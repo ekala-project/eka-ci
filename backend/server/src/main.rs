@@ -26,6 +26,8 @@ async fn main() {
 
     let about = warp::path("about")
     .map(|| format!("About Page"));
+
+    // TODO: serve up frontend bundle
     let root = warp::path::end()
     .map(|| format!("Welcome to Eka-CI"));
 
