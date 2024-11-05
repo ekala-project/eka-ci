@@ -23,7 +23,7 @@ Server + evaluator + build queue
 - GitHub OAuth
   - [ ] Allow users to register through GitHub
 - GitHub webhooks
-  - [ ] App registration workflow
+  - [x] App registration workflow
   - [ ] Receive PR review events
   - [ ] Send check gates
 - PR Review workflow
