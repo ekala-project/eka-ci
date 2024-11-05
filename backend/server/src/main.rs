@@ -1,7 +1,9 @@
 mod cli;
+mod github;
+mod error;
 
 use clap::Parser;
-use log::info;
+use log::{info, warn};
 use warp::Filter;
 use chrono::Local;
 use std::io::Write;
@@ -23,6 +25,11 @@ async fn main() {
     }).init();
 
     let args = cli::Args::parse();
+
+    match github::register_app().await {
+        Err(e) => warn!("Failed to register as github app: {:?}", e),
+        _ => { },
+    }
 
     let about = warp::path("about")
     .map(|| format!("About Page"));
