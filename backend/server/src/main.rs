@@ -1,10 +1,10 @@
 mod cli;
 mod github;
 mod error;
+mod web;
 
 use clap::Parser;
-use log::{info, warn};
-use warp::Filter;
+use log::warn;
 use chrono::Local;
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -27,23 +27,11 @@ async fn main() {
     let args = cli::Args::parse();
 
     match github::register_app().await {
-        Err(e) => warn!("Failed to register as github app: {:?}", e),
+        Err(e) => warn!(target: &LOG_TARGET, "Failed to register as github app: {:?}", e),
         _ => { },
     }
 
-    let about = warp::path("about")
-    .map(|| format!("About Page"));
-
-    // TODO: serve up frontend bundle
-    let root = warp::path::end()
-    .map(|| format!("Welcome to Eka-CI"));
-
-    let routes = warp::get().and(about.or(root));
     let addr = args.addr.parse::<Ipv4Addr>().expect("Invalid addr");
 
-    info!(target: LOG_TARGET, "Serving Eka-CI on {}:{}", args.addr, args.port);
-
-    warp::serve(routes)
-    .run((addr, args.port))
-    .await
+    web::serve_web(addr, args.port).await
 }
