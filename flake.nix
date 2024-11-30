@@ -16,6 +16,7 @@
       devShells.default = with legacyPackages; mkShell {
         nativeBuildInputs = [
           cargo
+          clippy
           rustc
         ];
       };
