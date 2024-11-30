@@ -1,5 +1,4 @@
 
-use octocrab;
 use std::num::ParseIntError;
 use std::env::VarError;
 
@@ -7,25 +6,25 @@ use std::env::VarError;
 #[allow(dead_code)]
 pub enum Error {
     Ocotocrab(octocrab::Error),
-    ParseIntError(ParseIntError),
-    EnvVarError(VarError),
+    ParseInt(ParseIntError),
+    EnvVar(VarError),
 }
 
 impl From<VarError> for self::Error {
     fn from(err: VarError) -> Self {
-        return Self::EnvVarError(err)
+        Self::EnvVar(err)
     }
 }
 
 impl From<ParseIntError> for self::Error {
     fn from(err: ParseIntError) -> Self {
-        return Self::ParseIntError(err)
+        Self::ParseInt(err)
     }
 }
 
 impl From<octocrab::Error> for self::Error {
     fn from(err: octocrab::Error) -> Self {
-        return Error::Ocotocrab(err)
+        Error::Ocotocrab(err)
     }
 }
 

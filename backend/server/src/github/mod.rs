@@ -1,7 +1,5 @@
 use octocrab::{Octocrab, Page};
 use octocrab::models::Installation;
-use octocrab;
-use jsonwebtoken;
 use crate::error;
 use log::info;
 

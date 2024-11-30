@@ -26,9 +26,8 @@ async fn main() {
 
     let args = cli::Args::parse();
 
-    match github::register_app().await {
-        Err(e) => warn!(target: &LOG_TARGET, "Failed to register as github app: {:?}", e),
-        _ => { },
+    if let Err(e) = github::register_app().await {
+        warn!(target: &LOG_TARGET, "Failed to register as github app: {:?}", e);
     }
 
     let addr = args.addr.parse::<Ipv4Addr>().expect("Invalid addr");
