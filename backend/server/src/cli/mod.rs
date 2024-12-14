@@ -13,4 +13,8 @@ pub(crate) struct Args {
     #[arg(help = "IPv4 address to bind http traffic")]
     #[arg(short,long)]
     pub addr: String,
+
+    #[arg(help = "Socket for ekaci client. Defaults to $XDG_RUNTIME_DIR/ekaci.")]
+    #[arg(short,long)]
+    pub socket: Option<String>,
 }
