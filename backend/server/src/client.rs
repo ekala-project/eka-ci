@@ -61,7 +61,7 @@ fn handle_client(mut stream: UnixStream) -> Result<()> {
     let response = handle_request(message);
     let response_message = serde_json::to_string(&response)?;
 
-    stream.write(response_message.as_bytes())?;
+    stream.write_all(response_message.as_bytes())?;
     stream.flush()?;
     println!("Shutting down socket");
     stream.shutdown(Shutdown::Both)?;
