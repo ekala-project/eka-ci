@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use shared::types as t;
 
 #[derive(Debug)]
 #[derive(Subcommand)]
@@ -7,6 +8,8 @@ pub(crate) enum Commands {
     Info,
     /// Brief status and summary of EkaCI
     Status,
+    /// Force an evaluation
+    EvalPR(t::EvalPRRequest),
 }
 
 #[derive(Parser, Debug)]
