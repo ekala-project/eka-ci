@@ -79,5 +79,12 @@ fn handle_request(request: ClientRequest) -> ClientResponse {
             status: t::ServerStatus::Active,
             version : "0.1.0".to_string(),
         }),
+        req::EvalPR(eval_info) => {
+            debug!("Eval Request received: {:?}", &eval_info);
+            resp::EvalPR (t::EvalPRResponse {
+                // TODO: actually schedule reponse
+                eval_id: 1_u32,
+            })
+        },
     }
 }

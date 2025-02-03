@@ -23,10 +23,15 @@ fn main() -> Result <()> {
         }).init();
 
     let args = cli::Args::parse();
+    let socket = requests::socket_addr(args.socket);
 
-    match &args.command {
+    match args.command {
         Some(Commands::Info) => {
-            send_request(args, ClientRequest::Info)?;
+            send_request(socket, ClientRequest::Info)?;
+        },
+        Some(Commands::EvalPR(eval_args)) => {
+            let request = ClientRequest::EvalPR(eval_args);
+            send_request(socket, request)?;
         },
         Some(Commands::Status) => {
         },
