@@ -2,6 +2,7 @@ mod cli;
 mod client;
 mod github;
 mod error;
+mod types;
 mod web;
 
 use clap::Parser;
