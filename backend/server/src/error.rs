@@ -1,4 +1,3 @@
-
 use std::num::ParseIntError;
 use std::env::VarError;
 
@@ -35,6 +34,7 @@ impl From<serde_json::Error> for self::Error {
         Self::SerdeJson(err)
     }
 }
+
 impl From<octocrab::Error> for self::Error {
     fn from(err: octocrab::Error) -> Self {
         Error::Ocotocrab(err)
@@ -42,3 +42,20 @@ impl From<octocrab::Error> for self::Error {
 }
 
 pub type Result<T, E = self::Error> = std::result::Result<T, E>;
+
+pub trait LogResult {
+    fn log_with_context(self, context: &str);
+}
+
+impl<T> LogResult for Result<T> {
+    fn log_with_context(self, context: &str) {
+        match self {
+            Ok(_) => {
+                log::info!("Attempting {} was successful", context);
+            }
+            Err(e) => {
+                log::error!("When attempting to {}, an error was encountered: {:?}", context, e);
+            }
+        }
+    }
+}
