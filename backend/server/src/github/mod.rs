@@ -17,3 +17,10 @@ pub async fn register_app() -> error::Result<Page<Installation>> {
 
     Ok(installations)
 }
+
+#[allow(unused_variables)]
+fn github_pull(domain: &str, owner: &str, pull: u32) {
+    evalRequest = EvalPRRequest::new(
+    unimplemented!();
+   // GET("repos/{}/{}/pulls/{}", &domain, &owner, pull)
+}
