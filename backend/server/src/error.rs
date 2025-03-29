@@ -9,6 +9,7 @@ pub enum Error {
     EnvVar(VarError),
     StdIO(std::io::Error),
     SerdeJson(serde_json::Error),
+    FromUtf8(std::string::FromUtf8Error),
 }
 
 impl From<VarError> for self::Error {
@@ -38,6 +39,12 @@ impl From<serde_json::Error> for self::Error {
 impl From<octocrab::Error> for self::Error {
     fn from(err: octocrab::Error) -> Self {
         Error::Ocotocrab(err)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for self::Error {
+    fn from(err: std::string::FromUtf8Error) -> Self {
+        Error::FromUtf8(err)
     }
 }
 

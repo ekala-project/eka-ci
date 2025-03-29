@@ -1,8 +1,8 @@
 use shared::types as t;
 use crate::error as err;
-use crate::error::LogResult;
-use std::process::{Command, ExitStatus};
-use std::path::Path;
+use std::process::ExitStatus;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 // TODO: Make serializable, use hash as ID
 #[derive(Hash)]
@@ -36,8 +36,6 @@ impl IntoEvalInfo for t::EvalPRRequest {
 }
 
 fn git_clone(url: &str, dest_dir: &str) -> err::Result<ExitStatus> {
-    use std::process::Command;
-
     log::info!("Cloning {} to {}", &url, &dest_dir);
     Command::new("git")
         .args(&[ "clone", &url, &dest_dir])
@@ -45,8 +43,29 @@ fn git_clone(url: &str, dest_dir: &str) -> err::Result<ExitStatus> {
         .map_err(|e| e.into())
 }
 
-fn git_force_fetch<P: AsRef<Path>>(dir: P) -> err::Result<ExistStatus> {
-    git -c fetch.prune=false fetch --no-tags --force https://github.com/NixOS/nixpkgs master:refs/nixpkgs-review/0 pull/384947/head:refs/nixpkgs-review/1
+fn git_force_fetch_to_ref<P: AsRef<Path>>(dir: P, upstream_ref: &str, local_ref: &str) -> err::Result<String> {
+    // Example fetch, which creates ref to specific commits:
+    // "git -c fetch.prune=false fetch --no-tags --force https://github.com/NixOS/nixpkgs master:refs/nixpkgs-review/0 pull/384947/head:refs/nixpkgs-review/1"
+    let ref_pair = format!("{}:{}", &upstream_ref, &local_ref);
+    Command::new("git")
+        .current_dir(&dir)
+        .args(&[ "-c", "fetch.prune=false", "fetch", "--no-tags", &ref_pair ])
+        .status()?;
+
+    let output = Command::new("git")
+        .current_dir(&dir)
+        .args(&[ "rev-parse", &local_ref ])
+        .output()?;
+
+
+    String::from_utf8(output.stdout)
+        .map_err(|e| e.into())
+
+}
+
+fn git_force_fetch<P: AsRef<Path>>(dir: P) -> err::Result<ExitStatus> {
+    // Example fetch, which creates ref to specific commits:
+    // "git -c fetch.prune=false fetch --no-tags --force https://github.com/NixOS/nixpkgs master:refs/nixpkgs-review/0 pull/384947/head:refs/nixpkgs-review/1"
     Command::new("git")
         .current_dir(dir)
         .args(&[ "-c", "fetch.prune=false", "fetch", "--no-tags"])
@@ -67,6 +86,11 @@ impl PREvalInfo {
                 '\\' =>  '-',
                 _ => x
             }).collect()
+    }
+
+    /// Takes base ref name, and creates project+ekaci-specific ref
+    fn git_ref(&self, git_ref: &str) -> String {
+        format!("{}/{}/{}/{}", "refs", "eka-ci", &self.repo, &git_ref)
     }
 
     fn repo_dir(&self) -> PathBuf {
@@ -97,12 +121,12 @@ impl PREvalInfo {
 
     /// This directory houses the main checkout of the repo
     fn ensure_default_dir(&self) -> err::Result<()> {
-        let mut already_checkedout = self.already_checkedout_file();
+        let already_checkedout = self.already_checkedout_file();
         if !already_checkedout.exists() {
-            let dest_dir = self.default_branch_dir().to_str().expect("invalid worktree dir");
+            let dest_dir = self.default_branch_dir().to_str().map(|x| x.to_owned()).expect("invalid worktree dir");
             git_clone(&self.git_ssh_url(), &dest_dir)?;
-            log::info!("Successfully cloned {} to {}", &self.git_ssh_url(), &dest_dir);
-            std::fs::OpenOptions::new().write(true).create_new(true).open(&already_checkedout);
+            log::debug!("Successfully cloned {} to {}", &self.git_ssh_url(), &dest_dir);
+            std::fs::OpenOptions::new().write(true).create_new(true).open(&already_checkedout)?;
         } else {
             log::debug!("Skipping checkout of {}, already exists", &self.git_ssh_url());
         }
@@ -122,9 +146,9 @@ impl PREvalInfo {
     pub fn checkout(&self) -> err::Result<()> {
         self.ensure_default_dir()?;
 
-        let mut head_tree = worktree_dir.clone();
+        let mut head_tree = self.worktree_dir();
         head_tree.push(&self.head_commit);
-        let mut base_tree = worktree_dir.clone();
+        let mut base_tree = self.worktree_dir();
         base_tree.push(&self.base_commit);
 
 
