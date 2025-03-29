@@ -19,3 +19,4 @@ xdg = {workspace = true}
 serde = {workspace = true}
 serde_json = {workspace = true}
 shared = { path = "../shared" }
+reqwest = { version = "0.12.15", features = ["blocking", "json"] }

@@ -18,6 +18,11 @@
           cargo
           clippy
           rustc
+          pkg-config
+        ];
+
+        buildInputs = [
+          openssl
         ];
       };
   });

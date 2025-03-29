@@ -10,6 +10,7 @@ pub enum Error {
     StdIO(std::io::Error),
     SerdeJson(serde_json::Error),
     FromUtf8(std::string::FromUtf8Error),
+    Reqwest(reqwest::Error),
 }
 
 impl From<VarError> for self::Error {
@@ -48,6 +49,11 @@ impl From<std::string::FromUtf8Error> for self::Error {
     }
 }
 
+impl From<reqwest::Error> for self::Error {
+    fn from(err: reqwest::Error) -> Self {
+        Error::Reqwest(err)
+    }
+}
 pub type Result<T, E = self::Error> = std::result::Result<T, E>;
 
 pub trait LogResult {

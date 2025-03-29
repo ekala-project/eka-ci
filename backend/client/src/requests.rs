@@ -23,7 +23,11 @@ pub fn send_request(socket: String, request: ClientRequest)
     // attempt to connect to socket
     debug!("Attempting to connect to {}", &socket);
 
-    let mut stream = UnixStream::connect(socket)?;
+    if !std::path::Path::new(&socket).exists() {
+        log::error!("{} does not exist, is eka-ci running?", &socket);
+    };
+
+    let mut stream= UnixStream::connect(socket)?;
 
     // send request
     let request_message = serde_json::to_string(&request)?;

@@ -23,6 +23,8 @@ pub struct EvalPRRequest {
     pub owner: String,
     #[arg(short, long)]
     pub repo: String,
+    #[arg(short, long)]
+    pub number: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

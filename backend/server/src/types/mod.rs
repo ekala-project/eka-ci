@@ -3,6 +3,7 @@ use crate::error as err;
 use std::process::ExitStatus;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use serde::Deserialize;
 
 // TODO: Make serializable, use hash as ID
 #[derive(Hash)]
@@ -33,6 +34,20 @@ impl IntoEvalInfo for t::EvalPRRequest {
             repo: self.repo,
         }
     }
+}
+
+#[derive(Deserialize, Debug)]
+struct Branch {
+    #[serde(alias = "ref")]
+    gitref: String,
+    sha: String,
+}
+
+
+#[derive(Deserialize, Debug)]
+pub(crate) struct GHPullInfo {
+    base: Branch,
+    head: Branch,
 }
 
 fn git_clone(url: &str, dest_dir: &str) -> err::Result<ExitStatus> {
