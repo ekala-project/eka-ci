@@ -1,5 +1,6 @@
 mod cli;
 mod client;
+mod db;
 mod github;
 mod error;
 mod types;
@@ -11,9 +12,7 @@ use chrono::Local;
 use std::io::Write;
 use std::net::Ipv4Addr;
 use shared::dirs::eka_dirs;
-use crate::error::Result;
-
-const LOG_TARGET: &str = "eka-ci::server::main";
+use crate::error::{Result, LogResult};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -30,6 +29,11 @@ async fn main() -> Result<()> {
 
     let args = cli::Args::parse();
 
+    std::fs::create_dir_all(eka_dirs().get_data_home());
+    let db_file = eka_dirs().get_data_file("sqlite.db");
+    db::initialize(&db_file.display().to_string()).await
+        .log_with_context("attempted to create DB pool");
+
     let socket = args.socket.unwrap_or_else(||
         eka_dirs().get_runtime_file("ekaci.socket")
           .expect("failed to find xdg_runtime_dir after socket not set")
@@ -41,7 +45,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async { client::listen_for_client(socket).await });
 
     if let Err(e) = github::register_app().await {
-        warn!(target: &LOG_TARGET, "Failed to register as github app: {:?}", e);
+        warn!("Failed to register as github app: {:?}", e);
     }
 
     let addr = args.addr.parse::<Ipv4Addr>().expect("Invalid addr");

@@ -83,7 +83,7 @@ async fn handle_request(request: ClientRequest) -> ClientResponse {
             debug!("Got info {:?}", &pr_info);
             resp::EvalPR (t::EvalPRResponse {
                 // TODO: actually schedule reponse
-                eval_id: 1_u32,
+                eval_id: 1_i64,
             })
         },
     }

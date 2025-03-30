@@ -11,6 +11,8 @@ pub enum Error {
     SerdeJson(serde_json::Error),
     FromUtf8(std::string::FromUtf8Error),
     Reqwest(reqwest::Error),
+    Sqlx(sqlx::Error),
+    SqlxMigrate(sqlx::migrate::MigrateError),
 }
 
 impl From<VarError> for self::Error {
@@ -54,6 +56,19 @@ impl From<reqwest::Error> for self::Error {
         Error::Reqwest(err)
     }
 }
+
+impl From<sqlx::Error> for self::Error {
+    fn from(err: sqlx::Error) -> Self {
+        Error::Sqlx(err)
+    }
+}
+
+impl From<sqlx::migrate::MigrateError> for self::Error {
+    fn from(err: sqlx::migrate::MigrateError) -> Self {
+        Error::SqlxMigrate(err)
+    }
+}
+
 pub type Result<T, E = self::Error> = std::result::Result<T, E>;
 
 pub trait LogResult {
@@ -67,7 +82,7 @@ impl<T> LogResult for Result<T> {
                 log::info!("Attempting {} was successful", context);
             }
             Err(e) => {
-                log::error!("When attempting to {}, an error was encountered: {:?}", context, e);
+                log::error!("When attempting {}, an error was encountered: {:?}", context, e);
             }
         }
     }

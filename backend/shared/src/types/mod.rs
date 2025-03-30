@@ -42,7 +42,7 @@ pub struct InfoResponse {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EvalPRResponse {
-    pub eval_id: u32,
+    pub eval_id: i64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
