@@ -34,7 +34,11 @@ pub async fn listen_for_client(socket: String) -> Result<()> {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(async { handle_client(stream).await });
+                tokio::spawn(async {
+                    if let Err(err) = handle_client(stream).await {
+                        warn!("Failed to handle socket connection: {:?}", err);
+                    }
+                });
             }
             Err(err) => {
                 warn!("Failed to create socket connection: {:?}", err);
