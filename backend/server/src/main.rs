@@ -9,7 +9,6 @@ use log::warn;
 use chrono::Local;
 use std::io::Write;
 use std::net::Ipv4Addr;
-use tokio::runtime::Runtime;
 use shared::dirs::eka_dirs;
 use crate::error::Result;
 
@@ -38,9 +37,7 @@ async fn main() -> Result<()> {
           .to_string()
     );
 
-    let rt = Runtime::new()?;
-
-    rt.spawn(async { client::listen_for_client(socket) });
+    tokio::spawn(async { client::listen_for_client(socket).await });
 
     if let Err(e) = github::register_app().await {
         warn!(target: &LOG_TARGET, "Failed to register as github app: {:?}", e);

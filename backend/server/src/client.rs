@@ -1,12 +1,8 @@
-use log::{debug, info, warn};
-use std::os::unix::net::UnixListener;
-use std::os::unix::net::UnixStream;
-use std::path::Path;
-use std::io::{Read, Write};
-use std::net::Shutdown;
-use tokio::runtime::Runtime;
-use shared::types::{ClientRequest, ClientResponse};
 use crate::error::Result;
+use log::{debug, info, warn};
+use shared::types::{ClientRequest, ClientResponse};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{UnixListener, UnixStream}};
+use std::path::Path;
 
 /// Ensure parent directories
 /// Remove potential lingering socket file from previous runs
@@ -28,43 +24,41 @@ fn prepare_path(socket: &str) {
     }
 }
 
-pub fn listen_for_client(socket: String) -> Result <()> {
+pub async fn listen_for_client(socket: String) -> Result<()> {
     prepare_path(&socket);
 
     // TODO: Remove previous socket if it exists
     info!("Attempting to listen on socket: {:?}", socket);
     let listener = UnixListener::bind(socket)?;
-    let rt = Runtime::new()?;
 
-
-    for maybe_socket in listener.incoming() {
-       match maybe_socket {
-           Ok(s) =>  {
-               rt.spawn(async { handle_client(s) });
-           },
-           Err(e) => warn!("Failed to create socket connection: {:?}", e),
-       }
-   }
-
-    Ok(())
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                tokio::spawn(async { handle_client(stream).await });
+            }
+            Err(err) => {
+                warn!("Failed to create socket connection: {:?}", err);
+            }
+        };
+    }
 }
 
-fn handle_client(mut stream: UnixStream) -> Result<()> {
+async fn handle_client(mut stream: UnixStream) -> Result<()> {
     use shared::types as t;
     info!("Got unix socket client: {:?}", stream);
 
     let mut request_message: String = String::new();
-    stream.read_to_string(&mut request_message)?;
+    stream.read_to_string(&mut request_message).await?;
     let message: t::ClientRequest = serde_json::from_str(&request_message)?;
     debug!("Got message from client: {:?}", &message);
 
     let response = handle_request(message);
     let response_message = serde_json::to_string(&response)?;
 
-    stream.write_all(response_message.as_bytes())?;
-    stream.flush()?;
+    stream.write_all(response_message.as_bytes()).await?;
+    stream.flush().await?;
     println!("Shutting down socket");
-    stream.shutdown(Shutdown::Both)?;
+    stream.shutdown().await?;
 
     Ok(())
 }
