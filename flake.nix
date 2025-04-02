@@ -19,6 +19,8 @@
           clippy
           rustc
           rustfmt
+          elmPackages.elm
+          elmPackages.elm-format
         ];
       };
   });

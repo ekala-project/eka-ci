@@ -19,3 +19,4 @@ xdg = {workspace = true}
 serde = {workspace = true}
 serde_json = {workspace = true}
 shared = { path = "../shared" }
+maud = { version = "0.27.0", features = ["warp"] }
