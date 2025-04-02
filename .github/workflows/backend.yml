@@ -25,3 +25,6 @@ jobs:
     - name: Run lint
       run: rustup component add clippy && cargo clippy
       working-directory: ./backend
+    - name: Run Format
+      run: rustup component add rustfmt && cargo fmt --all --manifest-path ./Cargo.toml -- --check
+      working-directory: ./backend
