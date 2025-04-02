@@ -1,5 +1,5 @@
-use std::num::ParseIntError;
 use std::env::VarError;
+use std::num::ParseIntError;
 
 #[derive(Debug)]
 #[allow(dead_code)]

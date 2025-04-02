@@ -1,24 +1,24 @@
-use shared::types::{ClientRequest, ClientResponse};
-use shared::types as t;
-use shared::dirs::eka_dirs;
 use crate::cli;
-use std::os::unix::net::UnixStream;
-use std::io::{Read, Write};
-use log::debug;
-use std::net::Shutdown;
 use crate::error::Result;
+use log::debug;
+use shared::dirs::eka_dirs;
+use shared::types as t;
+use shared::types::{ClientRequest, ClientResponse};
+use std::io::{Read, Write};
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 
 // TODO: Better error handling
-pub fn send_request(args: cli::Args, request: ClientRequest)
-   -> Result<()> {
+pub fn send_request(args: cli::Args, request: ClientRequest) -> Result<()> {
     // attempt to connect to socket
-    let socket = args.socket.unwrap_or_else(||
-        eka_dirs().get_runtime_file("ekaci.socket")
-          .expect("failed to find xdg_runtime_dir after socket not set")
-          .to_str()
-          .expect("failed to make socket path into string")
-          .to_string()
-    );
+    let socket = args.socket.unwrap_or_else(|| {
+        eka_dirs()
+            .get_runtime_file("ekaci.socket")
+            .expect("failed to find xdg_runtime_dir after socket not set")
+            .to_str()
+            .expect("failed to make socket path into string")
+            .to_string()
+    });
 
     debug!("Attempting to connect to {}", &socket);
 

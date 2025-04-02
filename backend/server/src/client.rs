@@ -1,8 +1,11 @@
 use crate::error::Result;
 use log::{debug, info, warn};
 use shared::types::{ClientRequest, ClientResponse};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{UnixListener, UnixStream}};
 use std::path::Path;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{UnixListener, UnixStream},
+};
 
 /// Ensure parent directories
 /// Remove potential lingering socket file from previous runs
@@ -18,9 +21,11 @@ fn prepare_path(socket: &str) {
     // Not deleting the previous socket file results in a:
     // "Already in use" error
     if socket_path.exists() {
-        debug!("Previous socket file {:?} found, attempting to remove", socket_path);
-        std::fs::remove_file(socket_path)
-            .expect("Failed to remove previous socket");
+        debug!(
+            "Previous socket file {:?} found, attempting to remove",
+            socket_path
+        );
+        std::fs::remove_file(socket_path).expect("Failed to remove previous socket");
     }
 }
 
@@ -68,14 +73,14 @@ async fn handle_client(mut stream: UnixStream) -> Result<()> {
 }
 
 fn handle_request(request: ClientRequest) -> ClientResponse {
+    use shared::types as t;
     use shared::types::ClientRequest as req;
     use shared::types::ClientResponse as resp;
-    use shared::types as t;
 
     match request {
-        req::Info => resp::Info (t::InfoResponse {
+        req::Info => resp::Info(t::InfoResponse {
             status: t::ServerStatus::Active,
-            version : "0.1.0".to_string(),
+            version: "0.1.0".to_string(),
         }),
     }
 }

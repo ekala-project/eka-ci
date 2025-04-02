@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
 use serde;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum ClientRequest {
-  Info,
+    Info,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -23,6 +23,5 @@ pub struct InfoResponse {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum ClientResponse {
-  Info(InfoResponse),
+    Info(InfoResponse),
 }
-

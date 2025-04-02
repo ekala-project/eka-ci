@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 
-#[derive(Debug)]
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub(crate) enum Commands {
     /// Information about EkaCI running on host
     Info,
@@ -18,4 +17,3 @@ pub(crate) struct Args {
     #[arg(short, long)]
     pub socket: Option<String>,
 }
-
