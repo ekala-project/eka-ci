@@ -1,4 +1,3 @@
-
 use std::num::ParseIntError;
 use std::env::VarError;
 
@@ -10,6 +9,10 @@ pub enum Error {
     EnvVar(VarError),
     StdIO(std::io::Error),
     SerdeJson(serde_json::Error),
+    FromUtf8(std::string::FromUtf8Error),
+    Reqwest(reqwest::Error),
+    Sqlx(sqlx::Error),
+    SqlxMigrate(sqlx::migrate::MigrateError),
 }
 
 impl From<VarError> for self::Error {
@@ -35,10 +38,52 @@ impl From<serde_json::Error> for self::Error {
         Self::SerdeJson(err)
     }
 }
+
 impl From<octocrab::Error> for self::Error {
     fn from(err: octocrab::Error) -> Self {
         Error::Ocotocrab(err)
     }
 }
 
+impl From<std::string::FromUtf8Error> for self::Error {
+    fn from(err: std::string::FromUtf8Error) -> Self {
+        Error::FromUtf8(err)
+    }
+}
+
+impl From<reqwest::Error> for self::Error {
+    fn from(err: reqwest::Error) -> Self {
+        Error::Reqwest(err)
+    }
+}
+
+impl From<sqlx::Error> for self::Error {
+    fn from(err: sqlx::Error) -> Self {
+        Error::Sqlx(err)
+    }
+}
+
+impl From<sqlx::migrate::MigrateError> for self::Error {
+    fn from(err: sqlx::migrate::MigrateError) -> Self {
+        Error::SqlxMigrate(err)
+    }
+}
+
 pub type Result<T, E = self::Error> = std::result::Result<T, E>;
+
+pub trait LogResult {
+    fn log_with_context(self, context: &str);
+}
+
+impl<T> LogResult for Result<T> {
+    fn log_with_context(self, context: &str) {
+        match self {
+            Ok(_) => {
+                log::info!("Attempting {} was successful", context);
+            }
+            Err(e) => {
+                log::error!("When attempting {}, an error was encountered: {:?}", context, e);
+            }
+        }
+    }
+}

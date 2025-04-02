@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS eval_pr_queue (
+    id INTEGER PRIMARY KEY,
+    platform TEXT NOT NULL,
+    requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    pr_number INTEGER NOT NULL
+);
