@@ -1,53 +1,40 @@
-use log::info;
-use maud::html;
-use warp::Filter;
+use std::path::{Path, PathBuf};
 
-const LOG_TARGET: &str = "eka-ci::server::web";
+use axum::{routing::get, Router};
+use http::StatusCode;
+use tokio::net::TcpListener;
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    set_status::SetStatus,
+};
 
-const BUNDLE: &[u8] = include_bytes!("../../../frontend/static/main.js");
+pub async fn serve_web(listener: TcpListener, bundle: Option<PathBuf>) {
+    let app = Router::new().nest("/api", api_routes());
 
-fn bundle() -> &'static [u8] {
-    BUNDLE
+    let app = if let Some(bundle) = bundle {
+        // If nothing else matched, always return the SPA. The client application has its own
+        // router, which it will use to handle the requested the path.
+        app.fallback_service(spa_service(&bundle))
+    } else {
+        // Make sure to include some information on why there is no UI showing.
+        app.fallback(|| async {
+            (
+                StatusCode::NOT_FOUND,
+                "This instance of Eka CI has been started with the web interface disabled.",
+            )
+        })
+    };
+
+    axum::serve(listener, app).await.unwrap();
 }
 
-pub async fn serve_web(addr: std::net::Ipv4Addr, port: u16) {
-    let root = warp::path::end().map(root);
-    let bundle = warp::path("main.js").map(bundle);
-
-    let routes = warp::get().and(bundle.or(root));
-
-    info!(target: LOG_TARGET, "Serving Eka-CI on {}:{}", addr, port);
-
-    warp::serve(routes).run((addr, port)).await
+fn api_routes() -> Router {
+    // Placeholder to verify that nesting works as expected.
+    Router::new().route("/", get(|| async { "API" }))
 }
 
-fn root() -> maud::Markup {
-    html! {
-        (maud::DOCTYPE)
-        html lang="en" {
-            head {
-                // Some html boilerplate
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                style {
-                    // Copied from `elm make` output, no idea why they do this and if we need it.
-                    "body { padding: 0; margin: 0; }"
-                }
-
-                // Use a nice mono space font, because we deserve bettern than Courier.
-                // No thought has been given to this choice, replace at will.
-                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/fira_code.css";
-
-                // The server has an additional endpoint configured that serves this file.
-                // Empty body necessary to cirumvent https://github.com/lambda-fairy/maud/issues/474.
-                script src="main.js" {}
-            }
-            body {
-                script {
-                    // No further setup required, straight into Elm we go.
-                    "Elm.Main.init();"
-                }
-            }
-        }
-    }
+fn spa_service(bundle: &Path) -> ServeDir<SetStatus<ServeFile>> {
+    // The recommended way to serve a SPA:
+    // https://github.com/tokio-rs/axum/blob/main/axum-extra/CHANGELOG.md#060-24-february-2022
+    ServeDir::new(bundle).not_found_service(ServeFile::new(bundle.join("index.html")))
 }

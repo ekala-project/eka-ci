@@ -7,16 +7,17 @@ description = "Continuous Integration server for Nix"
 repository = "https://github.com/ekala-project/eka-ci"
 
 [dependencies]
+axum = { version = "0.8.3", features = ["tokio", "tracing", "json"] }
 chrono = "0.4.38"
-clap = {workspace = true}
-env_logger = {workspace = true}
+clap = { workspace = true }
+env_logger = { workspace = true }
+http = "1.3.1"
 jsonwebtoken = "9.3.0"
 log = "0.4.22"
 octocrab = "0.41.2"
-tokio = { version = "1.41.0", features = ["full"] }
-warp = "0.3.7"
-xdg = {workspace = true}
-serde = {workspace = true}
-serde_json = {workspace = true}
+serde = { workspace = true }
+serde_json = { workspace = true }
 shared = { path = "../shared" }
-maud = { version = "0.27.0", features = ["warp"] }
+tokio = { version = "1.41.0", features = ["full"] }
+tower-http = { version = "0.6.2", features = ["fs", "tracing"] }
+xdg = { workspace = true }

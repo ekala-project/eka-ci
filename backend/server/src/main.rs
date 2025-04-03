@@ -7,7 +7,7 @@ mod web;
 use crate::error::Result;
 use chrono::Local;
 use clap::Parser;
-use log::warn;
+use log::{info, warn};
 use shared::dirs::eka_dirs;
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -47,7 +47,12 @@ async fn main() -> Result<()> {
     }
 
     let addr = args.addr.parse::<Ipv4Addr>().expect("Invalid addr");
-    web::serve_web(addr, args.port).await;
+    let listener = tokio::net::TcpListener::bind((addr, args.port)).await?;
+    info!(
+        "Serving Eka CI web service on http://{}",
+        listener.local_addr()?,
+    );
+    web::serve_web(listener, args.bundle).await;
 
     Ok(())
 }
