@@ -16,6 +16,7 @@ octocrab = "0.41.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { workspace = true }
+thiserror = { workspace = true }
 tokio = { version = "1.41.0", features = ["full"] }
 tower-http = { version = "0.6.2", features = ["fs", "tracing"] }
 tracing = { workspace = true }

@@ -1,6 +1,5 @@
 mod cli;
 mod client;
-mod error;
 mod github;
 mod web;
 
@@ -10,8 +9,6 @@ use client::UnixService;
 use tracing::{info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
-
-const LOG_TARGET: &str = "eka-ci::server::main";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,7 +34,20 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to start web service")?;
 
     if let Err(e) = github::register_app().await {
-        warn!(target: &LOG_TARGET, "Failed to register as github app: {:?}", e);
+        // In dev environments, there usually is no authentication, but the server should still be
+        // runnable. If someone however tried to configure authentication, make sure to tell them
+        // load and clear if there was a problem.
+        if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
+            warn!(
+                "Skipping GitHub app registration: {}",
+                anyhow::Chain::new(&e)
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join(": ")
+            );
+        } else {
+            Err(e).context("failed to register GitHub app")?;
+        }
     }
 
     // Use `bind_addr` instead of the `addr` + `port` given by the user, to ensure the printed
