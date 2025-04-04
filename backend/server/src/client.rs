@@ -1,20 +1,59 @@
-use crate::error::Result;
-use shared::types::{ClientRequest, ClientResponse};
-use std::path::Path;
+use anyhow::{Context, Result};
+use shared::{
+    dirs::eka_dirs,
+    types::{ClientRequest, ClientResponse},
+};
+use std::path::{Path, PathBuf};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
+    net::{unix::SocketAddr, UnixListener, UnixStream},
 };
 use tracing::{debug, info, warn};
 
+pub struct UnixService {
+    listener: UnixListener,
+}
+
+impl UnixService {
+    pub async fn bind_to_path_or_default(socket_path: Option<PathBuf>) -> Result<Self> {
+        let socket_path = socket_path.map_or_else(
+            || {
+                eka_dirs().get_runtime_file("ekaci.socket").context(
+                    "failed to determine default path for unix socket, consider setting it explicitly",
+                )
+            },
+            Result::Ok,
+        )?;
+
+        prepare_path(&socket_path)?;
+
+        let listener = UnixListener::bind(socket_path)?;
+
+        Ok(Self { listener })
+    }
+
+    pub fn bind_addr(&self) -> SocketAddr {
+        // If the call fails either the system ran out of resources or libc is broken, for both of
+        // these cases a panic seems appropiate.
+        self.listener
+            .local_addr()
+            .expect("getsockname should always succeed on a properly initialized listener")
+    }
+
+    pub async fn run(self) {
+        listen_for_client(self.listener).await
+    }
+}
+
 /// Ensure parent directories
 /// Remove potential lingering socket file from previous runs
-fn prepare_path(socket: &str) {
-    let socket_path = Path::new(&socket);
-    let parent = socket_path.parent().expect("Socket can not be under root");
+fn prepare_path(socket_path: &Path) -> Result<()> {
+    let parent = socket_path
+        .parent()
+        .context("socket file cannot be located directly under root")?;
 
     if !parent.exists() {
-        info!("Creating directory: {:?}", &parent);
+        info!("Creating socket directory: {:?}", &parent);
         let _ = std::fs::create_dir_all(parent);
     }
 
@@ -25,17 +64,13 @@ fn prepare_path(socket: &str) {
             "Previous socket file {:?} found, attempting to remove",
             socket_path
         );
-        std::fs::remove_file(socket_path).expect("Failed to remove previous socket");
+        std::fs::remove_file(socket_path).context("failed to remove previous socket file")?;
     }
+
+    Ok(())
 }
 
-pub async fn listen_for_client(socket: String) -> Result<()> {
-    prepare_path(&socket);
-
-    // TODO: Remove previous socket if it exists
-    info!("Attempting to listen on socket: {:?}", socket);
-    let listener = UnixListener::bind(socket)?;
-
+async fn listen_for_client(listener: UnixListener) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
