@@ -7,10 +7,10 @@ members = [
 ]
 
 [workspace.dependencies]
-chrono = "0.4.38"
 clap = { version = "4.5.20", features = ["derive"] }
-env_logger = "0.11.5"
-log = "0.4.22"
 serde = {version = "1.0", features = [ "derive" ]}
 serde_json = "1.0"
+shared = { path = "./shared" }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 xdg = "2.5"

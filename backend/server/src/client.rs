@@ -1,11 +1,11 @@
 use crate::error::Result;
-use log::{debug, info, warn};
 use shared::types::{ClientRequest, ClientResponse};
 use std::path::Path;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
 };
+use tracing::{debug, info, warn};
 
 /// Ensure parent directories
 /// Remove potential lingering socket file from previous runs

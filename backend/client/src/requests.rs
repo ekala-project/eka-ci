@@ -1,12 +1,12 @@
 use crate::cli;
 use crate::error::Result;
-use log::debug;
 use shared::dirs::eka_dirs;
 use shared::types as t;
 use shared::types::{ClientRequest, ClientResponse};
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use tracing::debug;
 
 // TODO: Better error handling
 pub fn send_request(args: cli::Args, request: ClientRequest) -> Result<()> {

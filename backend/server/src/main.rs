@@ -5,28 +5,26 @@ mod github;
 mod web;
 
 use crate::error::Result;
-use chrono::Local;
 use clap::Parser;
-use log::{info, warn};
 use shared::dirs::eka_dirs;
-use std::io::Write;
 use std::net::Ipv4Addr;
+use tracing::{info, level_filters::LevelFilter, warn};
+use tracing_subscriber::EnvFilter;
 
 const LOG_TARGET: &str = "eka-ci::server::main";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::from_default_env()
-        .format(|buf, record| {
-            writeln!(
-                buf,
-                "[{}] {:5} - {} - {}",
-                Local::now().to_rfc3339(),
-                record.level(),
-                record.target(),
-                record.args()
-            )
-        })
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .with_ansi(true)
+        .with_level(true)
+        .with_target(true)
+        .with_timer(tracing_subscriber::fmt::time())
         .init();
 
     let args = cli::Args::parse();

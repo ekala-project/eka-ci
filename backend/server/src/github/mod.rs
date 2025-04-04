@@ -1,7 +1,7 @@
 use crate::error;
-use log::info;
 use octocrab::models::Installation;
 use octocrab::{Octocrab, Page};
+use tracing::info;
 
 pub async fn register_app() -> error::Result<Page<Installation>> {
     let app_id = std::env::var("GITHUB_APP_ID")
