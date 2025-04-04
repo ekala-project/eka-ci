@@ -17,7 +17,7 @@ pub(crate) struct Args {
 
     #[arg(help = "Socket for ekaci client. Defaults to $XDG_RUNTIME_DIR/ekaci.")]
     #[arg(short, long)]
-    pub socket: Option<String>,
+    pub socket: Option<PathBuf>,
 
     #[arg(help = "Path for the frontend bundle. Frontend will be disabled if not provided.")]
     #[arg(short, long)]
