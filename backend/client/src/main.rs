@@ -1,8 +1,7 @@
 mod cli;
-mod error;
 mod requests;
 
-use crate::error::Result;
+use anyhow::Context;
 use clap::Parser;
 use cli::Commands;
 use requests::send_request;
@@ -10,7 +9,7 @@ use shared::types::ClientRequest;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
-fn main() -> Result<()> {
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -27,7 +26,8 @@ fn main() -> Result<()> {
 
     match &args.command {
         Some(Commands::Info) => {
-            send_request(args, ClientRequest::Info)?;
+            send_request(args, ClientRequest::Info)
+                .context("failed to send info request to server")?;
         }
         Some(Commands::Status) => {}
         None => {}

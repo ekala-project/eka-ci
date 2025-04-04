@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Subcommand)]
@@ -15,5 +17,5 @@ pub(crate) struct Args {
     pub command: Option<Commands>,
 
     #[arg(short, long)]
-    pub socket: Option<String>,
+    pub socket: Option<PathBuf>,
 }

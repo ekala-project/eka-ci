@@ -355,10 +355,12 @@ dependencies = [
 name = "ekaci"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "clap",
  "serde",
  "serde_json",
  "shared",
+ "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
 ]
