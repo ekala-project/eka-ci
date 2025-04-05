@@ -1,0 +1,85 @@
+@import url("https://fonts.googleapis.com/css?family=Inter:700|Inter:400");
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --text: #110f0d;
+        --background: #e1e0df;
+        --primary: #49433c;
+        --secondary: #b6b6a5;
+        --accent: #737660;
+    }
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --text: #f2f0ee;
+        --background: #1f1e1d;
+        --primary: #c3bdb6;
+        --secondary: #5a5a49;
+        --accent: #9c9f89;
+    }
+}
+
+body {
+    font-family: "Inter";
+    font-weight: 400;
+
+    color: var(--text);
+    background-color: var(--background);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5 {
+    font-family: "Inter";
+    font-weight: 700;
+}
+
+pre,
+code {
+    font-family: "Fira Code";
+    font-weight: 400;
+}
+
+html {
+    font-size: 100%;
+} /* 16px */
+
+html {
+    font-size: 100%;
+} /* 16px */
+
+h1 {
+    font-size: 2.489rem; /* 39.84px */
+}
+
+h2 {
+    font-size: 2.074rem; /* 33.12px */
+}
+
+h3 {
+    font-size: 1.728rem; /* 27.68px */
+}
+
+h4 {
+    font-size: 1.44rem; /* 23.04px */
+}
+
+h5 {
+    font-size: 1.2rem; /* 19.2px */
+}
+
+small {
+    font-size: 0.833rem; /* 13.28px */
+}
+
+p,
+small,
+a,
+ul,
+li,
+table {
+    margin: 0;
+    padding: 0;
+}

@@ -16,6 +16,8 @@ use tower_http::{
 
 use crate::cli::Args;
 
+mod repositories;
+
 pub enum SpaBundle {
     Disabled,
     Path(PathBuf),
@@ -124,7 +126,7 @@ async fn bind_to_addr_and_port(addr: &str, port: u16) -> Result<TcpListener> {
 
 fn api_routes() -> Router {
     // Placeholder to verify that nesting works as expected.
-    Router::new().route("/", get(|| async { "API" }))
+    Router::new().route("/", get(repositories::list))
 }
 
 fn spa_service(bundle: &Path) -> ServeDir<SetStatus<ServeFile>> {
