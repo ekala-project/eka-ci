@@ -1,3 +1,4 @@
+mod config;
 mod cli;
 mod client;
 mod github;
@@ -6,12 +7,16 @@ mod web;
 use anyhow::Context;
 use clap::Parser;
 use client::UnixService;
+use config::Config;
 use tracing::{info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = dbg!(Config::from_env()?);
+    return Ok(());
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
