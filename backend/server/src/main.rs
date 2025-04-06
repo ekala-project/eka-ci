@@ -26,10 +26,10 @@ async fn main() -> anyhow::Result<()> {
 
     let args = cli::Args::parse();
 
-    let unix_servie = UnixService::bind_to_path_or_default(args.socket)
+    let unix_servie = UnixService::bind_to_path_or_default(args.socket.clone())
         .await
         .context("failed to start unix service")?;
-    let web_service = WebService::bind_to_addr_and_port(args.addr, args.port)
+    let web_service = WebService::bind_from_args(&args)
         .await
         .context("failed to start web service")?;
 
@@ -53,8 +53,9 @@ async fn main() -> anyhow::Result<()> {
     // Use `bind_addr` instead of the `addr` + `port` given by the user, to ensure the printed
     // address is always correct (even for funny things like setting the port to 0).
     info!(
-        "Serving Eka CI web service on http://{}",
+        "Serving Eka CI web service at http://{} ({})",
         web_service.bind_addr(),
+        web_service.spa_bundle(),
     );
     info!(
         "Listening for client connection on {}",
@@ -67,7 +68,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     tokio::spawn(async { unix_servie.run().await });
-    web_service.run(args.bundle).await;
+
+    web_service.run().await;
 
     Ok(())
 }
