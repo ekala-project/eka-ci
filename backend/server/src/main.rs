@@ -15,7 +15,6 @@ use web::WebService;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = dbg!(Config::from_env()?);
-    return Ok(());
 
     tracing_subscriber::fmt()
         .with_env_filter(
