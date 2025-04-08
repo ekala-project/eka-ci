@@ -103,7 +103,8 @@ impl Config {
         let file = Figment::from(Serialized::defaults(ConfigFile::default()))
             .merge(Toml::file(config_path))
             .merge(Env::prefixed("EKA_CI_").split("__"))
-            .extract::<ConfigFile>().context("failed to parse config file")?;
+            .extract::<ConfigFile>()
+            .context("failed to parse config file")?;
 
         Ok(Config {
             web: ConfigWeb {

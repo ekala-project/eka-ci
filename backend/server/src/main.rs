@@ -1,6 +1,6 @@
-mod config;
 mod cli;
 mod client;
+mod config;
 mod github;
 mod web;
 
