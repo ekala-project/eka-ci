@@ -5,7 +5,6 @@ mod github;
 mod web;
 
 use anyhow::Context;
-use clap::Parser;
 use client::UnixService;
 use config::Config;
 use tracing::{info, level_filters::LevelFilter, warn};
@@ -14,8 +13,6 @@ use web::WebService;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _ = dbg!(Config::from_env()?);
-
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -28,12 +25,12 @@ async fn main() -> anyhow::Result<()> {
         .with_timer(tracing_subscriber::fmt::time())
         .init();
 
-    let args = cli::Args::parse();
+    let config = dbg!(Config::from_env()?);
 
-    let unix_servie = UnixService::bind_to_path_or_default(args.socket)
+    let unix_servie = UnixService::bind_to_path(&config.unix.socket_path)
         .await
         .context("failed to start unix service")?;
-    let web_service = WebService::bind_to_addr_and_port(args.addr, args.port)
+    let web_service = WebService::bind_to_address(&config.web.address)
         .await
         .context("failed to start web service")?;
 
@@ -71,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     tokio::spawn(async { unix_servie.run().await });
-    web_service.run(args.bundle).await;
+    web_service.run(&config.web.spa_bundle).await;
 
     Ok(())
 }

@@ -1,9 +1,6 @@
 use anyhow::{Context, Result};
-use shared::{
-    dirs::eka_dirs,
-    types::{ClientRequest, ClientResponse},
-};
-use std::path::{Path, PathBuf};
+use shared::types::{ClientRequest, ClientResponse};
+use std::path::Path;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{unix::SocketAddr, UnixListener, UnixStream},
@@ -15,17 +12,8 @@ pub struct UnixService {
 }
 
 impl UnixService {
-    pub async fn bind_to_path_or_default(socket_path: Option<PathBuf>) -> Result<Self> {
-        let socket_path = socket_path.map_or_else(
-            || {
-                eka_dirs().get_runtime_file("ekaci.socket").context(
-                    "failed to determine default path for unix socket, consider setting it explicitly",
-                )
-            },
-            Result::Ok,
-        )?;
-
-        prepare_path(&socket_path)?;
+    pub async fn bind_to_path(socket_path: &Path) -> Result<Self> {
+        prepare_path(socket_path)?;
 
         let listener = UnixListener::bind(socket_path)?;
 

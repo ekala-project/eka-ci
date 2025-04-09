@@ -1,6 +1,6 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr},
-    path::{Path, PathBuf},
+    net::{SocketAddr, SocketAddrV4},
+    path::Path,
 };
 
 use anyhow::{Context, Result};
@@ -12,21 +12,17 @@ use tower_http::{
     set_status::SetStatus,
 };
 
+use crate::config::SpaBundle;
+
 pub struct WebService {
     listener: TcpListener,
 }
 
 impl WebService {
-    pub async fn bind_to_addr_and_port(addr: String, port: u16) -> Result<Self> {
-        let web_listen_address = addr
-            .parse::<Ipv4Addr>()
-            .context("failed to determine listen address")?;
-
-        let listener = tokio::net::TcpListener::bind((web_listen_address, port))
+    pub async fn bind_to_address(socket: &SocketAddrV4) -> Result<Self> {
+        let listener = tokio::net::TcpListener::bind(socket)
             .await
-            .context(format!(
-                "failed to bind to tcp socket at {web_listen_address}:{port}"
-            ))?;
+            .context(format!("failed to bind to tcp socket at {socket}"))?;
 
         Ok(Self { listener })
     }
@@ -39,10 +35,10 @@ impl WebService {
             .expect("getsockname should always succeed on a properly initialized listener")
     }
 
-    pub async fn run(self, spa_bundle_path: Option<PathBuf>) {
+    pub async fn run(self, spa_bundle_path: &SpaBundle) {
         let app = Router::new().nest("/api", api_routes());
 
-        let app = if let Some(spa_bundle_path) = spa_bundle_path {
+        let app = if let SpaBundle::Path(spa_bundle_path) = spa_bundle_path {
             // If nothing else matched, always return the SPA. The client application has its own
             // router, which it will use to handle the requested the path.
             app.fallback_service(spa_service(&spa_bundle_path))

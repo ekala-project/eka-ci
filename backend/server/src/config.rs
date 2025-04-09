@@ -65,28 +65,28 @@ struct ConfigEnv {
 
 #[derive(Debug)]
 pub struct Config {
-    web: ConfigWeb,
-    unix: ConfigUnix,
+    pub web: ConfigWeb,
+    pub unix: ConfigUnix,
     cli_only: Option<String>,
     file_only: Option<String>,
     env_only: Option<String>,
 }
 
 #[derive(Debug)]
-struct ConfigWeb {
-    address: SocketAddrV4,
-    spa_bundle: SpaBundle,
+pub struct ConfigWeb {
+    pub address: SocketAddrV4,
+    pub spa_bundle: SpaBundle,
 }
 
 #[derive(Debug)]
-enum SpaBundle {
+pub enum SpaBundle {
     Disabled,
     Path(PathBuf),
 }
 
 #[derive(Debug)]
-struct ConfigUnix {
-    socket_path: PathBuf,
+pub struct ConfigUnix {
+    pub socket_path: PathBuf,
 }
 
 impl Config {
