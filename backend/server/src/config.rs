@@ -10,6 +10,7 @@ use figment::{
     Figment,
 };
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -30,18 +31,16 @@ struct ConfigCli {
     #[arg(short, long)]
     pub bundle_path: Option<PathBuf>,
 
+    /// Path for the configuration file. Can also be set using the $EKA_CI_CONFIG_FILE.
+    /// If not provided a default path will be attempted, based on the XDG spec.
     #[arg(long)]
     pub config_file: Option<PathBuf>,
-
-    #[arg(long)]
-    pub cli_only: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct ConfigFile {
     web: ConfigFileWeb,
     unix: ConfigFileUnix,
-    file_only: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -60,16 +59,12 @@ struct ConfigFileUnix {
 struct ConfigEnv {
     #[serde(rename = "eka_ci_config_file")]
     pub config_file: Option<PathBuf>,
-    pub env_only: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct Config {
     pub web: ConfigWeb,
     pub unix: ConfigUnix,
-    cli_only: Option<String>,
-    file_only: Option<String>,
-    env_only: Option<String>,
 }
 
 #[derive(Debug)]
@@ -100,6 +95,8 @@ impl Config {
             .or(env.config_file)
             .unwrap_or(dirs.get_config_file("ekaci.toml"));
 
+        info!("Loading configuration file from {}", config_path.display());
+
         let file = Figment::from(Serialized::defaults(ConfigFile::default()))
             .merge(Toml::file(config_path))
             .merge(Env::prefixed("EKA_CI_").split("__"))
@@ -125,9 +122,6 @@ impl Config {
                     None => dirs.get_runtime_file("ekaci.socket")?,
                 },
             },
-            cli_only: args.cli_only,
-            env_only: env.env_only,
-            file_only: file.file_only,
         })
     }
 }

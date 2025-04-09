@@ -1,4 +1,3 @@
-mod cli;
 mod client;
 mod config;
 mod github;
@@ -7,7 +6,7 @@ mod web;
 use anyhow::Context;
 use client::UnixService;
 use config::Config;
-use tracing::{info, level_filters::LevelFilter, warn};
+use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
 
@@ -25,7 +24,9 @@ async fn main() -> anyhow::Result<()> {
         .with_timer(tracing_subscriber::fmt::time())
         .init();
 
-    let config = dbg!(Config::from_env()?);
+    let config = Config::from_env()?;
+
+    debug!("Using configuration {config:?}");
 
     let unix_servie = UnixService::bind_to_path(&config.unix.socket_path)
         .await
