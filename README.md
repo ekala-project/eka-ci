@@ -1,4 +1,4 @@
-# (WIP) Eka CI
+# (WIP) EkaCI
 
 This tool is meant to provide an optimized reviewing experience for small to
 large nix package repositories. In particular, the tool should provide:
@@ -16,6 +16,11 @@ large nix package repositories. In particular, the tool should provide:
 Ultimately, this tool is meant to answer, "should I merge this PR" in the quickest manner possible.
 Curating a Nix repository should not be highly limited to manual review processes of a reviewer.
 This doesn't scale well, and is error prone.
+
+# Design
+
+See the [design document](./DESIGN.md) for details about a high-level overview
+of EkaCI.
 
 # MVP Roadmap
 
