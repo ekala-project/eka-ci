@@ -1,6 +1,8 @@
 mod client;
 mod config;
 mod db;
+#[allow(dead_code, reason = "Only model definition for now, remove once used.")]
+mod derivation;
 mod github;
 mod nix;
 mod web;
