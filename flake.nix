@@ -17,10 +17,15 @@
         nativeBuildInputs = [
           cargo
           clippy
+          pkg-config
           rustc
           rustfmt
           elmPackages.elm
           elmPackages.elm-format
+        ];
+
+        buildInputs = [
+          openssl
         ];
       };
   });
