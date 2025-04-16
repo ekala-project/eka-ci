@@ -31,6 +31,10 @@ struct ConfigCli {
     #[arg(short, long)]
     pub bundle_path: Option<PathBuf>,
 
+    /// Path for the sqlite db path. Defaults to $XDG_DATA_HOME/ekaci/sqlite.db
+    #[arg(short, long)]
+    pub db_path: Option<PathBuf>,
+
     /// Path for the configuration file. Can also be set using the $EKA_CI_CONFIG_FILE.
     /// If not provided a default path will be attempted, based on the XDG spec.
     #[arg(long)]
@@ -41,6 +45,7 @@ struct ConfigCli {
 struct ConfigFile {
     web: ConfigFileWeb,
     unix: ConfigFileUnix,
+    db_path: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -65,6 +70,7 @@ struct ConfigEnv {
 pub struct Config {
     pub web: ConfigWeb,
     pub unix: ConfigUnix,
+    pub db_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -122,6 +128,10 @@ impl Config {
                     None => dirs.get_runtime_file("ekaci.socket")?,
                 },
             },
+            db_path: args
+                .db_path
+                .or(file.db_path)
+                .unwrap_or_else(|| dirs.get_data_file("sqlite.db")),
         })
     }
 }

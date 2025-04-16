@@ -18,7 +18,10 @@ pub async fn initialize(connection: &str) -> anyhow::Result<()> {
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal);
     let pool: SqlitePool = SqlitePool::connect_with(opts).await?;
-    SQLITEPOOL.set(pool.clone());
+
+    // TODO: This shouldn't be a global, rather a struct should wrap
+    // the connection pool while exposing a way to do CRUD for most commands
+    let _ = SQLITEPOOL.set(pool.clone());
     debug!("Finished creating SQLite database pool");
 
     // TODO: allow for path to be set, needs to be available at deployment time

@@ -7,7 +7,6 @@ mod web;
 use anyhow::Context;
 use client::UnixService;
 use config::Config;
-use shared::dirs::eka_dirs;
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
@@ -29,10 +28,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     debug!("Using configuration {config:?}");
 
-    // This should probably be moved into Config
-    std::fs::create_dir_all(eka_dirs().get_data_home()).context("Unable to determine DATA HOME")?;
-    let db_file = eka_dirs().get_data_file("sqlite.db");
-    db::initialize(&db_file.display().to_string())
+    db::initialize(&config.db_path.display().to_string())
         .await
         .context("attempted to create DB pool")?;
 
