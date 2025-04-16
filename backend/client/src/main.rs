@@ -5,6 +5,7 @@ use anyhow::Context;
 use clap::Parser;
 use cli::Commands;
 use requests::send_request;
+use shared::dirs::eka_dirs;
 use shared::types::ClientRequest;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -23,13 +24,25 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let args = cli::Args::parse();
+    let socket = args.socket.map_or_else(
+        || {
+            eka_dirs().get_runtime_file("ekaci.socket").context(
+                "failed to determine default path for unix socket, consider setting it explicitly",
+            )
+        },
+        Result::Ok,
+    )?;
 
-    match &args.command {
+    match args.command {
         Some(Commands::Info) => {
-            send_request(args, ClientRequest::Info)
+            send_request(&socket, ClientRequest::Info)
                 .context("failed to send info request to server")?;
         }
         Some(Commands::Status) => {}
+        Some(Commands::Build(build_req)) => {
+            send_request(&socket, ClientRequest::Build(build_req))
+                .context("failed to send info request to server")?;
+        }
         None => {}
     }
 

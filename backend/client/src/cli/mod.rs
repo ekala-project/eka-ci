@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use shared::types as t;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Commands {
@@ -8,6 +9,8 @@ pub(crate) enum Commands {
     Info,
     /// Brief status and summary of EkaCI
     Status,
+    /// Ask server to attempt to build a drv
+    Build(t::BuildRequest),
 }
 
 #[derive(Parser, Debug)]

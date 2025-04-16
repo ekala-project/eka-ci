@@ -105,5 +105,6 @@ fn handle_request(request: ClientRequest) -> ClientResponse {
             status: t::ServerStatus::Active,
             version: "0.1.0".to_string(),
         }),
+        req::Build(build_info) => resp::Build(t::BuildResponse { drv_id: 1_u64 }),
     }
 }
