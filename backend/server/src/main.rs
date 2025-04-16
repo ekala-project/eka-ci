@@ -2,6 +2,7 @@ mod client;
 mod config;
 mod db;
 mod github;
+mod nix;
 mod web;
 
 use anyhow::Context;
