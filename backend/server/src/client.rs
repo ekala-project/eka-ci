@@ -106,9 +106,11 @@ fn handle_request(request: ClientRequest) -> ClientResponse {
             version: "0.1.0".to_string(),
         }),
         req::Build(build_info) => {
-            let enqueued_drvs = crate::nix::traverse_drvs(&build_info.drv_path)
-                .expect("Failed to query drv graph");
-            resp::Build(t::BuildResponse { drv_id: enqueued_drvs.len() as u64 })
+            let enqueued_drvs =
+                crate::nix::traverse_drvs(&build_info.drv_path).expect("Failed to query drv graph");
+            resp::Build(t::BuildResponse {
+                drv_id: enqueued_drvs.len() as u64,
+            })
         }
     }
 }
