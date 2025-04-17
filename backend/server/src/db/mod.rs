@@ -4,6 +4,7 @@ use sqlx::migrate;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use tracing::debug;
 
+#[derive(Clone)]
 pub struct DbService {
     conn: SqlitePool,
 }
