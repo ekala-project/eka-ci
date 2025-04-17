@@ -8,7 +8,7 @@
 //!
 //! During the build process several [`DrvBuildEvent`] entries are inserted into the database. The
 //! latest of these entries is the current build status.
-use std::num::NonZero;
+use std::{iter::Map, num::NonZero, path::PathBuf};
 
 /// Unique identifier for a derivation build attempt.
 ///
@@ -41,12 +41,15 @@ pub struct DrvBuildMetadata {
     /// The derivation build this metadata is associated with.
     pub build: DrvBuildId,
 
-    /// The Git commit this derivation build is based upon.
+    /// The Git repository this derivation build originates from.
+    pub git_repo: gix_url::Url,
+
+    /// The Git commit this derivation build originates from.
     ///
     /// Note that this may not be the only commit that can produce this derivation. Because a
     /// derivation only needs to fully build once, later commits may still include this
     /// derivation but do not trigger a new build.
-    pub commit: gix_hash::ObjectId,
+    pub git_commit: gix_hash::ObjectId,
 
     /// The Nix command that was used to build this derivation.
     pub build_command: DrvBuildCommand,
@@ -55,8 +58,22 @@ pub struct DrvBuildMetadata {
 /// Command used to build the derivation.
 #[derive(Debug)]
 pub enum DrvBuildCommand {
-    /// Nix 1.0 style command. Fields are TBD.
-    Nix1,
+    /// Build a single attribute.
+    SingleAttr {
+        /// Path to the Nix executable.
+        ///
+        /// Since this will be a Nix store path, it conveniently also includes the executable's
+        /// version and unique identifier.
+        exec: PathBuf,
+        /// Nix arguments.
+        args: Vec<String>,
+        /// Environment variables for the subprocess.
+        env: Map<String, String>,
+        /// The `.nix` file that contains the attribute.
+        file: PathBuf,
+        /// The attribute to build.
+        attr: String,
+    },
 }
 
 /// Emitted whenever a derivation build's state changes.
