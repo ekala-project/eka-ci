@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     debug!("Using configuration {config:?}");
 
-    db::initialize(&config.db_path.display().to_string())
+    let db_service = db::DbService::new(&config.db_path.display().to_string())
         .await
         .context("attempted to create DB pool")?;
 
