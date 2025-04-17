@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::process::Command;
-use tracing::{debug};
+use tracing::debug;
 
 /// Given a drv, traverse all direct drv dependencies
 pub fn traverse_drvs(drv_path: &str) -> Result<HashMap<String, Vec<String>>> {

@@ -10,7 +10,7 @@ pub struct DbService {
 
 impl DbService {
     pub async fn new(connection: &str) -> anyhow::Result<DbService> {
-        use std::path::{Path};
+        use std::path::Path;
 
         debug!("Creating SQLite database pool at {}", connection);
 
