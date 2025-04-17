@@ -84,7 +84,7 @@ async fn handle_client(mut stream: UnixStream) -> Result<()> {
     let message: t::ClientRequest = serde_json::from_str(&request_message)?;
     debug!("Got message from client: {:?}", &message);
 
-    let response = handle_request(message);
+    let response = handle_request(message).await;
     let response_message = serde_json::to_string(&response)?;
 
     stream.write_all(response_message.as_bytes()).await?;
@@ -95,7 +95,7 @@ async fn handle_client(mut stream: UnixStream) -> Result<()> {
     Ok(())
 }
 
-fn handle_request(request: ClientRequest) -> ClientResponse {
+async fn handle_request(request: ClientRequest) -> ClientResponse {
     use shared::types as t;
     use shared::types::ClientRequest as req;
     use shared::types::ClientResponse as resp;
@@ -108,6 +108,13 @@ fn handle_request(request: ClientRequest) -> ClientResponse {
         req::Build(build_info) => {
             let enqueued_drvs =
                 crate::nix::traverse_drvs(&build_info.drv_path).expect("Failed to query drv graph");
+
+            use crate::db::drvs::insert::new as insert_drv;
+            for key in enqueued_drvs.keys() {
+                insert_drv(&key).await;
+            }
+
+
             resp::Build(t::BuildResponse {
                 drv_id: enqueued_drvs.len() as u64,
             })

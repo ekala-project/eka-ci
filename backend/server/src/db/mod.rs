@@ -1,3 +1,5 @@
+pub mod drvs;
+
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use std::sync::OnceLock;
 use tracing::debug;
@@ -5,7 +7,7 @@ use tracing::debug;
 static SQLITEPOOL: OnceLock<SqlitePool> = OnceLock::new();
 
 pub async fn initialize(connection: &str) -> anyhow::Result<()> {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     if SQLITEPOOL.get().is_some() {
         debug!("Sqlite already initialized, doing nothing");
@@ -13,6 +15,11 @@ pub async fn initialize(connection: &str) -> anyhow::Result<()> {
     }
 
     debug!("Creating SQLite database pool at {}", connection);
+    let db_path_parent = Path::new(connection).parent().expect("Inavlid db path");
+
+    if !db_path_parent.exists() {
+        std::fs::create_dir_all(db_path_parent)?;
+    }
     let opts = SqliteConnectOptions::new()
         .filename(connection)
         .create_if_missing(true)

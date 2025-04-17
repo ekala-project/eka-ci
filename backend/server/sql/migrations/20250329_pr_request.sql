@@ -1,7 +1,7 @@
 -- These are effectively queued builds to be attempted
 CREATE TABLE IF NOT EXISTS Drv (
     id INTEGER PRIMARY KEY,
-    drv_path TEXT NOT NULL,
+    drv_path TEXT NOT NULL UNIQUE,
     was_successful BOOLEAN NULL DEFAULT NULL,
     build_attempt_count INTEGER NOT NULL DEFAULT 0,
     platform TEXT NOT NULL,
