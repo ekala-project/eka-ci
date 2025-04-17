@@ -106,15 +106,12 @@ async fn handle_request(request: ClientRequest) -> ClientResponse {
             version: "0.1.0".to_string(),
         }),
         req::Build(build_info) => {
+            // TODO: we should not be doing this operation on the response thread
+            // Instead, we should be sending a message for the evaluator service to traverse this
             let enqueued_drvs =
                 crate::nix::traverse_drvs(&build_info.drv_path).expect("Failed to query drv graph");
 
-            use crate::db::drvs::insert::new as insert_drv;
-            for key in enqueued_drvs.keys() {
-                insert_drv(&key).await;
-            }
-
-
+            // TODO: We should likely return a URL to build status
             resp::Build(t::BuildResponse {
                 drv_id: enqueued_drvs.len() as u64,
             })
