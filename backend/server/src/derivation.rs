@@ -114,14 +114,45 @@ pub enum DrvBuildState {
     /// Build is currently running.
     Building,
     /// Build has completed, either successfully or not.
-    Completed {
-        result: DrvBuildResult,
-
-        // TBD
-        build_log: (),
-    },
+    ///
+    /// True means successful, false means an error was encountered while building the derivation.
+    Completed(DrvBuildResult),
     /// Build was interrupted before it could complete.
-    Interrupted { reason: DrvBuildInterruptionKind },
+    Interrupted(DrvBuildInterruptionKind),
+    /// Build depends on a derivation that is [Interrupted][DrvBuildState::Interrupted].
+    Blocked,
+}
+
+/// The result of building a derivation.
+///
+/// In essence, this enum captures whether the status code returned by the build command was `0`
+/// or not.
+#[derive(Debug)]
+pub enum DrvBuildResult {
+    /// The derivation built successfully.
+    Success,
+    /// The derivation failed to build.
+    Failure,
+}
+
+impl DrvBuildResult {
+    /// Handy helper that allows processing the build result in a more functional style using
+    /// [map][Result::map], [map_err][Result::map_err], [map_or_else][Result::map_or_else] and
+    /// the like.
+    pub fn as_result(&self) -> Result<(), ()> {
+        match self {
+            DrvBuildResult::Success => Ok(()),
+            DrvBuildResult::Failure => Err(()),
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success)
+    }
+
+    pub fn is_failure(&self) -> bool {
+        matches!(self, Self::Failure)
+    }
 }
 
 /// Possible causes for why the derivation build was interrupted.
@@ -140,18 +171,6 @@ pub enum DrvBuildInterruptionKind {
     /// derivation builds which do not have the status [`DrvBuildState::Completed`] whilst
     /// starting.
     SchedulerDeath,
-}
-
-/// The result of building a derivation.
-///
-/// In essence, this enum captures whether the status code returned by the build command was `0`
-/// or not.
-#[derive(Debug)]
-pub enum DrvBuildResult {
-    /// The derivation build successfully.
-    Ok,
-    /// The derivation failed to build.
-    Error,
 }
 
 /// A derivation identifier of the form `hash-name.drv`.
