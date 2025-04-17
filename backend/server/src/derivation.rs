@@ -196,3 +196,15 @@ pub enum DrvBuildInterruptionKind {
 /// [^nix-by-hand]: <https://bernsteinbear.com/blog/nix-by-hand/>
 #[derive(Debug)]
 pub struct DrvId(String);
+
+/// The edge in a derivation dependency DAG.
+///
+/// Maps a derivation to all the derivations it directly depends on and vice-versa to all the
+/// derivations that directly depend on it.
+#[derive(Debug)]
+pub struct DrvRefs {
+    /// Also known as dependant or consumer.
+    pub referrer: DrvId,
+    /// Also known as dependency.
+    pub reference: DrvId,
+}
