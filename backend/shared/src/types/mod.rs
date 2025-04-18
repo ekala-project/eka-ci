@@ -36,5 +36,5 @@ pub struct BuildRequest {
 
 #[derive(Serialize, Parser, Deserialize, Debug)]
 pub struct BuildResponse {
-    pub drv_id: u64,
+    pub enqueued: bool,
 }

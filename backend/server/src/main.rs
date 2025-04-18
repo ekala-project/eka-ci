@@ -13,6 +13,7 @@ use config::Config;
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
+use std::sync::mpsc::channel;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,11 +32,14 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     debug!("Using configuration {config:?}");
 
+    let (eval_sender, eval_receiver)  = channel::<String>();
+    let eval_service = nix::EvalService::new(eval_receiver);
+    eval_service.run();
     let db_service = db::DbService::new(&config.db_path.display().to_string())
         .await
         .context("attempted to create DB pool")?;
 
-    let unix_service = UnixService::bind_to_path(&config.unix.socket_path)
+    let unix_service = UnixService::bind_to_path(&config.unix.socket_path, eval_sender)
         .await
         .context("failed to start unix service")?;
     let web_service = WebService::bind_to_address(&config.web.address)

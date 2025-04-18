@@ -1,34 +1,75 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::process::Command;
-use tracing::debug;
+use tracing::{debug, warn};
+use std::sync::mpsc::Receiver;
 
-/// Given a drv, traverse all direct drv dependencies
-pub fn traverse_drvs(drv_path: &str) -> Result<HashMap<String, Vec<String>>> {
-    debug!("traversing {}", drv_path);
-
-    let mut drv_to_references: HashMap<String, Vec<String>> = HashMap::new();
-    inner_traverse_drvs(&mut drv_to_references, drv_path)?;
-
-    debug!("drvs {:?}", drv_to_references);
-    Ok(drv_to_references)
+pub struct EvalService {
+    drv_receiver: Receiver<String>,
+    // TODO: Eventually this should be an LRU cache
+    drv_map: HashMap<String, Vec<String>>,
 }
 
-/// To avoid lifetime issues, we do a recursive descent instead of a loop
-/// instead of appending to an iterator :(
-fn inner_traverse_drvs(drv_map: &mut HashMap<String, Vec<String>>, drv_path: &str) -> Result<()> {
-    let references = drv_references(drv_path)?;
-    drv_map.insert(drv_path.to_string(), references.clone());
-
-    for drv in references.into_iter() {
-        if drv_map.contains_key(&drv) {
-            continue;
+impl EvalService {
+    pub fn new(rcvr: Receiver<String>) -> EvalService {
+        EvalService {
+            drv_receiver: rcvr,
+            drv_map: HashMap::new(),
         }
-        debug!("traversing {}", &drv);
-        inner_traverse_drvs(drv_map, &drv)?;
     }
 
-    Ok(())
+    pub fn run(self) {
+        tokio::spawn(async {
+            self.listen();
+        });
+    }
+
+    fn listen(mut self) {
+        loop {
+            match self.drv_receiver.recv() {
+                Ok(drv) => {
+                    if let Err(e) = self.traverse_drvs(&drv) {
+                        warn!("Ran into error when query drv information: {}", e);
+                    }
+                }
+                Err(err) => {
+                    warn!("Eval reciever channel errored: {:?}", err);
+                }
+            }
+        }
+    }
+
+    /// Given a drv, traverse all direct drv dependencies
+    fn traverse_drvs(&mut self, drv_path: &str) -> Result<()> {
+        if self.drv_map.contains_key(drv_path) {
+            debug!("Already evaluated {}, skipping....", drv_path);
+            return Ok(());
+        }
+
+        debug!("traversing {}", drv_path);
+        self.inner_traverse_drvs(drv_path)?;
+
+        Ok(())
+    }
+
+    /// To avoid lifetime issues, we do a recursive descent instead of a loop
+    /// instead of appending to an iterator :(
+    fn inner_traverse_drvs(&mut self, drv_path: &str) -> Result<()> {
+        let references = drv_references(drv_path)?;
+        // TODO: this drv hasn't been built before, it should eventually it put into a "new drv"
+        // queue
+        debug!("new drv, traversing {}", &drv_path);
+        self.drv_map.insert(drv_path.to_string(), references.clone());
+
+        for drv in references.into_iter() {
+            if self.drv_map.contains_key(&drv) {
+                continue;
+            }
+            self.inner_traverse_drvs(&drv)?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Retreive the direct dependencies of a drv

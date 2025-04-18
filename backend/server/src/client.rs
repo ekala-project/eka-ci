@@ -6,18 +6,30 @@ use tokio::{
     net::{unix::SocketAddr, UnixListener, UnixStream},
 };
 use tracing::{debug, info, warn};
+use std::sync::mpsc::Sender;
 
 pub struct UnixService {
     listener: UnixListener,
+    /// Channel to emit drvs to be evaluated
+    dispatch: DispatchChannels,
+}
+
+/// Channels which can be used to communicate actions to other services
+#[derive(Clone)]
+struct DispatchChannels {
+    eval_sender: Sender<String>,
 }
 
 impl UnixService {
-    pub async fn bind_to_path(socket_path: &Path) -> Result<Self> {
+    // TODO: We should probably use a builder pattern to pass eval channel and other items
+    pub async fn bind_to_path(socket_path: &Path, eval_sender: Sender<String>) -> Result<Self> {
         prepare_path(socket_path)?;
 
         let listener = UnixListener::bind(socket_path)?;
+        let dispatch = DispatchChannels {
+            eval_sender };
 
-        Ok(Self { listener })
+        Ok(Self { listener, dispatch })
     }
 
     pub fn bind_addr(&self) -> SocketAddr {
@@ -29,7 +41,25 @@ impl UnixService {
     }
 
     pub async fn run(self) {
-        listen_for_client(self.listener).await
+        self.listen_for_client().await
+    }
+
+    async fn listen_for_client(self) {
+        loop {
+            match self.listener.accept().await {
+                Ok((stream, _)) => {
+                    let new_dispatch = self.dispatch.clone();
+                    tokio::spawn(async {
+                        if let Err(err) = handle_client(stream, new_dispatch).await {
+                            warn!("Failed to handle socket connection: {:?}", err);
+                        }
+                    });
+                }
+                Err(err) => {
+                    warn!("Failed to create socket connection: {:?}", err);
+                }
+            };
+        }
     }
 }
 
@@ -58,24 +88,7 @@ fn prepare_path(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn listen_for_client(listener: UnixListener) {
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                tokio::spawn(async {
-                    if let Err(err) = handle_client(stream).await {
-                        warn!("Failed to handle socket connection: {:?}", err);
-                    }
-                });
-            }
-            Err(err) => {
-                warn!("Failed to create socket connection: {:?}", err);
-            }
-        };
-    }
-}
-
-async fn handle_client(mut stream: UnixStream) -> Result<()> {
+async fn handle_client(mut stream: UnixStream, dispatch: DispatchChannels) -> Result<()> {
     use shared::types as t;
     info!("Got unix socket client: {:?}", stream);
 
@@ -84,7 +97,7 @@ async fn handle_client(mut stream: UnixStream) -> Result<()> {
     let message: t::ClientRequest = serde_json::from_str(&request_message)?;
     debug!("Got message from client: {:?}", &message);
 
-    let response = handle_request(message).await;
+    let response = handle_request(message, dispatch).await;
     let response_message = serde_json::to_string(&response)?;
 
     stream.write_all(response_message.as_bytes()).await?;
@@ -95,7 +108,7 @@ async fn handle_client(mut stream: UnixStream) -> Result<()> {
     Ok(())
 }
 
-async fn handle_request(request: ClientRequest) -> ClientResponse {
+async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> ClientResponse {
     use shared::types as t;
     use shared::types::ClientRequest as req;
     use shared::types::ClientResponse as resp;
@@ -108,13 +121,11 @@ async fn handle_request(request: ClientRequest) -> ClientResponse {
         req::Build(build_info) => {
             // TODO: we should not be doing this operation on the response thread
             // Instead, we should be sending a message for the evaluator service to traverse this
-            let enqueued_drvs =
-                crate::nix::traverse_drvs(&build_info.drv_path).expect("Failed to query drv graph");
+            dispatch.eval_sender.send(build_info.drv_path).expect("Eval service is unhealthy");
 
             // TODO: We should likely return a URL to build status
-            resp::Build(t::BuildResponse {
-                drv_id: enqueued_drvs.len() as u64,
-            })
+            resp::Build(t::BuildResponse { enqueued: true })
         }
     }
 }
+
