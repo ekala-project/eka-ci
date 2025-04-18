@@ -49,7 +49,7 @@ fn handle_response(response: ClientResponse) {
             print_info(info);
         }
         r::Build(info) => {
-            println!("DrvID: {}", &info.drv_id);
+            println!("Queued Successfully: {}", &info.enqueued);
         }
     }
 }
