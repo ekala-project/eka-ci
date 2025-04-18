@@ -1,8 +1,8 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::process::Command;
-use tracing::{debug, warn};
 use std::sync::mpsc::Receiver;
+use tracing::{debug, warn};
 
 pub struct EvalService {
     drv_receiver: Receiver<String>,
@@ -59,7 +59,8 @@ impl EvalService {
         // TODO: this drv hasn't been built before, it should eventually it put into a "new drv"
         // queue
         debug!("new drv, traversing {}", &drv_path);
-        self.drv_map.insert(drv_path.to_string(), references.clone());
+        self.drv_map
+            .insert(drv_path.to_string(), references.clone());
 
         for drv in references.into_iter() {
             if self.drv_map.contains_key(&drv) {

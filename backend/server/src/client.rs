@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use shared::types::{ClientRequest, ClientResponse};
 use std::path::Path;
+use std::sync::mpsc::Sender;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{unix::SocketAddr, UnixListener, UnixStream},
 };
 use tracing::{debug, info, warn};
-use std::sync::mpsc::Sender;
 
 pub struct UnixService {
     listener: UnixListener,
@@ -26,8 +26,7 @@ impl UnixService {
         prepare_path(socket_path)?;
 
         let listener = UnixListener::bind(socket_path)?;
-        let dispatch = DispatchChannels {
-            eval_sender };
+        let dispatch = DispatchChannels { eval_sender };
 
         Ok(Self { listener, dispatch })
     }
@@ -121,11 +120,13 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
         req::Build(build_info) => {
             // TODO: we should not be doing this operation on the response thread
             // Instead, we should be sending a message for the evaluator service to traverse this
-            dispatch.eval_sender.send(build_info.drv_path).expect("Eval service is unhealthy");
+            dispatch
+                .eval_sender
+                .send(build_info.drv_path)
+                .expect("Eval service is unhealthy");
 
             // TODO: We should likely return a URL to build status
             resp::Build(t::BuildResponse { enqueued: true })
         }
     }
 }
-
