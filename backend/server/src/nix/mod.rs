@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::mpsc::Receiver;
+use tokio::sync::mpsc::Receiver;
 use tracing::{debug, warn};
 
 pub struct EvalService {
@@ -20,20 +20,20 @@ impl EvalService {
 
     pub fn run(self) {
         tokio::spawn(async {
-            self.listen();
+            self.listen().await;
         });
     }
 
-    fn listen(mut self) {
+    async fn listen(mut self) {
         loop {
-            match self.drv_receiver.recv() {
-                Ok(drv) => {
+            match self.drv_receiver.recv().await {
+                Some(drv) => {
                     if let Err(e) = self.traverse_drvs(&drv) {
                         warn!("Ran into error when query drv information: {}", e);
                     }
                 }
-                Err(err) => {
-                    warn!("Eval reciever channel errored: {:?}", err);
+                None => {
+                    warn!("Eval reciever channel shutdown");
                 }
             }
         }

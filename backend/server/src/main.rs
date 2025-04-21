@@ -10,7 +10,7 @@ mod web;
 use anyhow::Context;
 use client::UnixService;
 use config::Config;
-use std::sync::mpsc::channel;
+use tokio::sync::mpsc::channel;
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
@@ -32,10 +32,10 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     debug!("Using configuration {config:?}");
 
-    let (eval_sender, eval_receiver) = channel::<String>();
+    let (eval_sender, eval_receiver) = channel::<String>(1000);
     let eval_service = nix::EvalService::new(eval_receiver);
     eval_service.run();
-    let db_service = db::DbService::new(&config.db_path.display().to_string())
+    let _db_service = db::DbService::new(&config.db_path.display().to_string())
         .await
         .context("attempted to create DB pool")?;
 

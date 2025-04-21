@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use shared::types::{ClientRequest, ClientResponse};
 use std::path::Path;
-use std::sync::mpsc::Sender;
+use tokio::sync::mpsc::Sender;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{unix::SocketAddr, UnixListener, UnixStream},
@@ -123,6 +123,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             dispatch
                 .eval_sender
                 .send(build_info.drv_path)
+                .await
                 .expect("Eval service is unhealthy");
 
             // TODO: We should likely return a URL to build status
