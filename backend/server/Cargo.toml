@@ -21,7 +21,7 @@ octocrab = "0.41.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { workspace = true }
-sqlx = { version = "0.8.3", features = [ "runtime-tokio", "sqlite" ], no-default-features = true }
+sqlx = { version = "0.8.5", features = [ "runtime-tokio", "sqlite", "migrate", "macros" ], default-features = false }
 thiserror = { workspace = true }
 tokio = { version = "1.41.0", features = ["full"] }
 tower-http = { version = "0.6.2", features = ["fs", "tracing"] }
