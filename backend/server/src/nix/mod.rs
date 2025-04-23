@@ -1,3 +1,5 @@
+mod nix_eval_jobs;
+
 use anyhow::Result;
 use std::collections::HashMap;
 use std::process::Command;
