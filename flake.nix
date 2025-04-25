@@ -13,20 +13,6 @@
       };
     in utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ] (system: rec {
       legacyPackages = pkgsForSystem system;
-      devShells.default = with legacyPackages; mkShell {
-        nativeBuildInputs = [
-          cargo
-          clippy
-          pkg-config
-          rustc
-          rustfmt
-          elmPackages.elm
-          elmPackages.elm-format
-        ];
-
-        buildInputs = [
-          openssl
-        ];
-      };
-  });
+      devShells.default = legacyPackages.callPackage ./nix/dev-shell.nix { };
+    });
 }
