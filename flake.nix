@@ -15,8 +15,8 @@
     utils.lib.eachDefaultSystem (system: rec {
       legacyPackages = nixpkgs.legacyPackages.${system}.extend (
         final: prev: {
-          dev-server = prev.callPackage ./nix/dev-server.nix { };
-          dev-shell = prev.callPackage ./nix/dev-shell.nix { };
+          dev-server = final.callPackage ./nix/dev-server.nix { };
+          dev-shell = final.callPackage ./nix/dev-shell.nix { };
         }
       );
 
