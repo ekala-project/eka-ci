@@ -7,6 +7,7 @@
   pkg-config,
   rustc,
   rustfmt,
+  dev-server,
 }:
 
 mkShell {
@@ -18,6 +19,7 @@ mkShell {
     rustfmt
     elmPackages.elm
     elmPackages.elm-format
+    dev-server
   ];
 
   buildInputs = [

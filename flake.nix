@@ -12,16 +12,15 @@
       nixpkgs,
       utils,
     }:
-    let
-      pkgsForSystem =
-        system:
-        import nixpkgs {
-          inherit system;
-        };
-    in
     utils.lib.eachDefaultSystem (system: rec {
-      legacyPackages = pkgsForSystem system;
-      devShells.default = legacyPackages.callPackage ./nix/dev-shell.nix { };
+      legacyPackages = nixpkgs.legacyPackages.${system}.extend (
+        final: prev: {
+          dev-server = prev.callPackage ./nix/dev-server.nix { };
+          dev-shell = prev.callPackage ./nix/dev-shell.nix { };
+        }
+      );
+
+      devShells.default = legacyPackages.dev-shell;
       formatter = legacyPackages.nixfmt-rfc-style;
     });
 }
