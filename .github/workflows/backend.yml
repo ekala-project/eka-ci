@@ -15,16 +15,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
+    - uses: cachix/install-nix-action@v25
     - name: Build
-      run: cargo build --verbose
+      run: nix develop --command cargo build --verbose
       working-directory: ./backend
     - name: Run tests
-      run: cargo test --verbose
+      run: nix develop --command cargo test --verbose
       working-directory: ./backend
-    - name: Run lint
-      run: rustup component add clippy && cargo clippy
+    - name: Run Rust Format
+      run: nix develop --command cargo fmt --all --check --verbose
       working-directory: ./backend
-    - name: Run Format
-      run: rustup component add rustfmt && cargo fmt --all --manifest-path ./Cargo.toml -- --check
-      working-directory: ./backend
+
