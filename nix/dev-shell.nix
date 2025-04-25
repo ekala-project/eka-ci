@@ -1,11 +1,12 @@
-{ cargo
-, clippy
-, elmPackages
-, mkShell
-, openssl
-, pkg-config
-, rustc
-, rustfmt
+{
+  cargo,
+  clippy,
+  elmPackages,
+  mkShell,
+  openssl,
+  pkg-config,
+  rustc,
+  rustfmt,
 }:
 
 mkShell {

@@ -6,15 +6,22 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
   };
 
-  outputs = { self, nixpkgs, utils }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      utils,
+    }:
     let
-      pkgsForSystem = system: import nixpkgs {
-        inherit system;
-      };
+      pkgsForSystem =
+        system:
+        import nixpkgs {
+          inherit system;
+        };
     in
-    utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ] (system: rec {
+    utils.lib.eachDefaultSystem (system: rec {
       legacyPackages = pkgsForSystem system;
       devShells.default = legacyPackages.callPackage ./nix/dev-shell.nix { };
-      formatter = legacyPackages.nixpkgs-fmt;
+      formatter = legacyPackages.nixfmt-rfc-style;
     });
 }
