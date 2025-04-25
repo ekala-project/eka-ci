@@ -17,7 +17,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: cachix/install-nix-action@v25
-    - name: Build
+    - name: Build, Test, and Lint
       run: nix develop --command cargo build --verbose
       working-directory: ./backend
     - name: Run tests
