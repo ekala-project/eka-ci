@@ -13,12 +13,15 @@
       utils,
     }:
     utils.lib.eachDefaultSystem (system: rec {
-      legacyPackages = nixpkgs.legacyPackages.${system}.extend (
-        final: prev: {
-          dev-server = final.callPackage ./nix/dev-server.nix { };
-          dev-shell = final.callPackage ./nix/dev-shell.nix { };
-        }
-      );
+      legacyPackages = import nixpkgs {
+        inherit system;
+        overlays = [
+          (final: prev: {
+            dev-server = final.callPackage ./nix/dev-server.nix { };
+            dev-shell = final.callPackage ./nix/dev-shell.nix { };
+          })
+        ];
+      };
 
       devShells.default = legacyPackages.dev-shell;
       formatter = legacyPackages.nixfmt-rfc-style;
