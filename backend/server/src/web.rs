@@ -36,7 +36,7 @@ impl WebService {
     }
 
     pub async fn run(self, spa_bundle_path: &SpaBundle) {
-        let app = Router::new().nest("/api/v1", api_routes());
+        let app = Router::new().nest("/v1", api_routes());
 
         let app = if let SpaBundle::Path(spa_bundle_path) = spa_bundle_path {
             // If nothing else matched, always return the SPA. The client application has its own
