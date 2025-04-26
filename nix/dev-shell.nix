@@ -2,6 +2,7 @@
   cargo,
   clippy,
   elmPackages,
+  nix-eval-jobs,
   mkShell,
   openssl,
   pkg-config,
@@ -16,6 +17,7 @@ mkShell {
     cargo
     clippy
     pkg-config
+    nix-eval-jobs
     rustc
     rustfmt
     rust-analyzer

@@ -11,6 +11,8 @@ pub(crate) enum Commands {
     Status,
     /// Ask server to attempt to build a drv
     Build(t::BuildRequest),
+
+    Job(t::JobRequest),
 }
 
 #[derive(Parser, Debug)]

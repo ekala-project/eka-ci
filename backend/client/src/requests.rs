@@ -47,8 +47,11 @@ fn handle_response(response: ClientResponse) {
     match response {
         r::Info(info) => {
             print_info(info);
-        }
+        },
         r::Build(info) => {
+            println!("Queued Successfully: {}", &info.enqueued);
+        },
+        r::Job(info) => {
             println!("Queued Successfully: {}", &info.enqueued);
         }
     }

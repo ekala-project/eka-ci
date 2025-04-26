@@ -117,6 +117,11 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             status: t::ServerStatus::Active,
             version: "0.1.0".to_string(),
         }),
+        req::Job(job_info) => {
+            use crate::nix::jobs::run_nix_eval_jobs;
+            run_nix_eval_jobs(job_info.file_path);
+            resp::Job(t::JobResponse { enqueued: true })
+        },
         req::Build(build_info) => {
             // TODO: we should not be doing this operation on the response thread
             // Instead, we should be sending a message for the evaluator service to traverse this
