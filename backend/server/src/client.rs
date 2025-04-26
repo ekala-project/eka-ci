@@ -7,6 +7,7 @@ use tokio::{
     net::{unix::SocketAddr, UnixListener, UnixStream},
 };
 use tracing::{debug, info, warn};
+use crate::nix::EvalTask;
 
 pub struct UnixService {
     listener: UnixListener,
@@ -17,12 +18,12 @@ pub struct UnixService {
 /// Channels which can be used to communicate actions to other services
 #[derive(Clone)]
 struct DispatchChannels {
-    eval_sender: Sender<String>,
+    eval_sender: Sender<EvalTask>,
 }
 
 impl UnixService {
     // TODO: We should probably use a builder pattern to pass eval channel and other items
-    pub async fn bind_to_path(socket_path: &Path, eval_sender: Sender<String>) -> Result<Self> {
+    pub async fn bind_to_path(socket_path: &Path, eval_sender: Sender<EvalTask>) -> Result<Self> {
         prepare_path(socket_path)?;
 
         let listener = UnixListener::bind(socket_path)?;
@@ -125,9 +126,10 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
         req::Build(build_info) => {
             // TODO: we should not be doing this operation on the response thread
             // Instead, we should be sending a message for the evaluator service to traverse this
+            let task = EvalTask::TraverseDrv(build_info.drv_path);
             dispatch
                 .eval_sender
-                .send(build_info.drv_path)
+                .send(task)
                 .await
                 .expect("Eval service is unhealthy");
 

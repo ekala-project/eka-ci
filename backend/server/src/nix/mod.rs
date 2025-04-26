@@ -7,14 +7,26 @@ use std::process::Command;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, warn};
 
+pub struct EvalJob {
+    file_path: String,
+    // TODO: support arguments
+}
+
+pub enum EvalTask {
+    Job(EvalJob),
+    TraverseDrv(String),
+}
+
 pub struct EvalService {
-    drv_receiver: Receiver<String>,
+    drv_receiver: Receiver<EvalTask>,
     // TODO: Eventually this should be an LRU cache
+    // This allows for us to memoize visited drvs so we don't have to revisit
+    // common drvs (e.g. stdenv)
     drv_map: HashMap<String, Vec<String>>,
 }
 
 impl EvalService {
-    pub fn new(rcvr: Receiver<String>) -> EvalService {
+    pub fn new(rcvr: Receiver<EvalTask>) -> EvalService {
         EvalService {
             drv_receiver: rcvr,
             drv_map: HashMap::new(),
@@ -30,7 +42,10 @@ impl EvalService {
     async fn listen(mut self) {
         loop {
             match self.drv_receiver.recv().await {
-                Some(drv) => {
+                Some(EvalTask::Job(drv)) => {
+                    // TODO: do eval
+                }
+                Some(EvalTask::TraverseDrv(drv)) => {
                     if let Err(e) = self.traverse_drvs(&drv) {
                         warn!("Ran into error when query drv information: {}", e);
                     }
@@ -87,7 +102,8 @@ fn drv_references(drv_path: &str) -> Result<Vec<String>> {
     let drvs = drv_str
         .lines()
         // drv references can include "inputSrcs" which are not inputDrvs
-        // but rather files which were added to the nix store through `nix-store --add`
+        // but rather files which were added to the nix store through
+        // path literals or `nix-store --add`
         .filter(|x| x.ends_with(".drv"))
         .map(|x| x.to_string())
         .collect::<Vec<String>>();
