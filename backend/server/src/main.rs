@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     tokio::spawn(async { unix_service.run().await });
-    web_service.run(&config.web.spa_bundle).await;
+    web_service.run().await;
 
     Ok(())
 }

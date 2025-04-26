@@ -27,10 +27,6 @@ struct ConfigCli {
     #[arg(short, long)]
     pub socket: Option<PathBuf>,
 
-    /// Path for the frontend bundle. Frontend will be disabled if not provided.
-    #[arg(short, long)]
-    pub bundle_path: Option<PathBuf>,
-
     /// Path for the sqlite db path. Defaults to $XDG_DATA_HOME/ekaci/sqlite.db
     #[arg(short, long)]
     pub db_path: Option<PathBuf>,
@@ -76,13 +72,6 @@ pub struct Config {
 #[derive(Debug)]
 pub struct ConfigWeb {
     pub address: SocketAddrV4,
-    pub spa_bundle: SpaBundle,
-}
-
-#[derive(Debug)]
-pub enum SpaBundle {
-    Disabled,
-    Path(PathBuf),
 }
 
 #[derive(Debug)]
@@ -117,10 +106,6 @@ impl Config {
                         .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1)),
                     args.port.or(file.web.port).unwrap_or(3030),
                 ),
-                spa_bundle: args
-                    .bundle_path
-                    .or(file.web.bundle_path)
-                    .map_or(SpaBundle::Disabled, SpaBundle::Path),
             },
             unix: ConfigUnix {
                 socket_path: match args.socket.or(file.unix.socket_path) {
