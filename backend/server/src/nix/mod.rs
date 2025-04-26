@@ -1,5 +1,5 @@
-pub mod nix_eval_jobs;
 pub mod jobs;
+pub mod nix_eval_jobs;
 
 use anyhow::Result;
 use std::collections::HashMap;

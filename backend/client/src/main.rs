@@ -6,8 +6,8 @@ use clap::Parser;
 use cli::Commands;
 use requests::send_request;
 use shared::dirs::eka_dirs;
-use shared::types::ClientRequest;
 use shared::types as t;
+use shared::types::ClientRequest;
 use tracing::debug;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -46,8 +46,14 @@ fn main() -> anyhow::Result<()> {
                 .context("failed to send info request to server")?;
         }
         Some(Commands::Job(req)) => {
-            let abs_file_path = std::fs::canonicalize(req.file_path)?.as_path().to_str().unwrap().to_string();
-            let abs_req = t::JobRequest { file_path: abs_file_path };
+            let abs_file_path = std::fs::canonicalize(req.file_path)?
+                .as_path()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let abs_req = t::JobRequest {
+                file_path: abs_file_path,
+            };
             debug!("Requesting job eval: {:?}", &abs_req);
             send_request(&socket, ClientRequest::Job(abs_req))
                 .context("failed to send info request to server")?;
