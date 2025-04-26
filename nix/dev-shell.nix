@@ -7,6 +7,7 @@
   pkg-config,
   rustc,
   rustfmt,
+  rust-analyzer,
   dev-server,
 }:
 
@@ -17,6 +18,7 @@ mkShell {
     pkg-config
     rustc
     rustfmt
+    rust-analyzer
     elmPackages.elm
     elmPackages.elm-format
     dev-server
