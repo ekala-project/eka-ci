@@ -1,13 +1,13 @@
 pub mod jobs;
 pub mod nix_eval_jobs;
 
+use crate::db::model::ForInsert;
+use crate::db::DbService;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::process::Command;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, warn};
-use crate::db::DbService;
-use crate::db::model::ForInsert;
 
 pub struct EvalJob {
     pub file_path: String,
@@ -84,7 +84,11 @@ impl EvalService {
 
     /// To avoid lifetime issues, we do a recursive descent
     /// instead of appending to an iterator and a loop :(
-    fn inner_traverse_drvs(&mut self, drv_path: &str, new_drvs: &mut HashMap<String, Vec<String>>) -> Result<()> {
+    fn inner_traverse_drvs(
+        &mut self,
+        drv_path: &str,
+        new_drvs: &mut HashMap<String, Vec<String>>,
+    ) -> Result<()> {
         use crate::db::model::eval::Drv;
 
         let references = drv_references(drv_path)?;
