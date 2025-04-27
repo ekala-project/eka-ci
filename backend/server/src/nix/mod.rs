@@ -6,9 +6,11 @@ use std::collections::HashMap;
 use std::process::Command;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, warn};
+use crate::db::DbService;
+use crate::db::model::ForInsert;
 
 pub struct EvalJob {
-    file_path: String,
+    pub file_path: String,
     // TODO: support arguments
 }
 
@@ -18,6 +20,7 @@ pub enum EvalTask {
 }
 
 pub struct EvalService {
+    db_service: DbService,
     drv_receiver: Receiver<EvalTask>,
     // TODO: Eventually this should be an LRU cache
     // This allows for us to memoize visited drvs so we don't have to revisit
@@ -26,8 +29,9 @@ pub struct EvalService {
 }
 
 impl EvalService {
-    pub fn new(rcvr: Receiver<EvalTask>) -> EvalService {
+    pub fn new(rcvr: Receiver<EvalTask>, db_service: DbService) -> EvalService {
         EvalService {
+            db_service,
             drv_receiver: rcvr,
             drv_map: HashMap::new(),
         }
@@ -43,10 +47,10 @@ impl EvalService {
         loop {
             match self.drv_receiver.recv().await {
                 Some(EvalTask::Job(drv)) => {
-                    // TODO: do eval
+                    self.run_nix_eval_jobs(drv.file_path).await;
                 }
                 Some(EvalTask::TraverseDrv(drv)) => {
-                    if let Err(e) = self.traverse_drvs(&drv) {
+                    if let Err(e) = self.traverse_drvs(&drv).await {
                         warn!("Ran into error when query drv information: {}", e);
                     }
                 }
@@ -58,33 +62,42 @@ impl EvalService {
     }
 
     /// Given a drv, traverse all direct drv dependencies
-    fn traverse_drvs(&mut self, drv_path: &str) -> Result<()> {
-        if self.drv_map.contains_key(drv_path) {
+    async fn traverse_drvs(&mut self, drv_path: &str) -> Result<()> {
+        debug!("Entering traverse drvs");
+        if self.drv_map.contains_key(drv_path) || self.db_service.has_drv(drv_path).await? {
             debug!("Already evaluated {}, skipping....", drv_path);
             return Ok(());
         }
 
+        // This is used to collect drvs for insertion into the database
+        // We must know all of the drvs before refrencing relationships
+        // So we must complete the traversal, then attempt assertion of
+        // drvs (which are the keys in this case), then can add the references
+        let mut new_drvs: HashMap<String, Vec<String>> = HashMap::new();
+
         debug!("traversing {}", drv_path);
-        self.inner_traverse_drvs(drv_path)?;
+        self.inner_traverse_drvs(drv_path, &mut new_drvs)?;
+        self.db_service.insert_drv_graph(new_drvs).await;
 
         Ok(())
     }
 
-    /// To avoid lifetime issues, we do a recursive descent instead of a loop
-    /// instead of appending to an iterator :(
-    fn inner_traverse_drvs(&mut self, drv_path: &str) -> Result<()> {
+    /// To avoid lifetime issues, we do a recursive descent
+    /// instead of appending to an iterator and a loop :(
+    fn inner_traverse_drvs(&mut self, drv_path: &str, new_drvs: &mut HashMap<String, Vec<String>>) -> Result<()> {
+        use crate::db::model::eval::Drv;
+
         let references = drv_references(drv_path)?;
-        // TODO: this drv hasn't been built before, it should eventually it put into a "new drv"
-        // queue
         debug!("new drv, traversing {}", &drv_path);
         self.drv_map
             .insert(drv_path.to_string(), references.clone());
+        new_drvs.insert(drv_path.to_string(), references.clone());
 
         for drv in references.into_iter() {
             if self.drv_map.contains_key(&drv) {
                 continue;
             }
-            self.inner_traverse_drvs(&drv)?;
+            self.inner_traverse_drvs(&drv, new_drvs)?;
         }
 
         Ok(())

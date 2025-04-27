@@ -35,11 +35,6 @@ CREATE INDEX IF NOT EXISTS DrvBuildEventState ON DrvBuildEvent (state);
 CREATE TABLE IF NOT EXISTS DrvRefs (
     referrer TEXT NOT NULL,
     reference TEXT NOT NULL,
-    -- A primary key on this table is useless, as all accesses go through the explicit indexes
-    -- anyways. To avoid duplicates entries, a unique constraint is put on the fields. By
-    -- ignoring conflicting entries, the service can just not care about this constraint when
-    -- inserting new entries.
-    UNIQUE (referrer, reference) ON CONFLICT IGNORE
 );
 
 -- Speed up queries that want to retrieve a derivation's dependencies.

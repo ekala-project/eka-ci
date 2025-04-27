@@ -9,7 +9,9 @@ use super::model::{build::DrvBuildMetadata, ForInsert};
 
 #[derive(Clone)]
 pub struct DbService {
-    pool: SqlitePool,
+    // Instead of exposing this, we should probably have a function
+    // where people can get a cloned instance
+    pub pool: SqlitePool,
 }
 
 impl DbService {

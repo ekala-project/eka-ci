@@ -1,4 +1,5 @@
 pub mod build;
+pub mod eval;
 pub mod git;
 
 /// A variant of some type `T` that can only be used for insertion in the database.

@@ -1,3 +1,4 @@
+use crate::nix::EvalTask;
 use anyhow::{Context, Result};
 use shared::types::{ClientRequest, ClientResponse};
 use std::path::Path;
@@ -7,7 +8,6 @@ use tokio::{
     net::{unix::SocketAddr, UnixListener, UnixStream},
 };
 use tracing::{debug, info, warn};
-use crate::nix::EvalTask;
 
 pub struct UnixService {
     listener: UnixListener,
@@ -119,8 +119,16 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             version: "0.1.0".to_string(),
         }),
         req::Job(job_info) => {
-            use crate::nix::jobs::run_nix_eval_jobs;
-            run_nix_eval_jobs(job_info.file_path);
+            let job = crate::nix::EvalJob {
+                file_path: job_info.file_path,
+            };
+            let task = EvalTask::Job(job);
+            dispatch
+                .eval_sender
+                .send(task)
+                .await
+                .expect("Eval service is unhealthy");
+
             resp::Job(t::JobResponse { enqueued: true })
         }
         req::Build(build_info) => {
