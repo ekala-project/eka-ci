@@ -31,12 +31,6 @@ CREATE INDEX IF NOT EXISTS DrvBuildEventDerivation ON DrvBuildEvent (derivation)
 -- Speed up queries that want to retrieve all derivations in a specific state.
 CREATE INDEX IF NOT EXISTS DrvBuildEventState ON DrvBuildEvent (state);
 
--- For documentation, see the corresponding Rust struct.
-CREATE TABLE IF NOT EXISTS DrvRefs (
-    referrer TEXT NOT NULL,
-    reference TEXT NOT NULL,
-);
-
 -- Speed up queries that want to retrieve a derivation's dependencies.
 CREATE INDEX IF NOT EXISTS DrvRefsReferrer ON DrvRefs (referrer);
 

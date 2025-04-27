@@ -13,6 +13,7 @@ CREATE INDEX IF NOT EXISTS IndexDrvPath ON Drv(drv_path);
 -- These are the direct drv dependencies
 -- Invert the relation to find direct "referrers"/"downstream drvs"
 -- It should be that downstream dependencies can span many branches
+-- For more documentation, see the corresponding Rust struct.
 CREATE TABLE IF NOT EXISTS DrvRefs (
     referrer INTEGER NOT NULL, -- downstream drv or consumer
     reference INTEGER NOT NULL, -- upstream drv or dependency
