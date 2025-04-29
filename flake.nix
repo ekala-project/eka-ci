@@ -11,7 +11,8 @@
       self,
       nixpkgs,
       utils,
-    }: let
+    }:
+    let
       localOverlay = import ./nix/overlay.nix;
     in
     utils.lib.eachDefaultSystem (system: rec {
@@ -29,7 +30,8 @@
       packages.default = legacyPackages.eka-ci;
       devShells.default = legacyPackages.dev-shell;
       formatter = legacyPackages.nixfmt-rfc-style;
-    }) // {
+    })
+    // {
       overlays.default = localOverlay;
     };
 }
