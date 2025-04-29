@@ -3,7 +3,8 @@
 -- differ (e.g. python3.pkgs.setuptools vs python3Packages.setuptools)
 CREATE TABLE IF NOT EXISTS Drv (
     drv_path TEXT NOT NULL PRIMARY KEY,
-    system TEXT NOT NULL
+    system TEXT NOT NULL,
+    UNIQUE (drv_path) ON CONFLICT IGNORE
 );
 
 -- These are the direct drv dependencies

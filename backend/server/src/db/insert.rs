@@ -36,7 +36,7 @@ RETURNING derivation, build_attempt, git_repo, git_commit, build_command
     Ok(metadata)
 }
 
-pub async fn _new_drv_build_event(
+pub async fn new_drv_build_event(
     event: ForInsert<DrvBuildEvent>,
     pool: &SqlitePool,
 ) -> anyhow::Result<DrvBuildEvent> {

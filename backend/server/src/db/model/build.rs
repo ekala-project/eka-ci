@@ -314,18 +314,6 @@ impl DrvId {
     }
 }
 
-/// The edge in a derivation dependency DAG.
-///
-/// Maps a derivation to all the derivations it directly depends on and vice-versa to all the
-/// derivations that directly depend on it.
-#[derive(Clone, Debug)]
-pub struct DrvRefs {
-    /// Also known as dependant or consumer.
-    pub referrer: DrvId,
-    /// Also known as dependency.
-    pub reference: DrvId,
-}
-
 mod state {
     use sqlx::{Decode, Encode, Sqlite, Type};
 
