@@ -1,7 +1,6 @@
 pub mod jobs;
 pub mod nix_eval_jobs;
 
-use crate::db::model::ForInsert;
 use crate::db::DbService;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -47,7 +46,9 @@ impl EvalService {
         loop {
             match self.drv_receiver.recv().await {
                 Some(EvalTask::Job(drv)) => {
-                    self.run_nix_eval_jobs(drv.file_path).await;
+                    if let Err(e) = self.run_nix_eval_jobs(drv.file_path).await {
+                        warn!("Ran into error when query eval job: {}", e);
+                    };
                 }
                 Some(EvalTask::TraverseDrv(drv)) => {
                     if let Err(e) = self.traverse_drvs(&drv).await {
@@ -77,7 +78,7 @@ impl EvalService {
 
         debug!("traversing {}", drv_path);
         self.inner_traverse_drvs(drv_path, &mut new_drvs)?;
-        self.db_service.insert_drv_graph(new_drvs).await;
+        self.db_service.insert_drv_graph(new_drvs).await?;
 
         Ok(())
     }
@@ -89,8 +90,6 @@ impl EvalService {
         drv_path: &str,
         new_drvs: &mut HashMap<String, Vec<String>>,
     ) -> Result<()> {
-        use crate::db::model::eval::Drv;
-
         let references = drv_references(drv_path)?;
         debug!("new drv, traversing {}", &drv_path);
         self.drv_map
@@ -111,7 +110,7 @@ impl EvalService {
 /// Retreive the direct dependencies of a drv
 fn drv_references(drv_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
-        .args(&["--query", "--references", &drv_path])
+        .args(["--query", "--references", drv_path])
         .output()?
         .stdout;
     let drv_str = String::from_utf8(output)?;

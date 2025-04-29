@@ -1,5 +1,3 @@
-use anyhow;
-use sqlx;
 use sqlx::SqlitePool;
 
 use super::model::{
@@ -38,7 +36,7 @@ RETURNING derivation, build_attempt, git_repo, git_commit, build_command
     Ok(metadata)
 }
 
-pub async fn new_drv_build_event(
+pub async fn _new_drv_build_event(
     event: ForInsert<DrvBuildEvent>,
     pool: &SqlitePool,
 ) -> anyhow::Result<DrvBuildEvent> {
@@ -52,7 +50,7 @@ RETURNING derivation, build_attempt, state, timestamp
         "#,
     )
     .bind(&event.build.derivation)
-    .bind(&event.build.build_attempt)
+    .bind(event.build.build_attempt)
     .bind(&event.state)
     .fetch_one(pool)
     .await?;

@@ -1,8 +1,7 @@
 use crate::nix::nix_eval_jobs::NixEvalItem;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
 use std::process::{Command, Stdio};
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// This file is meant to handle the evaluation of a "job" which is similar
 /// to the "jobset" by hydra, in particular:
@@ -30,7 +29,9 @@ impl super::EvalService {
                     let item = serde_json::from_str::<NixEvalItem>(&input)?;
                     match item {
                         NixEvalItem::Drv(drv) => {
-                            self.traverse_drvs(&drv.drv_path).await;
+                            if let Err(e) = self.traverse_drvs(&drv.drv_path).await {
+                                warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
+                            };
                         }
                         NixEvalItem::Error(e) => {
                             // TODO: Collect evaluation errors, these are still very useful
