@@ -1,14 +1,36 @@
 use sqlx::{FromRow, Pool, Sqlite};
 use std::collections::HashMap;
 use tracing::debug;
+use std::fmt;
 
-#[derive(Clone, Debug, FromRow)]
+#[derive(Clone, FromRow)]
 pub struct Drv {
     /// Derivation store path
     pub drv_path: String,
 
     /// to reattempt the build (depending on the interruption kind).
     pub system: String,
+}
+
+impl Drv  {
+    pub fn new(drv_path: String, system: String) -> Self {
+        let truncated_path = drv_path.strip_prefix("/nix/store/").unwrap_or(&drv_path).to_string();
+        Drv {
+            drv_path: truncated_path,
+            system
+        }
+    }
+
+    pub fn full_drv_path(&self) -> String {
+        format!("/nix/store/{}", &self.drv_path)
+    }
+}
+
+impl fmt::Debug for Drv {
+    // Allow for debug output to resemble expected output
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{{ drv_path:{}, system:{} }}", self.full_drv_path(), &self.system)
+    }
 }
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
