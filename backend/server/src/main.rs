@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod github;
 mod nix;
+mod scheduler;
 mod web;
 
 use crate::nix::EvalTask;
@@ -17,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
+use crate::db::model::DrvId;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -41,10 +43,17 @@ async fn main() -> anyhow::Result<()> {
 
     let db_pool = db_service.pool.clone();
 
+    let (build_sender, build_receiver) = channel::<DrvId>(10000);
+    let scheduler_service = scheduler::SchedulerService::new(db_service.clone())?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
-    let eval_service = nix::EvalService::new(eval_receiver, db_service);
 
-    let unix_service = UnixService::bind_to_path(&config.unix.socket_path, eval_sender)
+    let eval_service = nix::EvalService::new(
+        eval_receiver,
+        db_service.clone(),
+        scheduler_service.ingress_request_sender(),
+    );
+
+    let unix_service = UnixService::bind_to_path(&config.unix.socket_path, eval_sender, db_service.clone())
         .await
         .context("failed to start unix service")?;
 

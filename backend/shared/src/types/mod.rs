@@ -8,6 +8,7 @@ pub enum ClientRequest {
     Info,
     Build(BuildRequest),
     Job(JobRequest),
+    DrvStatus(DrvStatusRequest),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -24,11 +25,24 @@ pub struct InfoResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "type")]
+//#[serde(tag = "type")]
 pub enum ClientResponse {
     Info(InfoResponse),
     Build(BuildResponse),
     Job(JobResponse),
+    DrvStatus(Option<DrvStatusResponse>),
+}
+
+#[derive(Serialize, Parser, Deserialize, Debug)]
+pub struct DrvStatusResponse {
+    pub drv_path: String,
+    pub status: String,
+    // TODO: link to drv page
+}
+
+#[derive(Serialize, Parser, Deserialize, Debug)]
+pub struct DrvStatusRequest {
+    pub drv_path: String,
 }
 
 #[derive(Serialize, Parser, Deserialize, Debug)]

@@ -13,6 +13,17 @@ pub(crate) enum Commands {
     Build(t::BuildRequest),
 
     Job(t::JobRequest),
+
+    /// Inspect or Modify individual drvs
+    #[command(subcommand)]
+    Drv(DrvCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DrvCommands {
+    /// Request status for an individual Drv
+    #[command(about)]
+    Info(t::DrvStatusRequest),
 }
 
 #[derive(Parser, Debug)]

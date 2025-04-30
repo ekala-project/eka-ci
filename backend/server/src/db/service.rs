@@ -6,8 +6,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use tracing::{debug, info};
 
 use super::insert;
-use super::model::drv::DrvId;
-use super::model::{build::DrvBuildMetadata, drv, ForInsert};
+use super::model::drv_id::DrvId;
+use super::model::{build::DrvBuildMetadata, build_event, drv, ForInsert};
 
 #[derive(Clone)]
 pub struct DbService {
@@ -43,7 +43,6 @@ impl DbService {
         Ok(DbService { pool })
     }
 
-    #[allow(dead_code)]
     pub async fn insert_build(
         &self,
         metadata: ForInsert<DrvBuildMetadata>,
@@ -51,14 +50,41 @@ impl DbService {
         insert::new_drv_build_metadata(metadata, &self.pool).await
     }
 
+    pub async fn get_drv(&self, drv_path: &DrvId) -> anyhow::Result<Option<drv::Drv>> {
+        drv::get_drv(drv_path, &self.pool).await
+    }
+
     pub async fn has_drv(&self, drv_path: &str) -> anyhow::Result<bool> {
         drv::has_drv(&self.pool, drv_path).await
     }
 
+    pub async fn drv_references(&self, drv: &DrvId) -> anyhow::Result<Vec<drv::Drv>> {
+        drv::drv_references(&self.pool, &drv).await
+    }
+
+    pub async fn drv_referrers(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        drv::drv_referrers(&self.pool, &drv).await
+    }
+
     pub async fn insert_drv_graph(
         &self,
-        drv_graph: HashMap<DrvId, Vec<DrvId>>,
+        drv_graph: &HashMap<DrvId, Vec<DrvId>>,
     ) -> anyhow::Result<()> {
         drv::insert_drv_graph(&self.pool, drv_graph).await
+    }
+
+    pub async fn new_drv_build_event(
+        &self,
+        event: ForInsert<build_event::DrvBuildEvent>,
+    ) -> anyhow::Result<build_event::DrvBuildEvent> {
+        insert::new_drv_build_event(event, &self.pool).await
+    }
+
+    pub async fn update_drv_status(&self, drv_id: &DrvId, state: &build_event::DrvBuildState) -> anyhow::Result<()> {
+        drv::update_drv_status(&self.pool, drv_id, state).await
+    }
+
+    pub async fn is_drv_buildable(&self, derivation: &DrvId) -> anyhow::Result<bool> {
+        build_event::is_drv_buildable(derivation, &self.pool).await
     }
 }

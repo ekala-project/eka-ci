@@ -54,10 +54,23 @@ fn handle_response(response: ClientResponse) {
         r::Job(info) => {
             println!("Queued Successfully: {}", &info.enqueued);
         }
+        r::DrvStatus(info) => {
+            print_drv_status(info);
+        }
     }
 }
 
 fn print_info(info: t::InfoResponse) {
     println!("Server status: {:?}", &info.status);
     println!("EkaCI server version: {:?}", &info.version);
+}
+
+fn print_drv_status(maybe_drv: Option<t::DrvStatusResponse>) {
+    match maybe_drv {
+        None => println!("Drv has not been encountered"),
+        Some(drv) => {
+            println!("Drv: {:?}", &drv.drv_path);
+            println!("Status: {:?}", drv.status);
+        }
+    }
 }
