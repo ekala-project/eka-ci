@@ -1,7 +1,7 @@
 use sqlx::{FromRow, Pool, Sqlite};
 use std::collections::HashMap;
-use tracing::debug;
 use std::fmt;
+use tracing::debug;
 
 #[derive(Clone, FromRow)]
 pub struct Drv {
@@ -12,12 +12,11 @@ pub struct Drv {
     pub system: String,
 }
 
-impl Drv  {
+impl Drv {
     pub fn new(drv_path: String, system: String) -> Self {
-        let truncated_path = drv_path.strip_prefix("/nix/store/").unwrap_or(&drv_path).to_string();
         Drv {
-            drv_path: truncated_path,
-            system
+            drv_path: strip_store_prefix(drv_path),
+            system,
         }
     }
 
@@ -29,8 +28,20 @@ impl Drv  {
 impl fmt::Debug for Drv {
     // Allow for debug output to resemble expected output
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{{ drv_path:{}, system:{} }}", self.full_drv_path(), &self.system)
+        write!(
+            f,
+            "{{ drv_path:{}, system:{} }}",
+            self.full_drv_path(),
+            &self.system
+        )
     }
+}
+
+pub fn strip_store_prefix(drv_path: String) -> String {
+    drv_path
+        .strip_prefix("/nix/store/")
+        .unwrap_or(&drv_path)
+        .to_string()
 }
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
@@ -54,18 +65,19 @@ pub async fn insert_drv_graph(
     for (drv_path, references) in &drv_graph {
         debug!("Inserting {:?} into Drv", &drv_path);
         // TODO: have system be captured before this function
-        let drv = Drv::new(
-            drv_path.to_string(),
-            "x86_64-linux".to_string(),
-        );
+        let drv = Drv::new(drv_path.to_string(), "x86_64-linux".to_string());
         insert_drv(pool, &drv).await?;
         reference_map.insert(drv.drv_path, references.clone());
     }
 
     for (drv_path, references) in reference_map {
         for reference in references {
-            debug!("Inserting {:?},{:?} into DrvRef", &drv_path, &reference);
-            insert_drv_ref(pool, drv_path.clone(), reference).await?;
+            let fixed_reference = strip_store_prefix(reference);
+            debug!(
+                "Inserting {:?},{:?} into DrvRef",
+                &drv_path, &fixed_reference
+            );
+            insert_drv_ref(pool, drv_path.clone(), fixed_reference).await?;
         }
     }
 
