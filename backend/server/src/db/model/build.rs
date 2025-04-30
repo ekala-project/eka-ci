@@ -15,7 +15,8 @@ use sqlx::{encode::IsNull, sqlite::SqliteArgumentValue, Decode, Encode, FromRow,
 
 use crate::db::model::git::{GitCommit, GitRepo};
 
-use super::{drv::DrvId, ForInsert};
+use super::ForInsert;
+use crate::db::model::drv_id::DrvId;
 
 /// Unique identifier for a derivation build attempt.
 ///

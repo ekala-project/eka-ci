@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS Drv (
     system TEXT NOT NULL,
     -- Allows for allocation of a build on a host which needs certain features
     -- For example, NixOS tests require "kvm nixos-test"
-    required_system_features TEXT NULL
+    required_system_features TEXT NULL,
+    build_state INTEGER NOT NULL
 );
 
 -- These are the direct drv dependencies

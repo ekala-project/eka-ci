@@ -3,7 +3,7 @@ mod requests;
 
 use anyhow::Context;
 use clap::Parser;
-use cli::Commands;
+use cli::{Commands, DrvCommands};
 use requests::send_request;
 use shared::dirs::eka_dirs;
 use shared::types as t;
@@ -43,6 +43,10 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Status) => {}
         Some(Commands::Build(build_req)) => {
             send_request(&socket, ClientRequest::Build(build_req))
+                .context("failed to send info request to server")?;
+        }
+        Some(Commands::Drv(DrvCommands::Info(drv_status_request))) => {
+            send_request(&socket, ClientRequest::DrvStatus(drv_status_request))
                 .context("failed to send info request to server")?;
         }
         Some(Commands::Job(req)) => {

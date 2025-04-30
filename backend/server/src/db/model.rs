@@ -1,7 +1,12 @@
 pub mod build;
 pub mod build_event;
 pub mod drv;
+pub mod drv_id;
 pub mod git;
+
+#[allow(dead_code)]
+pub use drv::Drv;
+pub use drv_id::DrvId;
 
 /// A variant of some type `T` that can only be used for insertion in the database.
 ///

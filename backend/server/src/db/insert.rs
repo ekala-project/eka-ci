@@ -62,7 +62,7 @@ mod tests {
     use crate::db::model::{
         build::{DrvBuildCommand, DrvBuildId},
         build_event::{DrvBuildResult, DrvBuildState},
-        drv::DrvId,
+        drv_id::DrvId,
         git::{GitCommit, GitRepo},
     };
 

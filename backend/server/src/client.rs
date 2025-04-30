@@ -1,6 +1,6 @@
 use crate::nix::EvalTask;
 use anyhow::{Context, Result};
-use shared::types::{ClientRequest, ClientResponse};
+use shared::types::{ClientRequest, ClientResponse, DrvStatusResponse};
 use std::path::Path;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
@@ -10,6 +10,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+use crate::db::DbService;
 
 pub struct UnixService {
     listener: UnixListener,
@@ -21,15 +22,15 @@ pub struct UnixService {
 #[derive(Clone)]
 struct DispatchChannels {
     eval_sender: Sender<EvalTask>,
+    db_service: DbService,
 }
 
 impl UnixService {
-    // TODO: We should probably use a builder pattern to pass eval channel and other items
-    pub async fn bind_to_path(socket_path: &Path, eval_sender: Sender<EvalTask>) -> Result<Self> {
+    pub async fn bind_to_path(socket_path: &Path, eval_sender: Sender<EvalTask>, db_service: DbService) -> Result<Self> {
         prepare_path(socket_path)?;
 
         let listener = UnixListener::bind(socket_path)?;
-        let dispatch = DispatchChannels { eval_sender };
+        let dispatch = DispatchChannels { eval_sender, db_service };
 
         Ok(Self { listener, dispatch })
     }
@@ -153,8 +154,6 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             resp::Job(t::JobResponse { enqueued: true })
         }
         req::Build(build_info) => {
-            // TODO: we should not be doing this operation on the response thread
-            // Instead, we should be sending a message for the evaluator service to traverse this
             let task = EvalTask::TraverseDrv(build_info.drv_path);
             dispatch
                 .eval_sender
@@ -162,8 +161,23 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 .await
                 .expect("Eval service is unhealthy");
 
-            // TODO: We should likely return a URL to build status
             resp::Build(t::BuildResponse { enqueued: true })
+        }
+        req::DrvStatus(drv_status_request) => {
+            use crate::db::model::drv_id;
+            use std::str::FromStr;
+
+            if let Ok(drv_id) = drv_id::DrvId::from_str(&drv_status_request.drv_path) {
+                let maybe_drv = dispatch.db_service.get_drv(&drv_id).await.unwrap();
+                let inner = maybe_drv.map(|x| DrvStatusResponse {
+                    drv_path: x.drv_path.store_path(),
+                    status: format!("{:?}", x.build_state),
+                });
+                return resp::DrvStatus(inner);
+            }
+
+            // TODO: Send actual error
+            resp::DrvStatus(None)
         }
     }
 }

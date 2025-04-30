@@ -1,208 +1,24 @@
-use sqlx::encode::IsNull;
-use sqlx::sqlite::SqliteArgumentValue;
-use sqlx::{Decode, Encode, FromRow, Pool, Sqlite, Type};
-use std::borrow::Cow;
+use crate::db::model::build_event::DrvBuildState;
+use crate::db::model::DrvId;
+use sqlx::SqlitePool;
+use sqlx::{FromRow, Pool, Sqlite};
 use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::ops::Deref;
-use std::path::Path;
+use std::str::FromStr;
 use tracing::debug;
-
-/// A derivation identifier of the form `hash-name.drv`.
-///
-/// Many derivations that describe a package (binaries, libraries, ...) additionally include a
-/// version identifier in the name component. For these derivations, the identifier often looks
-/// like `hash-name-version.drv`. This is however only a convention. Many intermediate build
-/// artifacts for example do not have a version.
-///
-/// Each derivation identifier corresponds to a file with the same name located in a nix store. The
-/// filesystem path of the store depends on the evaluator that produced the derivation and is part
-/// of the identifier's hash component[^nix-by-hand]. It is not possible to determine the store
-/// path given only a derivation identifier.
-///
-/// # Examples
-///
-/// Derivation for the hello package, version 2.12.1:
-/// ```
-/// DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv")
-/// ```
-///
-/// Derivation for the source of an unknown other derivation:
-/// ```
-/// DrvId::try_from("0aykaqxhbby7mx7lgb217m9b3gkl52fn-source.drv")
-/// ```
-///
-/// The `try_from` implementation strips any store paths from the input and enforces that the given
-/// derivation identifier matches the `hash-name.drv` pattern. It also works with `&Path` inputs.
-///
-/// [^nix-by-hand]: <https://bernsteinbear.com/blog/nix-by-hand/>
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct DrvId(String);
-
-// This type is really just a string, that we enforce to be of a certain structure, as such, it
-// makes sense that all read-only methods on str should be available on this type as well.
-impl Deref for DrvId {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-// The double reference is a bit weird, but this is the correct way of implementing `PartialEq` for
-// comparison with strings, because it is the only impl that allows `drvid == "asdf"` to compile.
-impl PartialEq<&str> for DrvId {
-    fn eq(&self, other: &&str) -> bool {
-        str::eq(self, *other)
-    }
-}
-
-/// Helper implementations.
-impl DrvId {
-    pub fn store_path(&self) -> String {
-        format!("/nix/store/{}", self.0)
-    }
-}
-
-/// Strips any store path from the input, if one exists.
-fn strip_store_path(path: &str) -> &str {
-    match path.rsplit_once('/') {
-        Some((_, file_name)) => file_name,
-        None => path,
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("Invalid derivation identifier")]
-pub struct InvalidDrvId;
-
-impl TryFrom<&Path> for DrvId {
-    type Error = InvalidDrvId;
-
-    fn try_from(value: &Path) -> Result<Self, Self::Error> {
-        let file_name = value
-            .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or(InvalidDrvId)?;
-
-        file_name.try_into()
-    }
-}
-
-impl TryFrom<&str> for DrvId {
-    type Error = InvalidDrvId;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        // enforce that derivation identifiers have a `drv` extension
-        match value.rsplit_once('.') {
-            Some((_, "drv")) => {} // all is well
-            _ => return Err(InvalidDrvId),
-        };
-
-        // strip any potential store paths
-        let id = strip_store_path(value);
-
-        // enforce that derivation identifiers match the `hash-name` pattern
-        match id.split_once('-') {
-            Some((hash, _)) if hash.len() == 32 => {} // all is well
-            _ => return Err(InvalidDrvId),
-        }
-
-        Ok(Self(id.to_owned()))
-    }
-}
-
-impl<'q> Encode<'q, Sqlite> for DrvId {
-    fn encode_by_ref(
-        &self,
-        buf: &mut <Sqlite as sqlx::Database>::ArgumentBuffer<'q>,
-    ) -> Result<IsNull, sqlx::error::BoxDynError> {
-        // Using `Cow::Borrowed` is not possible because &self does not necessarily outlive 'q.
-        buf.push(SqliteArgumentValue::Text(Cow::Owned(self.0.clone())));
-        Ok(IsNull::No)
-    }
-
-    // Avoid the clone is `encode_by_ref` by overwriting the default impl of this method.
-    fn encode(
-        self,
-        buf: &mut <Sqlite as sqlx::Database>::ArgumentBuffer<'q>,
-    ) -> Result<IsNull, sqlx::error::BoxDynError>
-    where
-        Self: Sized,
-    {
-        buf.push(SqliteArgumentValue::Text(Cow::Owned(self.0)));
-        Ok(IsNull::No)
-    }
-
-    fn size_hint(&self) -> usize {
-        self.len()
-    }
-}
-
-impl<'r> Decode<'r, Sqlite> for DrvId {
-    fn decode(
-        value: <Sqlite as sqlx::Database>::ValueRef<'r>,
-    ) -> Result<Self, sqlx::error::BoxDynError> {
-        Ok(<&str as Decode<'r, Sqlite>>::decode(value)?.try_into()?)
-    }
-}
-
-impl Type<Sqlite> for DrvId {
-    fn type_info() -> <Sqlite as sqlx::Database>::TypeInfo {
-        <&str as Type<Sqlite>>::type_info()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::DrvId;
-
-    /// Constructors and methods useful for testing.
-    impl DrvId {
-        /// Returns a known good derivation identifier. Useful for database inserts in tests.
-        pub fn dummy() -> Self {
-            DrvId("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv".to_owned())
-        }
-    }
-
-    #[test]
-    fn drv_id_try_from() {
-        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv").unwrap();
-        let _ = DrvId::try_from("0aykaqxhbby7mx7lgb217m9b3gkl52fn-source.drv").unwrap();
-
-        assert_eq!(
-            DrvId::try_from(Path::new(
-                "/nix/store/0aykaqxhbby7mx7lgb217m9b3gkl52fn-source.drv",
-            ))
-            .unwrap(),
-            "0aykaqxhbby7mx7lgb217m9b3gkl52fn-source.drv"
-        );
-        assert_eq!(
-            DrvId::try_from(Path::new(
-                "/some/other/path/jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv"
-            ))
-            .unwrap(),
-            "jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv"
-        );
-
-        let _ = DrvId::try_from("").unwrap_err();
-        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1").unwrap_err();
-        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85.drv").unwrap_err();
-        let _ = DrvId::try_from("hello-2.12.1.drv").unwrap_err();
-    }
-}
 
 #[derive(Debug, Clone, FromRow)]
 pub struct Drv {
     /// Derivation identifier.
-    pub derivation: DrvId,
+    pub drv_path: DrvId,
 
     /// to reattempt the build (depending on the interruption kind).
     pub system: String,
 
     pub required_system_features: Option<String>,
+
+    /// This is None when queried from Nix
+    /// Otherwise, it is the latest build status
+    pub build_state: Option<DrvBuildState>,
 }
 
 impl Drv {
@@ -211,14 +27,32 @@ impl Drv {
         use crate::nix::derivation_show::drv_output;
         let drv_output = drv_output(drv_path).await?;
         Ok(Drv {
-            derivation: DrvId::try_from(drv_path)?,
+            drv_path: DrvId::from_str(drv_path)?,
             system: drv_output.system,
             required_system_features: drv_output.required_system_features,
+            build_state: None,
         })
     }
 }
 
+pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
+    let event = sqlx::query_as(
+        r#"
+SELECT drv_path, system, required_system_features, build_state
+FROM Drv
+WHERE drv_path = ?
+        "#,
+    )
+    .bind(derivation)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(event)
+}
+
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
+    use super::drv_id::strip_store_path;
+
     let result = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM Drv WHERE drv_path = $1)")
         .bind(strip_store_path(drv_path))
         .fetch_one(pool)
@@ -231,7 +65,7 @@ pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool
 /// references may or may not already exist
 pub async fn insert_drv_graph(
     pool: &Pool<Sqlite>,
-    drv_graph: HashMap<DrvId, Vec<DrvId>>,
+    drv_graph: &HashMap<DrvId, Vec<DrvId>>,
 ) -> anyhow::Result<()> {
     // We must first traverse the keys, add them all, then we can create
     // the reference relationships
@@ -281,15 +115,180 @@ pub async fn insert_drv(pool: &Pool<Sqlite>, drv: &Drv) -> anyhow::Result<()> {
     sqlx::query(
         r#"
 INSERT INTO Drv
-    (drv_path, system, required_system_features)
-VALUES (?1, ?2, ?3)
+    (drv_path, system, required_system_features, build_state)
+VALUES (?1, ?2, ?3, ?4)
     "#,
     )
-    .bind(&drv.derivation)
+    .bind(&drv.drv_path)
     .bind(&drv.system)
     .bind(&drv.required_system_features)
+    .bind(DrvBuildState::Queued)
     .execute(pool)
     .await?;
 
     Ok(())
+}
+
+pub async fn update_drv_status(pool: &Pool<Sqlite>, drv_id: &DrvId, build_state: &DrvBuildState) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+UPDATE Drv
+SET build_state = ?1
+WHERE drv_path = ?2
+    "#,
+    )
+    .bind(&build_state)
+    .bind(&drv_id)
+    .execute(pool)
+    .await?;
+
+    // TODO: emit build_event in the same transaction
+    Ok(())
+}
+
+
+async fn insert_drvs(categories: Vec<Drv>, pool: &Pool<Sqlite>) -> anyhow::Result<()> {
+    use sqlx::QueryBuilder;
+
+    let mut query_builder = QueryBuilder::new(
+        "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
+    );
+
+    query_builder.push_values(categories, |mut row, drv| {
+        row.push_bind(drv.drv_path)
+            .push_bind(drv.system)
+            .push_bind(drv.required_system_features)
+            .push_bind(drv.build_state);
+    });
+
+    query_builder.build().execute(pool).await?;
+
+    Ok(())
+}
+
+/// "Upstream" drvs, dependencies.
+pub async fn drv_references(pool: &Pool<Sqlite>, drv: &DrvId) -> anyhow::Result<Vec<Drv>> {
+    let result = sqlx::query_as(
+        r#"
+SELECT drv_path, system, required_system_features, build_state
+FROM Drv
+JOIN DrvRefs ON Drv.drv_path = DrvRefs.reference
+WHERE referrer = ?1
+"#,
+    )
+    .bind(&drv)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(result)
+}
+
+/// "Downstream" drvs, consumers.
+pub async fn drv_referrers(pool: &Pool<Sqlite>, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+    let result = sqlx::query_as(
+        r#"
+SELECT referrer
+FROM DrvRefs
+WHERE reference = ?1
+"#,
+    )
+    .bind(&drv)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(result)
+}
+
+pub async fn get_derivations_in_state(
+    state: DrvBuildState,
+    pool: &SqlitePool,
+) -> anyhow::Result<Vec<DrvId>> {
+    let res = sqlx::query_as(
+        r#"
+SELECT drv_path
+FROM Drv
+WHERE build_state = ?
+        "#,
+    )
+    .bind(state)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // use crate::db::model::DrvId;
+    // use crate::db::model::drv::DrvBuildState;
+    // use super::insert_drv;
+    use anyhow::bail;
+    // use futures::StreamExt;
+    use sqlx::SqlitePool;
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn get_latest_state(pool: SqlitePool) -> anyhow::Result<()> {
+        let drv_id = DrvId::dummy();
+        let drv = Drv {
+            drv_path: drv_id.clone(),
+            system: "x86_64-linux".to_string(),
+            required_system_features: None,
+            build_state: Some(DrvBuildState::Queued),
+        };
+        println!("inserting drv");
+        insert_drv(&pool, &drv).await?;
+        update_drv_status(&pool, &drv_id, DrvBuildState::Buildable).await?;
+
+        println!("querying for drv");
+        let Some(result) = get_drv(&drv_id, &pool).await? else {
+            bail!("Expected query to find a result")
+        };
+
+        assert_eq!(result.build_state, Some(DrvBuildState::Buildable));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn insert_many(pool: SqlitePool) -> anyhow::Result<()> {
+       let drv1 = Drv {
+            drv_path: DrvId::from_str(
+                "/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv",
+            )?,
+            system: "x86_64-linux".to_string(),
+            required_system_features: None,
+            build_state: Some(DrvBuildState::Queued),
+        };
+        let drv2 = Drv {
+            drv_path: DrvId::from_str(
+                "/nix/store/p470qfnbrf16agb4r05fllbsqgi2m8k5-git-2.47.2.drv",
+            )?,
+            system: "x86_64-linux".to_string(),
+            required_system_features: None,
+            build_state: Some(DrvBuildState::Queued),
+        };
+        let drv3 = Drv {
+            drv_path: DrvId::from_str(
+                "/nix/store/0wy8117gx1hbdv85x2xq1vf12nlagan4-bash-interactive-5.2p37.drv",
+            )?,
+            system: "x86_64-linux".to_string(),
+            required_system_features: None,
+            build_state: Some(DrvBuildState::Buildable),
+        };
+
+        let drvs = vec![drv1, drv2, drv3];
+
+        insert_drvs(drvs, &pool).await?;
+
+        let result = get_derivations_in_state(DrvBuildState::Queued, &pool).await?;
+
+        for drv in &result {
+            debug!("{:?}", &drv);
+        }
+
+        // TODO: make less ugly
+        let length = result.len();
+        assert_eq!(length, 2);
+        Ok(())
+    }
 }

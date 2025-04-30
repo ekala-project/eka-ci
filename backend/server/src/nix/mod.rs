@@ -2,12 +2,13 @@ pub mod derivation_show;
 pub mod jobs;
 pub mod nix_eval_jobs;
 
-use crate::db::{model::drv::DrvId, DbService};
+use crate::db::{model::drv_id::DrvId, DbService};
+use crate::scheduler::IngressTask;
 use anyhow::Result;
 use std::{collections::HashMap, process::Command};
-use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+use tokio::sync::mpsc;
 
 pub struct EvalJob {
     pub file_path: String,
@@ -21,7 +22,9 @@ pub enum EvalTask {
 
 pub struct EvalService {
     db_service: DbService,
-    drv_receiver: Receiver<EvalTask>,
+    drv_receiver: mpsc::Receiver<EvalTask>,
+    /// Used to request scheduler to determine if it should build a drv
+    scheduler_sender: mpsc::Sender<IngressTask>,
     // TODO: Eventually this should be an LRU cache
     // This allows for us to memoize visited drvs so we don't have to revisit
     // common drvs (e.g. stdenv)
@@ -29,10 +32,15 @@ pub struct EvalService {
 }
 
 impl EvalService {
-    pub fn new(rcvr: Receiver<EvalTask>, db_service: DbService) -> EvalService {
+    pub fn new(
+        rcvr: mpsc::Receiver<EvalTask>,
+        db_service: DbService,
+        scheduler_sender: mpsc::Sender<IngressTask>,
+    ) -> EvalService {
         EvalService {
             db_service,
             drv_receiver: rcvr,
+            scheduler_sender,
             drv_map: HashMap::new(),
         }
     }
@@ -78,8 +86,21 @@ impl EvalService {
         let mut new_drvs: HashMap<DrvId, Vec<DrvId>> = HashMap::new();
 
         debug!("traversing {}", drv_path);
+
+        // Populate new_drvs with any drvs that haven't been previously
+        // visited
         self.inner_traverse_drvs(drv_path, &mut new_drvs)?;
-        self.db_service.insert_drv_graph(new_drvs).await?;
+        // Populate DB with drvs and their dependency graph
+        // This is necessary to ensure that we don't progress to builds
+        // which have yet had their dependencies entered into the DB
+        self.db_service.insert_drv_graph(&new_drvs).await?;
+        // Ask scheduler service to determine if it needs to
+        // build a drv
+        for (drv, _) in new_drvs {
+            self.scheduler_sender
+                .send(IngressTask::EvalRequest(drv))
+                .await?;
+        }
 
         Ok(())
     }
