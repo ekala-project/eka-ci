@@ -77,7 +77,7 @@ pub async fn insert_drv_graph(
                 "Inserting {:?},{:?} into DrvRef",
                 &drv_path, &fixed_reference
             );
-            insert_drv_ref(pool, drv_path.clone(), fixed_reference).await?;
+            insert_drv_ref(pool, &drv_path, &fixed_reference).await?;
         }
     }
 
@@ -89,8 +89,8 @@ pub async fn insert_drv_graph(
 /// by their drv_path since that was not yet known
 pub async fn insert_drv_ref(
     pool: &Pool<Sqlite>,
-    drv_referrer_path: String,
-    drv_reference_path: String,
+    drv_referrer_path: &str,
+    drv_reference_path: &str,
 ) -> anyhow::Result<()> {
     debug!(
         "Inserting DrvRef ({:?}, {:?})",
