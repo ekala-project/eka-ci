@@ -2,7 +2,7 @@
 -- This purposely tries to avoid details such as attr path which may
 -- differ (e.g. python3.pkgs.setuptools vs python3Packages.setuptools)
 CREATE TABLE IF NOT EXISTS Drv (
-    drv_path TEXT NOT NULL PRIMARY KEY,
+    drv_path TEXT NOT NULL PRIMARY KEY ON CONFLICT IGNORE,
     system TEXT NOT NULL,
     UNIQUE (drv_path) ON CONFLICT IGNORE
 );
@@ -22,3 +22,7 @@ CREATE TABLE IF NOT EXISTS DrvRefs (
     FOREIGN KEY (referrer) REFERENCES Drv(drv_path) ON DELETE CASCADE,
     FOREIGN KEY (reference) REFERENCES Drv(drv_path) ON DELETE RESTRICT
 );
+
+-- We will be querying these frequently to determine dependency state
+CREATE INDEX IF NOT EXISTS DrvReferrer ON DrvRefs (referrer);
+CREATE INDEX IF NOT EXISTS DrvReferrer ON DrvRefs (reference);

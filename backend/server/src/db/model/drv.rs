@@ -29,15 +29,15 @@ pub async fn insert_drv_graph(
     let mut reference_map: HashMap<String, Vec<String>> = HashMap::new();
     // We must first traverse the keys, add them all, then we can create
     // the reference relationships
-    for (drv_path, references) in drv_graph {
+    for (drv_path, references) in &drv_graph {
         debug!("Inserting {:?} into Drv", &drv_path);
         // TODO: have system be captured before this function
-        let drv = Drv {
-            drv_path: drv_path.to_string(),
-            system: "x86_64-linux".to_string(),
-        };
+        let drv = Drv::new(
+            drv_path.to_string(),
+            "x86_64-linux".to_string(),
+        );
         insert_drv(pool, &drv).await?;
-        reference_map.insert(drv_path, references);
+        reference_map.insert(drv.drv_path, references.clone());
     }
 
     for (drv_path, references) in reference_map {
