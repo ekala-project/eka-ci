@@ -1,10 +1,7 @@
 pub mod jobs;
 pub mod nix_eval_jobs;
 
-use crate::db::{
-    model::drv::{strip_store_prefix, DrvId},
-    DbService,
-};
+use crate::db::{model::drv::DrvId, DbService};
 use anyhow::Result;
 use std::{collections::HashMap, process::Command};
 use tokio::sync::mpsc::Receiver;
@@ -97,11 +94,11 @@ impl EvalService {
         self.drv_map
             .insert(drv_path.to_string(), references.clone());
         new_drvs.insert(
-            DrvId(strip_store_prefix(drv_path)),
+            drv_path.try_into()?,
             references
                 .iter()
-                .map(|s| DrvId(strip_store_prefix(s)))
-                .collect(),
+                .map(|s| DrvId::try_from(s.as_str()))
+                .collect::<Result<_, _>>()?,
         );
 
         for drv in references.into_iter() {
