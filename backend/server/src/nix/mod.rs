@@ -1,10 +1,12 @@
 pub mod jobs;
 pub mod nix_eval_jobs;
 
-use crate::db::DbService;
+use crate::db::{
+    model::drv::{strip_store_prefix, DrvId},
+    DbService,
+};
 use anyhow::Result;
-use std::collections::HashMap;
-use std::process::Command;
+use std::{collections::HashMap, process::Command};
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, warn};
 
@@ -74,7 +76,7 @@ impl EvalService {
         // We must know all of the drvs before refrencing relationships
         // So we must complete the traversal, then attempt assertion of
         // drvs (which are the keys in this case), then can add the references
-        let mut new_drvs: HashMap<String, Vec<String>> = HashMap::new();
+        let mut new_drvs: HashMap<DrvId, Vec<DrvId>> = HashMap::new();
 
         debug!("traversing {}", drv_path);
         self.inner_traverse_drvs(drv_path, &mut new_drvs)?;
@@ -88,13 +90,19 @@ impl EvalService {
     fn inner_traverse_drvs(
         &mut self,
         drv_path: &str,
-        new_drvs: &mut HashMap<String, Vec<String>>,
+        new_drvs: &mut HashMap<DrvId, Vec<DrvId>>,
     ) -> Result<()> {
         let references = drv_references(drv_path)?;
         debug!("new drv, traversing {}", &drv_path);
         self.drv_map
             .insert(drv_path.to_string(), references.clone());
-        new_drvs.insert(drv_path.to_string(), references.clone());
+        new_drvs.insert(
+            DrvId(strip_store_prefix(drv_path)),
+            references
+                .iter()
+                .map(|s| DrvId(strip_store_prefix(s)))
+                .collect(),
+        );
 
         for drv in references.into_iter() {
             if self.drv_map.contains_key(&drv) {

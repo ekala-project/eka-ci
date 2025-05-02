@@ -6,6 +6,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use tracing::{debug, info};
 
 use super::insert;
+use super::model::drv::DrvId;
 use super::model::{build::DrvBuildMetadata, drv, ForInsert};
 
 #[derive(Clone)]
@@ -56,7 +57,7 @@ impl DbService {
 
     pub async fn insert_drv_graph(
         &self,
-        drv_graph: HashMap<String, Vec<String>>,
+        drv_graph: HashMap<DrvId, Vec<DrvId>>,
     ) -> anyhow::Result<()> {
         drv::insert_drv_graph(&self.pool, drv_graph).await
     }

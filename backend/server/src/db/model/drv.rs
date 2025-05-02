@@ -1,27 +1,53 @@
-use sqlx::{FromRow, Pool, Sqlite};
-use std::collections::HashMap;
-use std::fmt;
+use sqlx::{FromRow, Pool, Sqlite, Type};
+use std::{collections::HashMap, fmt};
 use tracing::debug;
+
+/// A derivation identifier of the form `hash-name.drv`.
+///
+/// Many derivations that describe a package (binaries, libraries, ...) additionally include a
+/// version identifier in the name component. For these derivations, the identifier often looks
+/// like `hash-name-version.drv`. This is however only a convention. Many intermediate build
+/// artifacts for example do not have a version.
+///
+/// Each derivation identifier corresponds to a file with the same name located in a nix store. The
+/// filesystem path of the store depends on the evaluator that produced the derivation and is part
+/// of the identifier's hash component[^nix-by-hand]. It is not possible to determine the store
+/// path given only a derivation identifier.
+///
+/// # Examples
+///
+/// Derivation for the hello package, version 2.12.1:
+/// `jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv`
+///
+/// Derivation for the source of an unknown other derivation:
+/// `0aykaqxhbby7mx7lgb217m9b3gkl52fn-source.drv`
+///
+/// [^nix-by-hand]: <https://bernsteinbear.com/blog/nix-by-hand/>
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Type)]
+#[sqlx(transparent)]
+pub struct DrvId(pub String);
+
+/// Constructors and methods useful for testing.
+#[cfg(test)]
+impl DrvId {
+    /// Returns a known good derivation identifier. Useful for database inserts in tests.
+    pub fn dummy() -> Self {
+        DrvId("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv".to_owned())
+    }
+}
 
 #[derive(Clone, FromRow)]
 pub struct Drv {
-    /// Derivation store path
-    pub drv_path: String,
+    /// Derivation identifier.
+    pub derivation: DrvId,
 
     /// to reattempt the build (depending on the interruption kind).
     pub system: String,
 }
 
 impl Drv {
-    pub fn new(drv_path: String, system: String) -> Self {
-        Drv {
-            drv_path: strip_store_prefix(drv_path),
-            system,
-        }
-    }
-
     pub fn full_drv_path(&self) -> String {
-        format!("/nix/store/{}", &self.drv_path)
+        format!("/nix/store/{}", &self.derivation.0)
     }
 }
 
@@ -37,7 +63,7 @@ impl fmt::Debug for Drv {
     }
 }
 
-pub fn strip_store_prefix(drv_path: String) -> String {
+pub fn strip_store_prefix(drv_path: &str) -> String {
     drv_path
         .strip_prefix("/nix/store/")
         .unwrap_or(&drv_path)
@@ -46,7 +72,7 @@ pub fn strip_store_prefix(drv_path: String) -> String {
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
     let result = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM Drv WHERE drv_path = $1)")
-        .bind(drv_path)
+        .bind(strip_store_prefix(drv_path))
         .fetch_one(pool)
         .await?;
     Ok(result)
@@ -57,27 +83,20 @@ pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool
 /// references may or may not already exist
 pub async fn insert_drv_graph(
     pool: &Pool<Sqlite>,
-    drv_graph: HashMap<String, Vec<String>>,
+    drv_graph: HashMap<DrvId, Vec<DrvId>>,
 ) -> anyhow::Result<()> {
-    let mut reference_map: HashMap<String, Vec<String>> = HashMap::new();
     // We must first traverse the keys, add them all, then we can create
     // the reference relationships
-    for (drv_path, references) in &drv_graph {
-        debug!("Inserting {:?} into Drv", &drv_path);
+    for id in drv_graph.keys() {
+        debug!("Inserting {:?} into Drv", id);
         // TODO: have system be captured before this function
-        let drv = Drv::new(drv_path.to_string(), "x86_64-linux".to_string());
-        insert_drv(pool, &drv).await?;
-        reference_map.insert(drv.drv_path, references.clone());
+        insert_drv(pool, id, "x86_64-linux").await?;
     }
 
-    for (drv_path, references) in reference_map {
+    for (referrer, references) in drv_graph {
         for reference in references {
-            let fixed_reference = strip_store_prefix(reference);
-            debug!(
-                "Inserting {:?},{:?} into DrvRef",
-                &drv_path, &fixed_reference
-            );
-            insert_drv_ref(pool, &drv_path, &fixed_reference).await?;
+            debug!("Inserting {:?},{:?} into DrvRef", &referrer, &reference);
+            insert_drv_ref(pool, &referrer, &reference).await?;
         }
     }
 
@@ -89,13 +108,10 @@ pub async fn insert_drv_graph(
 /// by their drv_path since that was not yet known
 pub async fn insert_drv_ref(
     pool: &Pool<Sqlite>,
-    drv_referrer_path: &str,
-    drv_reference_path: &str,
+    referrer_id: &DrvId,
+    reference_id: &DrvId,
 ) -> anyhow::Result<()> {
-    debug!(
-        "Inserting DrvRef ({:?}, {:?})",
-        drv_referrer_path, drv_reference_path
-    );
+    debug!("Inserting DrvRef ({:?}, {:?})", referrer_id, reference_id);
 
     sqlx::query(
         r#"
@@ -104,15 +120,15 @@ INSERT INTO DrvRefs
 VALUES (?1, ?2)
     "#,
     )
-    .bind(drv_referrer_path)
-    .bind(drv_reference_path)
+    .bind(referrer_id)
+    .bind(reference_id)
     .execute(pool)
     .await?;
 
     Ok(())
 }
 
-pub async fn insert_drv(pool: &Pool<Sqlite>, drv: &Drv) -> anyhow::Result<()> {
+pub async fn insert_drv(pool: &Pool<Sqlite>, id: &DrvId, system: &str) -> anyhow::Result<()> {
     sqlx::query(
         r#"
 INSERT INTO Drv
@@ -120,8 +136,8 @@ INSERT INTO Drv
 VALUES (?1, ?2)
     "#,
     )
-    .bind(&drv.drv_path)
-    .bind(&drv.system)
+    .bind(id)
+    .bind(system)
     .execute(pool)
     .await?;
 
