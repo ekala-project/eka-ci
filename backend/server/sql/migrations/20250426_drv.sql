@@ -4,7 +4,9 @@
 CREATE TABLE IF NOT EXISTS Drv (
     drv_path TEXT NOT NULL PRIMARY KEY ON CONFLICT IGNORE,
     system TEXT NOT NULL,
-    UNIQUE (drv_path) ON CONFLICT IGNORE
+    -- Allows for allocation of a build on a host which needs certain features
+    -- For example, NixOS tests require "kvm nixos-test"
+    required_system_features TEXT NULL
 );
 
 -- These are the direct drv dependencies

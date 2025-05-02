@@ -1,11 +1,13 @@
+use serde::Deserialize;
+use sqlx::{Decode, Encode, FromRow, Pool, Sqlite, Type};
 use sqlx::encode::IsNull;
 use sqlx::sqlite::SqliteArgumentValue;
-use sqlx::{Decode, Encode, FromRow, Pool, Sqlite, Type};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ops::Deref;
 use std::path::Path;
+use tokio::process::Command;
 use tracing::debug;
 
 /// A derivation identifier of the form `hash-name.drv`.
@@ -65,6 +67,19 @@ impl DrvId {
             Some((_, file_name)) => file_name,
             None => path,
         }
+    }
+
+    /// Take a drv store path, and make it into a DrvId
+    pub fn new(drv: String) -> Self {
+        DrvId(drv.strip_prefix("/nix/store/").unwrap_or(&drv).to_string())
+    }
+
+    pub fn drv_id(&self) -> &str {
+        &self.0
+    }
+
+    pub fn store_path(&self) -> String {
+        format!("/nix/store/{}", self.0)
     }
 }
 
@@ -190,13 +205,80 @@ mod tests {
     }
 }
 
-#[derive(Clone, Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 pub struct Drv {
     /// Derivation identifier.
     pub derivation: DrvId,
 
     /// to reattempt the build (depending on the interruption kind).
     pub system: String,
+
+    pub required_system_features: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DrvOutput {
+    // nix derivaiton show always structures the output as:
+    // { ${drv}: { ... } }
+    #[serde(flatten)]
+    drvs: HashMap<String, DrvAttrs>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DrvAttrs {
+    pub env: DrvInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct DrvInfo {
+    /// to reattempt the build (depending on the interruption kind).
+    pub system: String,
+
+    #[serde(rename = "requiredSystemFeatures")]
+    pub required_system_features: Option<String>,
+}
+
+impl Drv {
+    pub fn full_drv_path(&self) -> String {
+        format!("/nix/store/{}", &self.derivation.0)
+    }
+
+    /// Calls `nix derivation show` to retrieve system and requiredSystemFeatures
+    pub async fn fetch_info(drv_path: &str) -> anyhow::Result<Self> {
+        let drv_output = drv_output(drv_path).await?;
+        Ok(Drv {
+            derivation: DrvId::new(drv_path.to_string()),
+            system: drv_output.system,
+            required_system_features: drv_output.required_system_features,
+        })
+    }
+}
+
+pub fn strip_store_prefix(drv_path: String) -> String {
+    drv_path
+        .strip_prefix("/nix/store/")
+        .unwrap_or(&drv_path)
+        .to_string()
+}
+
+/// Do `nix derivation show` but filter for the things we care about
+async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
+    debug!("Fetching derivation information, {:?}", &drv_path);
+    let output = Command::new("nix")
+        .args(["derivation", "show", drv_path])
+        .output()
+        .await?
+        .stdout;
+    let str = String::from_utf8(output)?;
+    let drv_output: DrvOutput = serde_json::from_str(&str)?;
+    // FIXME: get rid of expect
+    let drv_info = drv_output
+        .drvs
+        .into_iter()
+        .next()
+        .expect("Invalid derivation show information")
+        .1;
+    Ok(drv_info.env)
 }
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
@@ -219,12 +301,16 @@ pub async fn insert_drv_graph(
     for id in drv_graph.keys() {
         debug!("Inserting {:?} into Drv", id);
         // TODO: have system be captured before this function
-        insert_drv(pool, id, "x86_64-linux").await?;
+        let drv = Drv::fetch_info(&id.store_path()).await?;
+        insert_drv(pool, &drv).await?;
     }
 
     for (referrer, references) in drv_graph {
         for reference in references {
-            debug!("Inserting {:?},{:?} into DrvRef", &referrer, &reference);
+            debug!(
+                "Inserting {:?},{:?} into DrvRef",
+                &referrer, &reference
+            );
             insert_drv_ref(pool, &referrer, &reference).await?;
         }
     }
@@ -257,16 +343,17 @@ VALUES (?1, ?2)
     Ok(())
 }
 
-pub async fn insert_drv(pool: &Pool<Sqlite>, id: &DrvId, system: &str) -> anyhow::Result<()> {
+pub async fn insert_drv(pool: &Pool<Sqlite>, drv: &Drv) -> anyhow::Result<()> {
     sqlx::query(
         r#"
 INSERT INTO Drv
-    (drv_path, system)
-VALUES (?1, ?2)
+    (drv_path, system, required_system_features)
+VALUES (?1, ?2, ?3)
     "#,
     )
-    .bind(id)
-    .bind(system)
+    .bind(&drv.derivation)
+    .bind(&drv.system)
+    .bind(&drv.required_system_features)
     .execute(pool)
     .await?;
 
