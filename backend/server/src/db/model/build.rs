@@ -15,7 +15,7 @@ use sqlx::{encode::IsNull, sqlite::SqliteArgumentValue, Decode, Encode, FromRow,
 
 use crate::db::model::git::{GitCommit, GitRepo};
 
-use super::ForInsert;
+use super::{drv::DrvId, ForInsert};
 
 /// Unique identifier for a derivation build attempt.
 ///
@@ -278,40 +278,6 @@ pub enum DrvBuildInterruptionKind {
     /// derivation builds which do not have the status [`DrvBuildState::Completed`] whilst
     /// starting.
     SchedulerDeath,
-}
-
-/// A derivation identifier of the form `hash-name.drv`.
-///
-/// Many derivations that describe a package (binaries, libraries, ...) additionally include a
-/// version identifier in the name component. For these derivations, the identifier often looks
-/// like `hash-name-version.drv`. This is however only a convention. Many intermediate build
-/// artifacts for example do not have a version.
-///
-/// Each derivation identifier corresponds to a file with the same name located in a nix store. The
-/// filesystem path of the store depends on the evaluator that produced the derivation and is part
-/// of the identifier's hash component[^nix-by-hand]. It is not possible to determine the store
-/// path given only a derivation identifier.
-///
-/// # Examples
-///
-/// Derivation for the hello package, version 2.12.1:
-/// `jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv`
-///
-/// Derivation for the source of an unknown other derivation:
-/// `0aykaqxhbby7mx7lgb217m9b3gkl52fn-source.drv`
-///
-/// [^nix-by-hand]: <https://bernsteinbear.com/blog/nix-by-hand/>
-#[derive(Clone, Debug, PartialEq, Eq, Type)]
-#[sqlx(transparent)]
-pub struct DrvId(String);
-
-/// Constructors and methods useful for testing.
-#[cfg(test)]
-impl DrvId {
-    /// Returns a known good derivation identifier. Useful for database inserts in tests.
-    pub fn dummy() -> Self {
-        DrvId("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv".to_owned())
-    }
 }
 
 mod state {
