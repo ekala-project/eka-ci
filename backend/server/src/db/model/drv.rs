@@ -59,15 +59,6 @@ impl PartialEq<&str> for DrvId {
 
 /// Helper implementations.
 impl DrvId {
-    /// Take a drv store path, and make it into a DrvId
-    pub fn new(drv: String) -> Self {
-        DrvId(drv.strip_prefix("/nix/store/").unwrap_or(&drv).to_string())
-    }
-
-    pub fn drv_id(&self) -> &str {
-        &self.0
-    }
-
     pub fn store_path(&self) -> String {
         format!("/nix/store/{}", self.0)
     }
