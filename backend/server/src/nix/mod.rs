@@ -1,3 +1,4 @@
+pub mod derivation_show;
 pub mod jobs;
 pub mod nix_eval_jobs;
 

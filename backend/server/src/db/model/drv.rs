@@ -1,5 +1,3 @@
-use anyhow::Context;
-use serde::Deserialize;
 use sqlx::encode::IsNull;
 use sqlx::sqlite::SqliteArgumentValue;
 use sqlx::{Decode, Encode, FromRow, Pool, Sqlite, Type};
@@ -8,7 +6,6 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ops::Deref;
 use std::path::Path;
-use tokio::process::Command;
 use tracing::debug;
 
 /// A derivation identifier of the form `hash-name.drv`.
@@ -217,31 +214,10 @@ pub struct Drv {
     pub required_system_features: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct DrvOutput {
-    // nix derivaiton show always structures the output as:
-    // { ${drv}: { ... } }
-    #[serde(flatten)]
-    drvs: HashMap<String, DrvAttrs>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DrvAttrs {
-    pub env: DrvInfo,
-}
-
-#[derive(Debug, Deserialize)]
-struct DrvInfo {
-    /// to reattempt the build (depending on the interruption kind).
-    pub system: String,
-
-    #[serde(rename = "requiredSystemFeatures")]
-    pub required_system_features: Option<String>,
-}
-
 impl Drv {
     /// Calls `nix derivation show` to retrieve system and requiredSystemFeatures
     pub async fn fetch_info(drv_path: &str) -> anyhow::Result<Self> {
+        use crate::nix::derivation_show::drv_output;
         let drv_output = drv_output(drv_path).await?;
         Ok(Drv {
             derivation: DrvId::try_from(drv_path)?,
@@ -249,26 +225,6 @@ impl Drv {
             required_system_features: drv_output.required_system_features,
         })
     }
-}
-
-/// Do `nix derivation show` but filter for the things we care about
-async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
-    debug!("Fetching derivation information, {:?}", &drv_path);
-    let output = Command::new("nix")
-        .args(["derivation", "show", drv_path])
-        .output()
-        .await?
-        .stdout;
-    let str = String::from_utf8(output)?;
-    let drv_output: DrvOutput = serde_json::from_str(&str)?;
-    // FIXME: get rid of expect
-    let drv_info = drv_output
-        .drvs
-        .into_iter()
-        .next()
-        .context("Invalid derivation show information")?
-        .1;
-    Ok(drv_info.env)
 }
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {

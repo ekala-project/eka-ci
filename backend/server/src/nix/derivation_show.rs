@@ -1,0 +1,47 @@
+use anyhow::Context;
+use serde::Deserialize;
+use tokio::process::Command;
+use std::collections::HashMap;
+use tracing::debug;
+
+#[derive(Debug, Deserialize)]
+struct DrvOutput {
+    // nix derivaiton show always structures the output as:
+    // { ${drv}: { ... } }
+    #[serde(flatten)]
+    drvs: HashMap<String, DrvAttrs>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DrvAttrs {
+    pub env: DrvInfo,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DrvInfo {
+    /// to reattempt the build (depending on the interruption kind).
+    pub system: String,
+
+    #[serde(rename = "requiredSystemFeatures")]
+    pub required_system_features: Option<String>,
+}
+
+/// Do `nix derivation show` but filter for the things we care about
+pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
+    debug!("Fetching derivation information, {:?}", &drv_path);
+    let output = Command::new("nix")
+        .args(["derivation", "show", drv_path])
+        .output()
+        .await?
+        .stdout;
+    let str = String::from_utf8(output)?;
+    let drv_output: DrvOutput = serde_json::from_str(&str)?;
+    // FIXME: get rid of expect
+    let drv_info = drv_output
+        .drvs
+        .into_iter()
+        .next()
+        .context("Invalid derivation show information")?
+        .1;
+    Ok(drv_info.env)
+}
