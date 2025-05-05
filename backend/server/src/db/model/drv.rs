@@ -1,7 +1,8 @@
+use anyhow::Context;
 use serde::Deserialize;
-use sqlx::{Decode, Encode, FromRow, Pool, Sqlite, Type};
 use sqlx::encode::IsNull;
 use sqlx::sqlite::SqliteArgumentValue;
+use sqlx::{Decode, Encode, FromRow, Pool, Sqlite, Type};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -61,14 +62,6 @@ impl PartialEq<&str> for DrvId {
 
 /// Helper implementations.
 impl DrvId {
-    /// Strips any store path from the input, if one exists.
-    fn strip_store_path(path: &str) -> &str {
-        match path.rsplit_once('/') {
-            Some((_, file_name)) => file_name,
-            None => path,
-        }
-    }
-
     /// Take a drv store path, and make it into a DrvId
     pub fn new(drv: String) -> Self {
         DrvId(drv.strip_prefix("/nix/store/").unwrap_or(&drv).to_string())
@@ -80,6 +73,14 @@ impl DrvId {
 
     pub fn store_path(&self) -> String {
         format!("/nix/store/{}", self.0)
+    }
+}
+
+/// Strips any store path from the input, if one exists.
+fn strip_store_path(path: &str) -> &str {
+    match path.rsplit_once('/') {
+        Some((_, file_name)) => file_name,
+        None => path,
     }
 }
 
@@ -111,7 +112,7 @@ impl TryFrom<&str> for DrvId {
         };
 
         // strip any potential store paths
-        let id = DrvId::strip_store_path(value);
+        let id = strip_store_path(value);
 
         // enforce that derivation identifiers match the `hash-name` pattern
         match id.split_once('-') {
@@ -239,26 +240,15 @@ struct DrvInfo {
 }
 
 impl Drv {
-    pub fn full_drv_path(&self) -> String {
-        format!("/nix/store/{}", &self.derivation.0)
-    }
-
     /// Calls `nix derivation show` to retrieve system and requiredSystemFeatures
     pub async fn fetch_info(drv_path: &str) -> anyhow::Result<Self> {
         let drv_output = drv_output(drv_path).await?;
         Ok(Drv {
-            derivation: DrvId::new(drv_path.to_string()),
+            derivation: DrvId::try_from(drv_path)?,
             system: drv_output.system,
             required_system_features: drv_output.required_system_features,
         })
     }
-}
-
-pub fn strip_store_prefix(drv_path: String) -> String {
-    drv_path
-        .strip_prefix("/nix/store/")
-        .unwrap_or(&drv_path)
-        .to_string()
 }
 
 /// Do `nix derivation show` but filter for the things we care about
@@ -276,14 +266,14 @@ async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
         .drvs
         .into_iter()
         .next()
-        .expect("Invalid derivation show information")
+        .context("Invalid derivation show information")?
         .1;
     Ok(drv_info.env)
 }
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
     let result = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM Drv WHERE drv_path = $1)")
-        .bind(DrvId::strip_store_path(drv_path))
+        .bind(strip_store_path(drv_path))
         .fetch_one(pool)
         .await?;
     Ok(result)
@@ -307,10 +297,7 @@ pub async fn insert_drv_graph(
 
     for (referrer, references) in drv_graph {
         for reference in references {
-            debug!(
-                "Inserting {:?},{:?} into DrvRef",
-                &referrer, &reference
-            );
+            debug!("Inserting {:?},{:?} into DrvRef", &referrer, &reference);
             insert_drv_ref(pool, &referrer, &reference).await?;
         }
     }
