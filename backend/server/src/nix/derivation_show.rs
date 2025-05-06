@@ -36,7 +36,6 @@ pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
         .stdout;
     let str = String::from_utf8(output)?;
     let drv_output: DrvOutput = serde_json::from_str(&str)?;
-    // FIXME: get rid of expect
     let drv_info = drv_output
         .drvs
         .into_iter()
