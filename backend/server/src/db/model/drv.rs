@@ -59,12 +59,16 @@ impl PartialEq<&str> for DrvId {
 
 /// Helper implementations.
 impl DrvId {
-    /// Strips any store path from the input, if one exists.
-    fn strip_store_path(path: &str) -> &str {
-        match path.rsplit_once('/') {
-            Some((_, file_name)) => file_name,
-            None => path,
-        }
+    pub fn store_path(&self) -> String {
+        format!("/nix/store/{}", self.0)
+    }
+}
+
+/// Strips any store path from the input, if one exists.
+fn strip_store_path(path: &str) -> &str {
+    match path.rsplit_once('/') {
+        Some((_, file_name)) => file_name,
+        None => path,
     }
 }
 
@@ -96,7 +100,7 @@ impl TryFrom<&str> for DrvId {
         };
 
         // strip any potential store paths
-        let id = DrvId::strip_store_path(value);
+        let id = strip_store_path(value);
 
         // enforce that derivation identifiers match the `hash-name` pattern
         match id.split_once('-') {
@@ -190,18 +194,33 @@ mod tests {
     }
 }
 
-#[derive(Clone, Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 pub struct Drv {
     /// Derivation identifier.
     pub derivation: DrvId,
 
     /// to reattempt the build (depending on the interruption kind).
     pub system: String,
+
+    pub required_system_features: Option<String>,
+}
+
+impl Drv {
+    /// Calls `nix derivation show` to retrieve system and requiredSystemFeatures
+    pub async fn fetch_info(drv_path: &str) -> anyhow::Result<Self> {
+        use crate::nix::derivation_show::drv_output;
+        let drv_output = drv_output(drv_path).await?;
+        Ok(Drv {
+            derivation: DrvId::try_from(drv_path)?,
+            system: drv_output.system,
+            required_system_features: drv_output.required_system_features,
+        })
+    }
 }
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
     let result = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM Drv WHERE drv_path = $1)")
-        .bind(DrvId::strip_store_path(drv_path))
+        .bind(strip_store_path(drv_path))
         .fetch_one(pool)
         .await?;
     Ok(result)
@@ -219,7 +238,8 @@ pub async fn insert_drv_graph(
     for id in drv_graph.keys() {
         debug!("Inserting {:?} into Drv", id);
         // TODO: have system be captured before this function
-        insert_drv(pool, id, "x86_64-linux").await?;
+        let drv = Drv::fetch_info(&id.store_path()).await?;
+        insert_drv(pool, &drv).await?;
     }
 
     for (referrer, references) in drv_graph {
@@ -257,16 +277,17 @@ VALUES (?1, ?2)
     Ok(())
 }
 
-pub async fn insert_drv(pool: &Pool<Sqlite>, id: &DrvId, system: &str) -> anyhow::Result<()> {
+pub async fn insert_drv(pool: &Pool<Sqlite>, drv: &Drv) -> anyhow::Result<()> {
     sqlx::query(
         r#"
 INSERT INTO Drv
-    (drv_path, system)
-VALUES (?1, ?2)
+    (drv_path, system, required_system_features)
+VALUES (?1, ?2, ?3)
     "#,
     )
-    .bind(id)
-    .bind(system)
+    .bind(&drv.derivation)
+    .bind(&drv.system)
+    .bind(&drv.required_system_features)
     .execute(pool)
     .await?;
 
