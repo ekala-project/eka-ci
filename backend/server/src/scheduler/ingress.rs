@@ -1,10 +1,10 @@
-use tracing::{debug, warn};
+use crate::db::model::drv;
+use crate::db::DbService;
+use std::process::Output;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::process::Command;
-use std::process::Output;
-use crate::db::DbService;
-use crate::db::model::drv;
+use tracing::{debug, warn};
 
 /// This acts as the service which filters incoming drv build requests
 /// and determines if the drv is "buildable", already successful,
@@ -18,7 +18,11 @@ pub struct Ingress {
 }
 
 impl Ingress {
-    pub fn new(receiver: mpsc::Receiver<String>, status_sender: mpsc::Sender<String>, db_service: DbService) -> Self {
+    pub fn new(
+        receiver: mpsc::Receiver<String>,
+        status_sender: mpsc::Sender<String>,
+        db_service: DbService,
+    ) -> Self {
         let db_clone = db_service.clone();
         let ingress_thread = tokio::spawn(async move {
             ingest_requests(receiver, status_sender, db_service);
@@ -26,12 +30,16 @@ impl Ingress {
 
         Self {
             ingress_thread,
-            db_service
+            db_service,
         }
     }
 }
 
-async fn ingest_requests(mut receiver: mpsc::Receiver<DrvId>, buildable_sender: mpsc::Sender<DrvId>, db_service: DbService) {
+async fn ingest_requests(
+    mut receiver: mpsc::Receiver<drv::DrvId>,
+    buildable_sender: mpsc::Sender<drv::DrvId>,
+    db_service: DbService,
+) {
     loop {
         if let Some(drv_id) = receiver.recv().await {
             // TODO: Determine if drv_id corresponds to a drv which was already attempted
@@ -41,4 +49,3 @@ async fn ingest_requests(mut receiver: mpsc::Receiver<DrvId>, buildable_sender: 
         }
     }
 }
-

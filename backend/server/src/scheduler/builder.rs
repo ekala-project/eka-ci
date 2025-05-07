@@ -1,8 +1,8 @@
-use tracing::{debug, warn};
+use std::process::Output;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::process::Command;
-use std::process::Output;
+use tracing::{debug, warn};
 
 /// This acts as the service which monitors a "nix build" and reports the
 /// status of a build
@@ -20,13 +20,14 @@ impl Builder {
             poll_for_builds(receiver, status_sender).await;
         });
 
-        Self {
-            build_thread
-        }
+        Self { build_thread }
     }
 }
 
-async fn poll_for_builds(mut receiver: mpsc::Receiver<String>, status_sender: mpsc::Sender<String>) {
+async fn poll_for_builds(
+    mut receiver: mpsc::Receiver<String>,
+    status_sender: mpsc::Sender<String>,
+) {
     loop {
         if let Some(drv_string) = receiver.recv().await {
             attempt_build(drv_string, status_sender.clone()).await;
