@@ -10,7 +10,10 @@ use super::builder::Builder;
 ///         Receives a stream of "buildable" drvs and builds them.
 ///         Upon completion of a build, passes build status to RecorderService
 ///   RecorderService:
-///         "Records" build status to the database. Upon recording a gg
+///         "Records" build status to the database.
+///         Upon recording a successful build, it pushes a check request for
+///         each downstream drv to RequestIngress service to see if the drv
+///         is now "buildable"
 pub struct SchedulerService {
     // Handle to the db service, useful for persisting and querying build state
     db_service: DbService,
