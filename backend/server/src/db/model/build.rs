@@ -146,4 +146,3 @@ impl Type<Sqlite> for DrvBuildCommand {
         <str as Type<Sqlite>>::type_info()
     }
 }
-

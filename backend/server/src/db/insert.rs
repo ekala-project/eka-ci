@@ -1,10 +1,6 @@
 use sqlx::SqlitePool;
 
-use super::model::{
-    build_event::DrvBuildEvent,
-    build::DrvBuildMetadata,
-    ForInsert,
-};
+use super::model::{build::DrvBuildMetadata, build_event::DrvBuildEvent, ForInsert};
 
 pub async fn new_drv_build_metadata(
     metadata: ForInsert<DrvBuildMetadata>,

@@ -1,6 +1,6 @@
-use sqlx::FromRow;
 use super::build::DrvBuildId;
 use super::ForInsert;
+use sqlx::FromRow;
 
 /// Emitted whenever a derivation build's state changes.
 #[derive(Clone, Debug, FromRow)]
