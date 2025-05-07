@@ -1,6 +1,6 @@
+use super::builder::Builder;
 use crate::db::DbService;
 use tokio::sync::mpsc;
-use super::builder::Builder;
 
 /// SchedulerService spins up three smaller services:
 ///   RequestIngress:
@@ -43,7 +43,4 @@ impl SchedulerService {
             builder,
         }
     }
-
 }
-
-
