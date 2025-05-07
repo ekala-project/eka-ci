@@ -1,9 +1,6 @@
 use sqlx::SqlitePool;
 
-use super::model::{
-    build::{DrvBuildEvent, DrvBuildMetadata},
-    ForInsert,
-};
+use super::model::{build::DrvBuildMetadata, build_event::DrvBuildEvent, ForInsert};
 
 pub async fn new_drv_build_metadata(
     metadata: ForInsert<DrvBuildMetadata>,
@@ -63,7 +60,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use crate::db::model::{
-        build::{DrvBuildCommand, DrvBuildId, DrvBuildResult, DrvBuildState},
+        build::{DrvBuildCommand, DrvBuildId},
+        build_event::{DrvBuildResult, DrvBuildState},
         drv::DrvId,
         git::{GitCommit, GitRepo},
     };

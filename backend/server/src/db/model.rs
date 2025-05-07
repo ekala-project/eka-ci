@@ -1,4 +1,5 @@
 pub mod build;
+pub mod build_event;
 pub mod drv;
 pub mod git;
 
