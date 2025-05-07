@@ -1,7 +1,8 @@
 use sqlx::SqlitePool;
 
 use super::model::{
-    build::{DrvBuildEvent, DrvBuildMetadata},
+    build_event::DrvBuildEvent,
+    build::DrvBuildMetadata,
     ForInsert,
 };
 
