@@ -4,6 +4,7 @@ use tokio::task::JoinHandle;
 use tokio::process::Command;
 use std::process::Output;
 use crate::db::DbService;
+use crate::db::model::drv;
 
 /// This acts as the service which filters incoming drv build requests
 /// and determines if the drv is "buildable", already successful,
@@ -18,8 +19,9 @@ pub struct Ingress {
 
 impl Ingress {
     pub fn new(receiver: mpsc::Receiver<String>, status_sender: mpsc::Sender<String>, db_service: DbService) -> Self {
+        let db_clone = db_service.clone();
         let ingress_thread = tokio::spawn(async move {
-            poll_for_builds(receiver, status_sender).await;
+            ingest_requests(receiver, status_sender, db_service);
         });
 
         Self {
@@ -29,7 +31,7 @@ impl Ingress {
     }
 }
 
-async fn ingest_requests(mut receiver: mpsc::Receiver<DrvId>, buildable_sender: mpsc::Sender<DrvId>) {
+async fn ingest_requests(mut receiver: mpsc::Receiver<DrvId>, buildable_sender: mpsc::Sender<DrvId>, db_service: DbService) {
     loop {
         if let Some(drv_id) = receiver.recv().await {
             // TODO: Determine if drv_id corresponds to a drv which was already attempted
