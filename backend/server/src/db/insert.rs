@@ -60,8 +60,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use crate::db::model::{
-        build_event::{DrvBuildState, DrvBuildResult},
         build::{DrvBuildCommand, DrvBuildId},
+        build_event::{DrvBuildResult, DrvBuildState},
         drv::DrvId,
         git::{GitCommit, GitRepo},
     };
