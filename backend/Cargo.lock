@@ -508,6 +508,7 @@ dependencies = [
  "clap",
  "envy",
  "figment",
+ "futures",
  "gix-hash",
  "gix-url",
  "http",
