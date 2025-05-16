@@ -7,7 +7,7 @@ use tracing::{debug, info};
 
 use super::insert;
 use super::model::drv::DrvId;
-use super::model::{build::DrvBuildMetadata, drv, ForInsert};
+use super::model::{build::DrvBuildMetadata, build_event, drv, ForInsert};
 
 #[derive(Clone)]
 pub struct DbService {
@@ -60,5 +60,13 @@ impl DbService {
         drv_graph: HashMap<DrvId, Vec<DrvId>>,
     ) -> anyhow::Result<()> {
         drv::insert_drv_graph(&self.pool, drv_graph).await
+    }
+
+    pub async fn get_latest_build_event(
+        &self,
+        derivation: &DrvId,
+        pool: &SqlitePool,
+    ) -> anyhow::Result<Option<build_event::DrvBuildEvent>> {
+        build_event::get_latest_build_event(derivation, &self.pool).await
     }
 }
