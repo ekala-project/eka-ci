@@ -1,4 +1,5 @@
 use super::builder::Builder;
+use super::ingress::{IngressService, IngressTask};
 use crate::db::DbService;
 use tokio::sync::mpsc;
 
@@ -18,9 +19,8 @@ pub struct SchedulerService {
     // Handle to the db service, useful for persisting and querying build state
     db_service: DbService,
 
-    // Channel to be notified of new drvs
-    // TODO: Use DrvId or Drv (with DrvId)
-    new_drv_receiver: mpsc::Receiver<String>,
+    // Channel to send requests for updating drv build progress
+    ingress_sender: mpsc::Sender<IngressTask>,
 
     // When spawning build tasks, we need to pass a clone of this so they
     // can communicate build status asynchronously.
@@ -30,17 +30,23 @@ pub struct SchedulerService {
 }
 
 impl SchedulerService {
-    pub fn new(db_service: DbService, new_drv_receiver: mpsc::Receiver<String>) -> Self {
+    pub fn new(db_service: DbService) -> Self {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);
         let (build_result_sender, build_result_receiver) = mpsc::channel(100);
 
         let builder = Builder::new(build_request_receiver, build_result_sender.clone());
+        let ingress_service = IngressService::new( db_service.clone());
+        let ingress_sender = ingress_service.ingress_sender();
 
         Self {
             db_service,
-            new_drv_receiver,
+            ingress_sender,
             build_request_sender,
             builder,
         }
+    }
+
+    pub fn ingress_request_sender(&self) -> mpsc::Sender<IngressTask> {
+        self.ingress_sender.clone()
     }
 }

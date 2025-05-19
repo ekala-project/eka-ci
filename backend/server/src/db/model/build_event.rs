@@ -304,6 +304,43 @@ mod state {
     }
 }
 
+/// Given a DrvId, what is theh build_event status of all dependencies
+pub async fn get_latest_build_events_for_deps(
+    derivation: &DrvId,
+    pool: &SqlitePool,
+) -> anyhow::Result<Vec<DrvBuildEvent>> {
+    let events = sqlx::query_as(
+        r#"
+SELECT MAX(rowid), derivation, build_attempt, state, timestamp
+FROM DrvBuildEvent
+JOIN DrvRefs ON DrvBuildEvent.derivation = DrvRefs.reference
+WHERE referrer = ?
+        "#,
+    )
+    .bind(derivation)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(events)
+}
+
+/// Determine if a Drv can be built
+/// One issue with this logic is a missing dependency drv in the db would be treated
+/// as "successful"
+pub async fn is_drv_buildable(
+    derivation: &DrvId,
+    pool: &SqlitePool,
+) -> anyhow::Result<bool> {
+    let deps = get_latest_build_events_for_deps(derivation, pool).await?;
+
+    let result = deps
+        .into_iter()
+        .all(|x| x.state == DrvBuildState::Completed(DrvBuildResult::Success));
+
+    Ok(result)
+}
+
+
 pub async fn get_latest_build_event(
     derivation: &DrvId,
     pool: &SqlitePool,

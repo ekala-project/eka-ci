@@ -43,7 +43,6 @@ impl DbService {
         Ok(DbService { pool })
     }
 
-    #[allow(dead_code)]
     pub async fn insert_build(
         &self,
         metadata: ForInsert<DrvBuildMetadata>,
@@ -62,10 +61,23 @@ impl DbService {
         drv::insert_drv_graph(&self.pool, drv_graph).await
     }
 
+    pub async fn new_drv_build_event(
+        &self,
+        event: ForInsert<build_event::DrvBuildEvent>,
+    ) -> anyhow::Result<build_event::DrvBuildEvent> {
+        insert::new_drv_build_event(event, &self.pool).await
+    }
+
+    pub async fn is_drv_buildable(
+        &self,
+        derivation: &DrvId,
+    ) -> anyhow::Result<bool> {
+        build_event::is_drv_buildable(derivation, &self.pool).await
+    }
+
     pub async fn get_latest_build_event(
         &self,
         derivation: &DrvId,
-        pool: &SqlitePool,
     ) -> anyhow::Result<Option<build_event::DrvBuildEvent>> {
         build_event::get_latest_build_event(derivation, &self.pool).await
     }
