@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod github;
 mod nix;
+mod scheduler;
 mod web;
 
 use crate::nix::EvalTask;
@@ -13,6 +14,7 @@ use tokio::sync::mpsc::channel;
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
+use crate::db::model::drv;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -35,6 +37,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("attempted to create DB pool")?;
 
+    let (build_sender, build_receiver) = channel::<drv::DrvId>(10000);
+    let scheduler_service = scheduler::SchedulerService::new(db_service.clone());
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
     let eval_service = nix::EvalService::new(eval_receiver, db_service);
     eval_service.run();

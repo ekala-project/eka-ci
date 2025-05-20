@@ -2,8 +2,8 @@ use super::build::DrvBuildId;
 use super::drv::DrvId;
 use super::ForInsert;
 use futures::stream::BoxStream;
-use sqlx::FromRow;
 use sqlx::SqlitePool;
+use sqlx::{FromRow, Pool, Sqlite};
 
 /// Emitted whenever a derivation build's state changes.
 #[derive(Clone, Debug, FromRow)]
@@ -88,6 +88,31 @@ pub enum DrvBuildState {
     Blocked,
 }
 
+/// See if there is a build state associated with a Drv
+///   None -> No build has been queued
+///   Some(state) -> State of latest build event
+pub async fn latest_build_state(
+    drv: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Option<DrvBuildState>> {
+    // Order by rowid, assuming that the latest will have the highest count
+    let maybe_state = sqlx::query_scalar(
+        r#"
+SELECT state FROM DrvBuildEvent
+WHERE derivation = ?1
+ORDER BY rowid ASC
+LIMIT 1
+        "#,
+    )
+    .bind(drv)
+    .fetch_optional(pool)
+    .await?;
+    let maybe_state =
+        maybe_state.map(|x: i8| DrvBuildState::try_from_i8(x).expect("Invalid build state value"));
+
+    Ok(maybe_state)
+}
+
 /// The result of building a derivation.
 ///
 /// In essence, this enum captures whether the status code returned by the build command was `0`
@@ -158,6 +183,35 @@ mod state {
         InterruptedProcessDeath = -66,
         InterruptedSchedulerDeath = -13,
         Blocked = 100,
+    }
+
+    impl DrvBuildStateRepr {
+        pub fn try_from(value: i8) -> anyhow::Result<DrvBuildStateRepr> {
+            match value {
+                x if x == Self::Queued as i8 => Ok(Self::Queued),
+                x if x == Self::Buildable as i8 => Ok(Self::Buildable),
+                x if x == Self::Building as i8 => Ok(Self::Building),
+                x if x == Self::CompletedSuccess as i8 => Ok(Self::CompletedSuccess),
+                x if x == Self::CompletedFailure as i8 => Ok(Self::CompletedFailure),
+                x if x == Self::TransitiveFailure as i8 => Ok(Self::TransitiveFailure),
+                x if x == Self::InterruptedOutOfMemory as i8 => Ok(Self::InterruptedOutOfMemory),
+                x if x == Self::InterruptedTimeout as i8 => Ok(Self::InterruptedTimeout),
+                x if x == Self::InterruptedCancelled as i8 => Ok(Self::InterruptedCancelled),
+                x if x == Self::InterruptedProcessDeath as i8 => Ok(Self::InterruptedProcessDeath),
+                x if x == Self::InterruptedSchedulerDeath as i8 => {
+                    Ok(Self::InterruptedSchedulerDeath)
+                }
+                x if x == Self::Blocked as i8 => Ok(Self::Blocked),
+                _ => Err(anyhow::Error::msg("Invalid build state repr vlue")),
+            }
+        }
+    }
+
+    impl DrvBuildState {
+        pub fn try_from_i8(value: i8) -> anyhow::Result<DrvBuildState> {
+            let repr: DrvBuildStateRepr = DrvBuildStateRepr::try_from(value)?;
+            Ok(DrvBuildState::from(repr))
+        }
     }
 
     impl From<&DrvBuildState> for DrvBuildStateRepr {
@@ -249,6 +303,43 @@ mod state {
         }
     }
 }
+
+/// Given a DrvId, what is theh build_event status of all dependencies
+pub async fn get_latest_build_events_for_deps(
+    derivation: &DrvId,
+    pool: &SqlitePool,
+) -> anyhow::Result<Vec<DrvBuildEvent>> {
+    let events = sqlx::query_as(
+        r#"
+SELECT MAX(rowid), derivation, build_attempt, state, timestamp
+FROM DrvBuildEvent
+JOIN DrvRefs ON DrvBuildEvent.derivation = DrvRefs.reference
+WHERE referrer = ?
+        "#,
+    )
+    .bind(derivation)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(events)
+}
+
+/// Determine if a Drv can be built
+/// One issue with this logic is a missing dependency drv in the db would be treated
+/// as "successful"
+pub async fn is_drv_buildable(
+    derivation: &DrvId,
+    pool: &SqlitePool,
+) -> anyhow::Result<bool> {
+    let deps = get_latest_build_events_for_deps(derivation, pool).await?;
+
+    let result = deps
+        .into_iter()
+        .all(|x| x.state == DrvBuildState::Completed(DrvBuildResult::Success));
+
+    Ok(result)
+}
+
 
 pub async fn get_latest_build_event(
     derivation: &DrvId,
