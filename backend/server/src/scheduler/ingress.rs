@@ -24,6 +24,7 @@ pub struct IngressWorker {
     db_service: DbService,
 }
 
+#[derive(Debug, Clone)]
 pub enum IngressTask {
     /// This is a Drv which was determined by an evaluation
     /// The actual status is unknown. Could be new, or could have already completed.
@@ -66,12 +67,10 @@ impl IngressService {
 impl IngressWorker {
     async fn ingest_requests(mut self) {
         loop {
-            if let Some(drv_id) = self.request_receiver.recv().await {
-                self.handle_ingress_request(drv_id).await;
-                // TODO: Determine if drv_id corresponds to a drv which was already attempted
-                //         if it has a previous terminal state, disregard
-                //         if one of the dependencies has a failure, set state as dependency failed
-                //         otherwise set as queued, move on
+            if let Some(task) = self.request_receiver.recv().await {
+                if let Err(e) = self.handle_ingress_request(task.clone()).await {
+                    warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
+                }
             }
         }
     }
@@ -83,7 +82,7 @@ impl IngressWorker {
 
         match task {
             EvalRequest(drv) => self.handle_eval_task(drv).await?,
-            CheckBuildable(drv) => self.handle_check_buildable_task(&drv).await?,
+            CheckBuildable(drv) => self.handle_check_buildable_task(drv).await?,
         }
 
         Ok(())
@@ -103,7 +102,7 @@ impl IngressWorker {
             // TODO: We should scan all of the existing drvs to see if they have
             // failure state, and instead just immediately propagate it
             let event = build_event::DrvBuildEvent::for_insert(build_id, build_event::DrvBuildState::Buildable);
-            self.db_service.new_drv_build_event(event).await;
+            self.db_service.new_drv_build_event(event).await?;
             self.buildable_sender.send(drv_id);
         }
 
@@ -134,7 +133,7 @@ impl IngressWorker {
                     // TODO: We should scan all of the existing drvs to see if they have
                     // failure state, and instead just immediately propagate it
                     let event = build_event::DrvBuildEvent::for_insert(build_id, build_event::DrvBuildState::Queued);
-                    self.db_service.new_drv_build_event(event).await;
+                    self.db_service.new_drv_build_event(event).await?;
                 }
             }
         }
