@@ -6,8 +6,8 @@ use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]
 pub struct RecorderTask {
-    derivation: drv::DrvId,
-    result: build_event::DrvBuildState,
+    pub derivation: drv::DrvId,
+    pub result: build_event::DrvBuildState,
 }
 
 /// This services records the event of a build. Depending on the build result,

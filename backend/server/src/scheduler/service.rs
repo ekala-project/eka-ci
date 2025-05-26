@@ -33,7 +33,7 @@ pub struct SchedulerService {
 
 impl SchedulerService {
     pub fn new(db_service: DbService) -> anyhow::Result<Self> {
-        let builder_service = Builder::new();
+        let builder_service = Builder::new(db_service.clone());
         let build_request_sender = builder_service.build_request_sender();
         let ingress_service = IngressService::new(build_request_sender.clone(), db_service.clone());
         let ingress_sender = ingress_service.ingress_sender();
