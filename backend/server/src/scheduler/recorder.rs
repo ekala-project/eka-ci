@@ -76,6 +76,21 @@ impl RecorderWorker {
     }
 
     async fn handle_recorder_request(&self, task: RecorderTask) -> anyhow::Result<()> {
-        unimplemented!();
+        use build_event::*;
+        use DrvBuildState as DBS;
+        use DrvBuildResult as DBR;
+
+        match &task.result {
+            DBS::Completed(DBR::Success) => {
+                // TODO: update status as successful, ask ingress to check drv again
+            },
+            DBS::Completed(DBR::Failure) => {
+                // TODO: update status as failure, mark all downstream drvs as
+                // dependency failure, and add this drv as cause
+            },
+            _ => { },
+        }
+
+        Ok(())
     }
 }
