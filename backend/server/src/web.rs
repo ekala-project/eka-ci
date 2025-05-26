@@ -3,6 +3,8 @@ use std::net::{SocketAddr, SocketAddrV4};
 use anyhow::{Context, Result};
 use axum::{routing::get, Router};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 
 pub struct WebService {
     listener: TcpListener,
@@ -25,12 +27,21 @@ impl WebService {
             .expect("getsockname should always succeed on a properly initialized listener")
     }
 
-    pub async fn run(self) {
+    pub async fn run(self, cancellation_token: CancellationToken) {
         let app = Router::new().nest("/v1", api_routes());
 
-        axum::serve(self.listener, app)
+        if let Err(e) = axum::serve(self.listener, app)
+            .with_graceful_shutdown(async move {
+                cancellation_token.cancelled().await;
+                info!("Web service shutting down")
+            })
             .await
-            .expect("axum::serve never returns");
+        {
+            error!(error = %e, "Failed to start web service");
+            return;
+        }
+
+        info!("Web service shutdown gracefully")
     }
 }
 

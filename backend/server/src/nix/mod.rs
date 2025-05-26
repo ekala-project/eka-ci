@@ -6,7 +6,8 @@ use crate::db::{model::drv::DrvId, DbService};
 use anyhow::Result;
 use std::{collections::HashMap, process::Command};
 use tokio::sync::mpsc::Receiver;
-use tracing::{debug, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 pub struct EvalJob {
     pub file_path: String,
@@ -36,30 +37,32 @@ impl EvalService {
         }
     }
 
-    pub fn run(self) {
-        tokio::spawn(async {
-            self.listen().await;
-        });
-    }
-
-    async fn listen(mut self) {
-        loop {
-            match self.drv_receiver.recv().await {
-                Some(EvalTask::Job(drv)) => {
-                    if let Err(e) = self.run_nix_eval_jobs(drv.file_path).await {
-                        warn!("Ran into error when query eval job: {}", e);
-                    };
-                }
-                Some(EvalTask::TraverseDrv(drv)) => {
-                    if let Err(e) = self.traverse_drvs(&drv).await {
-                        warn!("Ran into error when query drv information: {}", e);
-                    }
-                }
+    pub async fn run(mut self, cancellation_token: CancellationToken) {
+        while let Some(request) = cancellation_token
+            .run_until_cancelled(self.drv_receiver.recv())
+            .await
+        {
+            let task = match request {
+                Some(task) => task,
                 None => {
-                    warn!("Eval reciever channel shutdown");
+                    warn!("Eval receiver channel closed, shutting down");
+                    break;
                 }
+            };
+
+            let result = match task {
+                EvalTask::Job(drv) => self.run_nix_eval_jobs(drv.file_path).await,
+                EvalTask::TraverseDrv(drv) => self.traverse_drvs(&drv).await,
+            };
+
+            if let Err(e) = result {
+                error!(error = %e, "Failed to handle task")
             }
         }
+
+        self.db_service.close().await;
+        info!("Database service pool closed");
+        info!("Eval service shutdown gracefully");
     }
 
     /// Given a drv, traverse all direct drv dependencies
