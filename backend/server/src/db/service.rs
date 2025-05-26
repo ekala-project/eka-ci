@@ -61,4 +61,8 @@ impl DbService {
     ) -> anyhow::Result<()> {
         drv::insert_drv_graph(&self.pool, drv_graph).await
     }
+
+    pub async fn close(self) {
+        self.pool.close().await
+    }
 }

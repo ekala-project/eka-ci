@@ -9,7 +9,11 @@ use crate::nix::EvalTask;
 use anyhow::Context;
 use client::UnixService;
 use config::Config;
-use tokio::sync::mpsc::channel;
+use tokio::{
+    signal::unix::{signal, SignalKind},
+    sync::mpsc::channel,
+};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
@@ -37,11 +41,11 @@ async fn main() -> anyhow::Result<()> {
 
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
     let eval_service = nix::EvalService::new(eval_receiver, db_service);
-    eval_service.run();
 
     let unix_service = UnixService::bind_to_path(&config.unix.socket_path, eval_sender)
         .await
         .context("failed to start unix service")?;
+
     let web_service = WebService::bind_to_address(&config.web.address)
         .await
         .context("failed to start web service")?;
@@ -79,8 +83,30 @@ async fn main() -> anyhow::Result<()> {
                 .to_string())
     );
 
-    tokio::spawn(async { unix_service.run().await });
-    web_service.run().await;
+    let cancellation_token = CancellationToken::new();
+
+    let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
+    let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
+    let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
+
+    let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
+    let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
+
+    tokio::select! {
+        _ = sigterm.recv() => {
+            info!("Received SIGTERM, gracefully shutting down");
+        }
+        _ = sigint.recv() => {
+            info!("Received SIGINT, gracefully shutting down");
+        }
+    }
+
+    cancellation_token.cancel();
+
+    // Wait for the services to shutdown
+    _ = tokio::join!(eval_handle, unix_handle, web_handle);
+
+    info!("All services shutdown gracefully");
 
     Ok(())
 }

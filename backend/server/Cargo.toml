@@ -26,6 +26,7 @@ shared = { workspace = true }
 sqlx = { version = "0.8.5", features = [ "runtime-tokio", "sqlite", "migrate", "macros", "chrono" ], default-features = false }
 thiserror = { workspace = true }
 tokio = { version = "1.41.0", features = ["full"] }
+tokio-util = "0.7.15"
 tower-http = { version = "0.6.2", features = ["fs", "tracing"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

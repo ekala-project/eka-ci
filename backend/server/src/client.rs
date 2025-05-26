@@ -3,11 +3,13 @@ use anyhow::{Context, Result};
 use shared::types::{ClientRequest, ClientResponse};
 use std::path::Path;
 use tokio::sync::mpsc::Sender;
+use tokio::task::JoinSet;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{unix::SocketAddr, UnixListener, UnixStream},
 };
-use tracing::{debug, info, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 pub struct UnixService {
     listener: UnixListener,
@@ -40,26 +42,45 @@ impl UnixService {
             .expect("getsockname should always succeed on a properly initialized listener")
     }
 
-    pub async fn run(self) {
-        self.listen_for_client().await
-    }
+    pub async fn run(self, cancellation_token: CancellationToken) {
+        let mut join_set = JoinSet::new();
 
-    async fn listen_for_client(self) {
-        loop {
-            match self.listener.accept().await {
-                Ok((stream, _)) => {
-                    let new_dispatch = self.dispatch.clone();
-                    tokio::spawn(async {
-                        if let Err(err) = handle_client(stream, new_dispatch).await {
-                            warn!("Failed to handle socket connection: {:?}", err);
-                        }
-                    });
-                }
-                Err(err) => {
-                    warn!("Failed to create socket connection: {:?}", err);
+        while let Some(request) = cancellation_token
+            .run_until_cancelled(self.listener.accept())
+            .await
+        {
+            let stream = match request {
+                Ok((stream, _)) => stream,
+                Err(e) => {
+                    error!(error = %e, "Failed to create socket connection");
+
+                    use std::io::ErrorKind::*;
+                    if !matches!(
+                        e.kind(),
+                        ConnectionReset | ConnectionAborted | BrokenPipe | TimedOut
+                    ) {
+                        warn!("Error was irrecoverable, shutting down");
+                        cancellation_token.cancel();
+                        break;
+                    }
+
+                    continue;
                 }
             };
+
+            let new_dispatch = self.dispatch.clone();
+            join_set.spawn(async {
+                if let Err(e) = handle_client(stream, new_dispatch).await {
+                    error!(error = %e, "Failed to handle socket connection");
+                }
+            });
         }
+
+        while join_set.join_next().await.is_some() {
+            debug!("Client task completed during shutdown");
+        }
+
+        info!("Unix service shutdown gracefully")
     }
 }
 
