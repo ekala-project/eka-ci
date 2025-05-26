@@ -1,7 +1,9 @@
-use super::builder::Builder;
+use super::builder::{BuildRequest, Builder};
 use super::ingress::{IngressService, IngressTask};
-use crate::db::{DbService, model::drv};
+use super::recorder::RecorderService;
+use crate::db::{model::drv, DbService};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// SchedulerService spins up three smaller services:
 ///   RequestIngress:
@@ -24,28 +26,31 @@ pub struct SchedulerService {
 
     // When spawning build tasks, we need to pass a clone of this so they
     // can communicate build status asynchronously.
-    build_request_sender: mpsc::Sender<drv::DrvId>,
+    build_request_sender: mpsc::Sender<BuildRequest>,
 
-    builder: Builder,
+    builder_thread: JoinHandle<()>,
 }
 
 impl SchedulerService {
-    pub fn new(db_service: DbService) -> Self {
-        let (build_request_sender, build_request_receiver) = mpsc::channel(100);
-        let (build_result_sender, build_result_receiver) = mpsc::channel(100);
-
-        let builder = Builder::new(build_request_receiver, build_result_sender.clone());
-        let ingress_service = IngressService::new( build_request_sender.clone(), db_service.clone());
+    pub fn new(db_service: DbService) -> anyhow::Result<Self> {
+        let builder_service = Builder::new();
+        let build_request_sender = builder_service.build_request_sender();
+        let ingress_service = IngressService::new(build_request_sender.clone(), db_service.clone());
         let ingress_sender = ingress_service.ingress_sender();
+        let recorder_service = RecorderService::new(db_service.clone());
+        let recorder_task_sender = recorder_service.run(ingress_sender.clone())?;
+        let builder_thread = builder_service.run(recorder_task_sender.clone());
 
-        Self {
+        Ok(Self {
             db_service,
             ingress_sender,
             build_request_sender,
-            builder,
-        }
+            builder_thread,
+        })
     }
 
+    /// Producer channel for sending build requests for eventual scheduling
+    #[allow(dead_code)]
     pub fn ingress_request_sender(&self) -> mpsc::Sender<IngressTask> {
         self.ingress_sender.clone()
     }

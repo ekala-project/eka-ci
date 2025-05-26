@@ -1,5 +1,6 @@
 use crate::db::model::{build, build_event, drv, git};
 use crate::db::DbService;
+use crate::scheduler::builder::BuildRequest;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -20,7 +21,7 @@ pub struct IngressWorker {
     /// To receive requests for updating or inserting drvs
     request_receiver: mpsc::Receiver<IngressTask>,
     /// To send buildable requests to builder service
-    buildable_sender: mpsc::Sender<drv::DrvId>,
+    buildable_sender: mpsc::Sender<BuildRequest>,
     db_service: DbService,
 }
 
@@ -36,10 +37,7 @@ pub enum IngressTask {
 }
 
 impl IngressService {
-    pub fn new(
-        buildable_sender: mpsc::Sender<drv::DrvId>,
-        db_service: DbService,
-    ) -> Self {
+    pub fn new(buildable_sender: mpsc::Sender<BuildRequest>, db_service: DbService) -> Self {
         let db_clone = db_service.clone();
         let (request_sender, request_receiver) = mpsc::channel(1000);
 
@@ -75,9 +73,7 @@ impl IngressWorker {
         }
     }
 
-    async fn handle_ingress_request(&self,
-        task: IngressTask,
-    ) -> anyhow::Result<()> {
+    async fn handle_ingress_request(&self, task: IngressTask) -> anyhow::Result<()> {
         use IngressTask::*;
 
         match task {
@@ -88,9 +84,7 @@ impl IngressWorker {
         Ok(())
     }
 
-    async fn handle_check_buildable_task(&self,
-        drv_id: drv::DrvId,
-    ) -> anyhow::Result<()> {
+    async fn handle_check_buildable_task(&self, drv_id: drv::DrvId) -> anyhow::Result<()> {
         // TODO: make this more generic, we should be checking for other terminal states
         if self.db_service.is_drv_buildable(&drv_id).await? {
             let build_id = build::DrvBuildId {
@@ -101,17 +95,18 @@ impl IngressWorker {
 
             // TODO: We should scan all of the existing drvs to see if they have
             // failure state, and instead just immediately propagate it
-            let event = build_event::DrvBuildEvent::for_insert(build_id, build_event::DrvBuildState::Buildable);
+            let event = build_event::DrvBuildEvent::for_insert(
+                build_id,
+                build_event::DrvBuildState::Buildable,
+            );
             self.db_service.new_drv_build_event(event).await?;
-            self.buildable_sender.send(drv_id);
+            self.buildable_sender.send(BuildRequest(drv_id)).await?;
         }
 
         Ok(())
     }
 
-    async fn handle_eval_task(&self,
-        drv_id: drv::DrvId,
-    ) -> anyhow::Result<()> {
+    async fn handle_eval_task(&self, drv_id: drv::DrvId) -> anyhow::Result<()> {
         // For evaluation tasks, we only really need to do an action if the drv
         // hasn't been encountered before. Check if there's a build_event for this drv
         let maybe_build_event = self.db_service.get_latest_build_event(&drv_id).await?;
@@ -132,7 +127,10 @@ impl IngressWorker {
 
                     // TODO: We should scan all of the existing drvs to see if they have
                     // failure state, and instead just immediately propagate it
-                    let event = build_event::DrvBuildEvent::for_insert(build_id, build_event::DrvBuildState::Queued);
+                    let event = build_event::DrvBuildEvent::for_insert(
+                        build_id,
+                        build_event::DrvBuildState::Queued,
+                    );
                     self.db_service.new_drv_build_event(event).await?;
                 }
             }
@@ -143,14 +141,17 @@ impl IngressWorker {
 }
 
 /// Since we have to do a lot of construction, make this its own method
-async fn insert_metadata(drv_id: drv::DrvId, db_service: &DbService) -> anyhow::Result<build::DrvBuildMetadata> {
+async fn insert_metadata(
+    drv_id: drv::DrvId,
+    db_service: &DbService,
+) -> anyhow::Result<build::DrvBuildMetadata> {
     // TODO: Originating source should be passed. For now, just fill
     // with fake information
     let repo = git::GitRepo(gix_url::parse(
-            "https://github.com/ekala-project/fake-ci".into(),
+        "https://github.com/ekala-project/fake-ci".into(),
     )?);
     let commit = git::GitCommit(gix_hash::ObjectId::from_hex(
-            b"1f5cfe6827dc7956af7da54755717202d14667a0",
+        b"1f5cfe6827dc7956af7da54755717202d14667a0",
     )?);
     // Eventually, we will want to be able to re-create the .drv on
     // a potentially remote store, for now, we just assume that the .drv

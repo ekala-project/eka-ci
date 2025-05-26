@@ -6,6 +6,7 @@ mod nix;
 mod scheduler;
 mod web;
 
+use crate::db::model::drv;
 use crate::nix::EvalTask;
 use anyhow::Context;
 use client::UnixService;
@@ -14,7 +15,6 @@ use tokio::sync::mpsc::channel;
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
-use crate::db::model::drv;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

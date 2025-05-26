@@ -1,9 +1,12 @@
+use crate::db::model::drv::DrvId;
+use crate::scheduler::recorder::RecorderTask;
 use std::process::Output;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
-use crate::db::model::drv::DrvId;
+
+pub struct BuildRequest(pub DrvId);
 
 /// This acts as the service which monitors a "nix build" and reports the
 /// status of a build
@@ -11,35 +14,49 @@ use crate::db::model::drv::DrvId;
 /// TODO: Allow for number of parallel builds to be configured
 ///       tokio::task::JoinSet would likely be a good option for this
 pub struct Builder {
-    #[allow(dead_code)]
-    build_thread: JoinHandle<()>,
+    build_request_sender: mpsc::Sender<BuildRequest>,
+    build_request_receiver: mpsc::Receiver<BuildRequest>,
 }
 
 impl Builder {
-    pub fn new(receiver: mpsc::Receiver<DrvId>, status_sender: mpsc::Sender<DrvId>) -> Self {
-        let build_thread = tokio::spawn(async move {
-            poll_for_builds(receiver, status_sender).await;
-        });
+    /// Immediately starts builder service
+    pub fn new() -> Self {
+        let (build_request_sender, build_request_receiver) = mpsc::channel(100);
 
-        Self { build_thread }
+        Self {
+            build_request_sender,
+            build_request_receiver,
+        }
+    }
+
+    pub fn build_request_sender(&self) -> mpsc::Sender<BuildRequest> {
+        self.build_request_sender.clone()
+    }
+
+    pub fn run(self, recorder_sender: mpsc::Sender<RecorderTask>) -> JoinHandle<()> {
+        let recorder_clone = recorder_sender.clone();
+        tokio::spawn(async move {
+            poll_for_builds(self.build_request_receiver, recorder_clone).await;
+        })
     }
 }
 
 async fn poll_for_builds(
-    mut receiver: mpsc::Receiver<DrvId>,
-    status_sender: mpsc::Sender<DrvId>,
+    mut receiver: mpsc::Receiver<BuildRequest>,
+    status_sender: mpsc::Sender<RecorderTask>,
 ) {
     loop {
         if let Some(drv_string) = receiver.recv().await {
-            attempt_build(drv_string, status_sender.clone()).await;
+            attempt_build(drv_string, &status_sender).await;
         }
     }
 }
 
-async fn attempt_build(drv_path: DrvId, build_sender: mpsc::Sender<DrvId>) {
+async fn attempt_build(build_request: BuildRequest, recorder_sender: &mpsc::Sender<RecorderTask>) {
     // TODO: Create buildEvent
+    let drv_path = &build_request.0;
 
-    match build_drv(&drv_path).await {
+    match build_drv(drv_path).await {
         Ok(output) => {
             if output.status.success() {
                 // TODO: Update buildEvent with completed success

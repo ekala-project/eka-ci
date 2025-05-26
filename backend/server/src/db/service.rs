@@ -68,10 +68,7 @@ impl DbService {
         insert::new_drv_build_event(event, &self.pool).await
     }
 
-    pub async fn is_drv_buildable(
-        &self,
-        derivation: &DrvId,
-    ) -> anyhow::Result<bool> {
+    pub async fn is_drv_buildable(&self, derivation: &DrvId) -> anyhow::Result<bool> {
         build_event::is_drv_buildable(derivation, &self.pool).await
     }
 

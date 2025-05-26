@@ -327,10 +327,7 @@ WHERE referrer = ?
 /// Determine if a Drv can be built
 /// One issue with this logic is a missing dependency drv in the db would be treated
 /// as "successful"
-pub async fn is_drv_buildable(
-    derivation: &DrvId,
-    pool: &SqlitePool,
-) -> anyhow::Result<bool> {
+pub async fn is_drv_buildable(derivation: &DrvId, pool: &SqlitePool) -> anyhow::Result<bool> {
     let deps = get_latest_build_events_for_deps(derivation, pool).await?;
 
     let result = deps
@@ -339,7 +336,6 @@ pub async fn is_drv_buildable(
 
     Ok(result)
 }
-
 
 pub async fn get_latest_build_event(
     derivation: &DrvId,
