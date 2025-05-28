@@ -1,6 +1,6 @@
 use super::builder::{BuildRequest, Builder};
 use super::ingress::{IngressService, IngressTask};
-use super::recorder::RecorderService;
+use super::recorder::{RecorderService, RecorderTask};
 use crate::db::{model::drv, DbService};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -17,35 +17,45 @@ use tokio::task::JoinHandle;
 ///         Upon recording a successful build, it pushes a check request for
 ///         each downstream drv to RequestIngress service to see if the drv
 ///         is now "buildable"
+#[allow(dead_code)]
 pub struct SchedulerService {
     // Handle to the db service, useful for persisting and querying build state
     db_service: DbService,
 
-    // Channel to send requests for updating drv build progress
+    // Channels to individual services
+    // We may in the future need to recover an individual service, so retaining
+    // a handle to the other service channels will be prequisite
     ingress_sender: mpsc::Sender<IngressTask>,
-
-    // When spawning build tasks, we need to pass a clone of this so they
-    // can communicate build status asynchronously.
     build_request_sender: mpsc::Sender<BuildRequest>,
+    recorder_task_sender: mpsc::Sender<RecorderTask>,
 
+    ingress_thread: JoinHandle<()>,
     builder_thread: JoinHandle<()>,
+    recorder_thread: JoinHandle<()>,
 }
 
 impl SchedulerService {
     pub fn new(db_service: DbService) -> anyhow::Result<Self> {
         let builder_service = Builder::new(db_service.clone());
-        let build_request_sender = builder_service.build_request_sender();
-        let ingress_service = IngressService::new(build_request_sender.clone(), db_service.clone());
-        let ingress_sender = ingress_service.ingress_sender();
         let recorder_service = RecorderService::new(db_service.clone());
-        let recorder_task_sender = recorder_service.run(ingress_sender.clone())?;
+        let ingress_service = IngressService::new(db_service.clone());
+
+        let build_request_sender = builder_service.build_request_sender();
+        let ingress_sender = ingress_service.ingress_sender();
+        let recorder_task_sender = recorder_service.recorder_sender();
+
+        let ingress_thread = ingress_service.run(build_request_sender.clone());
+        let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run(recorder_task_sender.clone());
 
         Ok(Self {
             db_service,
             ingress_sender,
             build_request_sender,
+            recorder_task_sender,
+            ingress_thread,
             builder_thread,
+            recorder_thread,
         })
     }
 
