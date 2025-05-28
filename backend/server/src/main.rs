@@ -3,8 +3,10 @@ mod config;
 mod db;
 mod github;
 mod nix;
+mod scheduler;
 mod web;
 
+use crate::db::model::drv;
 use crate::nix::EvalTask;
 use anyhow::Context;
 use client::UnixService;
@@ -35,6 +37,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("attempted to create DB pool")?;
 
+    let (build_sender, build_receiver) = channel::<drv::DrvId>(10000);
+    let scheduler_service = scheduler::SchedulerService::new(db_service.clone());
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
     let eval_service = nix::EvalService::new(eval_receiver, db_service);
     eval_service.run();
