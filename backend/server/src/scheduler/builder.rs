@@ -16,34 +16,28 @@ pub struct BuildRequest(pub DrvId);
 ///       tokio::task::JoinSet would likely be a good option for this
 pub struct Builder {
     db_service: DbService,
-    build_request_sender: mpsc::Sender<BuildRequest>,
     build_request_receiver: mpsc::Receiver<BuildRequest>,
 }
 
 impl Builder {
     /// Immediately starts builder service
-    pub fn new(db_service: DbService) -> Self {
+    pub fn init(db_service: DbService) -> (Self, mpsc::Sender<BuildRequest>) {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);
 
-        Self {
+        let res = Self {
             db_service,
-            build_request_sender,
             build_request_receiver,
-        }
-    }
+        };
 
-    pub fn build_request_sender(&self) -> mpsc::Sender<BuildRequest> {
-        self.build_request_sender.clone()
+        (res, build_request_sender)
     }
 
     pub fn run(self, recorder_sender: mpsc::Sender<RecorderTask>) -> JoinHandle<()> {
-        let recorder_clone = recorder_sender.clone();
-        let db_service_clone = self.db_service.clone();
         tokio::spawn(async move {
             poll_for_builds(
                 self.build_request_receiver,
-                db_service_clone,
-                recorder_clone,
+                self.db_service,
+                recorder_sender,
             )
             .await;
         })

@@ -17,7 +17,6 @@ pub struct RecorderTask {
 pub struct RecorderService {
     db_service: DbService,
     recorder_receiver: mpsc::Receiver<RecorderTask>,
-    recorder_sender: mpsc::Sender<RecorderTask>,
 }
 
 /// Encapsulation of the Recorder thread. May want to gracefully recover from
@@ -30,24 +29,23 @@ struct RecorderWorker {
 }
 
 impl RecorderService {
-    pub fn new(db_service: DbService) -> Self {
+    pub fn init(db_service: DbService) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
-        Self {
+
+        let res = Self {
             db_service,
             recorder_receiver,
-            recorder_sender,
-        }
+        };
+
+        (res, recorder_sender)
     }
 
-    pub fn recorder_sender(&self) -> mpsc::Sender<RecorderTask> {
-        self.recorder_sender.clone()
-    }
-
-    pub fn run(
-        self,
-        ingress_sender: mpsc::Sender<IngressTask>,
-    ) -> JoinHandle<()> {
-        let worker = RecorderWorker::new(self.db_service.clone(), ingress_sender, self.recorder_receiver);
+    pub fn run(self, ingress_sender: mpsc::Sender<IngressTask>) -> JoinHandle<()> {
+        let worker = RecorderWorker::new(
+            self.db_service.clone(),
+            ingress_sender,
+            self.recorder_receiver,
+        );
 
         tokio::spawn(async move {
             worker.ingest_requests().await;
@@ -56,8 +54,11 @@ impl RecorderService {
 }
 
 impl RecorderWorker {
-    fn new(db_service: DbService, ingress_sender: mpsc::Sender<IngressTask>, recorder_receiver: mpsc::Receiver<RecorderTask>) -> Self {
-
+    fn new(
+        db_service: DbService,
+        ingress_sender: mpsc::Sender<IngressTask>,
+        recorder_receiver: mpsc::Receiver<RecorderTask>,
+    ) -> Self {
         Self {
             db_service,
             ingress_sender,
@@ -77,18 +78,18 @@ impl RecorderWorker {
 
     async fn handle_recorder_request(&self, task: RecorderTask) -> anyhow::Result<()> {
         use build_event::*;
-        use DrvBuildState as DBS;
         use DrvBuildResult as DBR;
+        use DrvBuildState as DBS;
 
         match &task.result {
             DBS::Completed(DBR::Success) => {
                 // TODO: update status as successful, ask ingress to check drv again
-            },
+            }
             DBS::Completed(DBR::Failure) => {
                 // TODO: update status as failure, mark all downstream drvs as
                 // dependency failure, and add this drv as cause
-            },
-            _ => { },
+            }
+            _ => {}
         }
 
         Ok(())

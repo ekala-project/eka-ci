@@ -12,7 +12,6 @@ use tracing::{debug, warn};
 ///
 pub struct IngressService {
     db_service: DbService,
-    request_sender: mpsc::Sender<IngressTask>,
     request_receiver: mpsc::Receiver<IngressTask>,
 }
 
@@ -36,30 +35,26 @@ pub enum IngressTask {
 }
 
 impl IngressService {
-    pub fn new( db_service: DbService) -> Self {
+    pub fn init(db_service: DbService) -> (Self, mpsc::Sender<IngressTask>) {
         let (request_sender, request_receiver) = mpsc::channel(1000);
 
-        Self {
+        let res = Self {
             db_service,
-            request_sender,
             request_receiver,
-        }
+        };
+
+        (res, request_sender)
     }
 
     pub fn run(self, buildable_sender: mpsc::Sender<BuildRequest>) -> JoinHandle<()> {
-        let db_clone = self.db_service.clone();
         let worker = IngressWorker {
             request_receiver: self.request_receiver,
             buildable_sender,
-            db_service: db_clone,
+            db_service: self.db_service,
         };
         tokio::spawn(async move {
             worker.ingest_requests().await;
         })
-    }
-
-    pub fn ingress_sender(&self) -> mpsc::Sender<IngressTask> {
-        self.request_sender.clone()
     }
 }
 
