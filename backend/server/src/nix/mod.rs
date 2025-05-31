@@ -60,8 +60,6 @@ impl EvalService {
             }
         }
 
-        self.db_service.close().await;
-        info!("Database service pool closed");
         info!("Eval service shutdown gracefully");
     }
 

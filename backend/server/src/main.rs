@@ -39,6 +39,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("attempted to create DB pool")?;
 
+    let db_pool = db_service.pool.clone();
+
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
     let eval_service = nix::EvalService::new(eval_receiver, db_service);
 
@@ -93,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
 
     tokio::select! {
+        biased;
         _ = sigterm.recv() => {
             info!("Received SIGTERM, gracefully shutting down");
         }
@@ -106,6 +109,9 @@ async fn main() -> anyhow::Result<()> {
     // Wait for the services to shutdown
     _ = tokio::join!(eval_handle, unix_handle, web_handle);
 
+    db_pool.close().await;
+
+    info!("Database service pool closed");
     info!("All services shutdown gracefully");
 
     Ok(())
