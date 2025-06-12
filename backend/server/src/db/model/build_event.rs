@@ -2,8 +2,8 @@ use super::build::DrvBuildId;
 use super::drv::DrvId;
 use super::ForInsert;
 use futures::stream::BoxStream;
+use sqlx::FromRow;
 use sqlx::SqlitePool;
-use sqlx::{FromRow, Pool, Sqlite};
 
 /// Emitted whenever a derivation build's state changes.
 #[derive(Clone, Debug, FromRow)]

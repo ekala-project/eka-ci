@@ -69,6 +69,7 @@ impl RecorderWorker {
     async fn ingest_requests(mut self) {
         loop {
             if let Some(task) = self.recorder_receiver.recv().await {
+                debug!("Received recorder task {:?}", &task);
                 if let Err(e) = self.handle_recorder_request(task.clone()).await {
                     warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
                 }
@@ -81,13 +82,35 @@ impl RecorderWorker {
         use DrvBuildResult as DBR;
         use DrvBuildState as DBS;
 
+        let build_id = build::DrvBuildId {
+            derivation: task.derivation,
+            // TODO: build_attempt seems like something we should query
+            build_attempt: std::num::NonZeroU32::new(1).unwrap(),
+        };
+
         match &task.result {
             DBS::Completed(DBR::Success) => {
-                // TODO: update status as successful, ask ingress to check drv again
+                debug!(
+                    "Attempting to record successful build of {}",
+                    build_id.derivation.store_path()
+                );
+                let event =
+                    build_event::DrvBuildEvent::for_insert(build_id, DBS::Completed(DBR::Success));
+                self.db_service.new_drv_build_event(event).await?;
+                // TODO: Need to ask ingress service to check if all downstream
+                // drvs are now buildable
             }
             DBS::Completed(DBR::Failure) => {
                 // TODO: update status as failure, mark all downstream drvs as
                 // dependency failure, and add this drv as cause
+                debug!(
+                    "Attempting to record failed build of {}",
+                    build_id.derivation.store_path()
+                );
+                let event =
+                    build_event::DrvBuildEvent::for_insert(build_id, DBS::Completed(DBR::Failure));
+                self.db_service.new_drv_build_event(event).await?;
+                // TODO: all downstream packages should be set to be a transitiveFailure
             }
             _ => {}
         }

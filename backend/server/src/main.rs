@@ -6,7 +6,6 @@ mod nix;
 mod scheduler;
 mod web;
 
-use crate::db::model::drv;
 use crate::nix::EvalTask;
 use anyhow::Context;
 use client::UnixService;

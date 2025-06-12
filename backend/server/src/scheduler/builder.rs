@@ -51,6 +51,7 @@ async fn poll_for_builds(
 ) {
     loop {
         if let Some(drv_string) = receiver.recv().await {
+            debug!("Attempting to build {:?}", &drv_string.0);
             let res = attempt_build(&drv_string, &db_service, &status_sender).await;
             match res {
                 Ok(_) => {
