@@ -54,6 +54,10 @@ impl DbService {
         drv::has_drv(&self.pool, drv_path).await
     }
 
+    pub async fn drv_referrers(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        drv::drv_referrers(&self.pool, &drv).await
+    }
+
     pub async fn insert_drv_graph(
         &self,
         drv_graph: &HashMap<DrvId, Vec<DrvId>>,

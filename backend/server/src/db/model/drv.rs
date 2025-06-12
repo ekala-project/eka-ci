@@ -36,7 +36,7 @@ use tracing::debug;
 /// derivation identifier matches the `hash-name.drv` pattern. It also works with `&Path` inputs.
 ///
 /// [^nix-by-hand]: <https://bernsteinbear.com/blog/nix-by-hand/>
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, FromRow)]
 pub struct DrvId(String);
 
 // This type is really just a string, that we enforce to be of a certain structure, as such, it
@@ -292,4 +292,19 @@ VALUES (?1, ?2, ?3)
     .await?;
 
     Ok(())
+}
+
+pub async fn drv_referrers(pool: &Pool<Sqlite>, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+    let result = sqlx::query_as(
+        r#"
+SELECT referrer
+FROM DrvRefs
+WHERE reference = ?1
+"#,
+    )
+    .bind(&drv)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(result)
 }

@@ -82,6 +82,7 @@ impl RecorderWorker {
         use DrvBuildResult as DBR;
         use DrvBuildState as DBS;
 
+        let drv = task.derivation.clone();
         let build_id = build::DrvBuildId {
             derivation: task.derivation,
             // TODO: build_attempt seems like something we should query
@@ -97,8 +98,14 @@ impl RecorderWorker {
                 let event =
                     build_event::DrvBuildEvent::for_insert(build_id, DBS::Completed(DBR::Success));
                 self.db_service.new_drv_build_event(event).await?;
-                // TODO: Need to ask ingress service to check if all downstream
+
+                // Ask ingress service to check if all downstream
                 // drvs are now buildable
+                let referrers = self.db_service.drv_referrers(&drv).await?;
+                for referrer in referrers {
+                    let task = IngressTask::CheckBuildable(referrer);
+                    self.ingress_sender.send(task).await?;
+                }
             }
             DBS::Completed(DBR::Failure) => {
                 // TODO: update status as failure, mark all downstream drvs as
