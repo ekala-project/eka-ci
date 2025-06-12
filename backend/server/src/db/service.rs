@@ -56,7 +56,7 @@ impl DbService {
 
     pub async fn insert_drv_graph(
         &self,
-        drv_graph: HashMap<DrvId, Vec<DrvId>>,
+        drv_graph: &HashMap<DrvId, Vec<DrvId>>,
     ) -> anyhow::Result<()> {
         drv::insert_drv_graph(&self.pool, drv_graph).await
     }

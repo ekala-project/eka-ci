@@ -37,10 +37,13 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("attempted to create DB pool")?;
 
-    let (build_sender, build_receiver) = channel::<drv::DrvId>(10000);
-    let scheduler_service = scheduler::SchedulerService::new(db_service.clone());
+    let scheduler_service = scheduler::SchedulerService::new(db_service.clone())?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
-    let eval_service = nix::EvalService::new(eval_receiver, db_service);
+    let eval_service = nix::EvalService::new(
+        eval_receiver,
+        db_service,
+        scheduler_service.ingress_request_sender(),
+    );
     eval_service.run();
 
     let unix_service = UnixService::bind_to_path(&config.unix.socket_path, eval_sender)

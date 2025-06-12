@@ -55,7 +55,6 @@ impl SchedulerService {
     }
 
     /// Producer channel for sending build requests for eventual scheduling
-    #[allow(dead_code)]
     pub fn ingress_request_sender(&self) -> mpsc::Sender<IngressTask> {
         self.ingress_sender.clone()
     }

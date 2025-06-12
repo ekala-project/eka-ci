@@ -231,7 +231,7 @@ pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool
 /// references may or may not already exist
 pub async fn insert_drv_graph(
     pool: &Pool<Sqlite>,
-    drv_graph: HashMap<DrvId, Vec<DrvId>>,
+    drv_graph: &HashMap<DrvId, Vec<DrvId>>,
 ) -> anyhow::Result<()> {
     // We must first traverse the keys, add them all, then we can create
     // the reference relationships
