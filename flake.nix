@@ -30,8 +30,10 @@
       packages.default = legacyPackages.eka-ci;
       devShells.default = legacyPackages.dev-shell;
       formatter = legacyPackages.nixfmt-rfc-style;
+      checks.module = import ./nix/module-test.nix self legacyPackages;
     })
     // {
       overlays.default = localOverlay;
+      nixosModules.daemon = import ./nix/module.nix self;
     };
 }
