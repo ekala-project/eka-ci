@@ -11,10 +11,12 @@
   rustc,
   rustfmt,
   rust-analyzer,
+  rustPlatform,
   dev-server,
 }:
 
 mkShell {
+  RUST_SRC_PATH = "${rustPlatform.rustcSrc}/library";
   nativeBuildInputs =
     [
       cargo
