@@ -6,9 +6,9 @@ use crate::db::{model::drv_id::DrvId, DbService};
 use crate::scheduler::IngressTask;
 use anyhow::Result;
 use std::{collections::HashMap, process::Command};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-use tokio::sync::mpsc;
 
 pub struct EvalJob {
     pub file_path: String,

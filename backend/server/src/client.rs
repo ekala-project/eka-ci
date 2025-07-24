@@ -1,3 +1,4 @@
+use crate::db::DbService;
 use crate::nix::EvalTask;
 use anyhow::{Context, Result};
 use shared::types::{ClientRequest, ClientResponse, DrvStatusResponse};
@@ -10,7 +11,6 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-use crate::db::DbService;
 
 pub struct UnixService {
     listener: UnixListener,
@@ -26,11 +26,18 @@ struct DispatchChannels {
 }
 
 impl UnixService {
-    pub async fn bind_to_path(socket_path: &Path, eval_sender: Sender<EvalTask>, db_service: DbService) -> Result<Self> {
+    pub async fn bind_to_path(
+        socket_path: &Path,
+        eval_sender: Sender<EvalTask>,
+        db_service: DbService,
+    ) -> Result<Self> {
         prepare_path(socket_path)?;
 
         let listener = UnixListener::bind(socket_path)?;
-        let dispatch = DispatchChannels { eval_sender, db_service };
+        let dispatch = DispatchChannels {
+            eval_sender,
+            db_service,
+        };
 
         Ok(Self { listener, dispatch })
     }

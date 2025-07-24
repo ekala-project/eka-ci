@@ -95,7 +95,9 @@ impl RecorderWorker {
                     "Attempting to record successful build of {}",
                     build_id.derivation.store_path()
                 );
-                self.db_service.update_drv_status(&drv, &task.result).await?;
+                self.db_service
+                    .update_drv_status(&drv, &task.result)
+                    .await?;
                 //let event =
                 //    build_event::DrvBuildEvent::for_insert(build_id, DBS::Completed(DBR::Success));
                 //self.db_service.new_drv_build_event(event).await?;
@@ -115,7 +117,9 @@ impl RecorderWorker {
                     "Attempting to record failed build of {}",
                     build_id.derivation.store_path()
                 );
-                self.db_service.update_drv_status(&drv, &task.result).await?;
+                self.db_service
+                    .update_drv_status(&drv, &task.result)
+                    .await?;
                 //let event =
                 //    build_event::DrvBuildEvent::for_insert(build_id, DBS::Completed(DBR::Failure));
                 //self.db_service.new_drv_build_event(event).await?;

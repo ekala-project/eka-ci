@@ -6,6 +6,7 @@ mod nix;
 mod scheduler;
 mod web;
 
+use crate::db::model::DrvId;
 use crate::nix::EvalTask;
 use anyhow::Context;
 use client::UnixService;
@@ -18,7 +19,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
-use crate::db::model::DrvId;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,9 +53,10 @@ async fn main() -> anyhow::Result<()> {
         scheduler_service.ingress_request_sender(),
     );
 
-    let unix_service = UnixService::bind_to_path(&config.unix.socket_path, eval_sender, db_service.clone())
-        .await
-        .context("failed to start unix service")?;
+    let unix_service =
+        UnixService::bind_to_path(&config.unix.socket_path, eval_sender, db_service.clone())
+            .await
+            .context("failed to start unix service")?;
 
     let web_service = WebService::bind_to_address(&config.web.address)
         .await

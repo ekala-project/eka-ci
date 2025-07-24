@@ -129,7 +129,11 @@ VALUES (?1, ?2, ?3, ?4)
     Ok(())
 }
 
-pub async fn update_drv_status(pool: &Pool<Sqlite>, drv_id: &DrvId, build_state: &DrvBuildState) -> anyhow::Result<()> {
+pub async fn update_drv_status(
+    pool: &Pool<Sqlite>,
+    drv_id: &DrvId,
+    build_state: &DrvBuildState,
+) -> anyhow::Result<()> {
     sqlx::query(
         r#"
 UPDATE Drv
@@ -145,7 +149,6 @@ WHERE drv_path = ?2
     // TODO: emit build_event in the same transaction
     Ok(())
 }
-
 
 async fn insert_drvs(categories: Vec<Drv>, pool: &Pool<Sqlite>) -> anyhow::Result<()> {
     use sqlx::QueryBuilder;
@@ -251,7 +254,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./sql/migrations")]
     async fn insert_many(pool: SqlitePool) -> anyhow::Result<()> {
-       let drv1 = Drv {
+        let drv1 = Drv {
             drv_path: DrvId::from_str(
                 "/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv",
             )?,

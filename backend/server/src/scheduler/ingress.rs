@@ -100,7 +100,9 @@ impl IngressWorker {
             //     build_event::DrvBuildState::Buildable,
             // );
             //self.db_service.new_drv_build_event(event).await?;
-            self.db_service.update_drv_status(&drv_id, &DrvBuildState::Buildable).await?;
+            self.db_service
+                .update_drv_status(&drv_id, &DrvBuildState::Buildable)
+                .await?;
             self.buildable_sender.send(BuildRequest(drv_id)).await?;
         }
 
@@ -110,7 +112,6 @@ impl IngressWorker {
     /// This attempts to update the status of a drv by inspecting the
     /// status of the dependencies.
     async fn handle_eval_task(&self, drv_id: drv_id::DrvId) -> anyhow::Result<()> {
-
         // TODO: check if drv is already in a terminal state
         self.handle_check_buildable_task(drv_id).await?;
 

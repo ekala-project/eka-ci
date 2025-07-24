@@ -80,7 +80,11 @@ impl DbService {
         insert::new_drv_build_event(event, &self.pool).await
     }
 
-    pub async fn update_drv_status(&self, drv_id: &DrvId, state: &build_event::DrvBuildState) -> anyhow::Result<()> {
+    pub async fn update_drv_status(
+        &self,
+        drv_id: &DrvId,
+        state: &build_event::DrvBuildState,
+    ) -> anyhow::Result<()> {
         drv::update_drv_status(&self.pool, drv_id, state).await
     }
 
