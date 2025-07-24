@@ -238,7 +238,7 @@ mod tests {
         };
         println!("inserting drv");
         insert_drv(&pool, &drv).await?;
-        update_drv_status(&pool, &drv_id, DrvBuildState::Buildable).await?;
+        update_drv_status(&pool, &drv_id, &DrvBuildState::Buildable).await?;
 
         println!("querying for drv");
         let Some(result) = get_drv(&drv_id, &pool).await? else {
