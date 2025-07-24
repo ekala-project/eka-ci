@@ -1,7 +1,7 @@
 use super::build::DrvBuildId;
 use super::drv_id::DrvId;
-use crate::db::model::Drv;
 use super::ForInsert;
+use crate::db::model::Drv;
 use sqlx::FromRow;
 use sqlx::SqlitePool;
 
@@ -279,4 +279,3 @@ pub async fn is_drv_buildable(derivation: &DrvId, pool: &SqlitePool) -> anyhow::
 
     Ok(result)
 }
-
