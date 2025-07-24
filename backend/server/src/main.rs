@@ -6,7 +6,6 @@ mod nix;
 mod scheduler;
 mod web;
 
-use crate::db::model::DrvId;
 use crate::nix::EvalTask;
 use anyhow::Context;
 use client::UnixService;
@@ -43,7 +42,6 @@ async fn main() -> anyhow::Result<()> {
 
     let db_pool = db_service.pool.clone();
 
-    let (build_sender, build_receiver) = channel::<DrvId>(10000);
     let scheduler_service = scheduler::SchedulerService::new(db_service.clone())?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 

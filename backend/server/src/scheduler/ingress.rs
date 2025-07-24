@@ -1,4 +1,4 @@
-use crate::db::model::{build, build_event, drv_id, git};
+use crate::db::model::{build, drv_id, git};
 use crate::db::DbService;
 use crate::scheduler::builder::BuildRequest;
 use std::collections::HashMap;

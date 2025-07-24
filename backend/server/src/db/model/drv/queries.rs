@@ -1,39 +1,10 @@
 use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::DrvId;
+use crate::db::model::{drv_id, DrvId};
 use sqlx::SqlitePool;
-use sqlx::{FromRow, Pool, Sqlite};
+use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
-use std::str::FromStr;
 use tracing::debug;
-
-#[derive(Debug, Clone, FromRow)]
-pub struct Drv {
-    /// Derivation identifier.
-    pub drv_path: DrvId,
-
-    /// to reattempt the build (depending on the interruption kind).
-    pub system: String,
-
-    pub required_system_features: Option<String>,
-
-    /// This is None when queried from Nix
-    /// Otherwise, it is the latest build status
-    pub build_state: Option<DrvBuildState>,
-}
-
-impl Drv {
-    /// Calls `nix derivation show` to retrieve system and requiredSystemFeatures
-    pub async fn fetch_info(drv_path: &str) -> anyhow::Result<Self> {
-        use crate::nix::derivation_show::drv_output;
-        let drv_output = drv_output(drv_path).await?;
-        Ok(Drv {
-            drv_path: DrvId::from_str(drv_path)?,
-            system: drv_output.system,
-            required_system_features: drv_output.required_system_features,
-            build_state: None,
-        })
-    }
-}
+use super::Drv;
 
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
@@ -51,7 +22,7 @@ WHERE drv_path = ?
 }
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
-    use super::drv_id::strip_store_path;
+    use drv_id::strip_store_path;
 
     let result = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM Drv WHERE drv_path = $1)")
         .bind(strip_store_path(drv_path))
