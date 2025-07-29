@@ -28,7 +28,10 @@ impl super::EvalService {
                 if let Ok(input) = line {
                     let output = serde_json::from_str::<NixEvalItem>(&input);
                     if let Err(e) = output {
-                        warn!("Encountered error when serializing nix-eval-jobs output: {:?}", e);
+                        warn!(
+                            "Encountered error when serializing nix-eval-jobs output: {:?}",
+                            e
+                        );
                         continue;
                     };
 
