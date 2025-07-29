@@ -26,8 +26,13 @@ impl super::EvalService {
 
             for line in stdout_lines {
                 if let Ok(input) = line {
-                    let item = serde_json::from_str::<NixEvalItem>(&input)?;
-                    match item {
+                    let output = serde_json::from_str::<NixEvalItem>(&input);
+                    if let Err(e) = output {
+                        warn!("Encountered error when serializing nix-eval-jobs output: {:?}", e);
+                        continue;
+                    };
+
+                    match output.unwrap() {
                         NixEvalItem::Drv(drv) => {
                             if let Err(e) = self.traverse_drvs(&drv.drv_path).await {
                                 warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
