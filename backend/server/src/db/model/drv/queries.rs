@@ -217,6 +217,7 @@ WHERE build_state = ?
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::*;
     // use crate::db::model::DrvId;
     // use crate::db::model::drv::DrvBuildState;
     // use super::insert_drv;
@@ -231,7 +232,7 @@ mod tests {
             drv_path: drv_id.clone(),
             system: "x86_64-linux".to_string(),
             required_system_features: None,
-            build_state: Some(DrvBuildState::Queued),
+            build_state: DrvBuildState::Queued,
         };
         println!("inserting drv");
         insert_drv(&pool, &drv).await?;
@@ -242,7 +243,7 @@ mod tests {
             bail!("Expected query to find a result")
         };
 
-        assert_eq!(result.build_state, Some(DrvBuildState::Buildable));
+        assert_eq!(result.build_state, DrvBuildState::Buildable);
         Ok(())
     }
 
@@ -254,7 +255,7 @@ mod tests {
             )?,
             system: "x86_64-linux".to_string(),
             required_system_features: None,
-            build_state: Some(DrvBuildState::Queued),
+            build_state: DrvBuildState::Queued,
         };
         let drv2 = Drv {
             drv_path: DrvId::from_str(
@@ -262,7 +263,7 @@ mod tests {
             )?,
             system: "x86_64-linux".to_string(),
             required_system_features: None,
-            build_state: Some(DrvBuildState::Queued),
+            build_state: DrvBuildState::Queued,
         };
         let drv3 = Drv {
             drv_path: DrvId::from_str(
@@ -270,7 +271,7 @@ mod tests {
             )?,
             system: "x86_64-linux".to_string(),
             required_system_features: None,
-            build_state: Some(DrvBuildState::Buildable),
+            build_state: DrvBuildState::Buildable,
         };
 
         let drvs = vec![drv1, drv2, drv3];
