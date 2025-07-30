@@ -1,39 +1,10 @@
+use super::Drv;
 use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::DrvId;
+use crate::db::model::{drv_id, DrvId};
 use sqlx::SqlitePool;
-use sqlx::{FromRow, Pool, Sqlite};
+use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
-use std::str::FromStr;
 use tracing::debug;
-
-#[derive(Debug, Clone, FromRow)]
-pub struct Drv {
-    /// Derivation identifier.
-    pub drv_path: DrvId,
-
-    /// to reattempt the build (depending on the interruption kind).
-    pub system: String,
-
-    pub required_system_features: Option<String>,
-
-    /// This is None when queried from Nix
-    /// Otherwise, it is the latest build status
-    pub build_state: Option<DrvBuildState>,
-}
-
-impl Drv {
-    /// Calls `nix derivation show` to retrieve system and requiredSystemFeatures
-    pub async fn fetch_info(drv_path: &str) -> anyhow::Result<Self> {
-        use crate::nix::derivation_show::drv_output;
-        let drv_output = drv_output(drv_path).await?;
-        Ok(Drv {
-            drv_path: DrvId::from_str(drv_path)?,
-            system: drv_output.system,
-            required_system_features: drv_output.required_system_features,
-            build_state: None,
-        })
-    }
-}
 
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
@@ -51,7 +22,7 @@ WHERE drv_path = ?
 }
 
 pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool> {
-    use super::drv_id::strip_store_path;
+    use drv_id::strip_store_path;
 
     let result = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM Drv WHERE drv_path = $1)")
         .bind(strip_store_path(drv_path))
@@ -67,21 +38,44 @@ pub async fn insert_drv_graph(
     pool: &Pool<Sqlite>,
     drv_graph: &HashMap<DrvId, Vec<DrvId>>,
 ) -> anyhow::Result<()> {
-    // We must first traverse the keys, add them all, then we can create
-    // the reference relationships
+    use sqlx::{QueryBuilder, Sqlite};
+
+    let mut drvs = Vec::new();
+    let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
+    );
+
+    // TODO: try to parallel fetch
     for id in drv_graph.keys() {
         debug!("Inserting {:?} into Drv", id);
-        // TODO: have system be captured before this function
         let drv = Drv::fetch_info(&id.store_path()).await?;
-        insert_drv(pool, &drv).await?;
+        drvs.push(drv);
     }
 
-    for (referrer, references) in drv_graph {
-        for reference in references {
-            debug!("Inserting {:?},{:?} into DrvRef", &referrer, &reference);
-            insert_drv_ref(pool, &referrer, &reference).await?;
-        }
-    }
+    // We must first traverse the keys, add them all, then we can create
+    // the reference relationships
+    // TODO: have system be captured before this function
+    query_builder.push_values(drvs.into_iter(), |mut b, drv: Drv| {
+        b.push_bind(drv.drv_path)
+            .push_bind(drv.system)
+            .push_bind(drv.required_system_features)
+            .push_bind(DrvBuildState::Queued);
+    });
+    query_builder.build().execute(pool).await?;
+
+    // flatten the map into referrer+reference pairs
+    let drv_pairs = drv_graph
+        .into_iter()
+        .filter(|(_, references)| !references.is_empty())
+        .flat_map(|(referrer, references)| std::iter::repeat(referrer).zip(references));
+
+    let mut reference_builder: QueryBuilder<Sqlite> =
+        QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
+    reference_builder.push_values(drv_pairs, |mut sep, (referrer, reference)| {
+        sep.push_bind(referrer).push_bind(reference);
+    });
+
+    reference_builder.build().execute(pool).await?;
 
     Ok(())
 }
@@ -222,12 +216,9 @@ WHERE build_state = ?
 
 #[cfg(test)]
 mod tests {
+    use super::super::*;
     use super::*;
-    // use crate::db::model::DrvId;
-    // use crate::db::model::drv::DrvBuildState;
-    // use super::insert_drv;
     use anyhow::bail;
-    // use futures::StreamExt;
     use sqlx::SqlitePool;
 
     #[sqlx::test(migrations = "./sql/migrations")]
@@ -237,7 +228,7 @@ mod tests {
             drv_path: drv_id.clone(),
             system: "x86_64-linux".to_string(),
             required_system_features: None,
-            build_state: Some(DrvBuildState::Queued),
+            build_state: DrvBuildState::Queued,
         };
         println!("inserting drv");
         insert_drv(&pool, &drv).await?;
@@ -248,7 +239,7 @@ mod tests {
             bail!("Expected query to find a result")
         };
 
-        assert_eq!(result.build_state, Some(DrvBuildState::Buildable));
+        assert_eq!(result.build_state, DrvBuildState::Buildable);
         Ok(())
     }
 
@@ -260,7 +251,7 @@ mod tests {
             )?,
             system: "x86_64-linux".to_string(),
             required_system_features: None,
-            build_state: Some(DrvBuildState::Queued),
+            build_state: DrvBuildState::Queued,
         };
         let drv2 = Drv {
             drv_path: DrvId::from_str(
@@ -268,7 +259,7 @@ mod tests {
             )?,
             system: "x86_64-linux".to_string(),
             required_system_features: None,
-            build_state: Some(DrvBuildState::Queued),
+            build_state: DrvBuildState::Queued,
         };
         let drv3 = Drv {
             drv_path: DrvId::from_str(
@@ -276,7 +267,7 @@ mod tests {
             )?,
             system: "x86_64-linux".to_string(),
             required_system_features: None,
-            build_state: Some(DrvBuildState::Buildable),
+            build_state: DrvBuildState::Buildable,
         };
 
         let drvs = vec![drv1, drv2, drv3];

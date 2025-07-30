@@ -275,7 +275,7 @@ pub async fn is_drv_buildable(derivation: &DrvId, pool: &SqlitePool) -> anyhow::
 
     let result = deps
         .into_iter()
-        .all(|x| x.build_state == Some(DrvBuildState::Completed(DrvBuildResult::Success)));
+        .all(|x| x.build_state == DrvBuildState::Completed(DrvBuildResult::Success));
 
     Ok(result)
 }
