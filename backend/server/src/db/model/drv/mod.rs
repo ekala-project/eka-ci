@@ -18,7 +18,7 @@ pub struct Drv {
 
     /// This is None when queried from Nix
     /// Otherwise, it is the latest build status
-    pub build_state: Option<DrvBuildState>,
+    pub build_state: DrvBuildState,
 }
 
 impl Drv {
@@ -30,9 +30,7 @@ impl Drv {
             drv_path: DrvId::from_str(drv_path)?,
             system: drv_output.system,
             required_system_features: drv_output.required_system_features,
-            build_state: None,
+            build_state: DrvBuildState::Queued,
         })
     }
 }
-
-

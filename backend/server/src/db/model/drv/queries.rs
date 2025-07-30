@@ -1,10 +1,10 @@
+use super::Drv;
 use crate::db::model::build_event::DrvBuildState;
 use crate::db::model::{drv_id, DrvId};
 use sqlx::SqlitePool;
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 use tracing::debug;
-use super::Drv;
 
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
@@ -38,21 +38,44 @@ pub async fn insert_drv_graph(
     pool: &Pool<Sqlite>,
     drv_graph: &HashMap<DrvId, Vec<DrvId>>,
 ) -> anyhow::Result<()> {
-    // We must first traverse the keys, add them all, then we can create
-    // the reference relationships
+    use sqlx::{QueryBuilder, Sqlite};
+
+    let mut drvs = Vec::new();
+    let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
+    );
+
+    // TODO: try to parallel fetch
     for id in drv_graph.keys() {
         debug!("Inserting {:?} into Drv", id);
-        // TODO: have system be captured before this function
         let drv = Drv::fetch_info(&id.store_path()).await?;
-        insert_drv(pool, &drv).await?;
+        drvs.push(drv);
     }
 
-    for (referrer, references) in drv_graph {
-        for reference in references {
-            debug!("Inserting {:?},{:?} into DrvRef", &referrer, &reference);
-            insert_drv_ref(pool, &referrer, &reference).await?;
-        }
-    }
+    // We must first traverse the keys, add them all, then we can create
+    // the reference relationships
+    // TODO: have system be captured before this function
+    query_builder.push_values(drvs.into_iter(), |mut b, drv: Drv| {
+        b.push_bind(drv.drv_path)
+            .push_bind(drv.system)
+            .push_bind(drv.required_system_features)
+            .push_bind(DrvBuildState::Queued);
+    });
+    query_builder.build().execute(pool).await?;
+
+    // flatten the map into referrer+reference pairs
+    let drv_pairs = drv_graph
+        .into_iter()
+        .filter(|(_, references)| !references.is_empty())
+        .flat_map(|(referrer, references)| std::iter::repeat(referrer).zip(references));
+
+    let mut reference_builder: QueryBuilder<Sqlite> =
+        QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
+    reference_builder.push_values(drv_pairs, |mut sep, (referrer, reference)| {
+        sep.push_bind(referrer).push_bind(reference);
+    });
+
+    reference_builder.build().execute(pool).await?;
 
     Ok(())
 }
