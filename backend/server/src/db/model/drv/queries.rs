@@ -216,13 +216,9 @@ WHERE build_state = ?
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::*;
-    // use crate::db::model::DrvId;
-    // use crate::db::model::drv::DrvBuildState;
-    // use super::insert_drv;
+    use super::*;
     use anyhow::bail;
-    // use futures::StreamExt;
     use sqlx::SqlitePool;
 
     #[sqlx::test(migrations = "./sql/migrations")]
