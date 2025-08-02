@@ -154,3 +154,40 @@ fn drv_references(drv_path: &str) -> Result<Vec<String>> {
 
     Ok(drvs)
 }
+
+/// This assumes a well-formated string from the output of nix-store --query --graph
+fn graph_str_to_drvid(drv_str: &str) -> DrvId {
+    use std::str::FromStr;
+
+    let mut reference_string: String = drv_str.to_string();
+    reference_string.retain(|c| c != '"');
+    DrvId::from_str(&reference_string).unwrap()
+}
+
+/// Retreive the entirity of a drv's reference graph.
+/// This uses `nix-store --query --graph` to construct
+/// the whole graph in one invocation
+fn drv_reference_graph(drv_path: &str) -> Result<Vec<(DrvId,DrvId)>> {
+    let output = Command::new("nix-store")
+        .args(["--query", "--graph", drv_path])
+        .output()?
+        .stdout;
+    let drv_str = String::from_utf8(output)?;
+
+    let drvs = drv_str
+        .lines()
+        // The graph includes inputSrcs as well as graphviz node information
+        // Filtering by " -> " assures we are only grabbing edges
+        .filter(|x| x.contains(" -> "))
+        .map(|x| {
+            let mut line = x.split(" ");
+            let reference: DrvId = graph_str_to_drvid(line.next().unwrap());
+            // drop inner "->"
+            line.next();
+            let referrer = graph_str_to_drvid(line.next().unwrap());
+            return (reference, referrer)
+        })
+        .collect::<Vec<(_,_)>>();
+
+    Ok(drvs)
+}
