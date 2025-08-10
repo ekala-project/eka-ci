@@ -1,8 +1,8 @@
 use crate::db::model::build_event::DrvBuildState;
 use crate::db::model::DrvId;
 use sqlx::FromRow;
-use std::str::FromStr;
 use std::hash::{Hash, Hasher};
+use std::str::FromStr;
 
 mod queries;
 pub use queries::*;

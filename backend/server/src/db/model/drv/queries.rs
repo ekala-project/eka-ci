@@ -93,30 +93,29 @@ pub async fn insert_drvs_and_references(
     let mut tx = pool.begin().await?;
 
     if !drvs.is_empty() {
+        let mut query_builder = QueryBuilder::new(
+            "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
+        );
 
-      let mut query_builder = QueryBuilder::new(
-          "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
-      );
+        query_builder.push_values(drvs, |mut row, drv| {
+            row.push_bind(&drv.drv_path)
+                .push_bind(&drv.system)
+                .push_bind(&drv.required_system_features)
+                .push_bind(&drv.build_state);
+        });
 
-      query_builder.push_values(drvs, |mut row, drv| {
-          row.push_bind(&drv.drv_path)
-              .push_bind(&drv.system)
-              .push_bind(&drv.required_system_features)
-              .push_bind(&drv.build_state);
-      });
-
-      query_builder.build().execute(&mut *tx).await?;
-      info!("Inserted {} new drvs", drvs.len());
+        query_builder.build().execute(&mut *tx).await?;
+        info!("Inserted {} new drvs", drvs.len());
     }
 
     if !drv_refs.is_empty() {
-      let mut reference_builder: QueryBuilder<Sqlite> =
-          QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
-      reference_builder.push_values(drv_refs.iter(), |mut sep, (referrer, reference)| {
-          sep.push_bind(referrer).push_bind(reference);
-      });
+        let mut reference_builder: QueryBuilder<Sqlite> =
+            QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
+        reference_builder.push_values(drv_refs.iter(), |mut sep, (referrer, reference)| {
+            sep.push_bind(referrer).push_bind(reference);
+        });
 
-      reference_builder.build().execute(&mut *tx).await?;
+        reference_builder.build().execute(&mut *tx).await?;
     }
 
     tx.commit().await?;

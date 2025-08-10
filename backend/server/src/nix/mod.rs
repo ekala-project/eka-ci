@@ -2,7 +2,7 @@ pub mod derivation_show;
 pub mod jobs;
 pub mod nix_eval_jobs;
 
-use crate::db::{model::drv_id::DrvId, model::drv::Drv, DbService};
+use crate::db::{model::drv::Drv, model::drv_id::DrvId, DbService};
 use crate::scheduler::IngressTask;
 use anyhow::Result;
 use std::{collections::HashMap, process::Command};
@@ -83,7 +83,6 @@ impl EvalService {
             .filter(|x| !self.drv_map.contains_key(&x))
             .collect();
 
-
         // resolve drv info in parallel
         // If there's over ~400, we quickly exhaust file handles, so take a slower path
         let mut new_drvs = Vec::new();
@@ -92,17 +91,21 @@ impl EvalService {
 
             for drv in drvs_chunk {
                 let drv_to_fetch = drv.store_path();
-                info_set.spawn(async move  { Drv::fetch_info(&drv_to_fetch).await });
+                info_set.spawn(async move { Drv::fetch_info(&drv_to_fetch).await });
             }
             let fetched_drvs = info_set.join_all().await;
-            let successful_fetches = fetched_drvs.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+            let successful_fetches = fetched_drvs
+                .into_iter()
+                .collect::<anyhow::Result<Vec<_>>>()?;
 
             new_drvs.extend(successful_fetches);
         }
 
         let drv_refs: Vec<(DrvId, DrvId)> = drv_reference_graph(&drv_path)?;
 
-        self.db_service.insert_drvs_and_references(&new_drvs, &drv_refs).await?;
+        self.db_service
+            .insert_drvs_and_references(&new_drvs, &drv_refs)
+            .await?;
 
         for drv in new_drvids {
             self.scheduler_sender
@@ -112,9 +115,7 @@ impl EvalService {
 
         Ok(())
     }
-
 }
-
 
 /// Retreive the requisites of a drv. This is a global list of all direct
 /// and transitive drvs
@@ -172,8 +173,8 @@ fn graph_line_to_drvids(drv_line: &str) -> Result<(DrvId, DrvId)> {
 
 /// This assumes a well-formated string from the output of nix-store --query --graph
 fn graph_str_to_drvid(drv_str: &str) -> Result<DrvId> {
-    use std::str::FromStr;
     use anyhow::bail;
+    use std::str::FromStr;
 
     let mut reference_string: String = drv_str.to_string();
     reference_string.retain(|c| c != '"');
@@ -187,7 +188,7 @@ fn graph_str_to_drvid(drv_str: &str) -> Result<DrvId> {
 /// This uses `nix-store --query --graph` to construct
 /// the whole graph in one invocation
 /// Returns: Vec<(reference, referrer)>, where the referrer consumes (downstream of) a reference
-fn drv_reference_graph(drv_path: &str) -> Result<Vec<(DrvId,DrvId)>> {
+fn drv_reference_graph(drv_path: &str) -> Result<Vec<(DrvId, DrvId)>> {
     let output = Command::new("nix-store")
         .args(["--query", "--graph", drv_path])
         .output()?
@@ -200,7 +201,7 @@ fn drv_reference_graph(drv_path: &str) -> Result<Vec<(DrvId,DrvId)>> {
         // Filtering by " -> " assures we are only grabbing edges
         .filter(|x| x.contains(" -> "))
         .filter_map(|x| graph_line_to_drvids(x).ok())
-        .collect::<Vec<(_,_)>>();
+        .collect::<Vec<(_, _)>>();
 
     debug!("drv_graph: {:?}", drvs);
 

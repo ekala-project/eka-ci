@@ -6,8 +6,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use tracing::{debug, info};
 
 use super::insert;
-use super::model::{drv_id::DrvId, drv::Drv};
 use super::model::{build::DrvBuildMetadata, build_event, drv, ForInsert};
+use super::model::{drv::Drv, drv_id::DrvId};
 
 #[derive(Clone)]
 pub struct DbService {
