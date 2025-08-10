@@ -4,7 +4,7 @@ use crate::db::model::{drv_id, DrvId};
 use sqlx::SqlitePool;
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
@@ -80,6 +80,50 @@ pub async fn insert_drv_graph(
     Ok(())
 }
 
+/// This will insert a vec of <drv, referrence> into
+/// the database. This only creates the reference+referrer relationship
+/// Drvs are assumed to already be populated
+pub async fn insert_drvs_and_references(
+    pool: &Pool<Sqlite>,
+    drvs: &Vec<Drv>,
+    drv_refs: &Vec<(DrvId, DrvId)>,
+) -> anyhow::Result<()> {
+    use sqlx::{QueryBuilder, Sqlite};
+
+    let mut tx = pool.begin().await?;
+
+    if !drvs.is_empty() {
+
+      let mut query_builder = QueryBuilder::new(
+          "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
+      );
+
+      query_builder.push_values(drvs, |mut row, drv| {
+          row.push_bind(&drv.drv_path)
+              .push_bind(&drv.system)
+              .push_bind(&drv.required_system_features)
+              .push_bind(&drv.build_state);
+      });
+
+      query_builder.build().execute(&mut *tx).await?;
+      info!("Inserted {} new drvs", drvs.len());
+    }
+
+    if !drv_refs.is_empty() {
+      let mut reference_builder: QueryBuilder<Sqlite> =
+          QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
+      reference_builder.push_values(drv_refs.iter(), |mut sep, (referrer, reference)| {
+          sep.push_bind(referrer).push_bind(reference);
+      });
+
+      reference_builder.build().execute(&mut *tx).await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(())
+}
+
 /// To avoid two round trips, or multiple subqueries, we assume that the referrer
 /// was recently inserted, thus we know its id. The references will be added
 /// by their drv_path since that was not yet known
@@ -141,25 +185,6 @@ WHERE drv_path = ?2
     .await?;
 
     // TODO: emit build_event in the same transaction
-    Ok(())
-}
-
-async fn insert_drvs(categories: Vec<Drv>, pool: &Pool<Sqlite>) -> anyhow::Result<()> {
-    use sqlx::QueryBuilder;
-
-    let mut query_builder = QueryBuilder::new(
-        "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
-    );
-
-    query_builder.push_values(categories, |mut row, drv| {
-        row.push_bind(drv.drv_path)
-            .push_bind(drv.system)
-            .push_bind(drv.required_system_features)
-            .push_bind(drv.build_state);
-    });
-
-    query_builder.build().execute(pool).await?;
-
     Ok(())
 }
 
@@ -272,7 +297,7 @@ mod tests {
 
         let drvs = vec![drv1, drv2, drv3];
 
-        insert_drvs(drvs, &pool).await?;
+        insert_drvs_and_references(&pool, &drvs, &Vec::new()).await?;
 
         let result = get_derivations_in_state(DrvBuildState::Queued, &pool).await?;
 

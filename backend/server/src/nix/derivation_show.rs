@@ -28,12 +28,20 @@ pub struct DrvInfo {
 
 /// Do `nix derivation show` but filter for the things we care about
 pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
+    use anyhow::bail;
+
     debug!("Fetching derivation information, {:?}", &drv_path);
     let output = Command::new("nix")
         .args(["derivation", "show", drv_path])
         .output()
         .await?
         .stdout;
+    if output.is_empty() {
+        bail!("failed to fetch info for {:?}", drv_path);
+    } else {
+        debug!("Successfully fetched info for {}", drv_path);
+    }
+
     let str = String::from_utf8(output)?;
     let drv_output: DrvOutput = serde_json::from_str(&str)?;
     let drv_info = drv_output

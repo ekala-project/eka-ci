@@ -2,7 +2,7 @@ pub mod derivation_show;
 pub mod jobs;
 pub mod nix_eval_jobs;
 
-use crate::db::{model::drv_id::DrvId, DbService};
+use crate::db::{model::drv_id::DrvId, model::drv::Drv, DbService};
 use crate::scheduler::IngressTask;
 use anyhow::Result;
 use std::{collections::HashMap, process::Command};
@@ -28,7 +28,7 @@ pub struct EvalService {
     // TODO: Eventually this should be an LRU cache
     // This allows for us to memoize visited drvs so we don't have to revisit
     // common drvs (e.g. stdenv)
-    drv_map: HashMap<String, Vec<String>>,
+    drv_map: HashMap<DrvId, Drv>,
 }
 
 impl EvalService {
@@ -73,30 +73,38 @@ impl EvalService {
 
     /// Given a drv, traverse all direct drv dependencies
     async fn traverse_drvs(&mut self, drv_path: &str) -> Result<()> {
+        use tokio::task::JoinSet;
+
         debug!("Entering traverse drvs");
-        if self.drv_map.contains_key(drv_path) || self.db_service.has_drv(drv_path).await? {
-            debug!("Already evaluated {}, skipping....", drv_path);
-            return Ok(());
+        let drvs: Vec<DrvId> = drv_requisites(&drv_path)?;
+        // Check if this drv has been visited in a previous evaluation.
+        let new_drvids: Vec<DrvId> = drvs
+            .into_iter()
+            .filter(|x| !self.drv_map.contains_key(&x))
+            .collect();
+
+
+        // resolve drv info in parallel
+        // If there's over ~400, we quickly exhaust file handles, so take a slower path
+        let mut new_drvs = Vec::new();
+        for drvs_chunk in new_drvids.chunks(300) {
+            let mut info_set: JoinSet<Result<Drv, anyhow::Error>> = JoinSet::new();
+
+            for drv in drvs_chunk {
+                let drv_to_fetch = drv.store_path();
+                info_set.spawn(async move  { Drv::fetch_info(&drv_to_fetch).await });
+            }
+            let fetched_drvs = info_set.join_all().await;
+            let successful_fetches = fetched_drvs.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+
+            new_drvs.extend(successful_fetches);
         }
 
-        // This is used to collect drvs for insertion into the database
-        // We must know all of the drvs before refrencing relationships
-        // So we must complete the traversal, then attempt assertion of
-        // drvs (which are the keys in this case), then can add the references
-        let mut new_drvs: HashMap<DrvId, Vec<DrvId>> = HashMap::new();
+        let drv_refs: Vec<(DrvId, DrvId)> = drv_reference_graph(&drv_path)?;
 
-        debug!("traversing {}", drv_path);
+        self.db_service.insert_drvs_and_references(&new_drvs, &drv_refs).await?;
 
-        // Populate new_drvs with any drvs that haven't been previously
-        // visited
-        self.inner_traverse_drvs(drv_path, &mut new_drvs)?;
-        // Populate DB with drvs and their dependency graph
-        // This is necessary to ensure that we don't progress to builds
-        // which have yet had their dependencies entered into the DB
-        self.db_service.insert_drv_graph(&new_drvs).await?;
-        // Ask scheduler service to determine if it needs to
-        // build a drv
-        for (drv, _) in new_drvs {
+        for drv in new_drvids {
             self.scheduler_sender
                 .send(IngressTask::EvalRequest(drv))
                 .await?;
@@ -105,34 +113,31 @@ impl EvalService {
         Ok(())
     }
 
-    /// To avoid lifetime issues, we do a recursive descent
-    /// instead of appending to an iterator and a loop :(
-    fn inner_traverse_drvs(
-        &mut self,
-        drv_path: &str,
-        new_drvs: &mut HashMap<DrvId, Vec<DrvId>>,
-    ) -> Result<()> {
-        let references = drv_references(drv_path)?;
-        debug!("new drv, traversing {}", &drv_path);
-        self.drv_map
-            .insert(drv_path.to_string(), references.clone());
-        new_drvs.insert(
-            drv_path.try_into()?,
-            references
-                .iter()
-                .map(|s| DrvId::try_from(s.as_str()))
-                .collect::<Result<_, _>>()?,
-        );
+}
 
-        for drv in references.into_iter() {
-            if self.drv_map.contains_key(&drv) {
-                continue;
-            }
-            self.inner_traverse_drvs(&drv, new_drvs)?;
-        }
 
-        Ok(())
-    }
+/// Retreive the requisites of a drv. This is a global list of all direct
+/// and transitive drvs
+fn drv_requisites(drv_path: &str) -> Result<Vec<DrvId>> {
+    use std::str::FromStr;
+
+    let output = Command::new("nix-store")
+        .args(["--query", "--requisites", drv_path])
+        .output()?
+        .stdout;
+    let drv_str = String::from_utf8(output)?;
+
+    let drvs = drv_str
+        .lines()
+        // drv requisites can include "inputSrcs" which are not inputDrvs
+        // but rather files which were added to the nix store through
+        // path literals or `nix-store --add`
+        .filter(|x| x.ends_with(".drv"))
+        .chain(std::iter::once(drv_path))
+        .map(|x| DrvId::from_str(x).unwrap())
+        .collect::<Vec<DrvId>>();
+
+    Ok(drvs)
 }
 
 /// Retreive the direct dependencies of a drv
@@ -155,18 +160,33 @@ fn drv_references(drv_path: &str) -> Result<Vec<String>> {
     Ok(drvs)
 }
 
+fn graph_line_to_drvids(drv_line: &str) -> Result<(DrvId, DrvId)> {
+    let mut line = drv_line.split(" ");
+    let reference: DrvId = graph_str_to_drvid(line.next().unwrap())?;
+    // drop inner "->"
+    line.next().unwrap();
+    let referrer = graph_str_to_drvid(line.next().unwrap())?;
+
+    Ok((reference, referrer))
+}
+
 /// This assumes a well-formated string from the output of nix-store --query --graph
-fn graph_str_to_drvid(drv_str: &str) -> DrvId {
+fn graph_str_to_drvid(drv_str: &str) -> Result<DrvId> {
     use std::str::FromStr;
+    use anyhow::bail;
 
     let mut reference_string: String = drv_str.to_string();
     reference_string.retain(|c| c != '"');
-    DrvId::from_str(&reference_string).unwrap()
+    if !reference_string.ends_with(".drv") {
+        bail!("not a drv");
+    }
+    DrvId::from_str(&reference_string)
 }
 
 /// Retreive the entirity of a drv's reference graph.
 /// This uses `nix-store --query --graph` to construct
 /// the whole graph in one invocation
+/// Returns: Vec<(reference, referrer)>, where the referrer consumes (downstream of) a reference
 fn drv_reference_graph(drv_path: &str) -> Result<Vec<(DrvId,DrvId)>> {
     let output = Command::new("nix-store")
         .args(["--query", "--graph", drv_path])
@@ -179,15 +199,10 @@ fn drv_reference_graph(drv_path: &str) -> Result<Vec<(DrvId,DrvId)>> {
         // The graph includes inputSrcs as well as graphviz node information
         // Filtering by " -> " assures we are only grabbing edges
         .filter(|x| x.contains(" -> "))
-        .map(|x| {
-            let mut line = x.split(" ");
-            let reference: DrvId = graph_str_to_drvid(line.next().unwrap());
-            // drop inner "->"
-            line.next();
-            let referrer = graph_str_to_drvid(line.next().unwrap());
-            return (reference, referrer)
-        })
+        .filter_map(|x| graph_line_to_drvids(x).ok())
         .collect::<Vec<(_,_)>>();
+
+    debug!("drv_graph: {:?}", drvs);
 
     Ok(drvs)
 }
