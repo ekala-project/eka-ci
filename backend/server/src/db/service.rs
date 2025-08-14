@@ -6,8 +6,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use tracing::{debug, info};
 
 use super::insert;
-use super::model::drv_id::DrvId;
 use super::model::{build::DrvBuildMetadata, build_event, drv, ForInsert};
+use super::model::{drv::Drv, drv_id::DrvId};
 
 #[derive(Clone)]
 pub struct DbService {
@@ -64,6 +64,14 @@ impl DbService {
 
     pub async fn drv_referrers(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
         drv::drv_referrers(&self.pool, &drv).await
+    }
+
+    pub async fn insert_drvs_and_references(
+        &self,
+        drvs: &[Drv],
+        drv_refs: &[(DrvId, DrvId)],
+    ) -> anyhow::Result<()> {
+        drv::insert_drvs_and_references(&self.pool, drvs, drv_refs).await
     }
 
     pub async fn insert_drv_graph(
