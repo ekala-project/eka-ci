@@ -80,9 +80,9 @@ pub async fn insert_drv_graph(
     Ok(())
 }
 
-/// This will insert a vec of <drv, referrence> into
-/// the database. This only creates the reference+referrer relationship
-/// Drvs are assumed to already be populated
+/// This will insert a slice of drvs and <reference, referrer> into
+/// the database. The reference relationships assume that the drvs
+/// have been inserted previously, or passed in this call as well
 pub async fn insert_drvs_and_references(
     pool: &Pool<Sqlite>,
     drvs: &[Drv],
