@@ -85,8 +85,8 @@ pub async fn insert_drv_graph(
 /// Drvs are assumed to already be populated
 pub async fn insert_drvs_and_references(
     pool: &Pool<Sqlite>,
-    drvs: &Vec<Drv>,
-    drv_refs: &Vec<(DrvId, DrvId)>,
+    drvs: &[Drv],
+    drv_refs: &[(DrvId, DrvId)],
 ) -> anyhow::Result<()> {
     use sqlx::{QueryBuilder, Sqlite};
 
