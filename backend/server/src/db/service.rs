@@ -68,8 +68,8 @@ impl DbService {
 
     pub async fn insert_drvs_and_references(
         &self,
-        drvs: &Vec<Drv>,
-        drv_refs: &Vec<(DrvId, DrvId)>,
+        drvs: &[Drv],
+        drv_refs: &[(DrvId, DrvId)],
     ) -> anyhow::Result<()> {
         drv::insert_drvs_and_references(&self.pool, drvs, drv_refs).await
     }
