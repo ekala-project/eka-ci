@@ -90,35 +90,55 @@ pub async fn insert_drvs_and_references(
 ) -> anyhow::Result<()> {
     use sqlx::{QueryBuilder, Sqlite};
 
-    let mut tx = pool.begin().await?;
-
     if !drvs.is_empty() {
-        let mut query_builder = QueryBuilder::new(
-            "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
-        );
+        // Ensure we do not exceed SQLite's 32k limit for query variables
+        // 32766 / 4 ~= 8190
+        for drvs_chunk in drvs.chunks(8190) {
+            let mut tx = pool.begin().await?;
+            let mut query_builder = QueryBuilder::new(
+                "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
+            );
 
-        query_builder.push_values(drvs, |mut row, drv| {
-            row.push_bind(&drv.drv_path)
-                .push_bind(&drv.system)
-                .push_bind(&drv.required_system_features)
-                .push_bind(&drv.build_state);
-        });
+            query_builder.push_values(drvs_chunk, |mut row, drv| {
+                row.push_bind(&drv.drv_path)
+                    .push_bind(&drv.system)
+                    .push_bind(&drv.required_system_features)
+                    .push_bind(&drv.build_state);
+            });
 
-        query_builder.build().persistent(false).execute(&mut *tx).await?;
-        info!("Inserted {} new drvs", drvs.len());
+            query_builder
+                .build()
+                // Avoid caching queries which are likely to vary greatly in length
+                .persistent(false)
+                .execute(&mut *tx)
+                .await?;
+            info!("Inserted {} new drvs", drvs.len());
+
+            tx.commit().await?;
+        }
     }
 
     if !drv_refs.is_empty() {
-        let mut reference_builder: QueryBuilder<Sqlite> =
-            QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
-        reference_builder.push_values(drv_refs.iter(), |mut sep, (referrer, reference)| {
-            sep.push_bind(referrer).push_bind(reference);
-        });
+        // Ensure we do not exceed SQLite's 32k limit for query variables
+        // 32766 / 2 ~= 16380
+        for refs_chunk in drv_refs.chunks(16380) {
+            let mut tx = pool.begin().await?;
 
-        reference_builder.build().execute(&mut *tx).await?;
+            let mut reference_builder: QueryBuilder<Sqlite> =
+                QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
+            reference_builder.push_values(refs_chunk, |mut sep, (referrer, reference)| {
+                sep.push_bind(referrer).push_bind(reference);
+            });
+
+            reference_builder
+                .build()
+                // Avoid caching queries which are likely to vary greatly in length
+                .persistent(false)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+        }
     }
-
-    tx.commit().await?;
 
     Ok(())
 }
