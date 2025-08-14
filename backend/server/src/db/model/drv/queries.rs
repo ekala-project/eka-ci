@@ -104,7 +104,7 @@ pub async fn insert_drvs_and_references(
                 .push_bind(&drv.build_state);
         });
 
-        query_builder.build().execute(&mut *tx).await?;
+        query_builder.build().persistent(false).execute(&mut *tx).await?;
         info!("Inserted {} new drvs", drvs.len());
     }
 
