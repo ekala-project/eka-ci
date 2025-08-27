@@ -12,6 +12,9 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+mod remote_builder;
+use remote_builder::{read_nix_machines_file, RemoteBuilder};
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct ConfigCli {
@@ -67,6 +70,7 @@ pub struct Config {
     pub web: ConfigWeb,
     pub unix: ConfigUnix,
     pub db_path: PathBuf,
+    pub remote_builders: Vec<RemoteBuilder>,
 }
 
 #[derive(Debug)]
@@ -98,6 +102,8 @@ impl Config {
             .extract::<ConfigFile>()
             .context("failed to parse config file")?;
 
+        let remote_builders = read_nix_machines_file();
+
         Ok(Config {
             web: ConfigWeb {
                 address: SocketAddrV4::new(
@@ -117,6 +123,9 @@ impl Config {
                 .db_path
                 .or(file.db_path)
                 .unwrap_or_else(|| dirs.get_data_file("sqlite.db")),
+            remote_builders,
         })
     }
 }
+
+
