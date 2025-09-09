@@ -2,10 +2,12 @@ use std::net::{SocketAddr, SocketAddrV4};
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::routing::get;
+use axum::extract::Json;
+use axum::routing::{get, post};
+use octocrab::models::webhook_events::{WebhookEventPayload as WEP, payload};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub struct WebService {
     listener: TcpListener,
@@ -47,7 +49,13 @@ impl WebService {
 }
 
 fn api_routes() -> Router {
-    Router::new().route("/logs/{drv}", get(get_derivation_log))
+    Router::new()
+        .route("/logs/{drv}", get(get_derivation_log))
+        .route("/github/webhook", post(handle_github_webhook))
+}
+
+async fn handle_github_webhook(Json(webhook_payload): Json<WEP>) {
+    crate::github::handle_webhook_payload(webhook_payload).await;
 }
 
 async fn get_derivation_log(axum::extract::Path(drv): axum::extract::Path<String>) -> String {

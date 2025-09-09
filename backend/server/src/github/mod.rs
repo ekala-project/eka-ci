@@ -2,7 +2,10 @@ use anyhow::Context;
 use octocrab::models::Installation;
 use octocrab::{Octocrab, Page};
 use thiserror::Error;
-use tracing::info;
+use tracing::{debug, info};
+
+mod webhook;
+pub use webhook::handle_webhook_payload;
 
 #[derive(Error, Debug)]
 pub enum AppRegistrationError {
@@ -16,7 +19,7 @@ pub enum AppRegistrationError {
     Octocrab(#[from] octocrab::Error),
 }
 
-pub async fn register_app() -> Result<Page<Installation>, AppRegistrationError> {
+pub async fn register_app() -> Result<(Octocrab, Page<Installation>), AppRegistrationError> {
     let app_id = std::env::var("GITHUB_APP_ID")
         .context("failed to locate $GITHUB_APP_ID")?
         .parse::<u64>()?
@@ -31,5 +34,7 @@ pub async fn register_app() -> Result<Page<Installation>, AppRegistrationError> 
 
     info!("Successfully registered as github app");
 
-    Ok(installations)
+    debug!("Installations: {:?}", &installations);
+
+    Ok((octocrab, installations))
 }
