@@ -101,8 +101,8 @@ mod tests {
     // async fn insert_metadata_existing_drv(pool: SqlitePool) -> anyhow::Result<()> {
     //     sqlx::query(
     //         r#"
-// INSERT INTO DrvBuildMetadata (derivation, build_attempt, git_repo, git_commit, build_command)
-// VALUES (?, 1, 'https://github.com/ekala-project/corepkgs', '0000000000000000000000000000000000000000', ?)
+    // INSERT INTO DrvBuildMetadata (derivation, build_attempt, git_repo, git_commit, build_command)
+    // VALUES (?, 1, 'https://github.com/ekala-project/corepkgs', '0000000000000000000000000000000000000000', ?)
     //         "#,
     //     )
     //     .bind(DrvId::dummy())
