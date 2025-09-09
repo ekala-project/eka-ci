@@ -11,9 +11,7 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
     - uses: cachix/install-nix-action@v25
@@ -23,7 +21,12 @@ jobs:
     - name: Run tests
       run: nix develop --command cargo test --verbose
       working-directory: ./backend
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: cachix/install-nix-action@v25
     - name: Run Rust Format
       run: nix develop --command cargo fmt --all --check --verbose
       working-directory: ./backend
-
