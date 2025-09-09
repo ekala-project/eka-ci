@@ -2,7 +2,10 @@ use anyhow::Context;
 use octocrab::models::Installation;
 use octocrab::{Octocrab, Page};
 use thiserror::Error;
-use tracing::info;
+use tracing::{debug, info};
+
+mod webhook;
+pub use webhook::handle_webhook_payload;
 
 #[derive(Error, Debug)]
 pub enum AppRegistrationError {
@@ -30,6 +33,8 @@ pub async fn register_app() -> Result<Page<Installation>, AppRegistrationError> 
     let installations = octocrab.apps().installations().send().await?;
 
     info!("Successfully registered as github app");
+
+    debug!("Installations: {:?}", &installations);
 
     Ok(installations)
 }
