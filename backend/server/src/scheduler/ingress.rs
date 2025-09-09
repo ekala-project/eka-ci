@@ -1,7 +1,6 @@
-use crate::db::model::{build, drv_id, git};
+use crate::db::model::drv_id;
 use crate::db::DbService;
 use crate::scheduler::builder::BuildRequest;
-use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -119,31 +118,31 @@ impl IngressWorker {
     }
 }
 
-/// Since we have to do a lot of construction, make this its own method
-async fn insert_metadata(
-    drv_id: drv_id::DrvId,
-    db_service: &DbService,
-) -> anyhow::Result<build::DrvBuildMetadata> {
-    // TODO: Originating source should be passed. For now, just fill
-    // with fake information
-    let repo = git::GitRepo(gix_url::parse(
-        "https://github.com/ekala-project/fake-ci".into(),
-    )?);
-    let commit = git::GitCommit(gix_hash::ObjectId::from_hex(
-        b"1f5cfe6827dc7956af7da54755717202d14667a0",
-    )?);
-    // Eventually, we will want to be able to re-create the .drv on
-    // a potentially remote store, for now, we just assume that the .drv
-    // exists in the local eval store and have this command be dummy data
-    let command = build::DrvBuildCommand::SingleAttr {
-        exec: "/bin/nix".into(),
-        args: Vec::new(),
-        env: HashMap::new(),
-        file: "/path/to/file.nix".into(),
-        attr: "hello".to_owned(),
-    };
-
-    debug!("Inserting DrvMetadata {:?}", &drv_id);
-    let metadata = build::DrvBuildMetadata::for_insert(drv_id, repo, commit, command);
-    db_service.insert_build(metadata).await
-}
+// Since we have to do a lot of construction, make this its own method
+// async fn insert_metadata(
+//     drv_id: drv_id::DrvId,
+//     db_service: &DbService,
+// ) -> anyhow::Result<build::DrvBuildMetadata> {
+//     // TODO: Originating source should be passed. For now, just fill
+//     // with fake information
+//     let repo = git::GitRepo(gix_url::parse(
+//         "https://github.com/ekala-project/fake-ci".into(),
+//     )?);
+//     let commit = git::GitCommit(gix_hash::ObjectId::from_hex(
+//         b"1f5cfe6827dc7956af7da54755717202d14667a0",
+//     )?);
+//     // Eventually, we will want to be able to re-create the .drv on
+//     // a potentially remote store, for now, we just assume that the .drv
+//     // exists in the local eval store and have this command be dummy data
+//     let command = build::DrvBuildCommand::SingleAttr {
+//         exec: "/bin/nix".into(),
+//         args: Vec::new(),
+//         env: HashMap::new(),
+//         file: "/path/to/file.nix".into(),
+//         attr: "hello".to_owned(),
+//     };
+//
+//     debug!("Inserting DrvMetadata {:?}", &drv_id);
+//     let metadata = build::DrvBuildMetadata::for_insert(drv_id, repo, commit, command);
+//     db_service.insert_build(metadata).await
+// }
