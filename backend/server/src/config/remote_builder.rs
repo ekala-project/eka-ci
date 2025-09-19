@@ -2,6 +2,7 @@ use anyhow::Context;
 use tracing::{info, warn};
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct RemoteBuilder {
     /// E.g. builder@10.0.0.11
     pub uri: String,
