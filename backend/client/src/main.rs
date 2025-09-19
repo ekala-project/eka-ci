@@ -8,6 +8,7 @@ use requests::send_request;
 use shared::dirs::eka_dirs;
 use shared::types as t;
 use shared::types::ClientRequest;
+use std::path::PathBuf;
 use tracing::debug;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -41,6 +42,14 @@ fn main() -> anyhow::Result<()> {
                 .context("failed to send info request to server")?;
         }
         Some(Commands::Status) => {}
+        Some(Commands::Repo(repo_req)) => {
+            let file_path = PathBuf::from(repo_req.file_path).canonicalize()?;
+            let request = t::RepoRequest {
+                file_path: file_path.to_string_lossy().into(),
+            };
+            send_request(&socket, ClientRequest::Repo(request))
+                .context("failed to send info request to server")?;
+        }
         Some(Commands::Build(build_req)) => {
             send_request(&socket, ClientRequest::Build(build_req))
                 .context("failed to send info request to server")?;

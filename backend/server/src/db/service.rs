@@ -62,7 +62,7 @@ impl DbService {
     //}
 
     pub async fn drv_referrers(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
-        drv::drv_referrers(&self.pool, &drv).await
+        drv::drv_referrers(&self.pool, drv).await
     }
 
     pub async fn insert_drvs_and_references(

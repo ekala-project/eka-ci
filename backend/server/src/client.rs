@@ -1,3 +1,4 @@
+use crate::ci::RepoTask;
 use crate::db::DbService;
 use crate::nix::EvalTask;
 use anyhow::{Context, Result};
@@ -22,6 +23,7 @@ pub struct UnixService {
 #[derive(Clone)]
 struct DispatchChannels {
     eval_sender: Sender<EvalTask>,
+    repo_sender: Sender<RepoTask>,
     db_service: DbService,
 }
 
@@ -29,6 +31,7 @@ impl UnixService {
     pub async fn bind_to_path(
         socket_path: &Path,
         eval_sender: Sender<EvalTask>,
+        repo_sender: Sender<RepoTask>,
         db_service: DbService,
     ) -> Result<Self> {
         prepare_path(socket_path)?;
@@ -36,6 +39,7 @@ impl UnixService {
         let listener = UnixListener::bind(socket_path)?;
         let dispatch = DispatchChannels {
             eval_sender,
+            repo_sender,
             db_service,
         };
 
@@ -147,6 +151,15 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             status: t::ServerStatus::Active,
             version: "0.1.0".to_string(),
         }),
+        req::Repo(repo_info) => {
+            let repo_request = RepoTask::Read(repo_info.file_path.into());
+            dispatch
+                .repo_sender
+                .send(repo_request)
+                .await
+                .expect("Failed to send repo task");
+            resp::Ack(true)
+        }
         req::Job(job_info) => {
             let job = crate::nix::EvalJob {
                 file_path: job_info.file_path,
@@ -158,7 +171,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 .await
                 .expect("Eval service is unhealthy");
 
-            resp::Job(t::JobResponse { enqueued: true })
+            resp::Ack(true)
         }
         req::Build(build_info) => {
             let task = EvalTask::TraverseDrv(build_info.drv_path);
@@ -168,7 +181,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 .await
                 .expect("Eval service is unhealthy");
 
-            resp::Build(t::BuildResponse { enqueued: true })
+            resp::Ack(true)
         }
         req::DrvStatus(drv_status_request) => {
             use crate::db::model::drv_id;

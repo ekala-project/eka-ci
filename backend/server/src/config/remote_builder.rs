@@ -2,6 +2,7 @@ use anyhow::Context;
 use tracing::{info, warn};
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct RemoteBuilder {
     /// E.g. builder@10.0.0.11
     pub uri: String,
@@ -29,7 +30,7 @@ pub(crate) fn read_nix_machines_file() -> Vec<RemoteBuilder> {
         return Vec::new();
     }
 
-    let contents = match std::fs::read_to_string(&nix_machines_file) {
+    let contents = match std::fs::read_to_string(nix_machines_file) {
         Err(e) => {
             warn!("Failed to read {:?}, {:?}", &nix_machines_file, e);
             return Vec::new();
@@ -41,15 +42,11 @@ pub(crate) fn read_nix_machines_file() -> Vec<RemoteBuilder> {
 }
 
 fn parse_nix_machine_contents(contents: String) -> Vec<RemoteBuilder> {
-    contents
-        .lines()
-        .into_iter()
-        .flat_map(parse_nix_machines_line)
-        .collect()
+    contents.lines().flat_map(parse_nix_machines_line).collect()
 }
 
 fn parse_nix_machines_line(line: &str) -> anyhow::Result<RemoteBuilder> {
-    let mut items = line.split_whitespace().into_iter();
+    let mut items = line.split_whitespace();
 
     let uri: String = items.next().context("empty line")?.to_string();
     let platforms = parse_many_values(items.next());
@@ -89,7 +86,7 @@ fn parse_nix_machines_line(line: &str) -> anyhow::Result<RemoteBuilder> {
 /// Reads a comma separate list into a list of Strings.
 /// Also accounts for the value not being specified, or using the "-" placeholder
 fn parse_many_values(value: Option<&str>) -> Vec<String> {
-    if value == None {
+    if value.is_none() {
         return Vec::new();
     }
     let inner_value = value.unwrap();
