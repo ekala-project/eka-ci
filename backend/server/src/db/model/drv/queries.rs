@@ -65,7 +65,7 @@ pub async fn insert_drv_graph(
 
     // flatten the map into referrer+reference pairs
     let drv_pairs = drv_graph
-        .into_iter()
+        .iter()
         .filter(|(_, references)| !references.is_empty())
         .flat_map(|(referrer, references)| std::iter::repeat(referrer).zip(references));
 
@@ -198,8 +198,8 @@ SET build_state = ?1
 WHERE drv_path = ?2
     "#,
     )
-    .bind(&build_state)
-    .bind(&drv_id)
+    .bind(build_state)
+    .bind(drv_id)
     .execute(pool)
     .await?;
 
@@ -217,7 +217,7 @@ JOIN DrvRefs ON Drv.drv_path = DrvRefs.reference
 WHERE referrer = ?1
 "#,
     )
-    .bind(&drv)
+    .bind(drv)
     .fetch_all(pool)
     .await?;
 
@@ -233,7 +233,7 @@ FROM DrvRefs
 WHERE reference = ?1
 "#,
     )
-    .bind(&drv)
+    .bind(drv)
     .fetch_all(pool)
     .await?;
 

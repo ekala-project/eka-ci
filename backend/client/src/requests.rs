@@ -48,11 +48,8 @@ fn handle_response(response: ClientResponse) {
         r::Info(info) => {
             print_info(info);
         }
-        r::Build(info) => {
-            println!("Queued Successfully: {}", &info.enqueued);
-        }
-        r::Job(info) => {
-            println!("Queued Successfully: {}", &info.enqueued);
+        r::Ack(was_successful) => {
+            println!("Queued Successfully: {}", &was_successful);
         }
         r::DrvStatus(info) => {
             print_drv_status(info);

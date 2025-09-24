@@ -8,6 +8,7 @@ pub enum ClientRequest {
     Info,
     Build(BuildRequest),
     Job(JobRequest),
+    Repo(RepoRequest),
     DrvStatus(DrvStatusRequest),
 }
 
@@ -28,8 +29,7 @@ pub struct InfoResponse {
 //#[serde(tag = "type")]
 pub enum ClientResponse {
     Info(InfoResponse),
-    Build(BuildResponse),
-    Job(JobResponse),
+    Ack(bool),
     DrvStatus(Option<DrvStatusResponse>),
 }
 
@@ -60,8 +60,7 @@ pub struct JobRequest {
     pub file_path: String,
 }
 
-// TODO: We should probably just have a generic async "event received" response
 #[derive(Serialize, Parser, Deserialize, Debug)]
-pub struct JobResponse {
-    pub enqueued: bool,
+pub struct RepoRequest {
+    pub file_path: String,
 }

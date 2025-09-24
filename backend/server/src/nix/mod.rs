@@ -76,11 +76,11 @@ impl EvalService {
         use tokio::task::JoinSet;
 
         debug!("Entering traverse drvs");
-        let drvs: Vec<DrvId> = drv_requisites(&drv_path)?;
+        let drvs: Vec<DrvId> = drv_requisites(drv_path)?;
         // Check if this drv has been visited in a previous evaluation.
         let new_drvids: Vec<DrvId> = drvs
             .into_iter()
-            .filter(|x| !self.drv_map.contains_key(&x))
+            .filter(|x| !self.drv_map.contains_key(x))
             .collect();
 
         // resolve drv info in parallel
@@ -101,7 +101,7 @@ impl EvalService {
             new_drvs.extend(successful_fetches);
         }
 
-        let drv_refs: Vec<(DrvId, DrvId)> = drv_reference_graph(&drv_path)?;
+        let drv_refs: Vec<(DrvId, DrvId)> = drv_reference_graph(drv_path)?;
 
         self.db_service
             .insert_drvs_and_references(&new_drvs, &drv_refs)

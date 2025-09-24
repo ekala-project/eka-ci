@@ -70,6 +70,7 @@ pub struct Config {
     pub web: ConfigWeb,
     pub unix: ConfigUnix,
     pub db_path: PathBuf,
+    #[allow(dead_code)]
     pub remote_builders: Vec<RemoteBuilder>,
 }
 

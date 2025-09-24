@@ -24,27 +24,25 @@ impl super::EvalService {
             let stdout_reader = BufReader::new(stdout);
             let stdout_lines = stdout_reader.lines();
 
-            for line in stdout_lines {
-                if let Ok(input) = line {
-                    let output = serde_json::from_str::<NixEvalItem>(&input);
-                    if let Err(e) = output {
-                        warn!(
-                            "Encountered error when serializing nix-eval-jobs output: {:?}",
-                            e
-                        );
-                        continue;
-                    };
+            for line in stdout_lines.flatten() {
+                let output = serde_json::from_str::<NixEvalItem>(&line);
+                if let Err(e) = output {
+                    warn!(
+                        "Encountered error when serializing nix-eval-jobs output: {:?}",
+                        e
+                    );
+                    continue;
+                };
 
-                    match output.unwrap() {
-                        NixEvalItem::Drv(drv) => {
-                            if let Err(e) = self.traverse_drvs(&drv.drv_path).await {
-                                warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
-                            };
-                        }
-                        NixEvalItem::Error(e) => {
-                            // TODO: Collect evaluation errors, these are still very useful
-                            debug!("error: {:?}", e);
-                        }
+                match output.unwrap() {
+                    NixEvalItem::Drv(drv) => {
+                        if let Err(e) = self.traverse_drvs(&drv.drv_path).await {
+                            warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
+                        };
+                    }
+                    NixEvalItem::Error(e) => {
+                        // TODO: Collect evaluation errors, these are still very useful
+                        debug!("error: {:?}", e);
                     }
                 }
             }

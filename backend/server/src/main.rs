@@ -1,3 +1,4 @@
+mod ci;
 mod client;
 mod config;
 mod db;
@@ -42,6 +43,9 @@ async fn main() -> anyhow::Result<()> {
 
     let db_pool = db_service.pool.clone();
 
+    let repo_service = ci::RepoReader::new()?;
+    let repo_sender = repo_service.repo_request_sender();
+
     let scheduler_service = scheduler::SchedulerService::new(db_service.clone())?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
@@ -51,10 +55,14 @@ async fn main() -> anyhow::Result<()> {
         scheduler_service.ingress_request_sender(),
     );
 
-    let unix_service =
-        UnixService::bind_to_path(&config.unix.socket_path, eval_sender, db_service.clone())
-            .await
-            .context("failed to start unix service")?;
+    let unix_service = UnixService::bind_to_path(
+        &config.unix.socket_path,
+        eval_sender.clone(),
+        repo_sender.clone(),
+        db_service.clone(),
+    )
+    .await
+    .context("failed to start unix service")?;
 
     let web_service = WebService::bind_to_address(&config.web.address)
         .await
@@ -95,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
+    let repo_handle = tokio::spawn(repo_service.run(eval_sender, cancellation_token.clone()));
     let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
     let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
@@ -115,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
     cancellation_token.cancel();
 
     // Wait for the services to shutdown
-    _ = tokio::join!(eval_handle, unix_handle, web_handle);
+    _ = tokio::join!(eval_handle, unix_handle, web_handle, repo_handle);
 
     db_pool.close().await;
 

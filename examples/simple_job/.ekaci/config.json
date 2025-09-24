@@ -1,0 +1,7 @@
+{
+  "jobs": {
+    "stdenv": {
+      "file": "/stdenv.nix"
+    }
+  }
+}
