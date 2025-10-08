@@ -12,7 +12,7 @@ use anyhow::Context;
 use client::UnixService;
 use config::Config;
 use tokio::{
-    signal::unix::{signal, SignalKind},
+    signal::unix::{SignalKind, signal},
     sync::mpsc::channel,
 };
 use tokio_util::sync::CancellationToken;

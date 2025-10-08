@@ -1,0 +1,43 @@
+# See https://rust-lang.github.io/rustfmt/ for configuration options
+
+# Use the 2021 edition of Rust
+edition                  = "2021"
+# Enforce Unix-style line endings
+newline_style            = "unix"
+# Use shorthand for struct field initialization
+use_field_init_shorthand = true
+# Use `?` instead of `try!`
+use_try_shorthand        = true
+
+# Enable unstable features for more opinionated formatting.
+# This allows for features like macro formatting and import grouping.
+unstable_features = true
+
+# Set the maximum line width for comments
+comment_width               = 100
+# Condense wildcard suffixes in imports (e.g., `use std::io::{self, Read};`)
+condense_wildcard_suffixes  = true
+# Error if a line exceeds the maximum width
+error_on_line_overflow      = true
+# Format code snippets in documentation comments
+format_code_in_doc_comments = true
+# Format macro bodies
+format_macro_bodies         = true
+# Format macro matchers
+format_macro_matchers       = true
+# Format string literals
+format_strings              = true
+# Group imports into three sections: `std`, external crates, and local modules
+group_imports               = "StdExternalCrate"
+# Control the granularity of imports
+imports_granularity         = "Module"
+# Add a trailing comma to match blocks
+match_block_trailing_comma  = true
+# Normalize documentation attributes
+normalize_doc_attributes    = true
+# Reorder `impl` items
+reorder_impl_items          = true
+# Use the 2024 style edition for the latest formatting rules
+style_edition               = "2024"
+# Wrap comments to the specified width
+wrap_comments               = true

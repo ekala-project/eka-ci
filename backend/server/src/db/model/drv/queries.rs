@@ -1,6 +1,6 @@
 use super::Drv;
 use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::{drv_id, DrvId};
+use crate::db::model::{DrvId, drv_id};
 use sqlx::SqlitePool;
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;

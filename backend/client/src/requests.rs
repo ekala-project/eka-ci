@@ -47,13 +47,13 @@ fn handle_response(response: ClientResponse) {
     match response {
         r::Info(info) => {
             print_info(info);
-        }
+        },
         r::Ack(was_successful) => {
             println!("Queued Successfully: {}", &was_successful);
-        }
+        },
         r::DrvStatus(info) => {
             print_drv_status(info);
-        }
+        },
     }
 }
 
@@ -68,6 +68,6 @@ fn print_drv_status(maybe_drv: Option<t::DrvStatusResponse>) {
         Some(drv) => {
             println!("Drv: {:?}", &drv.drv_path);
             println!("Status: {:?}", drv.status);
-        }
+        },
     }
 }

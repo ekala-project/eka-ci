@@ -8,7 +8,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{unix::SocketAddr, UnixListener, UnixStream},
+    net::{UnixListener, UnixStream, unix::SocketAddr},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -77,7 +77,7 @@ impl UnixService {
                     }
 
                     continue;
-                }
+                },
             };
 
             let new_dispatch = self.dispatch.clone();
@@ -159,7 +159,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 .await
                 .expect("Failed to send repo task");
             resp::Ack(true)
-        }
+        },
         req::Job(job_info) => {
             let job = crate::nix::EvalJob {
                 file_path: job_info.file_path,
@@ -172,7 +172,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 .expect("Eval service is unhealthy");
 
             resp::Ack(true)
-        }
+        },
         req::Build(build_info) => {
             let task = EvalTask::TraverseDrv(build_info.drv_path);
             dispatch
@@ -182,7 +182,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 .expect("Eval service is unhealthy");
 
             resp::Ack(true)
-        }
+        },
         req::DrvStatus(drv_status_request) => {
             use crate::db::model::drv_id;
             use std::str::FromStr;
@@ -198,6 +198,6 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
 
             // TODO: Send actual error
             resp::DrvStatus(None)
-        }
+        },
     }
 }

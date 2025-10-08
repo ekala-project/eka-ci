@@ -94,7 +94,7 @@ async fn handle_repo_task(
                     eval_sender.send(EvalTask::Job(eval_job)).await?;
                 }
             }
-        }
+        },
     }
 
     Ok(())

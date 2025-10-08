@@ -34,7 +34,7 @@ pub(crate) fn read_nix_machines_file() -> Vec<RemoteBuilder> {
         Err(e) => {
             warn!("Failed to read {:?}, {:?}", &nix_machines_file, e);
             return Vec::new();
-        }
+        },
         Ok(s) => s,
     };
 
@@ -56,7 +56,7 @@ fn parse_nix_machines_line(line: &str) -> anyhow::Result<RemoteBuilder> {
             let mut x = std::path::PathBuf::new();
             x.push(s);
             Some(x)
-        }
+        },
         _ => None,
     };
     let max_jobs = items

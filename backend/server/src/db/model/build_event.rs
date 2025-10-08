@@ -1,6 +1,6 @@
+use super::ForInsert;
 use super::build::DrvBuildId;
 use super::drv_id::DrvId;
-use super::ForInsert;
 use crate::db::model::Drv;
 use sqlx::FromRow;
 use sqlx::SqlitePool;
@@ -171,19 +171,19 @@ mod state {
                 DrvBuildState::TransitiveFailure => Self::TransitiveFailure,
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::OutOfMemory) => {
                     Self::InterruptedOutOfMemory
-                }
+                },
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout) => {
                     Self::InterruptedTimeout
-                }
+                },
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::Cancelled) => {
                     Self::InterruptedCancelled
-                }
+                },
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath) => {
                     Self::InterruptedProcessDeath
-                }
+                },
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::SchedulerDeath) => {
                     Self::InterruptedSchedulerDeath
-                }
+                },
                 DrvBuildState::Blocked => Self::Blocked,
             }
         }
@@ -200,19 +200,19 @@ mod state {
                 DrvBuildStateRepr::TransitiveFailure => Self::TransitiveFailure,
                 DrvBuildStateRepr::InterruptedOutOfMemory => {
                     Self::Interrupted(DrvBuildInterruptionKind::OutOfMemory)
-                }
+                },
                 DrvBuildStateRepr::InterruptedTimeout => {
                     Self::Interrupted(DrvBuildInterruptionKind::Timeout)
-                }
+                },
                 DrvBuildStateRepr::InterruptedCancelled => {
                     Self::Interrupted(DrvBuildInterruptionKind::Cancelled)
-                }
+                },
                 DrvBuildStateRepr::InterruptedProcessDeath => {
                     Self::Interrupted(DrvBuildInterruptionKind::ProcessDeath)
-                }
+                },
                 DrvBuildStateRepr::InterruptedSchedulerDeath => {
                     Self::Interrupted(DrvBuildInterruptionKind::SchedulerDeath)
-                }
+                },
                 DrvBuildStateRepr::Blocked => Self::Blocked,
             }
         }

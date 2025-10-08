@@ -39,11 +39,11 @@ impl super::EvalService {
                         if let Err(e) = self.traverse_drvs(&drv.drv_path).await {
                             warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
                         };
-                    }
+                    },
                     NixEvalItem::Error(e) => {
                         // TODO: Collect evaluation errors, these are still very useful
                         debug!("error: {:?}", e);
-                    }
+                    },
                 }
             }
         }
