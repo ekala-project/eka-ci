@@ -40,8 +40,8 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Info) => {
             send_request(&socket, ClientRequest::Info)
                 .context("failed to send info request to server")?;
-        }
-        Some(Commands::Status) => {}
+        },
+        Some(Commands::Status) => {},
         Some(Commands::Repo(repo_req)) => {
             let file_path = PathBuf::from(repo_req.file_path).canonicalize()?;
             let request = t::RepoRequest {
@@ -49,15 +49,15 @@ fn main() -> anyhow::Result<()> {
             };
             send_request(&socket, ClientRequest::Repo(request))
                 .context("failed to send info request to server")?;
-        }
+        },
         Some(Commands::Build(build_req)) => {
             send_request(&socket, ClientRequest::Build(build_req))
                 .context("failed to send info request to server")?;
-        }
+        },
         Some(Commands::Drv(DrvCommands::Info(drv_status_request))) => {
             send_request(&socket, ClientRequest::DrvStatus(drv_status_request))
                 .context("failed to send info request to server")?;
-        }
+        },
         Some(Commands::Job(req)) => {
             let abs_file_path = std::fs::canonicalize(req.file_path)?
                 .as_path()
@@ -70,8 +70,8 @@ fn main() -> anyhow::Result<()> {
             debug!("Requesting job eval: {:?}", &abs_req);
             send_request(&socket, ClientRequest::Job(abs_req))
                 .context("failed to send info request to server")?;
-        }
-        None => {}
+        },
+        None => {},
     }
 
     Ok(())

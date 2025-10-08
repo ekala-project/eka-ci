@@ -5,7 +5,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use tracing::{debug, info};
 
 use super::insert;
-use super::model::{build_event, drv, ForInsert};
+use super::model::{ForInsert, build_event, drv};
 use super::model::{drv::Drv, drv_id::DrvId};
 
 #[derive(Clone)]

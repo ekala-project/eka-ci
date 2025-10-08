@@ -6,14 +6,14 @@ use std::{
 use anyhow::Context;
 use clap::Parser;
 use figment::{
-    providers::{Env, Format, Serialized, Toml},
     Figment,
+    providers::{Env, Format, Serialized, Toml},
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 mod remote_builder;
-use remote_builder::{read_nix_machines_file, RemoteBuilder};
+use remote_builder::{RemoteBuilder, read_nix_machines_file};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

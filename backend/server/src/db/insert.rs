@@ -1,6 +1,6 @@
 use sqlx::SqlitePool;
 
-use super::model::{build_event::DrvBuildEvent, ForInsert};
+use super::model::{ForInsert, build_event::DrvBuildEvent};
 
 // Althought this isn't currently being used, eventually we
 // should emit when a build progresses

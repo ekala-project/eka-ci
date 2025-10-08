@@ -1,5 +1,5 @@
-use crate::db::model::drv_id;
 use crate::db::DbService;
+use crate::db::model::drv_id;
 use crate::scheduler::builder::BuildRequest;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;

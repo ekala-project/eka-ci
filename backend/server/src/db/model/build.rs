@@ -11,7 +11,7 @@
 use std::{borrow::Cow, collections::HashMap, num::NonZeroU32, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sqlx::{encode::IsNull, sqlite::SqliteArgumentValue, Decode, Encode, FromRow, Sqlite, Type};
+use sqlx::{Decode, Encode, FromRow, Sqlite, Type, encode::IsNull, sqlite::SqliteArgumentValue};
 
 use crate::db::model::git::{GitCommit, GitRepo};
 

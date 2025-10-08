@@ -100,7 +100,7 @@ impl TryFrom<&str> for DrvId {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         // enforce that derivation identifiers have a `drv` extension
         match value.rsplit_once('.') {
-            Some((_, "drv")) => {} // all is well
+            Some((_, "drv")) => {}, // all is well
             _ => return Err(InvalidDrvId),
         };
 
@@ -109,7 +109,7 @@ impl TryFrom<&str> for DrvId {
 
         // enforce that derivation identifiers match the `hash-name` pattern
         match id.split_once('-') {
-            Some((hash, _)) if hash.len() == 32 => {} // all is well
+            Some((hash, _)) if hash.len() == 32 => {}, // all is well
             _ => return Err(InvalidDrvId),
         }
 

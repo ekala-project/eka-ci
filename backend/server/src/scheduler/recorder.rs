@@ -1,5 +1,5 @@
-use crate::db::model::{build, build_event, drv_id};
 use crate::db::DbService;
+use crate::db::model::{build, build_event, drv_id};
 use crate::scheduler::ingress::IngressTask;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -78,9 +78,9 @@ impl RecorderWorker {
     }
 
     async fn handle_recorder_request(&self, task: RecorderTask) -> anyhow::Result<()> {
-        use build_event::*;
         use DrvBuildResult as DBR;
         use DrvBuildState as DBS;
+        use build_event::*;
 
         let drv = task.derivation.clone();
         let build_id = build::DrvBuildId {
@@ -109,7 +109,7 @@ impl RecorderWorker {
                     let task = IngressTask::CheckBuildable(referrer);
                     self.ingress_sender.send(task).await?;
                 }
-            }
+            },
             DBS::Completed(DBR::Failure) => {
                 // TODO: update status as failure, mark all downstream drvs as
                 // dependency failure, and add this drv as cause
@@ -124,8 +124,8 @@ impl RecorderWorker {
                 //    build_event::DrvBuildEvent::for_insert(build_id, DBS::Completed(DBR::Failure));
                 //self.db_service.new_drv_build_event(event).await?;
                 // TODO: all downstream packages should be set to be a transitiveFailure
-            }
-            _ => {}
+            },
+            _ => {},
         }
 
         Ok(())

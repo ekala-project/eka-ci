@@ -1,5 +1,5 @@
-use crate::db::model::{build::DrvBuildId, build_event, drv_id::DrvId};
 use crate::db::DbService;
+use crate::db::model::{build::DrvBuildId, build_event, drv_id::DrvId};
 use crate::scheduler::recorder::RecorderTask;
 use std::process::Output;
 use tokio::process::Command;
@@ -56,13 +56,13 @@ async fn poll_for_builds(
             match res {
                 Ok(_) => {
                     debug!("The build attempt for {:?} has completed", &drv_string.0);
-                }
+                },
                 Err(e) => {
                     debug!(
                         "The build attempt for {:?} has failed with: {}",
                         &drv_string.0, e
                     );
-                }
+                },
             }
         }
     }
@@ -112,13 +112,13 @@ async fn perform_build(drv: &DrvId) -> build_event::DrvBuildState {
                 debug!("Build failed for {:?}", drv_path);
                 DrvBuildState::Completed(DrvBuildResult::Failure)
             }
-        }
+        },
 
         // Err doesn't denote process failure, rather process construction
         Err(e) => {
             warn!("Failed to build {:?}, encountered error: {:?}", drv_path, e);
             DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath)
-        }
+        },
     }
 }
 

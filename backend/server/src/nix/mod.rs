@@ -2,7 +2,7 @@ pub mod derivation_show;
 pub mod jobs;
 pub mod nix_eval_jobs;
 
-use crate::db::{model::drv::Drv, model::drv_id::DrvId, DbService};
+use crate::db::{DbService, model::drv::Drv, model::drv_id::DrvId};
 use crate::scheduler::IngressTask;
 use anyhow::Result;
 use std::{collections::HashMap, process::Command};
@@ -55,7 +55,7 @@ impl EvalService {
                 None => {
                     warn!("Eval receiver channel closed, shutting down");
                     break;
-                }
+                },
             };
 
             let result = match task {

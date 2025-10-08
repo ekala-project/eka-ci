@@ -1,5 +1,5 @@
-use crate::db::model::build_event::DrvBuildState;
 use crate::db::model::DrvId;
+use crate::db::model::build_event::DrvBuildState;
 use sqlx::FromRow;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
