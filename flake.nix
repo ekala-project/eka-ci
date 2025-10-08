@@ -4,6 +4,7 @@
   inputs = {
     utils.url = "github:numtide/flake-utils";
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    treefmt-nix.url = "github:numtide/treefmt-nix";
   };
 
   outputs =
@@ -11,6 +12,7 @@
       self,
       nixpkgs,
       utils,
+      treefmt-nix,
     }:
     let
       localOverlay = import ./nix/overlay.nix;
@@ -29,8 +31,16 @@
 
       packages.default = legacyPackages.eka-ci;
       devShells.default = legacyPackages.dev-shell;
-      formatter = legacyPackages.nixfmt-rfc-style;
       checks.module = import ./nix/module-test.nix self legacyPackages;
+      formatter =
+        let
+          fmt = treefmt-nix.lib.evalModule legacyPackages {
+            programs.rustfmt.enable = true;
+            programs.elm-format.enable = true;
+            programs.nixfmt.enable = true;
+          };
+        in
+        fmt.config.build.wrapper;
     })
     // {
       overlays.default = localOverlay;
