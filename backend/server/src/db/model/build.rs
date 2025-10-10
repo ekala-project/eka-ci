@@ -8,15 +8,19 @@
 //!
 //! During the build process several [`DrvBuildEvent`] entries are inserted into the database. The
 //! latest of these entries is the current build status.
-use std::{borrow::Cow, collections::HashMap, num::NonZeroU32, path::PathBuf};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::num::NonZeroU32;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Decode, Encode, FromRow, Sqlite, Type, encode::IsNull, sqlite::SqliteArgumentValue};
-
-use crate::db::model::git::{GitCommit, GitRepo};
+use sqlx::encode::IsNull;
+use sqlx::sqlite::SqliteArgumentValue;
+use sqlx::{Decode, Encode, FromRow, Sqlite, Type};
 
 use super::ForInsert;
 use crate::db::model::drv_id::DrvId;
+use crate::db::model::git::{GitCommit, GitRepo};
 
 /// Unique identifier for a derivation build attempt.
 ///
@@ -35,8 +39,8 @@ pub struct DrvBuildId {
     /// trying to build the same derivation again. If it failed once, it will always fail.
     ///
     /// This counter is intended for cases in which the derivation build was interrupted due to
-    /// external factors (see [`DrvBuildState::Interrupted`]). In these situations it may make sense
-    /// to reattempt the build (depending on the interruption kind).
+    /// external factors (see [`DrvBuildState::Interrupted`]). In these situations it may make
+    /// sense to reattempt the build (depending on the interruption kind).
     pub build_attempt: NonZeroU32,
 }
 

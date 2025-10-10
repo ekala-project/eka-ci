@@ -1,6 +1,7 @@
 use sqlx::SqlitePool;
 
-use super::model::{ForInsert, build_event::DrvBuildEvent};
+use super::model::ForInsert;
+use super::model::build_event::DrvBuildEvent;
 
 // Althought this isn't currently being used, eventually we
 // should emit when a build progresses
@@ -62,13 +63,10 @@ RETURNING derivation, build_attempt, state, timestamp
 mod tests {
     use std::num::NonZeroU32;
 
-    use crate::db::model::{
-        build::DrvBuildId,
-        build_event::{DrvBuildResult, DrvBuildState},
-        drv_id::DrvId,
-    };
-
     use super::*;
+    use crate::db::model::build::DrvBuildId;
+    use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
+    use crate::db::model::drv_id::DrvId;
 
     // #[sqlx::test(migrations = "./sql/migrations")]
     // async fn insert_metadata_new_drv(pool: SqlitePool) -> anyhow::Result<()> {

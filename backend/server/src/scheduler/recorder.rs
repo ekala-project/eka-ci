@@ -1,9 +1,10 @@
-use crate::db::DbService;
-use crate::db::model::{build, build_event, drv_id};
-use crate::scheduler::ingress::IngressTask;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
+
+use crate::db::DbService;
+use crate::db::model::{build, build_event, drv_id};
+use crate::scheduler::ingress::IngressTask;
 
 #[derive(Debug, Clone)]
 pub struct RecorderTask {
@@ -13,7 +14,6 @@ pub struct RecorderTask {
 
 /// This services records the event of a build. Depending on the build result,
 /// this service may also enqueue new ingress requests.
-///
 pub struct RecorderService {
     db_service: DbService,
     recorder_receiver: mpsc::Receiver<RecorderTask>,
@@ -78,9 +78,8 @@ impl RecorderWorker {
     }
 
     async fn handle_recorder_request(&self, task: RecorderTask) -> anyhow::Result<()> {
-        use DrvBuildResult as DBR;
-        use DrvBuildState as DBS;
         use build_event::*;
+        use {DrvBuildResult as DBR, DrvBuildState as DBS};
 
         let drv = task.derivation.clone();
         let build_id = build::DrvBuildId {
@@ -99,8 +98,9 @@ impl RecorderWorker {
                     .update_drv_status(&drv, &task.result)
                     .await?;
                 //let event =
-                //    build_event::DrvBuildEvent::for_insert(build_id, DBS::Completed(DBR::Success));
-                //self.db_service.new_drv_build_event(event).await?;
+                //    build_event::DrvBuildEvent::for_insert(build_id,
+                // DBS::Completed(DBR::Success)); self.db_service.
+                // new_drv_build_event(event).await?;
 
                 // Ask ingress service to check if all downstream
                 // drvs are now buildable
@@ -121,9 +121,10 @@ impl RecorderWorker {
                     .update_drv_status(&drv, &task.result)
                     .await?;
                 //let event =
-                //    build_event::DrvBuildEvent::for_insert(build_id, DBS::Completed(DBR::Failure));
-                //self.db_service.new_drv_build_event(event).await?;
-                // TODO: all downstream packages should be set to be a transitiveFailure
+                //    build_event::DrvBuildEvent::for_insert(build_id,
+                // DBS::Completed(DBR::Failure)); self.db_service.
+                // new_drv_build_event(event).await?; TODO: all downstream packages
+                // should be set to be a transitiveFailure
             },
             _ => {},
         }

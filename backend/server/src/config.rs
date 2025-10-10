@@ -1,14 +1,10 @@
-use std::{
-    net::{Ipv4Addr, SocketAddrV4},
-    path::PathBuf,
-};
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::Parser;
-use figment::{
-    Figment,
-    providers::{Env, Format, Serialized, Toml},
-};
+use figment::Figment;
+use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 

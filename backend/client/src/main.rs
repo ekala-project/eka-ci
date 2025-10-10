@@ -1,6 +1,8 @@
 mod cli;
 mod requests;
 
+use std::path::PathBuf;
+
 use anyhow::Context;
 use clap::Parser;
 use cli::{Commands, DrvCommands};
@@ -8,7 +10,6 @@ use requests::send_request;
 use shared::dirs::eka_dirs;
 use shared::types as t;
 use shared::types::ClientRequest;
-use std::path::PathBuf;
 use tracing::debug;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;

@@ -1,11 +1,15 @@
-use crate::db::DbService;
-use crate::db::model::{build::DrvBuildId, build_event, drv_id::DrvId};
-use crate::scheduler::recorder::RecorderTask;
 use std::process::Output;
+
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
+
+use crate::db::DbService;
+use crate::db::model::build::DrvBuildId;
+use crate::db::model::build_event;
+use crate::db::model::drv_id::DrvId;
+use crate::scheduler::recorder::RecorderTask;
 
 pub struct BuildRequest(pub DrvId);
 

@@ -1,9 +1,10 @@
-use anyhow::Context;
-use shared::types as t;
-use shared::types::{ClientRequest, ClientResponse};
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+
+use anyhow::Context;
+use shared::types as t;
+use shared::types::{ClientRequest, ClientResponse};
 use tracing::debug;
 
 pub fn send_request(socket: &std::path::Path, request: ClientRequest) -> anyhow::Result<()> {

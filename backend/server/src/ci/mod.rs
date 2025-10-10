@@ -1,11 +1,13 @@
 mod config;
 
-use crate::nix::{EvalJob, EvalTask};
 use std::path::PathBuf;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+
+use crate::nix::{EvalJob, EvalTask};
 
 #[derive(Debug, Clone)]
 pub enum RepoTask {
@@ -140,9 +142,9 @@ mod tests {
     //     let file_path_to_config = PathBuf::from("/foo/.ekaci/config.json");
     //     let file_path_in_config = PathBuf::from("../foo.nix");
 
-    //     let resolved_path = resolve_file_path(repo_root, file_path_to_config, file_path_in_config).unwrap();
-    //     assert_eq!(resolved_path, PathBuf::from("/foo/foo.nix"));
-    // }
+    //     let resolved_path = resolve_file_path(repo_root, file_path_to_config,
+    // file_path_in_config).unwrap();     assert_eq!(resolved_path,
+    // PathBuf::from("/foo/foo.nix")); }
 
     #[test]
     fn test_absolute_file_resolve() {

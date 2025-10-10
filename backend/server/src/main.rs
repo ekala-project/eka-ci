@@ -7,18 +7,18 @@ mod nix;
 mod scheduler;
 mod web;
 
-use crate::nix::EvalTask;
 use anyhow::Context;
 use client::UnixService;
 use config::Config;
-use tokio::{
-    signal::unix::{SignalKind, signal},
-    sync::mpsc::channel,
-};
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, level_filters::LevelFilter, warn};
+use tracing::level_filters::LevelFilter;
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
+
+use crate::nix::EvalTask;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

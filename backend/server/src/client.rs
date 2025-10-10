@@ -1,17 +1,18 @@
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use shared::types::{ClientRequest, ClientResponse, DrvStatusResponse};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::unix::SocketAddr;
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::mpsc::Sender;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
+
 use crate::ci::RepoTask;
 use crate::db::DbService;
 use crate::nix::EvalTask;
-use anyhow::{Context, Result};
-use shared::types::{ClientRequest, ClientResponse, DrvStatusResponse};
-use std::path::Path;
-use tokio::sync::mpsc::Sender;
-use tokio::task::JoinSet;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream, unix::SocketAddr},
-};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
 
 pub struct UnixService {
     listener: UnixListener,
@@ -143,8 +144,7 @@ async fn handle_client(mut stream: UnixStream, dispatch: DispatchChannels) -> Re
 
 async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> ClientResponse {
     use shared::types as t;
-    use shared::types::ClientRequest as req;
-    use shared::types::ClientResponse as resp;
+    use shared::types::{ClientRequest as req, ClientResponse as resp};
 
     match request {
         req::Info => resp::Info(t::InfoResponse {
@@ -184,8 +184,9 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             resp::Ack(true)
         },
         req::DrvStatus(drv_status_request) => {
-            use crate::db::model::drv_id;
             use std::str::FromStr;
+
+            use crate::db::model::drv_id;
 
             if let Ok(drv_id) = drv_id::DrvId::from_str(&drv_status_request.drv_path) {
                 let maybe_drv = dispatch.db_service.get_drv(&drv_id).await.unwrap();

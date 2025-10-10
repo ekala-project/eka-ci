@@ -3,7 +3,9 @@
 use std::borrow::Cow;
 
 use bstr::ByteSlice;
-use sqlx::{Decode, Encode, Sqlite, Type, encode::IsNull, sqlite::SqliteArgumentValue};
+use sqlx::encode::IsNull;
+use sqlx::sqlite::SqliteArgumentValue;
+use sqlx::{Decode, Encode, Sqlite, Type};
 
 /// Wrapper around [`gix_url::Url`] that can be encoded and decoded from a SQlite database.
 ///

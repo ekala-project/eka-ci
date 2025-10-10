@@ -1,10 +1,11 @@
+use std::collections::HashMap;
+
+use sqlx::{Pool, Sqlite, SqlitePool};
+use tracing::{debug, info};
+
 use super::Drv;
 use crate::db::model::build_event::DrvBuildState;
 use crate::db::model::{DrvId, drv_id};
-use sqlx::SqlitePool;
-use sqlx::{Pool, Sqlite};
-use std::collections::HashMap;
-use tracing::{debug, info};
 
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
@@ -260,10 +261,11 @@ WHERE build_state = ?
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
-    use super::*;
     use anyhow::bail;
     use sqlx::SqlitePool;
+
+    use super::super::*;
+    use super::*;
 
     #[sqlx::test(migrations = "./sql/migrations")]
     async fn get_latest_state(pool: SqlitePool) -> anyhow::Result<()> {
