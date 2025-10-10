@@ -1,14 +1,14 @@
-use crate::db::DbService;
-use crate::db::model::drv_id;
-use crate::scheduler::builder::BuildRequest;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use crate::db::DbService;
+use crate::db::model::drv_id;
+use crate::scheduler::builder::BuildRequest;
+
 /// This acts as the service which filters incoming drv build requests
 /// and determines if the drv is "buildable", already successful,
 /// already failed, has a dependency failure, otherwise it will mark it as queued.
-///
 pub struct IngressService {
     db_service: DbService,
     request_receiver: mpsc::Receiver<IngressTask>,

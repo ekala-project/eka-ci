@@ -1,13 +1,15 @@
-use crate::nix::nix_eval_jobs::NixEvalItem;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+
 use tracing::{debug, warn};
+
+use crate::nix::nix_eval_jobs::NixEvalItem;
 
 /// This file is meant to handle the evaluation of a "job" which is similar
 /// to the "jobset" by hydra, in particular:
 /// - You pass the file path of a nix file
-/// - You can optionally pass arguments to the file, which should be structured
-///   as a function which receives an attrset of inputs
+/// - You can optionally pass arguments to the file, which should be structured as a function which
+///   receives an attrset of inputs
 /// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
 
 impl super::EvalService {

@@ -2,13 +2,18 @@ pub mod derivation_show;
 pub mod jobs;
 pub mod nix_eval_jobs;
 
-use crate::db::{DbService, model::drv::Drv, model::drv_id::DrvId};
-use crate::scheduler::IngressTask;
+use std::collections::HashMap;
+use std::process::Command;
+
 use anyhow::Result;
-use std::{collections::HashMap, process::Command};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+use crate::db::DbService;
+use crate::db::model::drv::Drv;
+use crate::db::model::drv_id::DrvId;
+use crate::scheduler::IngressTask;
 
 pub struct EvalJob {
     pub file_path: String,
@@ -173,8 +178,9 @@ fn graph_line_to_drvids(drv_line: &str) -> Result<(DrvId, DrvId)> {
 
 /// This assumes a well-formated string from the output of nix-store --query --graph
 fn graph_str_to_drvid(drv_str: &str) -> Result<DrvId> {
-    use anyhow::bail;
     use std::str::FromStr;
+
+    use anyhow::bail;
 
     let mut reference_string: String = drv_str.to_string();
     reference_string.retain(|c| c != '"');

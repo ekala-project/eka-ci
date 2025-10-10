@@ -1,10 +1,11 @@
-use sqlx::encode::IsNull;
-use sqlx::sqlite::SqliteArgumentValue;
-use sqlx::{Decode, Encode, FromRow, Sqlite, Type};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::ops::Deref;
 use std::path::Path;
+
+use sqlx::encode::IsNull;
+use sqlx::sqlite::SqliteArgumentValue;
+use sqlx::{Decode, Encode, FromRow, Sqlite, Type};
 
 /// A derivation identifier of the form `hash-name.drv`.
 ///
@@ -64,6 +65,7 @@ impl DrvId {
 
 impl std::str::FromStr for DrvId {
     type Err = anyhow::Error;
+
     fn from_str(drv_path: &str) -> Result<Self, anyhow::Error> {
         Ok(DrvId(strip_store_path(drv_path).to_string()))
     }

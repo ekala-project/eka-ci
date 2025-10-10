@@ -1,7 +1,8 @@
 use std::net::{SocketAddr, SocketAddrV4};
 
 use anyhow::{Context, Result};
-use axum::{Router, routing::get};
+use axum::Router;
+use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};

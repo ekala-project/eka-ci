@@ -1,9 +1,9 @@
+use sqlx::{FromRow, SqlitePool};
+
 use super::ForInsert;
 use super::build::DrvBuildId;
 use super::drv_id::DrvId;
 use crate::db::model::Drv;
-use sqlx::FromRow;
-use sqlx::SqlitePool;
 
 /// Emitted whenever a derivation build's state changes.
 #[derive(Clone, Debug, FromRow)]

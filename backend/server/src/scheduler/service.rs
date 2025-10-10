@@ -1,9 +1,10 @@
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
 use super::builder::{BuildRequest, Builder};
 use super::ingress::{IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
 use crate::db::DbService;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 /// SchedulerService spins up three smaller services:
 ///   RequestIngress:
