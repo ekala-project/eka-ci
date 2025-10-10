@@ -13,26 +13,29 @@
   rust-analyzer,
   rustPlatform,
   dev-server,
+  fenix,
 }:
 
 mkShell {
   RUST_SRC_PATH = "${rustPlatform.rustcSrc}/library";
-  nativeBuildInputs =
-    [
-      cargo
-      clippy
-      pkg-config
-      nix-eval-jobs
-      rustc
-      rustfmt
-      rust-analyzer
-      elmPackages.elm
-      dev-server
-    ]
-    ++ lib.optionals stdenv.isLinux [
-      # Broken in nixpkgs for darwin?
-      elmPackages.elm-format
-    ];
+  nativeBuildInputs = [
+    (fenix.default.withComponents [
+      "cargo"
+      "clippy"
+      "rust-std"
+      "rustc"
+      "rustfmt-preview"
+    ])
+    pkg-config
+    nix-eval-jobs
+    rust-analyzer
+    elmPackages.elm
+    dev-server
+  ]
+  ++ lib.optionals stdenv.isLinux [
+    # Broken in nixpkgs for darwin?
+    elmPackages.elm-format
+  ];
 
   buildInputs = [
     openssl
