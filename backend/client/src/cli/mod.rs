@@ -16,6 +16,8 @@ pub(crate) enum Commands {
 
     Repo(t::RepoRequest),
 
+    Git(t::GitRequest),
+
     /// Inspect or Modify individual drvs
     #[command(subcommand)]
     Drv(DrvCommands),

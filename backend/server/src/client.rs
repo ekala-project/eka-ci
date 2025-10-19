@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::ci::RepoTask;
 use crate::db::DbService;
+use crate::git::{GitTask, GitWorkspace};
 use crate::nix::EvalTask;
 
 pub struct UnixService {
@@ -25,6 +26,7 @@ pub struct UnixService {
 struct DispatchChannels {
     eval_sender: Sender<EvalTask>,
     repo_sender: Sender<RepoTask>,
+    git_sender: Sender<GitTask>,
     db_service: DbService,
 }
 
@@ -34,6 +36,7 @@ impl UnixService {
         eval_sender: Sender<EvalTask>,
         repo_sender: Sender<RepoTask>,
         db_service: DbService,
+        git_sender: Sender<GitTask>,
     ) -> Result<Self> {
         prepare_path(socket_path)?;
 
@@ -41,6 +44,7 @@ impl UnixService {
         let dispatch = DispatchChannels {
             eval_sender,
             repo_sender,
+            git_sender,
             db_service,
         };
 
@@ -151,6 +155,17 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             status: t::ServerStatus::Active,
             version: "0.1.0".to_string(),
         }),
+        req::Git(git_info) => {
+            let dirs = xdg::BaseDirectories::with_prefix("ekaci").unwrap();
+            let repos_dir = dirs.create_data_directory("repos").unwrap();
+            let task = GitTask::Checkout(GitWorkspace::from_git_request(git_info, repos_dir));
+            dispatch
+                .git_sender
+                .send(task)
+                .await
+                .expect("Failed to send git task");
+            resp::Ack(true)
+        },
         req::Repo(repo_info) => {
             let repo_request = RepoTask::Read(repo_info.file_path.into());
             dispatch

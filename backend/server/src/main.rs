@@ -2,6 +2,7 @@ mod ci;
 mod client;
 mod config;
 mod db;
+mod git;
 mod github;
 mod nix;
 mod scheduler;
@@ -43,6 +44,9 @@ async fn main() -> anyhow::Result<()> {
 
     let db_pool = db_service.pool.clone();
 
+    let git_service = git::GitService::new()?;
+    let git_sender = git_service.git_request_sender();
+
     let repo_service = ci::RepoReader::new()?;
     let repo_sender = repo_service.repo_request_sender();
 
@@ -60,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
         eval_sender.clone(),
         repo_sender.clone(),
         db_service.clone(),
+        git_sender.clone(),
     )
     .await
     .context("failed to start unix service")?;
@@ -103,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
+    let git_handle = tokio::spawn(git_service.run(repo_sender, cancellation_token.clone()));
     let repo_handle = tokio::spawn(repo_service.run(eval_sender, cancellation_token.clone()));
     let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
@@ -124,7 +130,13 @@ async fn main() -> anyhow::Result<()> {
     cancellation_token.cancel();
 
     // Wait for the services to shutdown
-    _ = tokio::join!(eval_handle, unix_handle, web_handle, repo_handle);
+    _ = tokio::join!(
+        eval_handle,
+        unix_handle,
+        web_handle,
+        repo_handle,
+        git_handle
+    );
 
     db_pool.close().await;
 
