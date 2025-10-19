@@ -42,6 +42,10 @@ fn main() -> anyhow::Result<()> {
             send_request(&socket, ClientRequest::Info)
                 .context("failed to send info request to server")?;
         },
+        Some(Commands::Git(repo_info)) => {
+            send_request(&socket, ClientRequest::Git(repo_info))
+                .context("failed to send info request to server")?;
+        },
         Some(Commands::Status) => {},
         Some(Commands::Repo(repo_req)) => {
             let file_path = PathBuf::from(repo_req.file_path).canonicalize()?;

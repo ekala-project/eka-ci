@@ -9,6 +9,7 @@ pub enum ClientRequest {
     Build(BuildRequest),
     Job(JobRequest),
     Repo(RepoRequest),
+    Git(GitRequest),
     DrvStatus(DrvStatusRequest),
 }
 
@@ -31,6 +32,14 @@ pub enum ClientResponse {
     Info(InfoResponse),
     Ack(bool),
     DrvStatus(Option<DrvStatusResponse>),
+}
+
+#[derive(Serialize, Parser, Deserialize, Debug)]
+pub struct GitRequest {
+    pub domain: String,
+    pub owner: String,
+    pub repo: String,
+    pub commitish: String,
 }
 
 #[derive(Serialize, Parser, Deserialize, Debug)]
