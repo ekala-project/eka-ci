@@ -1,3 +1,5 @@
 result*
 **/target/
 mprocs.log
+
+.direnv
