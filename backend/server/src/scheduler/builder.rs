@@ -18,12 +18,12 @@ pub struct BuildRequest(pub DrvId);
 ///
 /// TODO: Allow for number of parallel builds to be configured
 ///       tokio::task::JoinSet would likely be a good option for this
-pub struct Builder {
+pub struct BuildQueue {
     db_service: DbService,
     build_request_receiver: mpsc::Receiver<BuildRequest>,
 }
 
-impl Builder {
+impl BuildQueue {
     /// Immediately starts builder service
     pub fn init(db_service: DbService) -> (Self, mpsc::Sender<BuildRequest>) {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);

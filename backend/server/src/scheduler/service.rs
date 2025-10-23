@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::builder::{BuildRequest, Builder};
+use super::builder::{BuildRequest, BuildQueue};
 use super::ingress::{IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
 use crate::db::DbService;
@@ -10,7 +10,7 @@ use crate::db::DbService;
 ///   RequestIngress:
 ///         Handles taking in many drv build requests and determines
 ///         if the drv is "buildable", has a failed dependency, otherwise it's just queued
-///   Builder:
+///   BuildQueue:
 ///         Receives a stream of "buildable" drvs and builds them.
 ///         Upon completion of a build, passes build status to RecorderService
 ///   RecorderService:
@@ -38,7 +38,7 @@ pub struct SchedulerService {
 impl SchedulerService {
     pub fn new(db_service: DbService) -> anyhow::Result<Self> {
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
-        let (builder_service, builder_sender) = Builder::init(db_service.clone());
+        let (builder_service, builder_sender) = BuildQueue::init(db_service.clone());
         let (recorder_service, recorder_sender) = RecorderService::init(db_service.clone());
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
