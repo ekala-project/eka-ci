@@ -11,7 +11,6 @@ use crate::nix::nix_eval_jobs::NixEvalItem;
 /// - You can optionally pass arguments to the file, which should be structured as a function which
 ///   receives an attrset of inputs
 /// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
-
 impl super::EvalService {
     pub async fn run_nix_eval_jobs(&mut self, file_path: String) -> anyhow::Result<()> {
         let mut cmd = Command::new("nix-eval-jobs")
@@ -26,7 +25,7 @@ impl super::EvalService {
             let stdout_reader = BufReader::new(stdout);
             let stdout_lines = stdout_reader.lines();
 
-            for line in stdout_lines.flatten() {
+            for line in stdout_lines.map_while(Result::ok) {
                 let output = serde_json::from_str::<NixEvalItem>(&line);
                 if let Err(e) = output {
                     warn!(
