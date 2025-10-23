@@ -1,4 +1,4 @@
-mod builder;
+mod build;
 mod ingress;
 mod recorder;
 mod service;

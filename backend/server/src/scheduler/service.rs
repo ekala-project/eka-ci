@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::builder::{BuildRequest, BuildQueue};
+use super::build::{BuildRequest, BuildQueue};
 use super::ingress::{IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
 use crate::db::DbService;

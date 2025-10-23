@@ -4,7 +4,7 @@ use tracing::{debug, warn};
 
 use crate::db::DbService;
 use crate::db::model::drv_id;
-use crate::scheduler::builder::BuildRequest;
+use crate::scheduler::build::BuildRequest;
 
 /// This acts as the service which filters incoming drv build requests
 /// and determines if the drv is "buildable", already successful,
