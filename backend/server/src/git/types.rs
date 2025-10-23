@@ -96,7 +96,7 @@ impl GitWorkspace {
     pub async fn ensure_master_clone(&self) -> anyhow::Result<()> {
         if !self.repo_path.exists() {
             debug!("{:?} does not exist, creating", &self.repo_path);
-            std::fs::create_dir_all(&self.repo_path.parent().unwrap())?;
+            std::fs::create_dir_all(self.repo_path.parent().unwrap())?;
             let dest_dir = self
                 .repo_path
                 .clone()
@@ -113,7 +113,7 @@ impl GitWorkspace {
         self.ensure_master_clone().await?;
 
         if !self.worktree_path.exists() {
-            std::fs::create_dir_all(&self.worktree_path.parent().unwrap())?;
+            std::fs::create_dir_all(self.worktree_path.parent().unwrap())?;
             let dest_dir = self
                 .worktree_path
                 .clone()

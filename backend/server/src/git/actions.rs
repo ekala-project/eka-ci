@@ -20,7 +20,7 @@ pub async fn clone_git_repo(git_url: &str, path: &str) -> Result<Output> {
 pub async fn repo_is_healthy(path: &str) -> Result<bool> {
     debug!("Checking if {} is a healthy git repository", &path);
 
-    let status = Command::new("git").args(["status", &path]).status().await?;
+    let status = Command::new("git").args(["status", path]).status().await?;
 
     Ok(status.success())
 }
@@ -37,7 +37,7 @@ pub async fn add_git_worktree<P: AsRef<Path>>(
 
     let out = Command::new("git")
         .current_dir(repo_dir)
-        .args(["worktree", "add", "--detach", &worktree_dir, &commitish])
+        .args(["worktree", "add", "--detach", worktree_dir, commitish])
         .output()
         .await?;
 
