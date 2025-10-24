@@ -8,10 +8,10 @@ use tracing::{debug, warn};
 use crate::db::DbService;
 use crate::db::model::build::DrvBuildId;
 use crate::db::model::build_event;
-use crate::db::model::drv_id::DrvId;
+use crate::db::model::{drv::Drv, drv_id::DrvId};
 use crate::scheduler::recorder::RecorderTask;
 
-pub struct BuildRequest(pub DrvId);
+pub struct BuildRequest(pub Drv);
 
 /// This acts as the service which monitors a "nix build" and reports the
 /// status of a build
@@ -78,9 +78,9 @@ async fn attempt_build(
     recorder_sender: &mpsc::Sender<RecorderTask>,
 ) -> anyhow::Result<()> {
     use build_event::{DrvBuildEvent, DrvBuildState};
-    let drv_path = build_request.0.clone();
+    let drv = build_request.0.clone();
     let build_id = DrvBuildId {
-        derivation: drv_path.clone(),
+        derivation: drv.drv_path.clone(),
         // TODO: build_attempt seems like something we should query
         build_attempt: std::num::NonZeroU32::new(1).unwrap(),
     };
@@ -88,13 +88,13 @@ async fn attempt_build(
     let buildable_event = DrvBuildEvent::for_insert(build_id, DrvBuildState::Building);
     db_service.new_drv_build_event(buildable_event).await?;
 
-    let build_state = perform_build(&drv_path).await;
+    let build_state = perform_build(&drv.drv_path).await;
 
     // To avoid the state of the build not pushing the result to other potential
     // drvs, we let the recorder deal with updating the build_event task
     // and determining if other drv's now can be queued
     let recorder_task = RecorderTask {
-        derivation: drv_path,
+        derivation: drv.drv_path,
         result: build_state.clone(),
     };
 
