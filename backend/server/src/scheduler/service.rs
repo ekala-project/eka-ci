@@ -1,10 +1,11 @@
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::build::{BuildRequest, BuildQueue};
+use super::build::{Builder, BuildRequest, BuildQueue};
 use super::ingress::{IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
 use crate::db::DbService;
+use crate::config::RemoteBuilder;
 
 /// SchedulerService spins up three smaller services:
 ///   RequestIngress:
@@ -36,9 +37,9 @@ pub struct SchedulerService {
 }
 
 impl SchedulerService {
-    pub fn new(db_service: DbService) -> anyhow::Result<Self> {
+    pub fn new(db_service: DbService, remote_builders: Vec<RemoteBuilder>, local_builders: Vec<Builder>) -> anyhow::Result<Self> {
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
-        let (builder_service, builder_sender) = BuildQueue::init(db_service.clone());
+        let (builder_service, builder_sender) = BuildQueue::init(db_service.clone(), remote_builders, local_builders);
         let (recorder_service, recorder_sender) = RecorderService::init(db_service.clone());
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());

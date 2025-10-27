@@ -5,3 +5,4 @@ mod service;
 
 pub use ingress::IngressTask;
 pub use service::SchedulerService;
+pub use build::Builder;

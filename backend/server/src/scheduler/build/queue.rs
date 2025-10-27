@@ -1,15 +1,18 @@
+use std::collections::HashMap;
 use std::process::Output;
 
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::{debug, warn, info};
 
 use crate::db::DbService;
 use crate::db::model::build::DrvBuildId;
 use crate::db::model::build_event;
 use crate::db::model::{drv::Drv, drv_id::DrvId};
 use crate::scheduler::recorder::RecorderTask;
+use super::{Platform, SystemQueue, Builder};
+use crate::config::RemoteBuilder;
 
 pub struct BuildRequest(pub Drv);
 
@@ -21,19 +24,45 @@ pub struct BuildRequest(pub Drv);
 pub struct BuildQueue {
     db_service: DbService,
     build_request_receiver: mpsc::Receiver<BuildRequest>,
+    system_queues: HashMap<Platform, SystemQueue>,
 }
 
 impl BuildQueue {
     /// Immediately starts builder service
-    pub fn init(db_service: DbService) -> (Self, mpsc::Sender<BuildRequest>) {
+    pub fn init(db_service: DbService, remote_builders: Vec<RemoteBuilder>, local_builders: Vec<Builder>) -> (Self, mpsc::Sender<BuildRequest>) {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);
+        let system_queues = HashMap::new();
 
-        let res = Self {
+        let mut queue = Self {
             db_service,
             build_request_receiver,
+            system_queues,
         };
 
-        (res, build_request_sender)
+        info!("Initializing with {} local builder and {} remote builders", &local_builders.len(), &remote_builders.len());
+
+        for local_builder in local_builders {
+            queue.add_builder(local_builder);
+        }
+
+        for remote in remote_builders {
+            for remote_platform in &remote.platforms {
+                let remote_builder = Builder::from_remote_builder(remote_platform.to_string(), &remote);
+                queue.add_builder(remote_builder);
+            }
+        }
+
+        (queue, build_request_sender)
+    }
+
+    fn add_builder(&mut self, builder: Builder) {
+        if ! self.system_queues.contains_key(&builder.platform) {
+            let queue = SystemQueue::new();
+            self.system_queues.insert(builder.platform.clone(), queue);
+        }
+
+        let system_queue = self.system_queues.get_mut(&builder.platform).unwrap();
+        system_queue.add_builder(builder);
     }
 
     pub fn run(self, recorder_sender: mpsc::Sender<RecorderTask>) -> JoinHandle<()> {

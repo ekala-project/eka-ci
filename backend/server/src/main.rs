@@ -18,6 +18,7 @@ use tracing::level_filters::LevelFilter;
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 use web::WebService;
+use scheduler::Builder;
 
 use crate::nix::EvalTask;
 
@@ -50,7 +51,8 @@ async fn main() -> anyhow::Result<()> {
     let repo_service = ci::RepoReader::new()?;
     let repo_sender = repo_service.repo_request_sender();
 
-    let scheduler_service = scheduler::SchedulerService::new(db_service.clone())?;
+    let local_builders = Builder::local_from_env().await.unwrap();
+    let scheduler_service = scheduler::SchedulerService::new(db_service.clone(), config.remote_builders, local_builders)?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
     let eval_service = nix::EvalService::new(
