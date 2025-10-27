@@ -3,6 +3,7 @@ use super::{Builder, BuildRequest, Platform};
 use tokio::sync::mpsc;
 use anyhow::Result;
 use tokio::sync::mpsc::Permit;
+use tracing::error;
 
 type SystemName = String;
 
@@ -48,7 +49,7 @@ impl PlatformQueue {
         }
 
         loop {
-            if let Some(Ok(permit: Permit<BuildRequest>)) = permits.join_next().await {
+            if let Some(Ok(permit)) = permits.join_next().await {
                 let work = receiver.recv().await;
                 permit.send(work);
             } else {

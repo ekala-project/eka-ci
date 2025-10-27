@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use super::{Builder, Platform, SystemQueue};
+use super::{Builder, Platform, PlatformQueue};
 use crate::config::RemoteBuilder;
 use crate::db::DbService;
 use crate::db::model::build::DrvBuildId;
@@ -24,7 +24,7 @@ pub struct BuildRequest(pub Drv);
 pub struct BuildQueue {
     db_service: DbService,
     build_request_receiver: mpsc::Receiver<BuildRequest>,
-    system_queues: HashMap<Platform, SystemQueue>,
+    system_queues: HashMap<Platform, PlatformQueue>,
 }
 
 impl BuildQueue {
@@ -66,7 +66,7 @@ impl BuildQueue {
 
     fn add_builder(&mut self, builder: Builder) {
         if !self.system_queues.contains_key(&builder.platform) {
-            let queue = SystemQueue::new();
+            let queue = PlatformQueue::new(builder.platform.clone(), mpsc::Receiver<BuildRequest>);
             self.system_queues.insert(builder.platform.clone(), queue);
         }
 

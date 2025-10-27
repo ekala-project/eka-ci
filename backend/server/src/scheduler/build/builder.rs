@@ -14,37 +14,38 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 pub struct Builder {
     is_local: bool,
     max_jobs: u8,
-    build_sender: Sender<BuildRequest>,
-    build_receiver: Receiver<BuildRequest>,
     pub builder_name: String,
     pub platform: Platform,
+    build_thread: JoinHandle<()>,
+    db_service: DbService,
+    recorder_sender: mpsc::Sender<RecorderTask>,
 }
 
 impl Builder {
     fn new_inner(is_local: bool, max_jobs: u8, builder_name: String, platform: Platform) -> Self {
-        let (build_sender, build_receiver) = mpsc::channel(1);
-
         Self {
             is_local,
             max_jobs,
-            build_sender,
-            build_receiver,
             builder_name,
             platform,
         }
     }
 
     pub fn run(self) -> mpsc::Sender<BuildRequest> {
-        let (tx, rx) = mpsc::channel(self.max_jobs.into());
+      let thread = BuilderThread {
+          build_args: self.build_args(),
+          max_jobs: self.max_jobs,
+          db_service: self.db_service,
+          recorder_sender: self.recorder_sender,
+      };
 
-        tokio::spawn(async move {
-            self.loop_for_builds(rx).await;
-        });
-
-        tx
+      thread.run()
     }
 
-    pub async fn local_from_env() -> Result<Vec<Self>> {
+    pub async fn local_from_env(
+        db_service: DbService,
+        recorder_sender: mpsc::Sender<RecorderTask>,
+        ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
 
         info!(
@@ -54,13 +55,18 @@ impl Builder {
 
         let builders = local_platforms
             .iter()
-            .map(|platform| Self::new_inner(true, 4, "localhost".to_string(), platform.to_string()))
+            .map(|platform| Self::new_inner(true, 4, "localhost".to_string(), platform.to_string(), db_service, recorder_sender))
             .collect();
 
         Ok(builders)
     }
 
-    pub fn from_remote_builder(platform: Platform, remote_builder: &RemoteBuilder) -> Self {
+    pub fn from_remote_builder(
+        platform: Platform,
+        remote_builder: &RemoteBuilder
+        db_service: DbService,
+        recorder_sender: mpsc::Sender<RecorderTask>,
+    ) -> Self {
         Self::new_inner(
             false,
             remote_builder.max_jobs,
@@ -70,6 +76,8 @@ impl Builder {
                 remote_builder.platforms.join(",")
             ),
             platform,
+            db_service,
+            recorder_sender,
         )
     }
 

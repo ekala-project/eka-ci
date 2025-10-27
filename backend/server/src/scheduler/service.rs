@@ -43,9 +43,9 @@ impl SchedulerService {
         local_builders: Vec<Builder>,
     ) -> anyhow::Result<Self> {
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
-        let (builder_service, builder_sender) =
-            BuildQueue::init(db_service.clone(), remote_builders, local_builders);
         let (recorder_service, recorder_sender) = RecorderService::init(db_service.clone());
+        let (builder_service, builder_sender) =
+            BuildQueue::init(db_service.clone(), remote_builders, local_builders, recorder_sender.clone());
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run(recorder_sender.clone());

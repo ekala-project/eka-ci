@@ -1,7 +1,8 @@
 use std::process::Output;
 use tracing::{debug, error, info, warn};
 
-use super::{BuildRequest, RecorderTask};
+use crate::scheduler::recorder::RecorderTask;
+use super::{BuildRequest};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -16,7 +17,6 @@ pub struct BuilderThread {
     max_jobs: u8,
     db_service: DbService,
     recorder_sender: mpsc::Sender<RecorderTask>,
-    build_set: JoinSet<Result<()>>,
 }
 
 impl BuilderThread {
@@ -32,11 +32,13 @@ impl BuilderThread {
 
     async fn loop_for_builds(mut self, mut build_receiver: mpsc::Receiver<BuildRequest>) {
         use std::time::Duration;
+
         let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut build_set = JoinSet::new();
 
         loop {
-            if self.build_set.len() >= self.max_jobs.into() {
-                match self.build_set.join_next().await {
+            if build_set.len() >= self.max_jobs.into() {
+                match build_set.join_next().await {
                     Some(Err(e)) => info!("Failed to execute nix build, {:?}", e),
                     None => error!("Tried to await empty build queue"),
                     _ => debug!("Successfully built a drv"),
@@ -45,8 +47,7 @@ impl BuilderThread {
 
             if let Some(build_request) = build_receiver.recv().await {
                 let new_build = self.create_build(build_request.0.drv_path);
-                self.build_set
-                    .spawn(async move { new_build.attempt_build().await });
+                build_set.spawn(async move { new_build.attempt_build().await });
             } else {
                 interval.tick().await;
             }
