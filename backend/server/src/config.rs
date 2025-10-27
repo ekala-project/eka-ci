@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 mod remote_builder;
-use remote_builder::read_nix_machines_file;
 pub use remote_builder::RemoteBuilder;
+use remote_builder::read_nix_machines_file;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

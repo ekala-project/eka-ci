@@ -1,7 +1,7 @@
+use anyhow::Context;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
-use anyhow::Context;
 
 use crate::db::DbService;
 use crate::db::model::{drv, drv_id};
@@ -103,7 +103,11 @@ impl IngressWorker {
             self.db_service
                 .update_drv_status(&drv_id, &DrvBuildState::Buildable)
                 .await?;
-            let drv: drv::Drv = self.db_service.get_drv(&drv_id).await?.context("drv is missing")?;
+            let drv: drv::Drv = self
+                .db_service
+                .get_drv(&drv_id)
+                .await?
+                .context("drv is missing")?;
             self.buildable_sender.send(BuildRequest(drv)).await?;
         }
 

@@ -1,18 +1,18 @@
 use std::process::Output;
-use tracing::{info, error, debug, warn};
+use tracing::{debug, error, info, warn};
 
-use tokio::task::JoinSet;
+use super::{BuildRequest, RecorderTask};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use super::{BuildRequest, RecorderTask};
+use tokio::task::JoinSet;
 
-use crate::db::model::build_event;
 use crate::db::DbService;
 use crate::db::model::DrvId;
+use crate::db::model::build_event;
 use anyhow::Result;
 
 pub struct BuilderThread {
-    build_args: [String;2],
+    build_args: [String; 2],
     max_jobs: u8,
     db_service: DbService,
     recorder_sender: mpsc::Sender<RecorderTask>,
@@ -35,7 +35,7 @@ impl BuilderThread {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
 
         loop {
-            if self.build_set.len() >=  self.max_jobs.into() {
+            if self.build_set.len() >= self.max_jobs.into() {
                 match self.build_set.join_next().await {
                     Some(Err(e)) => info!("Failed to execute nix build, {:?}", e),
                     None => error!("Tried to await empty build queue"),
@@ -44,10 +44,9 @@ impl BuilderThread {
             }
 
             if let Some(build_request) = build_receiver.recv().await {
-              let new_build = self.create_build(build_request.0.drv_path);
-              self.build_set.spawn(async move {
-                  new_build.attempt_build().await
-              });
+                let new_build = self.create_build(build_request.0.drv_path);
+                self.build_set
+                    .spawn(async move { new_build.attempt_build().await });
             } else {
                 interval.tick().await;
             }
@@ -59,13 +58,13 @@ impl BuilderThread {
             build_args: self.build_args.clone(),
             db_service: self.db_service.clone(),
             recorder_sender: self.recorder_sender.clone(),
-            drv_id
+            drv_id,
         }
     }
 }
 
 struct NixBuild {
-    build_args: [String;2],
+    build_args: [String; 2],
     db_service: DbService,
     recorder_sender: mpsc::Sender<RecorderTask>,
     drv_id: DrvId,
@@ -130,6 +129,4 @@ impl NixBuild {
 
         Ok(())
     }
-
-
 }

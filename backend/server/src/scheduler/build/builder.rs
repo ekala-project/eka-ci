@@ -1,11 +1,11 @@
 use anyhow::Result;
-use tracing::{debug, warn, info};
+use tracing::{debug, info, warn};
 
+use super::BuildRequest;
+use super::Platform;
 use crate::config::RemoteBuilder;
 use tokio::process::Command;
-use tokio::sync::mpsc::{self, Sender, Receiver};
-use super::Platform;
-use super::BuildRequest;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 /// This is meant to be an abstraction over both local and remote builders
 ///
@@ -21,12 +21,7 @@ pub struct Builder {
 }
 
 impl Builder {
-    fn new_inner(
-        is_local: bool,
-        max_jobs: u8,
-        builder_name: String,
-        platform: Platform,
-    ) -> Self {
+    fn new_inner(is_local: bool, max_jobs: u8, builder_name: String, platform: Platform) -> Self {
         let (build_sender, build_receiver) = mpsc::channel(1);
 
         Self {
@@ -52,24 +47,33 @@ impl Builder {
     pub async fn local_from_env() -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
 
-        info!("Creating a local builder for these systems: {:?}", &local_platforms);
+        info!(
+            "Creating a local builder for these systems: {:?}",
+            &local_platforms
+        );
 
-        let builders = local_platforms.iter().map(|platform|
-            Self::new_inner(true, 4, "localhost".to_string(), platform.to_string())
-        ).collect();
+        let builders = local_platforms
+            .iter()
+            .map(|platform| Self::new_inner(true, 4, "localhost".to_string(), platform.to_string()))
+            .collect();
 
         Ok(builders)
     }
 
     pub fn from_remote_builder(platform: Platform, remote_builder: &RemoteBuilder) -> Self {
-        Self::new_inner(false,
+        Self::new_inner(
+            false,
             remote_builder.max_jobs,
-            format!("'{} {}'", remote_builder.uri, remote_builder.platforms.join(",")),
+            format!(
+                "'{} {}'",
+                remote_builder.uri,
+                remote_builder.platforms.join(",")
+            ),
             platform,
         )
     }
 
-    fn build_args(&self) -> [&str;2] {
+    fn build_args(&self) -> [&str; 2] {
         if self.is_local {
             // Force the build command to not use remote builders
             ["--builders", "''"]
@@ -89,19 +93,14 @@ async fn local_platforms() -> Result<Vec<String>> {
 
     let config_str = String::from_utf8(config_output.stdout)?;
 
-    let system_line: String = config_str.lines()
+    let system_line: String = config_str
+        .lines()
         .filter(|x| x.starts_with("system ="))
         .collect();
 
-    let system_str = system_line.
-        split(" ")
-        .skip(2)
-        .next().unwrap();
+    let system_str = system_line.split(" ").skip(2).next().unwrap();
 
-    let systems = system_str
-        .split(",")
-        .map(|x| x.to_string())
-        .collect();
+    let systems = system_str.split(",").map(|x| x.to_string()).collect();
 
     Ok(systems)
 }
