@@ -1,11 +1,15 @@
 use anyhow::Result;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use super::BuildRequest;
 use super::Platform;
+use super::builder_thread::BuilderThread;
+use crate::scheduler::recorder::RecorderTask;
+use crate::db::DbService;
 use crate::config::RemoteBuilder;
 use tokio::process::Command;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Sender};
+use tokio::task::JoinHandle;
 
 /// This is meant to be an abstraction over both local and remote builders
 ///
@@ -16,28 +20,29 @@ pub struct Builder {
     max_jobs: u8,
     pub builder_name: String,
     pub platform: Platform,
-    build_thread: JoinHandle<()>,
     db_service: DbService,
     recorder_sender: mpsc::Sender<RecorderTask>,
 }
 
 impl Builder {
-    fn new_inner(is_local: bool, max_jobs: u8, builder_name: String, platform: Platform) -> Self {
+    fn new_inner(is_local: bool, max_jobs: u8, builder_name: String, platform: Platform, db_service: DbService, recorder_sender: Sender<RecorderTask>) -> Self {
         Self {
             is_local,
             max_jobs,
             builder_name,
             platform,
+            db_service,
+            recorder_sender,
         }
     }
 
     pub fn run(self) -> mpsc::Sender<BuildRequest> {
-      let thread = BuilderThread {
-          build_args: self.build_args(),
-          max_jobs: self.max_jobs,
-          db_service: self.db_service,
-          recorder_sender: self.recorder_sender,
-      };
+      let thread = BuilderThread::init(
+          self.build_args(),
+          self.max_jobs,
+          self.db_service.clone(),
+          self.recorder_sender.clone(),
+      );
 
       thread.run()
     }
@@ -55,7 +60,9 @@ impl Builder {
 
         let builders = local_platforms
             .iter()
-            .map(|platform| Self::new_inner(true, 4, "localhost".to_string(), platform.to_string(), db_service, recorder_sender))
+            .map(|platform|
+                Self::new_inner(true,
+                    4, "localhost".to_string(), platform.to_string(), db_service.clone(), recorder_sender.clone()))
             .collect();
 
         Ok(builders)
@@ -63,7 +70,7 @@ impl Builder {
 
     pub fn from_remote_builder(
         platform: Platform,
-        remote_builder: &RemoteBuilder
+        remote_builder: &RemoteBuilder,
         db_service: DbService,
         recorder_sender: mpsc::Sender<RecorderTask>,
     ) -> Self {
@@ -81,12 +88,12 @@ impl Builder {
         )
     }
 
-    fn build_args(&self) -> [&str; 2] {
+    fn build_args(&self) -> [String; 2] {
         if self.is_local {
             // Force the build command to not use remote builders
-            ["--builders", "''"]
+            ["--builders".to_string(), "''".to_string()]
         } else {
-            ["--builders", &self.builder_name]
+            ["--builders".to_string(), self.builder_name.clone()]
         }
     }
 }

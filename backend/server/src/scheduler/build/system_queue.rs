@@ -10,15 +10,13 @@ type SystemName = String;
 pub struct PlatformQueue {
     platform: Platform,
     builders: HashMap<SystemName, Builder>,
-    build_receiver: mpsc::Receiver<BuildRequest>,
 }
 
 impl PlatformQueue {
-    pub fn new(platform: Platform, build_receiver: mpsc::Receiver<BuildRequest>) -> Self {
+    pub fn new(platform: Platform) -> Self {
         Self {
             platform,
             builders: HashMap::new(),
-            build_receiver,
         }
     }
 
@@ -36,31 +34,15 @@ impl PlatformQueue {
         tx
     }
 
-    pub async fn loop_builds(mut self, receiver: mpsc::Receiver<BuildRequest>) {
-        use tokio::task::JoinSet;
-
-        let permits: JoinSet<Permit<BuildRequest>> = JoinSet::new();
-
-        for (_, builder) in self.builders {
-            let sender = builder.run();
-            permits.spawn(async move {
-                get_permit(sender).await
-            });
-        }
-
-        loop {
-            if let Some(Ok(permit)) = permits.join_next().await {
-                let work = receiver.recv().await;
-                permit.send(work);
-            } else {
-                error!("{} queue does not have any workers, aborting", self.platform);
-                break;
+    pub async fn loop_builds<'a>(mut self, mut receiver: mpsc::Receiver<BuildRequest>) {
+        let build_channels: Vec<mpsc::Sender<BuildRequest>> = self.builders.into_iter().map(|(_, x)| x.run()).collect();
+        while let Some(work) = receiver.recv().await {
+            for channel in &build_channels {
+                if let Ok(permit) = channel.try_reserve() {
+                    permit.send(work);
+                    break;
+                }
             }
         }
     }
-}
-
-async fn get_permit(tx: mpsc::Sender<BuildRequest>) -> Result<(Permit<BuildRequest>, mpsc::Sender<BuildRequest>)> {
-    let permit = tx.reserve().await?;
-    Ok((permit, tx))
 }

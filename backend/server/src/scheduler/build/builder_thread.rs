@@ -10,7 +10,6 @@ use tokio::task::JoinSet;
 use crate::db::DbService;
 use crate::db::model::DrvId;
 use crate::db::model::build_event;
-use anyhow::Result;
 
 pub struct BuilderThread {
     build_args: [String; 2],
@@ -20,6 +19,20 @@ pub struct BuilderThread {
 }
 
 impl BuilderThread {
+    pub fn init(
+        build_args: [String; 2],
+        max_jobs: u8,
+        db_service: DbService,
+        recorder_sender: mpsc::Sender<RecorderTask>,
+    ) -> Self {
+        Self {
+            build_args,
+            max_jobs,
+            db_service,
+            recorder_sender,
+        }
+    }
+
     pub fn run(self) -> mpsc::Sender<BuildRequest> {
         let (tx, rx) = mpsc::channel(self.max_jobs.into());
 
@@ -30,7 +43,7 @@ impl BuilderThread {
         tx
     }
 
-    async fn loop_for_builds(mut self, mut build_receiver: mpsc::Receiver<BuildRequest>) {
+    async fn loop_for_builds(self, mut build_receiver: mpsc::Receiver<BuildRequest>) {
         use std::time::Duration;
 
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -122,7 +135,7 @@ impl NixBuild {
         // drvs, we let the recorder deal with updating the build_event task
         // and determining if other drv's now can be queued
         let recorder_task = RecorderTask {
-            derivation: self.drv_id.store_path(),
+            derivation: self.drv_id,
             result: build_state.clone(),
         };
 

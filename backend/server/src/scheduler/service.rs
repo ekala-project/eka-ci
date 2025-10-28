@@ -37,15 +37,24 @@ pub struct SchedulerService {
 }
 
 impl SchedulerService {
-    pub fn new(
+    pub async fn new(
         db_service: DbService,
         remote_builders: Vec<RemoteBuilder>,
-        local_builders: Vec<Builder>,
     ) -> anyhow::Result<Self> {
+
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
         let (recorder_service, recorder_sender) = RecorderService::init(db_service.clone());
+        let mut builders = Builder::local_from_env(db_service.clone(), recorder_sender.clone()).await?;
+        for remote in remote_builders {
+            for remote_platform in &remote.platforms {
+                let remote_builder =
+                    Builder::from_remote_builder(remote_platform.to_string(), &remote, db_service.clone(), recorder_sender.clone());
+                builders.push(remote_builder);
+            }
+        }
+
         let (builder_service, builder_sender) =
-            BuildQueue::init(db_service.clone(), remote_builders, local_builders, recorder_sender.clone());
+            BuildQueue::init(db_service.clone(), builders);
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run(recorder_sender.clone());

@@ -8,6 +8,9 @@ mod nix;
 mod scheduler;
 mod web;
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::Context;
 use client::UnixService;
 use config::Config;
@@ -51,12 +54,10 @@ async fn main() -> anyhow::Result<()> {
     let repo_service = ci::RepoReader::new()?;
     let repo_sender = repo_service.repo_request_sender();
 
-    let local_builders = Builder::local_from_env().await.unwrap();
     let scheduler_service = scheduler::SchedulerService::new(
         db_service.clone(),
         config.remote_builders,
-        local_builders,
-    )?;
+    ).await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
     let eval_service = nix::EvalService::new(

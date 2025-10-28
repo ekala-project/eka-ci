@@ -4,10 +4,9 @@ use std::process::Output;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::{Builder, Platform, PlatformQueue};
-use crate::config::RemoteBuilder;
 use crate::db::DbService;
 use crate::db::model::build::DrvBuildId;
 use crate::db::model::build_event;
@@ -31,8 +30,7 @@ impl BuildQueue {
     /// Immediately starts builder service
     pub fn init(
         db_service: DbService,
-        remote_builders: Vec<RemoteBuilder>,
-        local_builders: Vec<Builder>,
+        builders: Vec<Builder>,
     ) -> (Self, mpsc::Sender<BuildRequest>) {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);
         let system_queues = HashMap::new();
@@ -43,22 +41,8 @@ impl BuildQueue {
             system_queues,
         };
 
-        info!(
-            "Initializing with {} local builder and {} remote builders",
-            &local_builders.len(),
-            &remote_builders.len()
-        );
-
-        for local_builder in local_builders {
-            queue.add_builder(local_builder);
-        }
-
-        for remote in remote_builders {
-            for remote_platform in &remote.platforms {
-                let remote_builder =
-                    Builder::from_remote_builder(remote_platform.to_string(), &remote);
-                queue.add_builder(remote_builder);
-            }
+        for builder in builders {
+            queue.add_builder(builder);
         }
 
         (queue, build_request_sender)
@@ -66,7 +50,7 @@ impl BuildQueue {
 
     fn add_builder(&mut self, builder: Builder) {
         if !self.system_queues.contains_key(&builder.platform) {
-            let queue = PlatformQueue::new(builder.platform.clone(), mpsc::Receiver<BuildRequest>);
+            let queue = PlatformQueue::new(builder.platform.clone());
             self.system_queues.insert(builder.platform.clone(), queue);
         }
 

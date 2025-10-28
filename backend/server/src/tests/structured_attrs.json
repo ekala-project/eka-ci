@@ -1,0 +1,83 @@
+{
+  "/nix/store/dzfhk2dh9vhlyzfj4iwkhmkd95c1iz90-python3-minimal-3.13.7.drv": {
+    "args": [
+      "-e",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "builder": "/nix/store/razasrvdg7ckplfmvdxv4ia3wbayr94s-bootstrap-tools/bin/bash",
+    "env": {
+      "__json": "{\"CPPFLAGS\":\"\",\"LDFLAGS\":\"\",\"LIBS\":\"\",\"NIX_LDFLAGS\":\"-lgcc_s\",\"NIX_MAIN_PROGRAM\":\"python3.13\",\"PYTHONHASHSEED\":0,\"buildInputs\":[\"/nix/store/6mxzly3hv4n1q39bhl6mn3glpik7abk8-bash-5.3p3-dev\"],\"builder\":\"/nix/store/razasrvdg7ckplfmvdxv4ia3wbayr94s-bootstrap-tools/bin/bash\",\"cmakeFlags\":[],\"configureFlags\":[\"--without-ensurepip\",\"--enable-shared\",\"--enable-gil\",\"ac_cv_func_lchmod=no\"],\"depsBuildBuild\":[],\"depsBuildBuildPropagated\":[],\"depsBuildTarget\":[],\"depsBuildTargetPropagated\":[],\"depsHostHost\":[],\"depsHostHostPropagated\":[],\"depsTargetTarget\":[],\"depsTargetTargetPropagated\":[],\"doCheck\":false,\"doInstallCheck\":false,\"enableParallelBuilding\":true,\"enableParallelChecking\":true,\"enableParallelInstalling\":true,\"env\":{\"CPPFLAGS\":\"\",\"LDFLAGS\":\"\",\"LIBS\":\"\",\"NIX_LDFLAGS\":\"-lgcc_s\",\"NIX_MAIN_PROGRAM\":\"python3.13\",\"PYTHONHASHSEED\":0},\"hardeningEnable\":[],\"mesonFlags\":[],\"name\":\"python3-minimal-3.13.7\",\"nativeBuildInputs\":[\"/nix/store/4dgvhqcbfvnbdzq0g3c4p0l47pfif4lj-nuke-references\",\"/nix/store/r989dk196nl9frhnfsa1lb7knhbyjxw6-separate-debug-info.sh\"],\"outputChecks\":{\"debug\":{},\"out\":{\"allowedReferences\":[\"/nix/store/ic4kz8mq14ssrxmfm3dad2in0bmz9c55-bash-5.3p3\",\"/nix/store/nwjxbdvgrylq1dlq2pnllhqsjnq4kymp-xgcc-14.3.0-lib\",\"/nix/store/vwfprzg8aimy7mfjyn9qcj1swk0f0i82-bootstrap-stage0-glibc-bootstrapFiles\",\"out\"],\"disallowedReferences\":[]}},\"outputs\":[\"out\",\"debug\"],\"patches\":[\"/nix/store/s5myj3ybdn7wrsfpydj48mm24vnvw6bc-no-ldconfig.patch\",\"/nix/store/73bwxvdmw63kgb1x27nqr7hh227nz04g-virtualenv-permissions.patch\"],\"pname\":\"python3-minimal\",\"postFixup\":\"# https://github.com/python/cpython/blob/e488e300f5c01289c10906c2e53a8e43d6de32d8/configure.ac#L78\\nsysconfigdataName=\\\"$(make --eval $'print-sysconfigdata-name:\\n\\\\t@echo _sysconfigdata_$(ABIFLAGS)_$(MACHDEP)_$(MULTIARCH) ' print-sysconfigdata-name)\\\"\\n\\n# The CPython interpreter contains a _sysconfigdata_<platform specific suffix>\\n# module that is imported by the sysconfig and distutils.sysconfig modules.\\n# The sysconfigdata module is generated at build time and contains settings\\n# required for building Python extension modules, such as include paths and\\n# other compiler flags. By default, the sysconfigdata module is loaded from\\n# the currently running interpreter (ie. the build platform interpreter), but\\n# when cross-compiling we want to load it from the host platform interpreter.\\n# This can be done using the _PYTHON_SYSCONFIGDATA_NAME environment variable.\\n# The _PYTHON_HOST_PLATFORM variable also needs to be set to get the correct\\n# platform suffix on extension modules. The correct values for these variables\\n# are not documented, and must be derived from the configure script (see links\\n# below).\\ncat <<EOF >> \\\"$out/nix-support/setup-hook\\\"\\nsysconfigdataHook() {\\n  if [ \\\"\\\\$1\\\" = '$out' ]; then\\n    export _PYTHON_HOST_PLATFORM='linux-x86_64'\\n    export _PYTHON_SYSCONFIGDATA_NAME='$sysconfigdataName'\\n  fi\\n}\\n\\naddEnvHooks \\\"\\\\$hostOffset\\\" sysconfigdataHook\\nEOF\\n\",\"postInstall\":\"# needed for some packages, especially packages that backport functionality\\n# to 2.x from 3.x\\nfor item in $out/lib/python3.13/test/*; do\\n  if [[ \\\"$item\\\" != */test_support.py*\\n     && \\\"$item\\\" != */test/support\\n     && \\\"$item\\\" != */test/libregrtest\\n     && \\\"$item\\\" != */test/regrtest.py* ]]; then\\n    rm -rf \\\"$item\\\"\\n  else\\n    echo $item\\n  fi\\ndone\\ntouch $out/lib/python3.13/test/__init__.py\\n\\n# Determinism: Windows installers were not deterministic.\\n# We're also not interested in building Windows installers.\\nfind \\\"$out\\\" -name 'wininst*.exe' | xargs -r rm -f\\n\\n# Use Python3 as default python\\nln -s \\\"$out/bin/idle3\\\" \\\"$out/bin/idle\\\"\\nln -s \\\"$out/bin/pydoc3\\\" \\\"$out/bin/pydoc\\\"\\nln -s \\\"$out/bin/python3\\\" \\\"$out/bin/python\\\"\\nln -s \\\"$out/bin/python3-config\\\" \\\"$out/bin/python-config\\\"\\nln -s \\\"$out/lib/pkgconfig/python3.pc\\\" \\\"$out/lib/pkgconfig/python.pc\\\"\\nln -sL \\\"$out/share/man/man1/python3.1.gz\\\" \\\"$out/share/man/man1/python.1.gz\\\"\\n\\n# Get rid of retained dependencies on -dev packages, and remove\\n# some $TMPDIR references to improve binary reproducibility.\\n# Note that the .pyc file of _sysconfigdata.py should be regenerated!\\nfor i in $out/lib/python3.13/_sysconfigdata*.py $out/lib/python3.13/config-3.13*/Makefile; do\\n   sed -i $i -e \\\"s|$TMPDIR|/no-such-path|g\\\"\\ndone\\n\\n# Further get rid of references. https://github.com/NixOS/nixpkgs/issues/51668\\nfind $out/lib/python*/config-* -type f -print -exec nuke-refs -e /1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9 '{}' +\\nfind $out/lib -name '_sysconfigdata*.py*' -print -exec nuke-refs -e /1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9 '{}' +\\n\\n# Make the sysconfigdata module accessible on PYTHONPATH\\n# This allows build Python to import host Python's sysconfigdata\\nmkdir -p \\\"$out/lib/python3.13/site-packages\\\"\\nln -s \\\"$out/lib/python3.13/\\\"_sysconfigdata*.py \\\"$out/lib/python3.13/site-packages/\\\"\\nrm -R $out/bin/python*-config $out/lib/python*/config-*\\n# Strip IDLE (and turtledemo, which uses it)\\nrm -R $out/bin/idle* $out/lib/python*/{idlelib,turtledemo}\\nrm -R $out/lib/python*/tkinter\\n# Strip tests\\nrm -R $out/lib/python*/test $out/lib/python*/**/test{,s}\\n# Determinism: deterministic bytecode\\n# First we delete all old bytecode.\\nfind $out -type d -name __pycache__ -print0 | xargs -0 -I {} rm -rf \\\"{}\\\"\\n# *strip* shebang from libpython gdb script - it should be dual-syntax and\\n# interpretable by whatever python the gdb in question is using, which may\\n# not even match the major version of this python. doing this after the\\n# bytecode compilations for the same reason - we don't want bytecode generated.\\nmkdir -p $out/share/gdb\\nsed '/^#!/d' Tools/gdb/libpython.py > $out/share/gdb/libpython.py\\n\\n# Disable system-wide pip installation. See https://peps.python.org/pep-0668/.\\ncat <<'EXTERNALLY_MANAGED' > $out/lib/python3.13/EXTERNALLY-MANAGED\\n[externally-managed]\\nError=This command has been disabled as it tries to modify the immutable\\n `/nix/store` filesystem.\\n\\n To use Python with Nix and nixpkgs, have a look at the online documentation:\\n <https://nixos.org/manual/nixpkgs/stable/#python>.\\nEXTERNALLY_MANAGED\\n\",\"postPatch\":\"substituteInPlace Lib/subprocess.py \\\\\\n  --replace-fail \\\"'/bin/sh'\\\" \\\"'/nix/store/ic4kz8mq14ssrxmfm3dad2in0bmz9c55-bash-5.3p3/bin/sh'\\\"\\n\",\"preConfigure\":\"# Attempt to purify some of the host info collection\\nsed -E -i -e 's/uname -r/echo/g' -e 's/uname -n/echo nixpkgs/g' config.guess\\nsed -E -i -e 's/uname -r/echo/g' -e 's/uname -n/echo nixpkgs/g' configure\\n# Also override the auto-detection in `configure`.\\nsubstituteInPlace configure \\\\\\n  --replace-fail 'libmpdec_machine=universal' 'libmpdec_machine=x64'\\nexport CFLAGS_NODIST=\\\"-fno-semantic-interposition\\\"\\n\",\"preFixup\":\"\",\"prePatch\":\"\",\"propagatedBuildInputs\":[],\"propagatedNativeBuildInputs\":[],\"separateDebugInfo\":true,\"setupHook\":\"/nix/store/svl1752g8c47h5n7v9rznzhc1i8zncfb-python-setup-hook.sh\",\"src\":\"/nix/store/pm6wxgw6smx6phrqn8bl57q6dv1qk6ml-Python-3.13.7.tar.xz\",\"stdenv\":\"/nix/store/68ahzsz9yv4baad8iplp207p6vjyj4gr-bootstrap-stage2-stdenv-linux\",\"strictDeps\":true,\"system\":\"x86_64-linux\",\"version\":\"3.13.7\"}",
+      "debug": "/nix/store/dd0c9ggl2ys7c94032mb671kwd3p7sgz-python3-minimal-3.13.7-debug",
+      "out": "/nix/store/qg00dfzw0ddfbk3gxrdnpig1x741ysp1-python3-minimal-3.13.7"
+    },
+    "inputDrvs": {
+      "/nix/store/05q48dcd4lgk4vh7wyk330gr2fr082i2-bootstrap-tools.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4g9df6a0v0g5c2j5x23vv0i89aw2pd7l-bootstrap-stage2-stdenv-linux.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/fqsvi2f29ihmyc7ra1pxsv8dnznjil1h-bash-5.3p3.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev",
+          "out"
+        ]
+      },
+      "/nix/store/giy42bjgsdcvzyz9svxcvxxf9zgjbk1z-Python-3.13.7.tar.xz.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/hvzm72bhbifyaj31z6xkz8pqlvv502pm-nuke-references.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/p6g0ay7i6hrwk7c263m0s361vbm40b0y-python-setup-hook.sh.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/r4ymr0qa6vi193b9d72xqy2g7zypak2p-xgcc-14.3.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "lib"
+        ]
+      },
+      "/nix/store/swcark68dhh8qx8jnq6xjs2siakw5ggz-bootstrap-stage0-glibc-bootstrapFiles.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      }
+    },
+    "inputSrcs": [
+      "/nix/store/73bwxvdmw63kgb1x27nqr7hh227nz04g-virtualenv-permissions.patch",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/r989dk196nl9frhnfsa1lb7knhbyjxw6-separate-debug-info.sh",
+      "/nix/store/s5myj3ybdn7wrsfpydj48mm24vnvw6bc-no-ldconfig.patch",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "name": "python3-minimal-3.13.7",
+    "outputs": {
+      "debug": {
+        "path": "/nix/store/dd0c9ggl2ys7c94032mb671kwd3p7sgz-python3-minimal-3.13.7-debug"
+      },
+      "out": {
+        "path": "/nix/store/qg00dfzw0ddfbk3gxrdnpig1x741ysp1-python3-minimal-3.13.7"
+      }
+    },
+    "system": "x86_64-linux"
+  }
+}
