@@ -1,15 +1,14 @@
 use anyhow::Result;
-use tracing::info;
-
-use super::BuildRequest;
-use super::Platform;
-use super::builder_thread::BuilderThread;
-use crate::scheduler::recorder::RecorderTask;
-use crate::db::DbService;
-use crate::config::RemoteBuilder;
 use tokio::process::Command;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::task::JoinHandle;
+use tracing::info;
+
+use super::builder_thread::BuilderThread;
+use super::{BuildRequest, Platform};
+use crate::config::RemoteBuilder;
+use crate::db::DbService;
+use crate::scheduler::recorder::RecorderTask;
 
 /// This is meant to be an abstraction over both local and remote builders
 ///
@@ -25,7 +24,14 @@ pub struct Builder {
 }
 
 impl Builder {
-    fn new_inner(is_local: bool, max_jobs: u8, builder_name: String, platform: Platform, db_service: DbService, recorder_sender: Sender<RecorderTask>) -> Self {
+    fn new_inner(
+        is_local: bool,
+        max_jobs: u8,
+        builder_name: String,
+        platform: Platform,
+        db_service: DbService,
+        recorder_sender: Sender<RecorderTask>,
+    ) -> Self {
         Self {
             is_local,
             max_jobs,
@@ -37,20 +43,20 @@ impl Builder {
     }
 
     pub fn run(self) -> mpsc::Sender<BuildRequest> {
-      let thread = BuilderThread::init(
-          self.build_args(),
-          self.max_jobs,
-          self.db_service.clone(),
-          self.recorder_sender.clone(),
-      );
+        let thread = BuilderThread::init(
+            self.build_args(),
+            self.max_jobs,
+            self.db_service.clone(),
+            self.recorder_sender.clone(),
+        );
 
-      thread.run()
+        thread.run()
     }
 
     pub async fn local_from_env(
         db_service: DbService,
         recorder_sender: mpsc::Sender<RecorderTask>,
-        ) -> Result<Vec<Self>> {
+    ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
 
         info!(
@@ -60,9 +66,16 @@ impl Builder {
 
         let builders = local_platforms
             .iter()
-            .map(|platform|
-                Self::new_inner(true,
-                    4, "localhost".to_string(), platform.to_string(), db_service.clone(), recorder_sender.clone()))
+            .map(|platform| {
+                Self::new_inner(
+                    true,
+                    4,
+                    "localhost".to_string(),
+                    platform.to_string(),
+                    db_service.clone(),
+                    recorder_sender.clone(),
+                )
+            })
             .collect();
 
         Ok(builders)

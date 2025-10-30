@@ -1,15 +1,14 @@
 use std::process::Output;
-use tracing::{debug, error, info, warn};
 
-use crate::scheduler::recorder::RecorderTask;
-use super::{BuildRequest};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tracing::{debug, error, info, warn};
 
+use super::BuildRequest;
 use crate::db::DbService;
-use crate::db::model::DrvId;
-use crate::db::model::build_event;
+use crate::db::model::{DrvId, build_event};
+use crate::scheduler::recorder::RecorderTask;
 
 pub struct BuilderThread {
     build_args: [String; 2],

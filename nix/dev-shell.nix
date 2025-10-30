@@ -12,6 +12,7 @@
   rustfmt,
   rust-analyzer,
   rustPlatform,
+  sqlite,
   dev-server,
   fenix,
 }:
@@ -31,6 +32,7 @@ mkShell {
     rust-analyzer
     elmPackages.elm
     dev-server
+    sqlite
   ]
   ++ lib.optionals stdenv.isLinux [
     # Broken in nixpkgs for darwin?
