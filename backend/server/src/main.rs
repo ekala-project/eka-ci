@@ -14,7 +14,6 @@ mod tests;
 use anyhow::Context;
 use client::UnixService;
 use config::Config;
-use scheduler::Builder;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;

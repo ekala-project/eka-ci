@@ -1,13 +1,11 @@
 use anyhow::Result;
 use tokio::process::Command;
 use tokio::sync::mpsc::{self, Sender};
-use tokio::task::JoinHandle;
 use tracing::info;
 
 use super::builder_thread::BuilderThread;
 use super::{BuildRequest, Platform};
 use crate::config::RemoteBuilder;
-use crate::db::DbService;
 use crate::scheduler::recorder::RecorderTask;
 
 /// This is meant to be an abstraction over both local and remote builders
@@ -19,7 +17,6 @@ pub struct Builder {
     max_jobs: u8,
     pub builder_name: String,
     pub platform: Platform,
-    db_service: DbService,
     recorder_sender: mpsc::Sender<RecorderTask>,
 }
 
@@ -29,7 +26,6 @@ impl Builder {
         max_jobs: u8,
         builder_name: String,
         platform: Platform,
-        db_service: DbService,
         recorder_sender: Sender<RecorderTask>,
     ) -> Self {
         Self {
@@ -37,7 +33,6 @@ impl Builder {
             max_jobs,
             builder_name,
             platform,
-            db_service,
             recorder_sender,
         }
     }
@@ -46,17 +41,13 @@ impl Builder {
         let thread = BuilderThread::init(
             self.build_args(),
             self.max_jobs,
-            self.db_service.clone(),
             self.recorder_sender.clone(),
         );
 
         thread.run()
     }
 
-    pub async fn local_from_env(
-        db_service: DbService,
-        recorder_sender: mpsc::Sender<RecorderTask>,
-    ) -> Result<Vec<Self>> {
+    pub async fn local_from_env(recorder_sender: mpsc::Sender<RecorderTask>) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
 
         info!(
@@ -72,7 +63,6 @@ impl Builder {
                     4,
                     "localhost".to_string(),
                     platform.to_string(),
-                    db_service.clone(),
                     recorder_sender.clone(),
                 )
             })
@@ -84,7 +74,6 @@ impl Builder {
     pub fn from_remote_builder(
         platform: Platform,
         remote_builder: &RemoteBuilder,
-        db_service: DbService,
         recorder_sender: mpsc::Sender<RecorderTask>,
     ) -> Self {
         Self::new_inner(
@@ -96,7 +85,6 @@ impl Builder {
                 remote_builder.platforms.join(",")
             ),
             platform,
-            db_service,
             recorder_sender,
         )
     }
@@ -126,7 +114,7 @@ async fn local_platforms() -> Result<Vec<String>> {
         .filter(|x| x.starts_with("system ="))
         .collect();
 
-    let system_str = system_line.split(" ").skip(2).next().unwrap();
+    let system_str = system_line.split(" ").nth(2).unwrap();
 
     let systems = system_str.split(",").map(|x| x.to_string()).collect();
 

@@ -43,21 +43,19 @@ impl SchedulerService {
     ) -> anyhow::Result<Self> {
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
         let (recorder_service, recorder_sender) = RecorderService::init(db_service.clone());
-        let mut builders =
-            Builder::local_from_env(db_service.clone(), recorder_sender.clone()).await?;
+        let mut builders = Builder::local_from_env(recorder_sender.clone()).await?;
         for remote in remote_builders {
             for remote_platform in &remote.platforms {
                 let remote_builder = Builder::from_remote_builder(
                     remote_platform.to_string(),
                     &remote,
-                    db_service.clone(),
                     recorder_sender.clone(),
                 );
                 builders.push(remote_builder);
             }
         }
 
-        let (builder_service, builder_sender) = BuildQueue::init(db_service.clone(), builders);
+        let (builder_service, builder_sender) = BuildQueue::init(builders);
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run();

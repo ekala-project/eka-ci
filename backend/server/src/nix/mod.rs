@@ -65,7 +65,7 @@ impl EvalService {
 
             let result = match &task {
                 EvalTask::Job(drv) => self.run_nix_eval_jobs(&drv.file_path).await,
-                EvalTask::TraverseDrv(drv) => self.traverse_drvs(&drv).await,
+                EvalTask::TraverseDrv(drv) => self.traverse_drvs(drv).await,
             };
 
             if let Err(e) = result {

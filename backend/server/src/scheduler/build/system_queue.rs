@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::Permit;
-use tracing::{debug, error};
+use tracing::debug;
 
 use super::{BuildRequest, Builder, Platform};
 
@@ -36,9 +34,9 @@ impl PlatformQueue {
         tx
     }
 
-    pub async fn loop_builds<'a>(mut self, mut receiver: mpsc::Receiver<BuildRequest>) {
+    pub async fn loop_builds(self, mut receiver: mpsc::Receiver<BuildRequest>) {
         let build_channels: Vec<mpsc::Sender<BuildRequest>> =
-            self.builders.into_iter().map(|(_, x)| x.run()).collect();
+            self.builders.into_values().map(|x| x.run()).collect();
 
         debug!("{} system queue started", &self.platform);
         while let Some(work) = receiver.recv().await {

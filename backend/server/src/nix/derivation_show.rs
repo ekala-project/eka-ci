@@ -13,10 +13,13 @@ struct DrvOutput {
     drvs: HashMap<String, DrvInfo>,
 }
 
-#[derive(Debug, Deserialize)]
-struct DrvAttrs {
-    pub env: DrvInfo,
-}
+// TODO: Support both structuredAttrs and non-structured Attrs
+// structuredAttrs causes this to write a "env.__json" attr instead of just
+// an "env" attr.
+// #[derive(Debug, Deserialize)]
+// struct DrvAttrs {
+//     pub env: DrvInfo,
+// }
 
 #[derive(Debug, Deserialize)]
 pub struct DrvInfo {

@@ -6,9 +6,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error};
 
 use super::{Builder, Platform, PlatformQueue};
-use crate::db::DbService;
 use crate::db::model::drv::Drv;
-use crate::scheduler::recorder::RecorderTask;
 
 #[derive(Debug)]
 pub struct BuildRequest(pub Drv);
@@ -19,22 +17,17 @@ pub struct BuildRequest(pub Drv);
 /// TODO: Allow for number of parallel builds to be configured
 ///       tokio::task::JoinSet would likely be a good option for this
 pub struct BuildQueue {
-    db_service: DbService,
     build_request_receiver: mpsc::Receiver<BuildRequest>,
     system_queues: HashMap<Platform, PlatformQueue>,
 }
 
 impl BuildQueue {
     /// Immediately starts builder service
-    pub fn init(
-        db_service: DbService,
-        builders: Vec<Builder>,
-    ) -> (Self, mpsc::Sender<BuildRequest>) {
+    pub fn init(builders: Vec<Builder>) -> (Self, mpsc::Sender<BuildRequest>) {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);
         let system_queues = HashMap::new();
 
         let mut queue = Self {
-            db_service,
             build_request_receiver,
             system_queues,
         };
