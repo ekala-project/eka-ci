@@ -1,16 +1,17 @@
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::builder::{BuildRequest, Builder};
+use super::build::{BuildQueue, BuildRequest, Builder};
 use super::ingress::{IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
+use crate::config::RemoteBuilder;
 use crate::db::DbService;
 
 /// SchedulerService spins up three smaller services:
 ///   RequestIngress:
 ///         Handles taking in many drv build requests and determines
 ///         if the drv is "buildable", has a failed dependency, otherwise it's just queued
-///   Builder:
+///   BuildQueue:
 ///         Receives a stream of "buildable" drvs and builds them.
 ///         Upon completion of a build, passes build status to RecorderService
 ///   RecorderService:
@@ -36,13 +37,30 @@ pub struct SchedulerService {
 }
 
 impl SchedulerService {
-    pub fn new(db_service: DbService) -> anyhow::Result<Self> {
+    pub async fn new(
+        db_service: DbService,
+        remote_builders: Vec<RemoteBuilder>,
+    ) -> anyhow::Result<Self> {
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
-        let (builder_service, builder_sender) = Builder::init(db_service.clone());
         let (recorder_service, recorder_sender) = RecorderService::init(db_service.clone());
+        let mut builders =
+            Builder::local_from_env(db_service.clone(), recorder_sender.clone()).await?;
+        for remote in remote_builders {
+            for remote_platform in &remote.platforms {
+                let remote_builder = Builder::from_remote_builder(
+                    remote_platform.to_string(),
+                    &remote,
+                    db_service.clone(),
+                    recorder_sender.clone(),
+                );
+                builders.push(remote_builder);
+            }
+        }
+
+        let (builder_service, builder_sender) = BuildQueue::init(db_service.clone(), builders);
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
-        let builder_thread = builder_service.run(recorder_sender.clone());
+        let builder_thread = builder_service.run();
 
         Ok(Self {
             db_service,

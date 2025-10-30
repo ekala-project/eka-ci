@@ -238,6 +238,8 @@ WHERE reference = ?1
     .fetch_all(pool)
     .await?;
 
+    debug!("Got {:?} as referrers for {:?}", &result, drv);
+
     Ok(result)
 }
 

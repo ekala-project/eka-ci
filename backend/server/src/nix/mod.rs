@@ -63,8 +63,8 @@ impl EvalService {
                 },
             };
 
-            let result = match task {
-                EvalTask::Job(drv) => self.run_nix_eval_jobs(drv.file_path).await,
+            let result = match &task {
+                EvalTask::Job(drv) => self.run_nix_eval_jobs(&drv.file_path).await,
                 EvalTask::TraverseDrv(drv) => self.traverse_drvs(&drv).await,
             };
 
@@ -139,7 +139,6 @@ fn drv_requisites(drv_path: &str) -> Result<Vec<DrvId>> {
         // but rather files which were added to the nix store through
         // path literals or `nix-store --add`
         .filter(|x| x.ends_with(".drv"))
-        .chain(std::iter::once(drv_path))
         .map(|x| DrvId::from_str(x).unwrap())
         .collect::<Vec<DrvId>>();
 
@@ -207,6 +206,7 @@ fn drv_reference_graph(drv_path: &str) -> Result<Vec<(DrvId, DrvId)>> {
         // Filtering by " -> " assures we are only grabbing edges
         .filter(|x| x.contains(" -> "))
         .filter_map(|x| graph_line_to_drvids(x).ok())
+        .filter(| (x,y) | x != y)
         .collect::<Vec<(_, _)>>();
 
     debug!("drv_graph: {:?}", drvs);

@@ -8,9 +8,13 @@ mod nix;
 mod scheduler;
 mod web;
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::Context;
 use client::UnixService;
 use config::Config;
+use scheduler::Builder;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
@@ -50,7 +54,8 @@ async fn main() -> anyhow::Result<()> {
     let repo_service = ci::RepoReader::new()?;
     let repo_sender = repo_service.repo_request_sender();
 
-    let scheduler_service = scheduler::SchedulerService::new(db_service.clone())?;
+    let scheduler_service =
+        scheduler::SchedulerService::new(db_service.clone(), config.remote_builders).await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
     let eval_service = nix::EvalService::new(

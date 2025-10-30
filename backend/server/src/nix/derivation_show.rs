@@ -10,7 +10,7 @@ struct DrvOutput {
     // nix derivaiton show always structures the output as:
     // { ${drv}: { ... } }
     #[serde(flatten)]
-    drvs: HashMap<String, DrvAttrs>,
+    drvs: HashMap<String, DrvInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,5 +51,5 @@ pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
         .next()
         .context("Invalid derivation show information")?
         .1;
-    Ok(drv_info.env)
+    Ok(drv_info)
 }

@@ -1,4 +1,5 @@
 use sqlx::{FromRow, SqlitePool};
+use tracing::debug;
 
 use super::ForInsert;
 use super::build::DrvBuildId;
@@ -250,13 +251,13 @@ mod state {
     }
 }
 
-/// Given a DrvId, what is theh build_event status of all dependencies
+/// Given a DrvId, what is the build_event status of all dependencies
 pub async fn get_drv_deps(derivation: &DrvId, pool: &SqlitePool) -> anyhow::Result<Vec<Drv>> {
     let events = sqlx::query_as(
         r#"
 SELECT drv_path, system, required_system_features, build_state
 FROM Drv
-JOIN DrvRefs ON Drv.drv_path = DrvRefs.reference
+JOIN DrvRefs ON Drv.drv_path = DrvRefs.referrer
 WHERE reference = ?
         "#,
     )
@@ -273,9 +274,11 @@ WHERE reference = ?
 pub async fn is_drv_buildable(derivation: &DrvId, pool: &SqlitePool) -> anyhow::Result<bool> {
     let deps = get_drv_deps(derivation, pool).await?;
 
+    debug!("Got deps: {:?}", &deps);
     let result = deps
         .into_iter()
         .all(|x| x.build_state == DrvBuildState::Completed(DrvBuildResult::Success));
 
+    debug!("Is {:?} buildable?: {}", &derivation, result);
     Ok(result)
 }

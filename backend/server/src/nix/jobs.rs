@@ -12,7 +12,7 @@ use crate::nix::nix_eval_jobs::NixEvalItem;
 ///   receives an attrset of inputs
 /// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
 impl super::EvalService {
-    pub async fn run_nix_eval_jobs(&mut self, file_path: String) -> anyhow::Result<()> {
+    pub async fn run_nix_eval_jobs(&mut self, file_path: &str) -> anyhow::Result<()> {
         let mut cmd = Command::new("nix-eval-jobs")
             .arg(file_path)
             .stdout(Stdio::piped())
