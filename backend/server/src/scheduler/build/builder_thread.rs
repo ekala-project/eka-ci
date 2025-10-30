@@ -6,14 +6,12 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
 
 use super::BuildRequest;
-use crate::db::DbService;
 use crate::db::model::{DrvId, build_event};
 use crate::scheduler::recorder::RecorderTask;
 
 pub struct BuilderThread {
     build_args: [String; 2],
     max_jobs: u8,
-    db_service: DbService,
     recorder_sender: mpsc::Sender<RecorderTask>,
 }
 
@@ -21,13 +19,11 @@ impl BuilderThread {
     pub fn init(
         build_args: [String; 2],
         max_jobs: u8,
-        db_service: DbService,
         recorder_sender: mpsc::Sender<RecorderTask>,
     ) -> Self {
         Self {
             build_args,
             max_jobs,
-            db_service,
             recorder_sender,
         }
     }
@@ -69,7 +65,6 @@ impl BuilderThread {
     fn create_build(&self, drv_id: DrvId) -> NixBuild {
         NixBuild {
             build_args: self.build_args.clone(),
-            db_service: self.db_service.clone(),
             recorder_sender: self.recorder_sender.clone(),
             drv_id,
         }
@@ -78,7 +73,6 @@ impl BuilderThread {
 
 struct NixBuild {
     build_args: [String; 2],
-    db_service: DbService,
     recorder_sender: mpsc::Sender<RecorderTask>,
     drv_id: DrvId,
 }
