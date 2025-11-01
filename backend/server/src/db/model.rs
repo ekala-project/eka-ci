@@ -6,7 +6,7 @@ pub mod git;
 
 #[allow(dead_code)]
 pub use drv::Drv;
-pub use drv_id::DrvId;
+pub use drv_id::{DrvId, Reference, Referrer};
 
 /// A variant of some type `T` that can only be used for insertion in the database.
 ///

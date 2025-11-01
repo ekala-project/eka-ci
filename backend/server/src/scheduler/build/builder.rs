@@ -60,7 +60,7 @@ impl Builder {
             .map(|platform| {
                 Self::new_inner(
                     true,
-                    4,
+                    40,
                     "localhost".to_string(),
                     platform.to_string(),
                     recorder_sender.clone(),

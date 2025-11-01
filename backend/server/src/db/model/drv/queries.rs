@@ -5,7 +5,7 @@ use tracing::{debug, info};
 
 use super::Drv;
 use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::{DrvId, drv_id};
+use crate::db::model::{DrvId, Reference, Referrer, drv_id};
 
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
@@ -81,13 +81,13 @@ pub async fn insert_drv_graph(
     Ok(())
 }
 
-/// This will insert a slice of drvs and <reference, referrer> into
+/// This will insert a slice of drvs and <referrer, reference> into
 /// the database. The reference relationships assume that the drvs
 /// have been inserted previously, or passed in this call as well
 pub async fn insert_drvs_and_references(
     pool: &Pool<Sqlite>,
     drvs: &[Drv],
-    drv_refs: &[(DrvId, DrvId)],
+    drv_refs: &[(Referrer, Reference)],
 ) -> anyhow::Result<()> {
     use sqlx::{QueryBuilder, Sqlite};
 

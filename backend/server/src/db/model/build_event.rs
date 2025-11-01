@@ -257,8 +257,8 @@ pub async fn get_drv_deps(derivation: &DrvId, pool: &SqlitePool) -> anyhow::Resu
         r#"
 SELECT drv_path, system, required_system_features, build_state
 FROM Drv
-JOIN DrvRefs ON Drv.drv_path = DrvRefs.referrer
-WHERE reference = ?
+JOIN DrvRefs ON Drv.drv_path = DrvRefs.reference
+WHERE referrer = ?
         "#,
     )
     .bind(derivation)
