@@ -105,6 +105,7 @@ impl RecorderWorker {
                 // Ask ingress service to check if all downstream
                 // drvs are now buildable
                 let referrers = self.db_service.drv_referrers(&drv).await?;
+                debug!("Got {:?} referrers for {}", &referrers, &build_id.derivation.store_path());
                 for referrer in referrers {
                     let task = IngressTask::CheckBuildable(referrer);
                     self.ingress_sender.send(task).await?;

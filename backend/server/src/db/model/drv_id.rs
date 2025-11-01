@@ -39,6 +39,9 @@ use sqlx::{Decode, Encode, FromRow, Sqlite, Type};
 #[derive(Clone, Debug, Hash, PartialEq, Eq, FromRow)]
 pub struct DrvId(String);
 
+pub type Referrer = DrvId;
+pub type Reference = DrvId;
+
 // This type is really just a string, that we enforce to be of a certain structure, as such, it
 // makes sense that all read-only methods on str should be available on this type as well.
 impl Deref for DrvId {
@@ -63,16 +66,21 @@ impl DrvId {
         format!("/nix/store/{}", self.0)
     }
 
-    /// (reference, &self) pairs, for easy inserting into DB
-    pub async fn reference_pairs(&self) -> Result<Vec<(DrvId, DrvId)>> {
+    /// (&self, reference) pairs, for easy inserting into DB
+    pub async fn reference_pairs(&self) -> Result<Vec<(Referrer, Reference)>> {
         use std::str::FromStr;
+        use tracing::warn;
 
         use crate::nix::drv_references;
 
-        let refs = drv_references(&self.store_path()).await?;
+        let refs = match drv_references(&self.store_path()).await {
+            Err(e) => { warn!("Failed to fetch references for {}: {:?}", self.store_path(), e); vec![] },
+            Ok(x) => x,
+        };
+
         let pairs = refs
             .into_iter()
-            .flat_map(|x| DrvId::from_str(&x).map(|y| (y, self.clone())))
+            .flat_map(|x| DrvId::from_str(&x).map(|y| (self.clone(), y)))
             .collect();
 
         Ok(pairs)

@@ -41,13 +41,13 @@ impl BuilderThread {
     async fn loop_for_builds(self, mut build_receiver: mpsc::Receiver<BuildRequest>) {
         use std::time::Duration;
 
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut interval = tokio::time::interval(Duration::from_millis(1));
         let mut build_set = JoinSet::new();
 
         loop {
             if build_set.len() >= self.max_jobs.into() {
                 match build_set.join_next().await {
-                    Some(Err(e)) => info!("Failed to execute nix build, {:?}", e),
+                    Some(Err(e)) => warn!("Failed to execute nix build, {:?}", e),
                     None => error!("Tried to await empty build queue"),
                     _ => debug!("Successfully built a drv"),
                 }
@@ -102,6 +102,7 @@ impl NixBuild {
     }
 
     async fn build_drv(&self) -> anyhow::Result<Output> {
+        debug!("Building {} drv", self.drv_id.store_path());
         let build_output = Command::new("nix-build")
             .args([self.drv_id.store_path()])
             .args(&self.build_args)

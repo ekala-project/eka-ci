@@ -11,11 +11,11 @@ mod web;
 #[cfg(test)]
 mod tests;
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use client::UnixService;
 use config::Config;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::{channel, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, info, warn};
@@ -23,6 +23,8 @@ use tracing_subscriber::EnvFilter;
 use web::WebService;
 
 use crate::nix::EvalTask;
+use crate::scheduler::IngressTask;
+use crate::db::DbService;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -121,6 +123,8 @@ async fn main() -> anyhow::Result<()> {
     let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
 
+    enqueue_queued_builds(db_service.clone(), scheduler_service.ingress_request_sender()).await?;
+
     tokio::select! {
         biased;
         _ = sigterm.recv() => {
@@ -146,6 +150,18 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Database service pool closed");
     info!("All services shutdown gracefully");
+
+    Ok(())
+}
+
+async fn enqueue_queued_builds(db_service: DbService, ingress_sender: Sender<IngressTask> ) -> Result<()> {
+    let queued_drvs = db_service.get_buildable_drvs().await?;
+
+    info!("Checking {} drvs for build candidates", queued_drvs.len());
+    for drv_id in queued_drvs {
+        let ingress_task = IngressTask::CheckBuildable(drv_id);
+        ingress_sender.send(ingress_task).await?;
+    }
 
     Ok(())
 }
