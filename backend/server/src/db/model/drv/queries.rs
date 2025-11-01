@@ -5,7 +5,7 @@ use tracing::{debug, info};
 
 use super::Drv;
 use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::{DrvId, Referrer, Reference, drv_id};
+use crate::db::model::{DrvId, Reference, Referrer, drv_id};
 
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(

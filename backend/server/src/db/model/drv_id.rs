@@ -69,12 +69,20 @@ impl DrvId {
     /// (&self, reference) pairs, for easy inserting into DB
     pub async fn reference_pairs(&self) -> Result<Vec<(Referrer, Reference)>> {
         use std::str::FromStr;
+
         use tracing::warn;
 
         use crate::nix::drv_references;
 
         let refs = match drv_references(&self.store_path()).await {
-            Err(e) => { warn!("Failed to fetch references for {}: {:?}", self.store_path(), e); vec![] },
+            Err(e) => {
+                warn!(
+                    "Failed to fetch references for {}: {:?}",
+                    self.store_path(),
+                    e
+                );
+                vec![]
+            },
             Ok(x) => x,
         };
 

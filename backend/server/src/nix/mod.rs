@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use crate::db::DbService;
 use crate::db::model::drv::Drv;
 use crate::db::model::drv_id::DrvId;
-use crate::db::model::{Referrer, Reference};
+use crate::db::model::{Reference, Referrer};
 use crate::scheduler::IngressTask;
 
 pub struct EvalJob {
@@ -95,7 +95,8 @@ impl EvalService {
         let mut drv_refs: Vec<(DrvId, DrvId)> = Vec::new();
         for drvs_chunk in new_drvids.chunks(150) {
             let mut info_set: JoinSet<Result<Drv, anyhow::Error>> = JoinSet::new();
-            let mut ref_set: JoinSet<Result<Vec<(Referrer, Reference)>, anyhow::Error>> = JoinSet::new();
+            let mut ref_set: JoinSet<Result<Vec<(Referrer, Reference)>, anyhow::Error>> =
+                JoinSet::new();
 
             for drv in drvs_chunk {
                 let drv_to_fetch = drv.store_path();

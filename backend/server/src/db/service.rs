@@ -99,10 +99,6 @@ impl DbService {
         build_event::is_drv_buildable(derivation, &self.pool).await
     }
 
-    pub async fn get_queued_drvs(&self) -> anyhow::Result<Vec<DrvId>> {
-        drv::get_derivations_in_state(build_event::DrvBuildState::Queued, &self.pool).await
-    }
-
     pub async fn get_buildable_drvs(&self) -> anyhow::Result<Vec<DrvId>> {
         drv::get_derivations_in_state(build_event::DrvBuildState::Buildable, &self.pool).await
     }

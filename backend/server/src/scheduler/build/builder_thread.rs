@@ -3,7 +3,7 @@ use std::process::Output;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use super::BuildRequest;
 use crate::db::model::{DrvId, build_event};
