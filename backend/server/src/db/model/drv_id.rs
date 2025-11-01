@@ -65,8 +65,9 @@ impl DrvId {
 
     /// (reference, &self) pairs, for easy inserting into DB
     pub async fn reference_pairs(&self) -> Result<Vec<(DrvId, DrvId)>> {
-        use crate::nix::drv_references;
         use std::str::FromStr;
+
+        use crate::nix::drv_references;
 
         let refs = drv_references(&self.store_path()).await?;
         let pairs = refs

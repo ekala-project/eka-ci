@@ -3,10 +3,10 @@ pub mod jobs;
 pub mod nix_eval_jobs;
 
 use std::num::NonZeroUsize;
-use tokio::process::Command;
 
 use anyhow::Result;
 use lru::LruCache;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -88,7 +88,8 @@ impl EvalService {
         debug!("Found {} new drvs", new_drvids.len());
 
         // resolve drv info in parallel
-        // If there's over ~400 concurrent processes, we quickly exhaust file handles, so take a slower path
+        // If there's over ~400 concurrent processes, we quickly exhaust file handles, so take a
+        // slower path
         let mut new_drvs = Vec::new();
         let mut drv_refs: Vec<(DrvId, DrvId)> = Vec::new();
         for drvs_chunk in new_drvids.chunks(150) {
