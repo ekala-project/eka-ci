@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use std::ops::Deref;
 use std::path::Path;
 
+use anyhow::Result;
 use sqlx::encode::IsNull;
 use sqlx::sqlite::SqliteArgumentValue;
 use sqlx::{Decode, Encode, FromRow, Sqlite, Type};
@@ -60,6 +61,20 @@ impl PartialEq<&str> for DrvId {
 impl DrvId {
     pub fn store_path(&self) -> String {
         format!("/nix/store/{}", self.0)
+    }
+
+    /// (reference, &self) pairs, for easy inserting into DB
+    pub async fn reference_pairs(&self) -> Result<Vec<(DrvId, DrvId)>> {
+        use crate::nix::drv_references;
+        use std::str::FromStr;
+
+        let refs = drv_references(&self.store_path()).await?;
+        let pairs = refs
+            .into_iter()
+            .flat_map(|x| DrvId::from_str(&x).map(|y| (y, self.clone())))
+            .collect();
+
+        Ok(pairs)
     }
 }
 
