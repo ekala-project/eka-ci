@@ -1,0 +1,174 @@
+{
+  "/nix/store/avz9hbr7bcgcfkni8lbb94p4c1r0v6g2-cmake-4.1.1.drv": {
+    "args": [
+      "-e",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "builder": "/nix/store/cl2gkgnh26mmpka81pc2g5bzjfrili92-bash-5.3p3/bin/bash",
+    "env": {
+      "NIX_MAIN_PROGRAM": "cmake",
+      "__structuredAttrs": "",
+      "buildInputs": "/nix/store/z43lixbl4fidqknf8w37crz8znafw5yp-bzip2-1.0.8-dev /nix/store/8hb5c7lfhf1v2jf7z1bmzb689sgfbfd4-curl-8.16.0-dev /nix/store/bj7qjqr736cf15g34b86arnbypfqx9s5-expat-2.7.2-dev /nix/store/fcp24d17g3cnynmx41i6i72crcdkc501-libarchive-3.8.1-dev /nix/store/cpmkj74dn49wgbss616nkc2xx33jpd6z-xz-5.8.1-dev /nix/store/6fqij3sy1mlsnq1n679bzbl5bkqs7yvk-zlib-1.3.1-dev /nix/store/adklcnjpc31n6jabha2qd60y2s9wm133-libuv-1.51.0-dev /nix/store/x9jysj5b7gjkn1f8ii45hkhrfhdwn3ss-rhash-1.4.4 /nix/store/cz9k6nhxjppa1kmyf5npd0g8l89xzilw-openssl-3.5.2-dev",
+      "builder": "/nix/store/cl2gkgnh26mmpka81pc2g5bzjfrili92-bash-5.3p3/bin/bash",
+      "cmakeFlags": "",
+      "configureFlags": "--docdir=share/doc/cmake-4.1.1 --no-system-cppdap --no-system-jsoncpp --system-libs -- -DCMAKE_CXX_COMPILER:STRING=c++ -DCMAKE_C_COMPILER:STRING=cc -DCMAKE_AR:STRING=/nix/store/7h3qnwgvkw6z2r8lq4j5mks4l6r5x2cq-binutils-2.44/bin/ar -DCMAKE_RANLIB:STRING=/nix/store/7h3qnwgvkw6z2r8lq4j5mks4l6r5x2cq-binutils-2.44/bin/ranlib -DCMAKE_STRIP:STRING=/nix/store/7h3qnwgvkw6z2r8lq4j5mks4l6r5x2cq-binutils-2.44/bin/strip -DCMAKE_USE_OPENSSL:BOOL=TRUE -DBUILD_CursesDialog:BOOL=FALSE",
+      "configurePlatforms": "",
+      "debug": "/nix/store/8ka255hfrrykda2a7g3k1b9gmyqcvfq3-cmake-4.1.1-debug",
+      "depsBuildBuild": "/nix/store/dmypp1h4ldn0vfk3fi6yfyf5yxp9yz0k-gcc-wrapper-14.3.0",
+      "depsBuildBuildPropagated": "",
+      "depsBuildTarget": "",
+      "depsBuildTargetPropagated": "",
+      "depsHostHost": "",
+      "depsHostHostPropagated": "",
+      "depsTargetTarget": "",
+      "depsTargetTargetPropagated": "",
+      "doCheck": "",
+      "doInstallCheck": "",
+      "dontUseCmakeConfigure": "1",
+      "enableParallelBuilding": "1",
+      "enableParallelChecking": "1",
+      "enableParallelInstalling": "1",
+      "mesonFlags": "",
+      "name": "cmake-4.1.1",
+      "nativeBuildInputs": "/nix/store/qwl0q1rwnzk61qkach6iwz286x75v80w-setup-hook.sh /nix/store/ar1p4gcvlqf8dwbkfrcb01srbywinaj5-check-pc-files-hook.sh /nix/store/k9s1w95rqfr14lb5xms1lwzrq1yiinzz-pkg-config-wrapper-0.29.2 /nix/store/r989dk196nl9frhnfsa1lb7knhbyjxw6-separate-debug-info.sh",
+      "out": "/nix/store/2lrbixyw95bjg0x1aav648r0h0zsj2jl-cmake-4.1.1",
+      "outputs": "out debug",
+      "patches": "/nix/store/8lics7m8x3n4bj4c0xjzhx96hypj4ybq-nixpkgs-cmake-prefix-path.patch /nix/store/w7aq6m42kd88631s5gbkj8bjzid5ag0b-add-nixpkgs-libc-paths.patch /nix/store/1vqmbszqvi3fq8vs4j5hjjmab5f9a0f2-fix-curl-8.16.patch /nix/store/rznww7vypgl2zmdvv6sck4nz7x99mzfj-remove-impure-search-paths.patch",
+      "pname": "cmake",
+      "preConfigure": "substituteInPlace Modules/Platform/UnixPaths.cmake \\\n  --subst-var-by libc_bin /nix/store/gf1xp3sizlc0nkq3man8ys0mwhs1bp44-glibc-2.40-66-bin \\\n  --subst-var-by libc_dev /nix/store/0zv32kh0zb4s1v4ld6mc99vmzydj9nm9-glibc-2.40-66-dev \\\n  --subst-var-by libc_lib /nix/store/qhw0sp183mqd04x5jp75981kwya64npv-glibc-2.40-66\n# CC_FOR_BUILD and CXX_FOR_BUILD are used to bootstrap cmake\nconfigureFlags=\"--parallel=${NIX_BUILD_CORES:-1} CC=$CC_FOR_BUILD CXX=$CXX_FOR_BUILD $configureFlags $cmakeFlags\"\n",
+      "preInstall": "",
+      "propagatedBuildInputs": "",
+      "propagatedNativeBuildInputs": "",
+      "separateDebugInfo": "1",
+      "setOutputFlags": "",
+      "setupHooks": "/nix/store/qwl0q1rwnzk61qkach6iwz286x75v80w-setup-hook.sh /nix/store/ar1p4gcvlqf8dwbkfrcb01srbywinaj5-check-pc-files-hook.sh",
+      "src": "/nix/store/2yis2jbh6s545lwpim0k50335hh10w1m-cmake-4.1.1.tar.gz",
+      "stdenv": "/nix/store/87ds8jf53m7n8xscxgkfgwcc8dyj1qki-stdenv-linux",
+      "strictDeps": "",
+      "system": "x86_64-linux",
+      "version": "4.1.1"
+    },
+    "inputDrvs": {
+      "/nix/store/226jq76cgkp09x6hxn42gqpk5vzndp0x-expat-2.7.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/6l77ssnr72k2kl9fyvqwx7v9dw88jcac-openssl-3.5.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/ac8gnkpql064z1i4mpid20bx38i0ss27-stdenv-linux.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/az23nn7y2ngfn3jnsb9p8ffcm45v75g9-pkg-config-wrapper-0.29.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b17rqy04rvq2h1lg8i3zc5r048zvnb9b-bzip2-1.0.8.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/c8bk7gvivcy6lmhp26h2dr12kxll0qwj-rhash-1.4.4.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/hj9m1fjzvb6gj9ywihy3p44i72zmsxbl-binutils-2.44.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/j0y8jbm6pgpf1cnj89fz12wmdyjs7v3d-bash-5.3p3.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/jhvv459j3f9wywj0fz4ryxd8ljpzsadh-libarchive-3.8.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/jhwyhvxr3hs3fncpnmj2s1p5w7vh660a-xz-5.8.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/msipzxnwl7j1hx9vl9lgwkvcjmbdl0gc-zlib-1.3.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/rpdycda1ikpkfz0ihlhfb5p8xdpc4785-libuv-1.51.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/v51a5kb2jm01vyb54b4ci9zhp5k6a41f-gcc-wrapper-14.3.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vr8vvy38dvm9jy78pw08mmxsbnxw92k8-cmake-4.1.1.tar.gz.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/wz72m1w85fwl17fgfyfqvp628ns5834p-curl-8.16.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/yhqirmmhcqwv8k5xrxiqh4kdibf7b21k-glibc-2.40-66.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "bin",
+          "dev",
+          "out"
+        ]
+      }
+    },
+    "inputSrcs": [
+      "/nix/store/1vqmbszqvi3fq8vs4j5hjjmab5f9a0f2-fix-curl-8.16.patch",
+      "/nix/store/8lics7m8x3n4bj4c0xjzhx96hypj4ybq-nixpkgs-cmake-prefix-path.patch",
+      "/nix/store/ar1p4gcvlqf8dwbkfrcb01srbywinaj5-check-pc-files-hook.sh",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/qwl0q1rwnzk61qkach6iwz286x75v80w-setup-hook.sh",
+      "/nix/store/r989dk196nl9frhnfsa1lb7knhbyjxw6-separate-debug-info.sh",
+      "/nix/store/rznww7vypgl2zmdvv6sck4nz7x99mzfj-remove-impure-search-paths.patch",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh",
+      "/nix/store/w7aq6m42kd88631s5gbkj8bjzid5ag0b-add-nixpkgs-libc-paths.patch"
+    ],
+    "name": "cmake-4.1.1",
+    "outputs": {
+      "debug": {
+        "path": "/nix/store/8ka255hfrrykda2a7g3k1b9gmyqcvfq3-cmake-4.1.1-debug"
+      },
+      "out": {
+        "path": "/nix/store/2lrbixyw95bjg0x1aav648r0h0zsj2jl-cmake-4.1.1"
+      }
+    },
+    "system": "x86_64-linux"
+  }
+}
