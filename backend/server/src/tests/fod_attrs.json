@@ -1,0 +1,93 @@
+{
+  "/nix/store/ng20m6xr0sc12vwyh059dlk9idxspsdy-Python-3.13.7.tar.xz.drv": {
+    "args": [
+      "-e",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/w003xwysww5hwn4a759kji6s3157xmrc-builder.sh"
+    ],
+    "builder": "/nix/store/cl2gkgnh26mmpka81pc2g5bzjfrili92-bash-5.3p3/bin/bash",
+    "env": {
+      "SSL_CERT_FILE": "/no-cert-file.crt",
+      "__structuredAttrs": "",
+      "buildInputs": "",
+      "builder": "/nix/store/cl2gkgnh26mmpka81pc2g5bzjfrili92-bash-5.3p3/bin/bash",
+      "cmakeFlags": "",
+      "configureFlags": "",
+      "curlOpts": "",
+      "curlOptsList": "",
+      "depsBuildBuild": "",
+      "depsBuildBuildPropagated": "",
+      "depsBuildTarget": "",
+      "depsBuildTargetPropagated": "",
+      "depsHostHost": "",
+      "depsHostHostPropagated": "",
+      "depsTargetTarget": "",
+      "depsTargetTargetPropagated": "",
+      "doCheck": "",
+      "doInstallCheck": "",
+      "downloadToTemp": "",
+      "executable": "",
+      "impureEnvVars": "http_proxy https_proxy ftp_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY NIX_SSL_CERT_FILE NIX_CURL_FLAGS NIX_HASHED_MIRRORS NIX_CONNECT_TIMEOUT NIX_MIRRORS_alsa NIX_MIRRORS_apache NIX_MIRRORS_bioc NIX_MIRRORS_bitlbee NIX_MIRRORS_centos NIX_MIRRORS_cpan NIX_MIRRORS_cran NIX_MIRRORS_debian NIX_MIRRORS_dub NIX_MIRRORS_fedora NIX_MIRRORS_gcc NIX_MIRRORS_gentoo NIX_MIRRORS_gnome NIX_MIRRORS_gnu NIX_MIRRORS_gnupg NIX_MIRRORS_hackage NIX_MIRRORS_hashedMirrors NIX_MIRRORS_ibiblioPubLinux NIX_MIRRORS_imagemagick NIX_MIRRORS_kde NIX_MIRRORS_kernel NIX_MIRRORS_luarocks NIX_MIRRORS_maven NIX_MIRRORS_mozilla NIX_MIRRORS_mysql NIX_MIRRORS_openbsd NIX_MIRRORS_opensuse NIX_MIRRORS_osdn NIX_MIRRORS_postgresql NIX_MIRRORS_pypi NIX_MIRRORS_qt NIX_MIRRORS_sageupstream NIX_MIRRORS_samba NIX_MIRRORS_savannah NIX_MIRRORS_sourceforge NIX_MIRRORS_steamrt NIX_MIRRORS_tcsh NIX_MIRRORS_testpypi NIX_MIRRORS_ubuntu NIX_MIRRORS_xfce NIX_MIRRORS_xorg",
+      "mesonFlags": "",
+      "mirrorsFile": "/nix/store/dddyfnkixnqr8jy74rc2zs3bjfy55z6q-mirrors-list",
+      "name": "Python-3.13.7.tar.xz",
+      "nativeBuildInputs": "/nix/store/n5d9hl0jb4gzd3p886rb4nrprym4gwkp-curl-8.16.0-dev",
+      "nixpkgsVersion": "25.11",
+      "out": "/nix/store/pm6wxgw6smx6phrqn8bl57q6dv1qk6ml-Python-3.13.7.tar.xz",
+      "outputHash": "sha256-VGL5CZ39MOI43vg8cdkYl9jKpf9uvHpQ8U1IAs2qp5o=",
+      "outputHashMode": "flat",
+      "outputs": "out",
+      "patches": "",
+      "postFetch": "",
+      "preferHashedMirrors": "",
+      "preferLocalBuild": "1",
+      "propagatedBuildInputs": "",
+      "propagatedNativeBuildInputs": "",
+      "showURLs": "",
+      "stdenv": "/nix/store/x1d0ad98h92lp5g59pfryjzk4ca84i3r-stdenv-linux",
+      "strictDeps": "",
+      "system": "x86_64-linux",
+      "urls": "https://www.python.org/ftp/python/3.13.7/Python-3.13.7.tar.xz"
+    },
+    "inputDrvs": {
+      "/nix/store/52gygp77zfg9p7bv68v512nmg3p9nc03-curl-8.16.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "dev"
+        ]
+      },
+      "/nix/store/j0y8jbm6pgpf1cnj89fz12wmdyjs7v3d-bash-5.3p3.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/nlvvizmampzw3zxsj622q3lay829hd66-mirrors-list.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/wxa33bqf47pz1a02kri6yhvc5891s7cv-stdenv-linux.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      }
+    },
+    "inputSrcs": [
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/w003xwysww5hwn4a759kji6s3157xmrc-builder.sh"
+    ],
+    "name": "Python-3.13.7.tar.xz",
+    "outputs": {
+      "out": {
+        "hash": "5462f9099dfd30e238def83c71d91897d8caa5ff6ebc7a50f14d4802cdaaa79a",
+        "hashAlgo": "sha256",
+        "method": "flat",
+        "path": "/nix/store/pm6wxgw6smx6phrqn8bl57q6dv1qk6ml-Python-3.13.7.tar.xz"
+      }
+    },
+    "system": "x86_64-linux"
+  }
+}

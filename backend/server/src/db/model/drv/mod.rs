@@ -32,7 +32,7 @@ impl Drv {
         Ok(Drv {
             drv_path: DrvId::from_str(drv_path)?,
             system: drv_output.system,
-            required_system_features: drv_output.required_system_features,
+            required_system_features: drv_output.required_system_features_str,
             build_state: DrvBuildState::Queued,
         })
     }
