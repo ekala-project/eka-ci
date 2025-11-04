@@ -6,12 +6,7 @@ mod serialization {
     pub fn deserialize_structured_attrs() {
         let contents = include_str!("./structured_attrs.json");
         let drv_output: DrvOutput = serde_json::from_str(&contents).unwrap();
-        let drv_info = drv_output
-            .drvs
-            .into_iter()
-            .next()
-            .unwrap()
-            .1;
+        let drv_info = drv_output.drvs.into_iter().next().unwrap().1;
 
         assert_eq!(drv_info.system, "x86_64-linux");
         matches!(drv_info.env, EnvAttrs::StructuredAttrs { __json: _ });
@@ -24,12 +19,7 @@ mod serialization {
     pub fn deserialize_legacy_attrs() {
         let contents = include_str!("./legacy_attrs.json");
         let drv_output: DrvOutput = serde_json::from_str(&contents).unwrap();
-        let drv_info = drv_output
-            .drvs
-            .into_iter()
-            .next()
-            .unwrap()
-            .1;
+        let drv_info = drv_output.drvs.into_iter().next().unwrap().1;
 
         assert_eq!(drv_info.system, "x86_64-linux");
         matches!(drv_info.env, EnvAttrs::LegacyAttrs(_));
@@ -39,12 +29,7 @@ mod serialization {
     pub fn deserialize_fod_attrs() {
         let contents = include_str!("./fod_attrs.json");
         let drv_output: DrvOutput = serde_json::from_str(&contents).unwrap();
-        let drv_info = drv_output
-            .drvs
-            .into_iter()
-            .next()
-            .unwrap()
-            .1;
+        let drv_info = drv_output.drvs.into_iter().next().unwrap().1;
 
         assert_eq!(drv_info.system, "x86_64-linux");
         matches!(drv_info.env, EnvAttrs::LegacyAttrs(_));
@@ -57,5 +42,4 @@ mod serialization {
         assert_eq!(drv.required_system_features_str, None);
         assert_eq!(drv.system, "x86_64-linux");
     }
-
 }
