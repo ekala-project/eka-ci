@@ -41,5 +41,10 @@ mod serialization {
         assert_eq!(drv.required_system_features, None);
         assert_eq!(drv.required_system_features_str, None);
         assert_eq!(drv.system, "x86_64-linux");
+        assert_eq!(
+            drv.output_hash,
+            Some("sha256-VGL5CZ39MOI43vg8cdkYl9jKpf9uvHpQ8U1IAs2qp5o=".to_owned())
+        );
+        assert_eq!(drv.is_fod(), true);
     }
 }

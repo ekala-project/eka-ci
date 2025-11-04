@@ -27,6 +27,8 @@ pub(crate) struct LegacyAttrsStruct {
     pub(crate) pname: Option<String>,
     #[serde(rename = "preferLocalBuild")]
     pub(crate) prefer_local: Option<String>,
+    #[serde(rename = "outputHash")]
+    pub(crate) output_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,16 +44,16 @@ pub struct RawDrvInfo {
 
 impl RawDrvInfo {
     pub fn to_drv_info(self) -> Result<DrvInfo> {
-        let (name, pname, prefer_local) = match self.env {
+        let (name, pname, prefer_local, output_hash) = match self.env {
             // TODO: properly deserialize this. serde_json is getting caught up on
             // some 'unexpected integer'
             EnvAttrs::StructuredAttrs { __json: _ } => {
-                ("<structuredAttrs>".to_owned(), None, false)
+                ("<structuredAttrs>".to_owned(), None, false, None)
             },
             EnvAttrs::LegacyAttrs(attrs) => {
                 println!("attrs: {:?}", &attrs);
                 let prefer_local = attrs.prefer_local.map(|x| x == "1").unwrap_or(false);
-                (attrs.name, attrs.pname, prefer_local)
+                (attrs.name, attrs.pname, prefer_local, attrs.output_hash)
             },
         };
 
@@ -69,6 +71,7 @@ impl RawDrvInfo {
             name,
             pname,
             prefer_local,
+            output_hash,
             required_system_features,
             required_system_features_str,
             system: self.system,
@@ -85,10 +88,17 @@ pub struct DrvInfo {
     pub pname: Option<String>,
     pub prefer_local: bool,
     pub required_system_features: Option<std::collections::HashSet<String>>,
+    pub output_hash: Option<String>,
     // This feels redundant, but this is to avoid ordering changing from serializing/deserializing
     // to a HashSet
     pub required_system_features_str: Option<String>,
     pub system: String,
+}
+
+impl DrvInfo {
+    pub fn is_fod(&self) -> bool {
+        self.output_hash.is_some()
+    }
 }
 
 /// Do `nix derivation show` but filter for the things we care about
