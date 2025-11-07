@@ -275,6 +275,7 @@ mod tests {
         let drv = Drv {
             drv_path: drv_id.clone(),
             system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
             required_system_features: None,
             build_state: DrvBuildState::Queued,
         };
@@ -298,6 +299,7 @@ mod tests {
                 "/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv",
             )?,
             system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
             required_system_features: None,
             build_state: DrvBuildState::Queued,
         };
@@ -306,6 +308,7 @@ mod tests {
                 "/nix/store/p470qfnbrf16agb4r05fllbsqgi2m8k5-git-2.47.2.drv",
             )?,
             system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
             required_system_features: None,
             build_state: DrvBuildState::Queued,
         };
@@ -314,6 +317,7 @@ mod tests {
                 "/nix/store/0wy8117gx1hbdv85x2xq1vf12nlagan4-bash-interactive-5.2p37.drv",
             )?,
             system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
             required_system_features: None,
             build_state: DrvBuildState::Buildable,
         };
