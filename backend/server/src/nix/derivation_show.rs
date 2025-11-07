@@ -43,7 +43,7 @@ pub struct RawDrvInfo {
 }
 
 impl RawDrvInfo {
-    pub fn to_drv_info(self) -> Result<DrvInfo> {
+    pub fn into_drv_info(self) -> Result<DrvInfo> {
         let (name, pname, prefer_local, output_hash) = match self.env {
             // TODO: properly deserialize this. serde_json is getting caught up on
             // some 'unexpected integer'
@@ -83,6 +83,7 @@ impl RawDrvInfo {
 
 /// Cleaned up version of the drv we care about, details about
 /// structuredAttrs vs legacy have been resolved
+#[allow(dead_code)]
 pub struct DrvInfo {
     pub name: String,
     pub pname: Option<String>,
@@ -96,6 +97,7 @@ pub struct DrvInfo {
 }
 
 impl DrvInfo {
+    #[allow(dead_code)]
     pub fn is_fod(&self) -> bool {
         self.output_hash.is_some()
     }
@@ -125,5 +127,5 @@ pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
         .next()
         .context("Invalid derivation show information")?
         .1;
-    Ok(drv_info.to_drv_info()?)
+    drv_info.into_drv_info()
 }

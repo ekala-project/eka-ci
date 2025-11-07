@@ -14,7 +14,7 @@ use crate::scheduler::recorder::RecorderTask;
 /// simpler
 pub struct Builder {
     is_local: bool,
-    max_jobs: u8,
+    pub max_jobs: u8,
     pub builder_name: String,
     pub platform: Platform,
     recorder_sender: mpsc::Sender<RecorderTask>,
@@ -35,6 +35,10 @@ impl Builder {
             platform,
             recorder_sender,
         }
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.is_local
     }
 
     pub fn run(self) -> mpsc::Sender<BuildRequest> {

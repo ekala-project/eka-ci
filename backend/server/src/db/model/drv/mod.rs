@@ -17,6 +17,8 @@ pub struct Drv {
     /// to reattempt the build (depending on the interruption kind).
     pub system: String,
 
+    #[sqlx(skip)]
+    pub prefer_local_build: bool,
     pub required_system_features: Option<String>,
 
     /// This is None when queried from Nix
@@ -32,6 +34,7 @@ impl Drv {
         Ok(Drv {
             drv_path: DrvId::from_str(drv_path)?,
             system: drv_output.system,
+            prefer_local_build: drv_output.prefer_local,
             required_system_features: drv_output.required_system_features_str,
             build_state: DrvBuildState::Queued,
         })

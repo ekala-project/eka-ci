@@ -34,7 +34,7 @@ mod serialization {
         assert_eq!(drv_info.system, "x86_64-linux");
         matches!(drv_info.env, EnvAttrs::LegacyAttrs(_));
 
-        let drv = drv_info.to_drv_info().unwrap();
+        let drv = drv_info.into_drv_info().unwrap();
         assert_eq!(drv.prefer_local, true);
         assert_eq!(drv.name, "Python-3.13.7.tar.xz".to_owned());
         assert_eq!(drv.pname, None);
