@@ -8,11 +8,10 @@ use crate::ci::RepoReader;
 use crate::client::UnixService;
 use crate::config::Config;
 use crate::db::DbService;
-use crate::nix::EvalTask;
-use crate::scheduler::{IngressTask, SchedulerService};
-use crate::github;
-use crate::nix::EvalService;
 use crate::git::GitService;
+use crate::github;
+use crate::nix::{EvalService, EvalTask};
+use crate::scheduler::{IngressTask, SchedulerService};
 use crate::web::WebService;
 
 pub async fn start_services(config: Config) -> Result<()> {

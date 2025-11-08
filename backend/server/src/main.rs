@@ -13,8 +13,8 @@ mod web;
 mod tests;
 
 use config::Config;
-use tracing::level_filters::LevelFilter;
 use tracing::debug;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
