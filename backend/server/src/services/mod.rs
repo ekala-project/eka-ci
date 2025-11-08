@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc::{Sender, channel};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::ci::RepoReader;
 use crate::client::UnixService;
