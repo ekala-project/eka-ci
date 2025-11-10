@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 use tracing::{debug, warn};
 
-use crate::nix::nix_eval_jobs::NixEvalItem;
+use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalItem};
 
 /// This file is meant to handle the evaluation of a "job" which is similar
 /// to the "jobset" by hydra, in particular:
@@ -12,11 +12,13 @@ use crate::nix::nix_eval_jobs::NixEvalItem;
 ///   receives an attrset of inputs
 /// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
 impl super::EvalService {
-    pub async fn run_nix_eval_jobs(&mut self, file_path: &str) -> anyhow::Result<()> {
+    pub async fn run_nix_eval_jobs(&mut self, file_path: &str) -> anyhow::Result<Vec<NixEvalDrv>> {
         let mut cmd = Command::new("nix-eval-jobs")
             .arg(file_path)
             .stdout(Stdio::piped())
             .spawn()?;
+
+        let mut jobs = Vec::new();
 
         {
             // TODO: handle failure case more nicely
@@ -40,6 +42,7 @@ impl super::EvalService {
                         if let Err(e) = self.traverse_drvs(&drv.drv_path).await {
                             warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
                         };
+                        jobs.push(drv);
                     },
                     NixEvalItem::Error(e) => {
                         // TODO: Collect evaluation errors, these are still very useful
@@ -49,6 +52,6 @@ impl super::EvalService {
             }
         }
 
-        Ok(())
+        Ok(jobs)
     }
 }

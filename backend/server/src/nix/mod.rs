@@ -6,6 +6,7 @@ use std::num::NonZeroUsize;
 
 use anyhow::Result;
 use lru::LruCache;
+use octocrab::models::pulls::PullRequest;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -24,6 +25,7 @@ pub struct EvalJob {
 
 pub enum EvalTask {
     Job(EvalJob),
+    GithubJobPR((EvalJob, PullRequest)),
     TraverseDrv(String),
 }
 
@@ -62,17 +64,28 @@ impl EvalService {
                 },
             };
 
-            let result = match &task {
-                EvalTask::Job(drv) => self.run_nix_eval_jobs(&drv.file_path).await,
-                EvalTask::TraverseDrv(drv) => self.traverse_drvs(drv).await,
-            };
-
-            if let Err(e) = result {
-                error!(error = %e, "Failed to handle task")
+            if let Err(e) = self.handle_eval_task(task).await {
+                error!(error = %e, "Failed to handle eval task")
             }
         }
 
         info!("Eval service shutdown gracefully");
+    }
+
+    async fn handle_eval_task(&mut self, task: EvalTask) -> Result<()> {
+        let _ = match &task {
+            EvalTask::Job(drv) => {
+                self.run_nix_eval_jobs(&drv.file_path).await?;
+                ()
+            },
+            EvalTask::TraverseDrv(drv) => self.traverse_drvs(drv).await?,
+            EvalTask::GithubJobPR((drv, pr)) => {
+                let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
+                ()
+            },
+        };
+
+        Ok(())
     }
 
     /// Given a drv, traverse all direct drv dependencies

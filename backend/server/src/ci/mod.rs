@@ -2,6 +2,9 @@ mod config;
 
 use std::path::PathBuf;
 
+use anyhow::Result;
+use config::CIConfig;
+use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -12,6 +15,7 @@ use crate::nix::{EvalJob, EvalTask};
 #[derive(Debug, Clone)]
 pub enum RepoTask {
     Read(PathBuf),
+    ReadPR((PathBuf, PullRequest)),
 }
 /// This service will receive a repo checkout and determine what CI jobs need
 /// to be ran.
@@ -73,33 +77,50 @@ async fn handle_repo_task(
     task: RepoTask,
     eval_sender: &mpsc::Sender<EvalTask>,
 ) -> anyhow::Result<()> {
-    use config::CIConfig;
-
     match task {
+        // This is mostly for debugging, and evaluates a job free of any one PR
         RepoTask::Read(mut path) => {
             let root = path.clone();
-
-            path.push(".ekaci");
-            path.push("config.json");
-
-            debug!("Received ask to read path: {:?}", &path);
-            if !path.exists() {
-                info!("No CI config located at {:?}, skipping", &path);
-            } else {
-                let contents = std::fs::read_to_string(&path)?;
-                let config = CIConfig::from_str(&contents)?;
-                for (_job_name, job) in config.jobs {
-                    let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
-                    let eval_job = EvalJob {
-                        file_path: file_path.to_string_lossy().into(),
-                    };
-                    eval_sender.send(EvalTask::Job(eval_job)).await?;
-                }
+            let config = read_repo_toplevel(&mut path)?;
+            for (_job_name, job) in config.jobs {
+                let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
+                let eval_job = EvalJob {
+                    file_path: file_path.to_string_lossy().into(),
+                };
+                eval_sender.send(EvalTask::Job(eval_job)).await?;
+            }
+        },
+        RepoTask::ReadPR((mut path, pr)) => {
+            let root = path.clone();
+            let config = read_repo_toplevel(&mut path)?;
+            for (_job_name, job) in config.jobs {
+                let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
+                let eval_job = EvalJob {
+                    file_path: file_path.to_string_lossy().into(),
+                };
+                // TODO: Add jobset to db
+                eval_sender
+                    .send(EvalTask::GithubJobPR((eval_job, pr.clone())))
+                    .await?;
             }
         },
     }
 
     Ok(())
+}
+
+fn read_repo_toplevel(path: &mut PathBuf) -> Result<CIConfig> {
+    path.push(".ekaci");
+    path.push("config.json");
+
+    debug!("Received ask to read path: {:?}", &path);
+    if !path.exists() {
+        anyhow::bail!("No CI config located at {:?}, skipping", &path);
+    }
+
+    let contents = std::fs::read_to_string(&path)?;
+    let config = CIConfig::from_str(&contents)?;
+    Ok(config)
 }
 
 /// Resolve the file path
