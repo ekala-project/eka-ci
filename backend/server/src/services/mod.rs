@@ -31,12 +31,6 @@ pub async fn start_services(config: Config) -> Result<()> {
         SchedulerService::new(db_service.clone(), config.remote_builders).await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
-    let eval_service = EvalService::new(
-        eval_receiver,
-        db_service.clone(),
-        scheduler_service.ingress_request_sender(),
-    );
-
     let unix_service = UnixService::bind_to_path(
         &config.unix.socket_path,
         eval_sender.clone(),
@@ -51,7 +45,12 @@ pub async fn start_services(config: Config) -> Result<()> {
         .await
         .context("failed to start web service")?;
 
-    if let Err(e) = github::register_app().await {
+    let maybe_github_service = match  = github::register_app().await {
+        Ok(octocrab) => {
+            let github_service = GitHubService(db_service.clone(), octocrab)?;
+            Some(github_service)
+        }
+        Err(e) => {
         // In dev environments, there usually is no authentication, but the server should still be
         // runnable. If someone however tried to configure authentication, make sure to tell them
         // load and clear if there was a problem.
@@ -66,7 +65,15 @@ pub async fn start_services(config: Config) -> Result<()> {
         } else {
             Err(e).context("failed to register GitHub app")?;
         }
+        None
+        }
     }
+
+    let eval_service = EvalService::new(
+        eval_receiver,
+        db_service.clone(),
+        scheduler_service.ingress_request_sender(),
+    );
 
     // Use `bind_addr` instead of the `addr` + `port` given by the user, to ensure the printed
     // address is always correct (even for funny things like setting the port to 0).

@@ -16,6 +16,7 @@ use crate::db::DbService;
 use crate::db::model::drv::Drv;
 use crate::db::model::drv_id::DrvId;
 use crate::db::model::{Reference, Referrer};
+use crate::nix::nix_eval_jobs::NixEvalDrv;
 use crate::scheduler::IngressTask;
 
 pub struct EvalJob {
@@ -34,6 +35,7 @@ pub struct EvalService {
     drv_receiver: mpsc::Receiver<EvalTask>,
     /// Used to request scheduler to determine if it should build a drv
     scheduler_sender: mpsc::Sender<IngressTask>,
+    github_sender: mpsc::Sender<GitHubTask>,
     drv_map: LruCache<DrvId, Drv>,
 }
 
@@ -42,11 +44,13 @@ impl EvalService {
         rcvr: mpsc::Receiver<EvalTask>,
         db_service: DbService,
         scheduler_sender: mpsc::Sender<IngressTask>,
+    github_sender: mpsc::Sender<GitHubTask>,
     ) -> EvalService {
         EvalService {
             db_service,
             drv_receiver: rcvr,
             scheduler_sender,
+            github_sender,
             drv_map: LruCache::new(NonZeroUsize::new(5000).unwrap()),
         }
     }
@@ -72,20 +76,25 @@ impl EvalService {
         info!("Eval service shutdown gracefully");
     }
 
-    async fn handle_eval_task(&mut self, task: EvalTask) -> Result<()> {
-        let _ = match &task {
+    async fn handle_eval_task(&mut self, task: EvalTask) {
+        match &task {
             EvalTask::Job(drv) => {
-                self.run_nix_eval_jobs(&drv.file_path).await?;
+                self.run_nix_eval_jobs(&drv.file_path).await?,
                 ()
+            }
+            EvalTask::TraverseDrv(drv) => {
+                self.traverse_drvs(drv).await?;
+                Vec::new()
             },
-            EvalTask::TraverseDrv(drv) => self.traverse_drvs(drv).await?,
             EvalTask::GithubJobPR((drv, pr)) => {
                 let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
-                ()
+                let gh_task = GitHubTask::CreateJobSet {
+                    commit: pr.head.sha,
+                    jobs,
+                };
+                self.github_sender.send(gh_task);
             },
         };
-
-        Ok(())
     }
 
     /// Given a drv, traverse all direct drv dependencies

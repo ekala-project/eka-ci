@@ -4,7 +4,9 @@ use octocrab::{Octocrab, Page};
 use thiserror::Error;
 use tracing::{debug, info};
 
+pub mod service;
 mod webhook;
+
 pub use webhook::handle_webhook_payload;
 
 #[derive(Error, Debug)]
@@ -30,11 +32,10 @@ pub async fn register_app() -> Result<(Octocrab, Page<Installation>), AppRegistr
     let key = jsonwebtoken::EncodingKey::from_rsa_pem(app_private_key.as_bytes())?;
 
     let octocrab = Octocrab::builder().app(app_id, key).build()?;
-    let installations = octocrab.apps().installations().send().await?;
 
     info!("Successfully registered as github app");
 
     debug!("Installations: {:?}", &installations);
 
-    Ok((octocrab, installations))
+    Ok(octocrab)
 }
