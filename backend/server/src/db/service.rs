@@ -7,6 +7,7 @@ use tracing::{debug, info};
 use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
+use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 #[derive(Clone)]
 pub struct DbService {
@@ -101,5 +102,12 @@ impl DbService {
 
     pub async fn get_buildable_drvs(&self) -> anyhow::Result<Vec<DrvId>> {
         drv::get_derivations_in_state(build_event::DrvBuildState::Buildable, &self.pool).await
+    }
+
+    pub async fn insert_jobset(
+        &self,
+        _jobs: &Vec<(String, NixEvalDrv)>,
+    ) -> anyhow::Result<Vec<DrvId>> {
+        todo!();
     }
 }

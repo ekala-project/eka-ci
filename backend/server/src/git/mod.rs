@@ -2,6 +2,7 @@ mod actions;
 mod types;
 
 use anyhow::Result;
+use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -13,6 +14,7 @@ use crate::ci::RepoTask;
 #[derive(Debug, Clone)]
 pub enum GitTask {
     Checkout(GitWorkspace),
+    PRCheckout((GitWorkspace, PullRequest)),
 }
 
 pub struct GitService {
@@ -71,6 +73,12 @@ async fn handle_git_task(
             repo.ensure_master_clone().await?;
             repo.create_worktree().await?;
             let repo_task = RepoTask::Read(repo.worktree_path());
+            repo_sender.send(repo_task).await?;
+        },
+        GitTask::PRCheckout((repo, pr)) => {
+            repo.ensure_master_clone().await?;
+            repo.create_worktree().await?;
+            let repo_task = RepoTask::ReadGitHub((repo.worktree_path(), pr));
             repo_sender.send(repo_task).await?;
         },
     }

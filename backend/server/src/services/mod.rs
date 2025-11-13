@@ -9,7 +9,7 @@ use crate::client::UnixService;
 use crate::config::Config;
 use crate::db::DbService;
 use crate::git::GitService;
-use crate::github;
+use crate::github::{self, GitHubService};
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::web::WebService;
@@ -31,12 +31,6 @@ pub async fn start_services(config: Config) -> Result<()> {
         SchedulerService::new(db_service.clone(), config.remote_builders).await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
-    let eval_service = EvalService::new(
-        eval_receiver,
-        db_service.clone(),
-        scheduler_service.ingress_request_sender(),
-    );
-
     let unix_service = UnixService::bind_to_path(
         &config.unix.socket_path,
         eval_sender.clone(),
@@ -51,22 +45,36 @@ pub async fn start_services(config: Config) -> Result<()> {
         .await
         .context("failed to start web service")?;
 
-    if let Err(e) = github::register_app().await {
-        // In dev environments, there usually is no authentication, but the server should still be
-        // runnable. If someone however tried to configure authentication, make sure to tell them
-        // load and clear if there was a problem.
-        if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
-            warn!(
-                "Skipping GitHub app registration: {}",
-                anyhow::Chain::new(&e)
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join(": ")
-            );
-        } else {
-            Err(e).context("failed to register GitHub app")?;
-        }
-    }
+    let maybe_github_service = match github::register_app().await {
+        Ok(octocrab) => {
+            let github_service = GitHubService::new(db_service.clone(), octocrab).await?;
+            Some(github_service)
+        },
+        Err(e) => {
+            // In dev environments, there usually is no authentication, but the server should still
+            // be runnable. If someone however tried to configure authentication, make
+            // sure to tell them load and clear if there was a problem.
+            if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
+                warn!(
+                    "Skipping GitHub app registration: {}",
+                    anyhow::Chain::new(&e)
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join(": ")
+                );
+            } else {
+                Err(e).context("failed to register GitHub app")?;
+            }
+            None
+        },
+    };
+
+    let eval_service = EvalService::new(
+        eval_receiver,
+        db_service.clone(),
+        scheduler_service.ingress_request_sender(),
+        maybe_github_service.as_ref().map(|x| x.get_sender()),
+    );
 
     // Use `bind_addr` instead of the `addr` + `port` given by the user, to ensure the printed
     // address is always correct (even for funny things like setting the port to 0).
@@ -91,6 +99,9 @@ pub async fn start_services(config: Config) -> Result<()> {
     let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
     let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
+    if let Some(github_service) = maybe_github_service {
+        let _ = tokio::spawn(github_service.run(cancellation_token.clone()));
+    }
 
     let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
