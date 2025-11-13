@@ -13,11 +13,12 @@ where
     Self: Send + 'static,
 {
     fn get_sender(&self) -> mpsc::Sender<T>;
-    fn get_receiver(&mut self) -> &mut mpsc::Receiver<T>;
+    fn take_receiver(&mut self) -> Option<mpsc::Receiver<T>>;
 
     fn run(mut self, cancel_token: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
-            let mut receiver = self.get_receiver();
+            let mut receiver = self.take_receiver().expect("receiver was already taken");
+
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => {

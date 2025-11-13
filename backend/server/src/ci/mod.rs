@@ -6,8 +6,6 @@ use anyhow::Result;
 use config::CIConfig;
 use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::nix::{EvalJob, EvalTask};
@@ -29,7 +27,7 @@ pub struct RepoReader {
     // We may in the future need to recover an individual service, so retaining
     // a handle to the other service channels will be prequisite
     repo_sender: mpsc::Sender<RepoTask>,
-    repo_receiver: mpsc::Receiver<RepoTask>,
+    repo_receiver: Option<mpsc::Receiver<RepoTask>>,
     eval_sender: mpsc::Sender<EvalTask>,
 }
 
@@ -39,7 +37,7 @@ impl RepoReader {
 
         Ok(Self {
             repo_sender,
-            repo_receiver,
+            repo_receiver: Some(repo_receiver),
             eval_sender,
         })
     }
@@ -50,8 +48,8 @@ impl AsyncService<RepoTask> for RepoReader {
         self.repo_sender.clone()
     }
 
-    fn get_receiver(&mut self) -> &mut mpsc::Receiver<RepoTask> {
-        &mut self.repo_receiver
+    fn take_receiver(&mut self) -> Option<mpsc::Receiver<RepoTask>> {
+        self.repo_receiver.take()
     }
 
     async fn handle_task(&self, task: RepoTask) -> anyhow::Result<()> {
