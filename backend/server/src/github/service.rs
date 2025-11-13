@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use octocrab::Octocrab;
+use octocrab::models::pulls::PullRequest;
 use octocrab::models::{Installation, InstallationId};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -14,7 +15,7 @@ use crate::nix::nix_eval_jobs::NixEvalDrv;
 #[derive(Debug)]
 pub enum GitHubTask {
     CreateJobSet {
-        commit: String,
+        pr: PullRequest,
         jobs: Vec<NixEvalDrv>,
     },
 }
@@ -26,6 +27,8 @@ pub struct GitHubService {
     // a handle to the other service channels will be prequisite
     db_service: DbService,
     octocrab: Octocrab,
+    // TODO: look up installation associated with webhook event
+    #[allow(dead_code)]
     installations: HashMap<InstallationId, Installation>,
     github_receiver: mpsc::Receiver<GitHubTask>,
     github_sender: mpsc::Sender<GitHubTask>,
@@ -85,6 +88,31 @@ impl GitHubService {
     }
 
     async fn handle_github_task(&self, task: &GitHubTask) -> Result<()> {
+        match task {
+            GitHubTask::CreateJobSet { pr, jobs } => {
+                use octocrab::params::checks::CheckRunStatus;
+
+                let commit = pr.head.sha.clone();
+                let job_pairs: Vec<(String, NixEvalDrv)> = jobs
+                    .iter()
+                    .map(|x| (commit.clone(), (*x).clone()))
+                    .collect();
+                self.db_service.insert_jobset(&job_pairs).await?;
+                let repo = *pr.repo.as_ref().unwrap().clone();
+                let owner = repo.owner.unwrap().login;
+                let repo_name = repo.name;
+
+                // TODO: parallelize this
+                for job in jobs {
+                    self.octocrab
+                        .checks(&owner, &repo_name)
+                        .create_check_run(&job.attr, &commit)
+                        .status(CheckRunStatus::InProgress)
+                        .send()
+                        .await?;
+                }
+            },
+        }
         Ok(())
     }
 }

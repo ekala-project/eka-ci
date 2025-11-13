@@ -88,7 +88,7 @@ impl EvalService {
                 let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
                 if let Some(gh_sender) = self.github_sender.as_ref() {
                     let gh_task = GitHubTask::CreateJobSet {
-                        commit: pr.head.sha.clone(),
+                        pr: pr.clone(),
                         jobs,
                     };
                     gh_sender.send(gh_task).await?;

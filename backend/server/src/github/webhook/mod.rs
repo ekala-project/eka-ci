@@ -33,6 +33,7 @@ async fn handle_github_pr(pr: payload::PullRequestWebhookEventPayload) {
     }
 }
 
+#[allow(dead_code)]
 // base_ref is optional, so may actually be hard to determine what we can "diff"
 // the evaluation from
 async fn handle_github_push(push: payload::PushWebhookEventPayload) {
@@ -41,5 +42,6 @@ async fn handle_github_push(push: payload::PushWebhookEventPayload) {
 
 /// This is needed to checkout potentially private github repos
 /// These tokens only last an hour
-async fn fetch_installation_token(pr: &PullRequest) {}
-async fn eval_pr(pr: PullRequest) {}
+async fn fetch_installation_token(_pr: &PullRequest) {}
+#[allow(dead_code)]
+async fn eval_pr(_pr: PullRequest) {}

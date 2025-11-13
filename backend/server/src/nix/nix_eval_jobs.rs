@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum NixEvalItem {
     Error(NixEvalError),
     Drv(NixEvalDrv),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NixEvalDrv {
     /// String of full attr path
     /// E.g. "python.pkgs.setuptools"
@@ -34,7 +34,7 @@ pub struct NixEvalDrv {
     pub system: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NixEvalError {
     pub attr: String,
     #[serde(rename = "attrPath")]

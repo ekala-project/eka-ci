@@ -15,7 +15,7 @@ use crate::nix::{EvalJob, EvalTask};
 #[derive(Debug, Clone)]
 pub enum RepoTask {
     Read(PathBuf),
-    ReadPR((PathBuf, PullRequest)),
+    ReadGitHub((PathBuf, PullRequest)),
 }
 /// This service will receive a repo checkout and determine what CI jobs need
 /// to be ran.
@@ -90,7 +90,7 @@ async fn handle_repo_task(
                 eval_sender.send(EvalTask::Job(eval_job)).await?;
             }
         },
-        RepoTask::ReadPR((mut path, pr)) => {
+        RepoTask::ReadGitHub((mut path, pr)) => {
             let root = path.clone();
             let config = read_repo_toplevel(&mut path)?;
             for (_job_name, job) in config.jobs {

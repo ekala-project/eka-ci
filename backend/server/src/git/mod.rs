@@ -78,6 +78,8 @@ async fn handle_git_task(
         GitTask::PRCheckout((repo, pr)) => {
             repo.ensure_master_clone().await?;
             repo.create_worktree().await?;
+            let repo_task = RepoTask::ReadGitHub((repo.worktree_path(), pr));
+            repo_sender.send(repo_task).await?;
         },
     }
 
