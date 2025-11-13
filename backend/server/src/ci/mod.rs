@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::nix::{EvalJob, EvalTask};
+use crate::services::AsyncService;
 
 #[derive(Debug, Clone)]
 pub enum RepoTask {
@@ -29,84 +30,70 @@ pub struct RepoReader {
     // a handle to the other service channels will be prequisite
     repo_sender: mpsc::Sender<RepoTask>,
     repo_receiver: mpsc::Receiver<RepoTask>,
+    eval_sender: mpsc::Sender<EvalTask>,
 }
 
 impl RepoReader {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(eval_sender: mpsc::Sender<EvalTask>) -> anyhow::Result<Self> {
         let (repo_sender, repo_receiver) = mpsc::channel(1000);
 
         Ok(Self {
             repo_sender,
             repo_receiver,
+            eval_sender,
         })
     }
+}
 
-    /// Producer channel for sending build requests for eventual scheduling
-    pub fn repo_request_sender(&self) -> mpsc::Sender<RepoTask> {
+impl AsyncService<RepoTask> for RepoReader {
+    fn get_sender(&self) -> mpsc::Sender<RepoTask> {
         self.repo_sender.clone()
     }
 
-    pub fn run(
-        self,
-        eval_sender: mpsc::Sender<EvalTask>,
-        cancel_token: CancellationToken,
-    ) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            cancel_token
-                .run_until_cancelled(repo_tasks_loop(self.repo_receiver, eval_sender))
-                .await;
-        })
+    fn get_receiver(&mut self) -> &mut mpsc::Receiver<RepoTask> {
+        &mut self.repo_receiver
     }
-}
 
-async fn repo_tasks_loop(
-    mut receiver: mpsc::Receiver<RepoTask>,
-    eval_sender: mpsc::Sender<EvalTask>,
-) {
-    loop {
-        if let Some(task) = receiver.recv().await {
-            debug!("Received repo task {:?}", &task);
-            if let Err(e) = handle_repo_task(task.clone(), &eval_sender).await {
-                warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
-            }
+    async fn handle_task(&self, task: RepoTask) -> anyhow::Result<()> {
+        match task {
+            // This is mostly for debugging, and evaluates a job free of any one PR
+            RepoTask::Read(mut path) => {
+                let root = path.clone();
+                let config = read_repo_toplevel(&mut path)?;
+                for (_job_name, job) in config.jobs {
+                    let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
+                    let eval_job = EvalJob {
+                        file_path: file_path.to_string_lossy().into(),
+                    };
+                    self.eval_sender.send(EvalTask::Job(eval_job)).await?;
+                }
+            },
+            RepoTask::ReadGitHub((mut path, pr)) => {
+                let root = path.clone();
+                let config = read_repo_toplevel(&mut path)?;
+                for (_job_name, job) in config.jobs {
+                    let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
+                    let eval_job = EvalJob {
+                        file_path: file_path.to_string_lossy().into(),
+                    };
+                    // TODO: Add jobset to db
+                    self.eval_sender
+                        .send(EvalTask::GithubJobPR((eval_job, pr.clone())))
+                        .await?;
+                }
+            },
         }
-    }
-}
 
-async fn handle_repo_task(
-    task: RepoTask,
-    eval_sender: &mpsc::Sender<EvalTask>,
-) -> anyhow::Result<()> {
-    match task {
-        // This is mostly for debugging, and evaluates a job free of any one PR
-        RepoTask::Read(mut path) => {
-            let root = path.clone();
-            let config = read_repo_toplevel(&mut path)?;
-            for (_job_name, job) in config.jobs {
-                let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
-                let eval_job = EvalJob {
-                    file_path: file_path.to_string_lossy().into(),
-                };
-                eval_sender.send(EvalTask::Job(eval_job)).await?;
-            }
-        },
-        RepoTask::ReadGitHub((mut path, pr)) => {
-            let root = path.clone();
-            let config = read_repo_toplevel(&mut path)?;
-            for (_job_name, job) in config.jobs {
-                let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
-                let eval_job = EvalJob {
-                    file_path: file_path.to_string_lossy().into(),
-                };
-                // TODO: Add jobset to db
-                eval_sender
-                    .send(EvalTask::GithubJobPR((eval_job, pr.clone())))
-                    .await?;
-            }
-        },
+        Ok(())
     }
 
-    Ok(())
+    async fn handle_failure(&mut self, error: anyhow::Error) {
+        warn!("Failure while handling repo action: {:?}", error);
+    }
+
+    async fn handle_closure(&mut self) {
+        warn!("Closing repo service");
+    }
 }
 
 fn read_repo_toplevel(path: &mut PathBuf) -> Result<CIConfig> {
