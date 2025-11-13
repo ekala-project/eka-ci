@@ -14,6 +14,9 @@ use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::web::WebService;
 
+mod async_service;
+pub use async_service::AsyncService;
+
 pub async fn start_services(config: Config) -> Result<()> {
     let db_service = DbService::new(&config.db_path)
         .await
@@ -21,25 +24,9 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let db_pool = db_service.pool.clone();
 
-    let git_service = GitService::new()?;
-    let git_sender = git_service.git_request_sender();
-
-    let repo_service = RepoReader::new()?;
-    let repo_sender = repo_service.repo_request_sender();
-
     let scheduler_service =
         SchedulerService::new(db_service.clone(), config.remote_builders).await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
-
-    let unix_service = UnixService::bind_to_path(
-        &config.unix.socket_path,
-        eval_sender.clone(),
-        repo_sender.clone(),
-        db_service.clone(),
-        git_sender.clone(),
-    )
-    .await
-    .context("failed to start unix service")?;
 
     let web_service = WebService::bind_to_address(&config.web.address)
         .await
@@ -76,6 +63,21 @@ pub async fn start_services(config: Config) -> Result<()> {
         maybe_github_service.as_ref().map(|x| x.get_sender()),
     );
 
+    let repo_service = RepoReader::new(eval_sender.clone())?;
+    let repo_sender = repo_service.get_sender();
+
+    let git_service = GitService::new(repo_sender.clone())?;
+
+    let unix_service = UnixService::bind_to_path(
+        &config.unix.socket_path,
+        eval_sender.clone(),
+        repo_sender.clone(),
+        db_service.clone(),
+        git_service.get_sender(),
+    )
+    .await
+    .context("failed to start unix service")?;
+
     // Use `bind_addr` instead of the `addr` + `port` given by the user, to ensure the printed
     // address is always correct (even for funny things like setting the port to 0).
     info!(
@@ -94,8 +96,8 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
-    let git_handle = tokio::spawn(git_service.run(repo_sender, cancellation_token.clone()));
-    let repo_handle = tokio::spawn(repo_service.run(eval_sender, cancellation_token.clone()));
+    let git_handle = tokio::spawn(git_service.run(cancellation_token.clone()));
+    let repo_handle = tokio::spawn(repo_service.run(cancellation_token.clone()));
     let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
     let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
