@@ -47,9 +47,11 @@ where
         &self,
         task: T,
     ) -> impl std::future::Future<Output = Result<()>> + std::marker::Send;
+
     fn handle_failure(
         &mut self,
         error: Error,
     ) -> impl std::future::Future<Output = ()> + std::marker::Send;
+
     fn handle_closure(&mut self) -> impl std::future::Future<Output = ()> + std::marker::Send;
 }
