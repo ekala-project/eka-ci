@@ -8,7 +8,7 @@ use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::nix::{EvalJob, EvalTask};
 

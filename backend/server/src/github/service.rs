@@ -1,39 +1,90 @@
-#[derive(Debug, Clone)]
+use std::collections::HashMap;
+
+use anyhow::Result;
+use octocrab::Octocrab;
+use octocrab::models::{Installation, InstallationId};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
+
+use crate::db::DbService;
+use crate::nix::nix_eval_jobs::NixEvalDrv;
+
+#[derive(Debug)]
 pub enum GitHubTask {
-    CreateJobSet { commit: String, jobs: Vec<NixEvalDrv> },
+    CreateJobSet {
+        commit: String,
+        jobs: Vec<NixEvalDrv>,
+    },
 }
-/// This service will receive a repo checkout and determine what CI jobs need
-/// to be ran.
-///
-/// In particular, this involves reading the content of the .ekaci/ directory,
-/// and determining if there's legacy CI jobs or flake outputs
-#[allow(dead_code)]
+
+/// This service will be response for pushing/posting events to GitHub
 pub struct GitHubService {
     // Channels to individual services
     // We may in the future need to recover an individual service, so retaining
     // a handle to the other service channels will be prequisite
     db_service: DbService,
     octocrab: Octocrab,
+    installations: HashMap<InstallationId, Installation>,
+    github_receiver: mpsc::Receiver<GitHubTask>,
+    github_sender: mpsc::Sender<GitHubTask>,
 }
 
-impl RepoReader {
-    pub fn new(db_service: DbService) -> anyhow::Result<Self> {
+impl GitHubService {
+    pub async fn new(db_service: DbService, octocrab: Octocrab) -> anyhow::Result<Self> {
+        use futures::stream::TryStreamExt;
+        use tokio::pin;
+
+        let mut installations = HashMap::new();
+        let octoclone = octocrab.clone();
+        let installations_stream = octocrab
+            .apps()
+            .installations()
+            .send()
+            .await?
+            .into_stream(&octoclone);
+        pin!(installations_stream);
+        while let Some(installation) = installations_stream.try_next().await? {
+            installations.insert(installation.id, installation);
+        }
+
+        debug!("Installations: {:?}", &installations);
+
+        let (github_sender, github_receiver) = mpsc::channel(100);
         Ok(Self {
             db_service,
+            octocrab,
+            installations,
+            github_receiver,
+            github_sender,
         })
     }
 
-    pub fn run(
-        self,
-        eval_sender: mpsc::Sender<EvalTask>,
-        cancel_token: CancellationToken,
-    ) -> JoinHandle<()> {
+    pub fn get_sender(&self) -> mpsc::Sender<GitHubTask> {
+        self.github_sender.clone()
+    }
+
+    pub fn run(self, cancel_token: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
             cancel_token
-                .run_until_cancelled(repo_tasks_loop(self.repo_receiver, eval_sender))
+                .run_until_cancelled(self.github_tasks_loop())
                 .await;
         })
     }
+
+    async fn github_tasks_loop(mut self) {
+        loop {
+            if let Some(task) = self.github_receiver.recv().await {
+                debug!("Received github task {:?}", &task);
+                if let Err(e) = self.handle_github_task(&task).await {
+                    warn!("Failed to handle github request {:?}: {:?}", &task, e);
+                }
+            }
+        }
+    }
+
+    async fn handle_github_task(&self, task: &GitHubTask) -> Result<()> {
+        Ok(())
+    }
 }
-
-

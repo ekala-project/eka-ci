@@ -16,7 +16,7 @@ use crate::db::DbService;
 use crate::db::model::drv::Drv;
 use crate::db::model::drv_id::DrvId;
 use crate::db::model::{Reference, Referrer};
-use crate::nix::nix_eval_jobs::NixEvalDrv;
+use crate::github::GitHubTask;
 use crate::scheduler::IngressTask;
 
 pub struct EvalJob {
@@ -35,7 +35,7 @@ pub struct EvalService {
     drv_receiver: mpsc::Receiver<EvalTask>,
     /// Used to request scheduler to determine if it should build a drv
     scheduler_sender: mpsc::Sender<IngressTask>,
-    github_sender: mpsc::Sender<GitHubTask>,
+    github_sender: Option<mpsc::Sender<GitHubTask>>,
     drv_map: LruCache<DrvId, Drv>,
 }
 
@@ -44,7 +44,7 @@ impl EvalService {
         rcvr: mpsc::Receiver<EvalTask>,
         db_service: DbService,
         scheduler_sender: mpsc::Sender<IngressTask>,
-    github_sender: mpsc::Sender<GitHubTask>,
+        github_sender: Option<mpsc::Sender<GitHubTask>>,
     ) -> EvalService {
         EvalService {
             db_service,
@@ -76,25 +76,29 @@ impl EvalService {
         info!("Eval service shutdown gracefully");
     }
 
-    async fn handle_eval_task(&mut self, task: EvalTask) {
+    async fn handle_eval_task(&mut self, task: EvalTask) -> Result<()> {
         match &task {
             EvalTask::Job(drv) => {
-                self.run_nix_eval_jobs(&drv.file_path).await?,
-                ()
-            }
+                self.run_nix_eval_jobs(&drv.file_path).await?;
+            },
             EvalTask::TraverseDrv(drv) => {
                 self.traverse_drvs(drv).await?;
-                Vec::new()
             },
             EvalTask::GithubJobPR((drv, pr)) => {
                 let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
-                let gh_task = GitHubTask::CreateJobSet {
-                    commit: pr.head.sha,
-                    jobs,
-                };
-                self.github_sender.send(gh_task);
+                if let Some(gh_sender) = self.github_sender.as_ref() {
+                    let gh_task = GitHubTask::CreateJobSet {
+                        commit: pr.head.sha.clone(),
+                        jobs,
+                    };
+                    gh_sender.send(gh_task).await?;
+                } else {
+                    warn!("GitHub service was never initialized, skipping task to create a jobset")
+                }
             },
         };
+
+        Ok(())
     }
 
     /// Given a drv, traverse all direct drv dependencies

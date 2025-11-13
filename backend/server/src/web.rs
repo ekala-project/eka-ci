@@ -4,10 +4,10 @@ use anyhow::{Context, Result};
 use axum::Router;
 use axum::extract::Json;
 use axum::routing::{get, post};
-use octocrab::models::webhook_events::{WebhookEventPayload as WEP, payload};
+use octocrab::models::webhook_events::WebhookEventPayload as WEP;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 pub struct WebService {
     listener: TcpListener,

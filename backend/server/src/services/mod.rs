@@ -9,7 +9,7 @@ use crate::client::UnixService;
 use crate::config::Config;
 use crate::db::DbService;
 use crate::git::GitService;
-use crate::github;
+use crate::github::{self, GitHubService};
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::web::WebService;
@@ -45,34 +45,35 @@ pub async fn start_services(config: Config) -> Result<()> {
         .await
         .context("failed to start web service")?;
 
-    let maybe_github_service = match  = github::register_app().await {
+    let maybe_github_service = match github::register_app().await {
         Ok(octocrab) => {
-            let github_service = GitHubService(db_service.clone(), octocrab)?;
+            let github_service = GitHubService::new(db_service.clone(), octocrab).await?;
             Some(github_service)
-        }
+        },
         Err(e) => {
-        // In dev environments, there usually is no authentication, but the server should still be
-        // runnable. If someone however tried to configure authentication, make sure to tell them
-        // load and clear if there was a problem.
-        if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
-            warn!(
-                "Skipping GitHub app registration: {}",
-                anyhow::Chain::new(&e)
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join(": ")
-            );
-        } else {
-            Err(e).context("failed to register GitHub app")?;
-        }
-        None
-        }
-    }
+            // In dev environments, there usually is no authentication, but the server should still
+            // be runnable. If someone however tried to configure authentication, make
+            // sure to tell them load and clear if there was a problem.
+            if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
+                warn!(
+                    "Skipping GitHub app registration: {}",
+                    anyhow::Chain::new(&e)
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join(": ")
+                );
+            } else {
+                Err(e).context("failed to register GitHub app")?;
+            }
+            None
+        },
+    };
 
     let eval_service = EvalService::new(
         eval_receiver,
         db_service.clone(),
         scheduler_service.ingress_request_sender(),
+        maybe_github_service.map(|x| x.get_sender()),
     );
 
     // Use `bind_addr` instead of the `addr` + `port` given by the user, to ensure the printed
