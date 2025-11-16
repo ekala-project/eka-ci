@@ -5,6 +5,8 @@ use anyhow::Result;
 use tokio::process::Command;
 use tracing::debug;
 
+use super::GitRepo;
+
 pub async fn clone_git_repo(git_url: &str, path: &str) -> Result<Output> {
     debug!("Attempting to checkout {} at {}", git_url, path);
 
@@ -25,6 +27,24 @@ pub async fn repo_is_healthy(path: &str) -> Result<bool> {
     Ok(status.success())
 }
 
+pub async fn fetch_remote_repo<P: AsRef<Path>>(
+    repo_dir: P,
+    repo: &GitRepo,
+    reference: &str,
+) -> Result<()> {
+    debug!("fetching branch {} from {}", reference, repo.checkout_url());
+
+    let out = Command::new("git")
+        .current_dir(repo_dir)
+        .args(["fetch", &repo.checkout_url(), reference])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!("Failed to fetch remote branch {}", repo.checkout_url());
+    }
+
+    Ok(())
+}
 pub async fn add_git_worktree<P: AsRef<Path>>(
     repo_dir: P,
     worktree_dir: &str,

@@ -156,9 +156,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             version: "0.1.0".to_string(),
         }),
         req::Git(git_info) => {
-            let dirs = xdg::BaseDirectories::with_prefix("ekaci").unwrap();
-            let repos_dir = dirs.create_data_directory("repos").unwrap();
-            let task = GitTask::Checkout(GitWorkspace::from_git_request(git_info, repos_dir));
+            let task = GitTask::Checkout(GitWorkspace::from_git_request(git_info));
             dispatch
                 .git_sender
                 .send(task)

@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
+use anyhow::{Context, Result};
+use octocrab::models::Repository;
 use shared::types::GitRequest;
 use tracing::debug;
 
-use super::actions::{add_git_worktree, clone_git_repo};
+use super::actions::{add_git_worktree, clone_git_repo, fetch_remote_repo};
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -33,19 +35,19 @@ pub struct GitRepo {
     pub repo: String,
 }
 
-/// This is meant to provision a worktree
-/// To quicken checkout performance, we use a single "origin" to keep
-/// a running heap of git objects, then we can just use worktrees to create
-/// cheap per-commit directories
-#[derive(Clone, Debug)]
-pub struct GitWorkspace {
-    repo: GitRepo,
-    /// Branch, tag, or commit
-    rev_parse: String,
-    /// Non-worktree tree path
-    repo_path: PathBuf,
-    /// Worktree tree path
-    worktree_path: PathBuf,
+impl GitRepo {
+    pub fn from_gh_repo(
+        preferred: Option<&Repository>,
+        default: Option<&Repository>,
+    ) -> Result<Self> {
+        let repo: &Repository = preferred.unwrap_or(default.context("no repo")?);
+        Ok(Self {
+            protocol: GitProtocol::Https,
+            domain: repo.url.domain().context("Missing domain")?.to_string(),
+            owner: repo.owner.as_ref().context("Missing owner")?.login.clone(),
+            repo: repo.name.clone(),
+        })
+    }
 }
 
 impl GitRepo {
@@ -73,8 +75,23 @@ impl GitRepo {
     }
 }
 
+/// This is meant to provision a worktree
+/// To quicken checkout performance, we use a single "origin" to keep
+/// a running heap of git objects, then we can just use worktrees to create
+/// cheap per-commit directories
+#[derive(Clone, Debug)]
+pub struct GitWorkspace {
+    repo: GitRepo,
+    /// Branch, tag, or commit
+    rev_parse: String,
+    /// Non-worktree tree path
+    repo_path: PathBuf,
+    /// Worktree tree path
+    worktree_path: PathBuf,
+}
+
 impl GitWorkspace {
-    pub fn new(repo: GitRepo, rev_parse: String, mut repo_path_prefix: PathBuf) -> Self {
+    pub fn new(repo: GitRepo, rev_parse: &str, mut repo_path_prefix: PathBuf) -> Self {
         repo_path_prefix.push(&repo.domain);
         repo_path_prefix.push(&repo.owner);
         repo_path_prefix.push(&repo.repo);
@@ -86,10 +103,16 @@ impl GitWorkspace {
         repo_path_prefix.push("master");
         Self {
             repo,
-            rev_parse,
+            rev_parse: rev_parse.to_string(),
             repo_path: repo_path_prefix,
             worktree_path,
         }
+    }
+
+    pub fn from_git_repo(repo: GitRepo, rev_parse: &str) -> Self {
+        let dirs = xdg::BaseDirectories::with_prefix("ekaci").unwrap();
+        let repos_dir = dirs.create_data_directory("repos").unwrap();
+        Self::new(repo, rev_parse, repos_dir)
     }
 
     /// Ensure that the main clone exists and is healthy
@@ -107,6 +130,15 @@ impl GitWorkspace {
         }
 
         Ok(())
+    }
+
+    /// Assumes that master worktree has already been instantiated
+    pub async fn fetch_remote_repo(
+        &self,
+        remote_repo: &GitRepo,
+        branch: &str,
+    ) -> anyhow::Result<()> {
+        fetch_remote_repo(&self.repo_path, remote_repo, branch).await
     }
 
     pub async fn create_worktree(&self) -> anyhow::Result<()> {
@@ -130,7 +162,7 @@ impl GitWorkspace {
         self.worktree_path.clone()
     }
 
-    pub fn from_git_request(request: GitRequest, repo_path_prefix: PathBuf) -> Self {
+    pub fn from_git_request(request: GitRequest) -> Self {
         let repo = GitRepo {
             protocol: GitProtocol::Https,
             domain: request.domain,
@@ -138,7 +170,7 @@ impl GitWorkspace {
             repo: request.repo,
         };
 
-        Self::new(repo, request.commitish, repo_path_prefix)
+        Self::from_git_repo(repo, &request.commitish)
     }
 }
 

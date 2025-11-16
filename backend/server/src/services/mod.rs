@@ -28,10 +28,10 @@ pub async fn start_services(config: Config) -> Result<()> {
         SchedulerService::new(db_service.clone(), config.remote_builders).await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
-    let (maybe_github_service, octocrab_for_web) = match github::register_app().await {
+    let maybe_github_service = match github::register_app().await {
         Ok(octocrab) => {
-            let github_service = GitHubService::new(db_service.clone(), octocrab.clone()).await?;
-            (Some(github_service), Some(octocrab))
+            let github_service = GitHubService::new(db_service.clone(), octocrab).await?;
+            Some(github_service)
         },
         Err(e) => {
             // In dev environments, there usually is no authentication, but the server should still
@@ -48,13 +48,9 @@ pub async fn start_services(config: Config) -> Result<()> {
             } else {
                 Err(e).context("failed to register GitHub app")?;
             }
-            (None, None)
+            None
         },
     };
-
-    let web_service = WebService::bind_to_address(&config.web.address, octocrab_for_web)
-        .await
-        .context("failed to start web service")?;
 
     let eval_service = EvalService::new(
         eval_receiver,
@@ -67,6 +63,10 @@ pub async fn start_services(config: Config) -> Result<()> {
     let repo_sender = repo_service.get_sender();
 
     let git_service = GitService::new(repo_sender.clone())?;
+
+    let web_service = WebService::bind_to_address(&config.web.address, git_service.get_sender())
+        .await
+        .context("failed to start web service")?;
 
     let unix_service = UnixService::bind_to_path(
         &config.unix.socket_path,
