@@ -51,7 +51,6 @@ impl RawDrvInfo {
                 ("<structuredAttrs>".to_owned(), None, false, None)
             },
             EnvAttrs::LegacyAttrs(attrs) => {
-                println!("attrs: {:?}", &attrs);
                 let prefer_local = attrs.prefer_local.map(|x| x == "1").unwrap_or(false);
                 (attrs.name, attrs.pname, prefer_local, attrs.output_hash)
             },

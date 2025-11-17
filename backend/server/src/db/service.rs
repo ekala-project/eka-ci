@@ -4,6 +4,7 @@ use sqlx::migrate;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use tracing::{debug, info};
 
+use super::github;
 use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
@@ -104,10 +105,13 @@ impl DbService {
         drv::get_derivations_in_state(build_event::DrvBuildState::Buildable, &self.pool).await
     }
 
-    pub async fn insert_jobset(
+    pub async fn create_github_jobset_with_jobs(
         &self,
-        _jobs: &Vec<(String, NixEvalDrv)>,
-    ) -> anyhow::Result<Vec<DrvId>> {
-        todo!();
+        sha: &str,
+        name: &str,
+        jobs: &Vec<(String, NixEvalDrv)>,
+    ) -> anyhow::Result<()> {
+        let jobset_id = github::create_jobset(sha, name, &self.pool).await?;
+        github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await
     }
 }

@@ -41,6 +41,7 @@ impl CICheckInfo {
 pub enum GitHubTask {
     CreateJobSet {
         ci_check_info: CICheckInfo,
+        name: String,
         jobs: Vec<NixEvalDrv>,
     },
     CreateCIConfigureGate {
@@ -141,21 +142,34 @@ impl GitHubService {
         match task {
             GitHubTask::CreateJobSet {
                 ci_check_info,
+                name,
                 jobs,
             } => {
+                use tracing::info;
+
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+                info!(
+                    "Inserting {} jobs for {}",
+                    jobs.len(),
+                    &ci_check_info.commit
+                );
                 let job_pairs: Vec<(String, NixEvalDrv)> = jobs
                     .iter()
                     .map(|x| (ci_check_info.commit.clone(), (*x).clone()))
                     .collect();
-                self.db_service.insert_jobset(&job_pairs).await?;
+                self.db_service
+                    .create_github_jobset_with_jobs(&ci_check_info.commit, &name, &job_pairs)
+                    .await?;
 
-                // TODO: Create parent check suite
                 // TODO: parallelize this
+                info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
                 for job in jobs {
                     octocrab
                         .checks(&ci_check_info.owner, &ci_check_info.repo_name)
-                        .create_check_run(&job.attr, &ci_check_info.commit)
+                        .create_check_run(
+                            &format!("EkaCI: jobs/{name} {}", job.attr),
+                            &ci_check_info.commit,
+                        )
                         .status(CheckRunStatus::InProgress)
                         .send()
                         .await?;

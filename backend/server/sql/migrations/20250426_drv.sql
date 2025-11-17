@@ -2,12 +2,14 @@
 -- This purposely tries to avoid details such as attr path which may
 -- differ (e.g. python3.pkgs.setuptools vs python3Packages.setuptools)
 CREATE TABLE IF NOT EXISTS Drv (
-    drv_path TEXT NOT NULL PRIMARY KEY ON CONFLICT IGNORE,
+    ROWID INTEGER PRIMARY KEY NOT NULL,
+    drv_path TEXT NOT NULL,
     system TEXT NOT NULL,
     -- Allows for allocation of a build on a host which needs certain features
     -- For example, NixOS tests require "kvm nixos-test"
     required_system_features TEXT NULL,
-    build_state INTEGER NOT NULL
+    build_state INTEGER NOT NULL,
+    UNIQUE (drv_path) ON CONFLICT IGNORE
 );
 
 -- These are the direct drv dependencies

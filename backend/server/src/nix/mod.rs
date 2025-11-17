@@ -20,6 +20,7 @@ use crate::scheduler::IngressTask;
 
 pub struct EvalJob {
     pub file_path: String,
+    pub name: String,
     // TODO: support arguments
 }
 
@@ -85,9 +86,13 @@ impl EvalService {
             },
             EvalTask::GithubJobPR((drv, ci_info)) => {
                 let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
+                for drv in &jobs {
+                    self.traverse_drvs(&drv.drv_path).await?;
+                }
                 if let Some(gh_sender) = self.github_sender.as_ref() {
                     let gh_task = GitHubTask::CreateJobSet {
                         ci_check_info: ci_info.clone(),
+                        name: drv.name.to_string(),
                         jobs,
                     };
                     gh_sender.send(gh_task).await?;
