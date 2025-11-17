@@ -1,10 +1,13 @@
 use octocrab::models::pulls::PullRequest;
 use octocrab::models::webhook_events::{WebhookEventPayload as WEP, payload};
-use tracing::debug;
+use tokio::sync::mpsc;
+use tracing::{debug, warn};
 
-pub async fn handle_webhook_payload(webhook_payload: WEP) {
+use crate::git::GitTask;
+
+pub async fn handle_webhook_payload(webhook_payload: WEP, git_sender: mpsc::Sender<GitTask>) {
     match webhook_payload {
-        WEP::PullRequest(pr) => handle_github_pr(*pr).await,
+        WEP::PullRequest(pr) => handle_github_pr(*pr, git_sender).await,
         // We probably don't want to react to every push
         // WEP::Push(pr) => handle_github_push(*pr).await,
         _ => return,
@@ -12,13 +15,25 @@ pub async fn handle_webhook_payload(webhook_payload: WEP) {
     return;
 }
 
-async fn handle_github_pr(pr: payload::PullRequestWebhookEventPayload) {
+async fn handle_github_pr(
+    pr: payload::PullRequestWebhookEventPayload,
+    git_sender: mpsc::Sender<GitTask>,
+) {
     use payload::PullRequestWebhookEventAction as PRWEA;
     match pr.action {
         PRWEA::Opened | PRWEA::Synchronize | PRWEA::Reopened => {
-            fetch_installation_token(&pr.pull_request).await;
-            // TODO launch PR workflow
-            todo!()
+            debug!("Received event for PR #{}", &pr.pull_request.number);
+
+            let git_task = GitTask::GitHubCheckout(pr.pull_request.clone());
+
+            if let Err(e) = git_sender.send(git_task).await {
+                warn!("Failed to send PR checkout task: {:?}", e);
+            } else {
+                debug!(
+                    "Successfully queued PR checkout task for PR #{}",
+                    pr.pull_request.number
+                );
+            }
         },
         PRWEA::Closed | PRWEA::ConvertedToDraft => {
             // TODO, should be safe to cancel any in progress work
@@ -40,8 +55,5 @@ async fn handle_github_push(push: payload::PushWebhookEventPayload) {
     debug!("Received github push notification: {:?}", push.head_commit);
 }
 
-/// This is needed to checkout potentially private github repos
-/// These tokens only last an hour
-async fn fetch_installation_token(_pr: &PullRequest) {}
 #[allow(dead_code)]
 async fn eval_pr(_pr: PullRequest) {}

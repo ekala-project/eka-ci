@@ -6,7 +6,6 @@ use std::num::NonZeroUsize;
 
 use anyhow::Result;
 use lru::LruCache;
-use octocrab::models::pulls::PullRequest;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -16,7 +15,7 @@ use crate::db::DbService;
 use crate::db::model::drv::Drv;
 use crate::db::model::drv_id::DrvId;
 use crate::db::model::{Reference, Referrer};
-use crate::github::GitHubTask;
+use crate::github::{CICheckInfo, GitHubTask};
 use crate::scheduler::IngressTask;
 
 pub struct EvalJob {
@@ -26,7 +25,7 @@ pub struct EvalJob {
 
 pub enum EvalTask {
     Job(EvalJob),
-    GithubJobPR((EvalJob, PullRequest)),
+    GithubJobPR((EvalJob, CICheckInfo)),
     TraverseDrv(String),
 }
 
@@ -84,11 +83,11 @@ impl EvalService {
             EvalTask::TraverseDrv(drv) => {
                 self.traverse_drvs(drv).await?;
             },
-            EvalTask::GithubJobPR((drv, pr)) => {
+            EvalTask::GithubJobPR((drv, ci_info)) => {
                 let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
                 if let Some(gh_sender) = self.github_sender.as_ref() {
                     let gh_task = GitHubTask::CreateJobSet {
-                        pr: pr.clone(),
+                        ci_check_info: ci_info.clone(),
                         jobs,
                     };
                     gh_sender.send(gh_task).await?;

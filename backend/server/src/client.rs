@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use octocrab::Octocrab;
 use shared::types::{ClientRequest, ClientResponse, DrvStatusResponse};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::SocketAddr;
@@ -155,10 +156,31 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             status: t::ServerStatus::Active,
             version: "0.1.0".to_string(),
         }),
+        req::GitHub { pr } => {
+            let octocrab = Octocrab::builder()
+                .build()
+                .expect("failed to construct octocrab");
+            match octocrab.pulls(&pr.owner, &pr.repo).get(pr.pr).await {
+                Ok(github_pr) => {
+                    let task = GitTask::GitHubCheckout(github_pr);
+                    dispatch
+                        .git_sender
+                        .send(task)
+                        .await
+                        .expect("Failed to send github task");
+                    resp::Ack(true)
+                },
+                Err(e) => {
+                    error!(
+                        "Failed to fetch PR {}/{}/pull/{}: {}",
+                        pr.owner, pr.repo, pr.pr, e
+                    );
+                    resp::Ack(false)
+                },
+            }
+        },
         req::Git(git_info) => {
-            let dirs = xdg::BaseDirectories::with_prefix("ekaci").unwrap();
-            let repos_dir = dirs.create_data_directory("repos").unwrap();
-            let task = GitTask::Checkout(GitWorkspace::from_git_request(git_info, repos_dir));
+            let task = GitTask::Checkout(GitWorkspace::from_git_request(git_info));
             dispatch
                 .git_sender
                 .send(task)
