@@ -2,19 +2,19 @@ mod config;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use config::CIConfig;
-use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::github::{CICheckInfo, GitHubTask};
 use crate::nix::{EvalJob, EvalTask};
 use crate::services::AsyncService;
 
 #[derive(Debug, Clone)]
 pub enum RepoTask {
     Read(PathBuf),
-    ReadGitHub((PathBuf, PullRequest)),
+    ReadGitHub((PathBuf, CICheckInfo)),
 }
 /// This service will receive a repo checkout and determine what CI jobs need
 /// to be ran.
@@ -29,16 +29,21 @@ pub struct RepoReader {
     repo_sender: mpsc::Sender<RepoTask>,
     repo_receiver: Option<mpsc::Receiver<RepoTask>>,
     eval_sender: mpsc::Sender<EvalTask>,
+    github_sender: Option<mpsc::Sender<GitHubTask>>,
 }
 
 impl RepoReader {
-    pub fn new(eval_sender: mpsc::Sender<EvalTask>) -> anyhow::Result<Self> {
+    pub fn new(
+        eval_sender: mpsc::Sender<EvalTask>,
+        github_sender: Option<mpsc::Sender<GitHubTask>>,
+    ) -> anyhow::Result<Self> {
         let (repo_sender, repo_receiver) = mpsc::channel(1000);
 
         Ok(Self {
             repo_sender,
             repo_receiver: Some(repo_receiver),
             eval_sender,
+            github_sender,
         })
     }
 }
@@ -66,19 +71,35 @@ impl AsyncService<RepoTask> for RepoReader {
                     self.eval_sender.send(EvalTask::Job(eval_job)).await?;
                 }
             },
-            RepoTask::ReadGitHub((mut path, pr)) => {
+            RepoTask::ReadGitHub((mut path, ci_check_info)) => {
+                let configure_task = GitHubTask::CreateCIConfigureGate {
+                    ci_check_info: ci_check_info.clone(),
+                };
+                let github_sender = self
+                    .github_sender
+                    .as_ref()
+                    .context("GitHub app was not instantiated")?;
+                github_sender.send(configure_task).await?;
+
                 let root = path.clone();
-                let config = read_repo_toplevel(&mut path)?;
-                for (_job_name, job) in config.jobs {
-                    let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
-                    let eval_job = EvalJob {
-                        file_path: file_path.to_string_lossy().into(),
-                    };
-                    // TODO: Add jobset to db
-                    self.eval_sender
-                        .send(EvalTask::GithubJobPR((eval_job, pr.clone())))
-                        .await?;
+                if let Ok(config) = read_repo_toplevel(&mut path) {
+                    for (_job_name, job) in config.jobs {
+                        let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
+                        let eval_job = EvalJob {
+                            file_path: file_path.to_string_lossy().into(),
+                        };
+                        // TODO: Add jobset to db
+                        self.eval_sender
+                            .send(EvalTask::GithubJobPR((eval_job, ci_check_info.clone())))
+                            .await?;
+                    }
+                } else {
+                    debug!("Repo was missing a CI config");
                 }
+                let finish_configure_task = GitHubTask::CompleteCIConfigureGate {
+                    ci_check_info: ci_check_info.clone(),
+                };
+                github_sender.send(finish_configure_task).await?;
             },
         }
 

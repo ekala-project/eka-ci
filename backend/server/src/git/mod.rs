@@ -8,6 +8,7 @@ use tracing::warn;
 pub use types::{GitRepo, GitWorkspace};
 
 use crate::ci::RepoTask;
+use crate::github::CICheckInfo;
 use crate::services::AsyncService;
 
 #[derive(Debug, Clone)]
@@ -53,16 +54,15 @@ impl AsyncService<GitTask> for GitService {
                 self.repo_sender.send(repo_task).await?;
             },
             GitTask::GitHubCheckout(pr) => {
-                let owned_default_repo = pr.repo.clone().map(|x| *x).clone();
-                let default_repo = owned_default_repo.as_ref();
-                let base_repo = GitRepo::from_gh_repo((*pr.base).repo.as_ref(), default_repo)?;
-                let head_repo = GitRepo::from_gh_repo((*pr.head).repo.as_ref(), default_repo)?;
+                let base_repo = GitRepo::from_gh_repo((*pr.base).repo.as_ref().unwrap().clone())?;
+                let head_repo = GitRepo::from_gh_repo((*pr.head).repo.as_ref().unwrap().clone())?;
                 let repo = GitWorkspace::from_git_repo(base_repo, &pr.head.sha);
                 repo.ensure_master_clone().await?;
                 repo.fetch_remote_repo(&head_repo, &pr.head.ref_field)
                     .await?;
                 repo.create_worktree().await?;
-                let repo_task = RepoTask::ReadGitHub((repo.worktree_path(), pr));
+                let ci_info = CICheckInfo::from_gh_pr(&pr);
+                let repo_task = RepoTask::ReadGitHub((repo.worktree_path(), ci_info));
                 self.repo_sender.send(repo_task).await?;
             },
         }

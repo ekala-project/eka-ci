@@ -36,14 +36,15 @@ pub struct GitRepo {
 }
 
 impl GitRepo {
-    pub fn from_gh_repo(
-        preferred: Option<&Repository>,
-        default: Option<&Repository>,
-    ) -> Result<Self> {
-        let repo: &Repository = preferred.unwrap_or(default.context("no repo")?);
+    pub fn from_gh_repo(repo: Repository) -> Result<Self> {
         Ok(Self {
             protocol: GitProtocol::Https,
-            domain: repo.url.domain().context("Missing domain")?.to_string(),
+            domain: repo
+                .html_url
+                .context("missing html_url")?
+                .domain()
+                .context("Missing domain")?
+                .to_string(),
             owner: repo.owner.as_ref().context("Missing owner")?.login.clone(),
             repo: repo.name.clone(),
         })

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use octocrab::Octocrab;
 use octocrab::models::pulls::PullRequest;
-use octocrab::models::{Installation, InstallationId};
+use octocrab::models::{CheckRunId, Installation};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -12,13 +12,47 @@ use tracing::{debug, warn};
 use crate::db::DbService;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
+mod actions;
+
+#[derive(Debug, Clone)]
+/// Information needed to create a CI check run gate
+pub struct CICheckInfo {
+    pub commit: String,
+    pub owner: String,
+    pub repo_name: String,
+}
+
+impl CICheckInfo {
+    pub fn from_gh_pr(pr: &PullRequest) -> Self {
+        let commit = pr.head.sha.clone();
+        let repo = (*pr.head).repo.as_ref().unwrap();
+        let owner = repo.owner.as_ref().unwrap().login.clone();
+        let repo_name = repo.name.clone();
+
+        Self {
+            commit,
+            owner,
+            repo_name,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum GitHubTask {
     CreateJobSet {
-        pr: PullRequest,
+        ci_check_info: CICheckInfo,
         jobs: Vec<NixEvalDrv>,
     },
+    CreateCIConfigureGate {
+        ci_check_info: CICheckInfo,
+    },
+    CompleteCIConfigureGate {
+        ci_check_info: CICheckInfo,
+    },
 }
+
+type Owner = String;
+type Commit = String;
 
 /// This service will be response for pushing/posting events to GitHub
 pub struct GitHubService {
@@ -27,11 +61,10 @@ pub struct GitHubService {
     // a handle to the other service channels will be prequisite
     db_service: DbService,
     octocrab: Octocrab,
-    // TODO: look up installation associated with webhook event
-    #[allow(dead_code)]
-    installations: HashMap<InstallationId, Installation>,
+    installations: HashMap<Owner, Installation>,
     github_receiver: mpsc::Receiver<GitHubTask>,
     github_sender: mpsc::Sender<GitHubTask>,
+    github_configure_checks: HashMap<Commit, CheckRunId>,
 }
 
 impl GitHubService {
@@ -49,7 +82,7 @@ impl GitHubService {
             .into_stream(&octoclone);
         pin!(installations_stream);
         while let Some(installation) = installations_stream.try_next().await? {
-            installations.insert(installation.id, installation);
+            installations.insert(installation.account.login.clone(), installation);
         }
 
         debug!("Installations: {:?}", &installations);
@@ -61,6 +94,7 @@ impl GitHubService {
             installations,
             github_receiver,
             github_sender,
+            github_configure_checks: HashMap::new(),
         })
     }
 
@@ -76,6 +110,20 @@ impl GitHubService {
         })
     }
 
+    /// Attempt to look up installation by owner
+    fn octocrab_for_owner(&self, owner: &str) -> Result<Octocrab> {
+        let installation = self
+            .installations
+            .get(owner)
+            .context("No installation associated with owner")?;
+        debug!(
+            "Found installation for owner {}: {:?}",
+            &owner, &installation
+        );
+        let octo = self.octocrab.installation(installation.id)?;
+        Ok(octo)
+    }
+
     async fn github_tasks_loop(mut self) {
         loop {
             if let Some(task) = self.github_receiver.recv().await {
@@ -87,30 +135,52 @@ impl GitHubService {
         }
     }
 
-    async fn handle_github_task(&self, task: &GitHubTask) -> Result<()> {
-        match task {
-            GitHubTask::CreateJobSet { pr, jobs } => {
-                use octocrab::params::checks::CheckRunStatus;
+    async fn handle_github_task(&mut self, task: &GitHubTask) -> Result<()> {
+        use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
 
-                let commit = pr.head.sha.clone();
+        match task {
+            GitHubTask::CreateJobSet {
+                ci_check_info,
+                jobs,
+            } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let job_pairs: Vec<(String, NixEvalDrv)> = jobs
                     .iter()
-                    .map(|x| (commit.clone(), (*x).clone()))
+                    .map(|x| (ci_check_info.commit.clone(), (*x).clone()))
                     .collect();
                 self.db_service.insert_jobset(&job_pairs).await?;
-                let repo = *pr.repo.as_ref().unwrap().clone();
-                let owner = repo.owner.unwrap().login;
-                let repo_name = repo.name;
 
+                // TODO: Create parent check suite
                 // TODO: parallelize this
                 for job in jobs {
-                    self.octocrab
-                        .checks(&owner, &repo_name)
-                        .create_check_run(&job.attr, &commit)
+                    octocrab
+                        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+                        .create_check_run(&job.attr, &ci_check_info.commit)
                         .status(CheckRunStatus::InProgress)
                         .send()
                         .await?;
                 }
+            },
+            GitHubTask::CreateCIConfigureGate { ci_check_info } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+                let check_run = actions::create_ci_configure_gate(&octocrab, ci_check_info).await?;
+                self.github_configure_checks
+                    .insert(ci_check_info.commit.clone(), check_run.id);
+            },
+            GitHubTask::CompleteCIConfigureGate { ci_check_info } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+                let check_run_id = self
+                    .github_configure_checks
+                    .get(&ci_check_info.commit)
+                    .context("No configure gate check run found for commit")?;
+                actions::update_ci_configure_gate(
+                    &octocrab,
+                    ci_check_info,
+                    *check_run_id,
+                    CheckRunStatus::Completed,
+                    CheckRunConclusion::Success,
+                )
+                .await?;
             },
         }
         Ok(())

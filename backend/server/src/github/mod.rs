@@ -6,7 +6,7 @@ use tracing::info;
 mod service;
 mod webhook;
 
-pub use service::{GitHubService, GitHubTask};
+pub use service::{CICheckInfo, GitHubService, GitHubTask};
 pub use webhook::handle_webhook_payload;
 
 #[derive(Error, Debug)]
