@@ -161,7 +161,7 @@ impl GitHubService {
                     .create_github_jobset_with_jobs(&ci_check_info.commit, &name, &job_pairs)
                     .await?;
 
-                // TODO: parallelize this
+                // TODO: parallelize this, and make it async
                 info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
                 for job in jobs {
                     octocrab
