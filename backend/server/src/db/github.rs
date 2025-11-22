@@ -1,4 +1,6 @@
 use anyhow::Result;
+use octocrab::Octocrab;
+use octocrab::models::checks::CheckRun as GHCheckRun;
 use sqlx::{FromRow, Pool, Sqlite};
 
 use super::model::build_event::DrvBuildState;
@@ -12,6 +14,28 @@ pub struct CheckRun {
     pub repo_owner: String,
     pub build_state: DrvBuildState,
     pub drv_path: DrvId,
+}
+
+impl CheckRun {
+    pub async fn send_gh_update(
+        &self,
+        octocrab: &Octocrab,
+        status: &DrvBuildState,
+    ) -> Result<GHCheckRun> {
+        let (gh_status, gh_conclusion) = status.as_gh_checkrun_state();
+
+        let check_builder = octocrab.checks(&self.repo_owner, &self.repo_name);
+        let mut check_update = check_builder
+            .update_check_run(octocrab::models::CheckRunId(self.check_run_id as u64))
+            .status(gh_status);
+
+        if let Some(conclusion) = gh_conclusion {
+            check_update = check_update.conclusion(conclusion);
+        }
+
+        let check_run = check_update.send().await?;
+        Ok(check_run)
+    }
 }
 
 pub async fn create_jobset(sha: &str, name: &str, pool: &Pool<Sqlite>) -> Result<i64> {
@@ -35,6 +59,10 @@ pub async fn create_jobs_for_jobset(
 
     use crate::db::model::DrvId;
 
+    // Using a transaction should allow for the pool to batch statements
+    // better than individual insertions + pool flush
+    let mut tx = pool.begin().await?;
+
     // TODO: convert to using query builder
     for (name, job) in jobs {
         // Convert drv_path to DrvId
@@ -48,9 +76,11 @@ pub async fn create_jobs_for_jobset(
         .bind(jobset_id)
         .bind(drv_id)
         .bind(&name)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
+
+    tx.commit().await?;
 
     Ok(())
 }

@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS Job (
 CREATE TABLE IF NOT EXISTS CheckRunInfo (
     check_run_id INTEGER PRIMARY KEY, -- identifier for a specific job on a commit
     drv_id INTEGER NOT NULL, -- drv which gets referenced by the jobset
-    repo_name TEXT NOT NULL, -- "job name" this will usually be the attrpath
-    repo_owner TEXT NOT NULL, -- "job name" this will usually be the attrpath
+    repo_name TEXT NOT NULL, -- repository name, e.g. github.com/{owner}/{repo}
+    repo_owner TEXT NOT NULL, -- repository owner, e.g. github.com/{owner}/{repo}
     FOREIGN KEY (drv_id) REFERENCES Drv(ROWID) ON DELETE CASCADE
 );
 
