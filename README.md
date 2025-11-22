@@ -31,10 +31,10 @@ Server + evaluator + build queue
 - GitHub webhooks
   - [x] App registration workflow
   - [ ] Receive PR review events
-  - [ ] Send check gates
+  - [x] Send check gates
 - PR Review workflow
-  - [ ] Git checkout
-  - [ ] Evaluate derivation differences between head and base branch
+  - [x] Git checkout
+  - [x] Evaluate derivation differences between head and base branch
   - [ ] Queue changed derivations for build
   - [ ] Allow successful builds to push outputs to attic
   - [ ] Calculate changed metrics between builds: build and runtime closure size, dependencies
