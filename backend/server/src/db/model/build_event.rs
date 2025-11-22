@@ -140,6 +140,9 @@ pub enum DrvBuildInterruptionKind {
 }
 
 mod state {
+    use octocrab::params::checks::{
+        CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus,
+    };
     use sqlx::{Decode, Encode, Sqlite, Type};
 
     use super::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
@@ -190,6 +193,41 @@ mod state {
         }
     }
 
+    impl DrvBuildState {
+        pub fn as_gh_checkrun_state(&self) -> (GHStatus, Option<GHConclusion>) {
+            match self {
+                DrvBuildState::Queued => (GHStatus::Queued, None),
+                DrvBuildState::Buildable => (GHStatus::Queued, None),
+                DrvBuildState::Building => (GHStatus::InProgress, None),
+                DrvBuildState::Completed(DrvBuildResult::Success) => {
+                    (GHStatus::Completed, Some(GHConclusion::Success))
+                },
+                DrvBuildState::Completed(DrvBuildResult::Failure) => {
+                    (GHStatus::Completed, Some(GHConclusion::Failure))
+                },
+                DrvBuildState::TransitiveFailure => {
+                    (GHStatus::Completed, Some(GHConclusion::Failure))
+                },
+                DrvBuildState::Interrupted(DrvBuildInterruptionKind::OutOfMemory) => {
+                    (GHStatus::Completed, Some(GHConclusion::Failure))
+                },
+                DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout) => {
+                    (GHStatus::Completed, Some(GHConclusion::TimedOut))
+                },
+                DrvBuildState::Interrupted(DrvBuildInterruptionKind::Cancelled) => {
+                    (GHStatus::Completed, Some(GHConclusion::Neutral))
+                },
+                DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath) => {
+                    (GHStatus::Completed, Some(GHConclusion::Failure))
+                },
+                DrvBuildState::Interrupted(DrvBuildInterruptionKind::SchedulerDeath) => {
+                    (GHStatus::Completed, Some(GHConclusion::Failure))
+                },
+                // I'm not actually sure what this would be
+                DrvBuildState::Blocked => (GHStatus::Completed, Some(GHConclusion::ActionRequired)),
+            }
+        }
+    }
     impl From<DrvBuildStateRepr> for DrvBuildState {
         fn from(value: DrvBuildStateRepr) -> Self {
             match value {

@@ -4,6 +4,7 @@ use tracing::{debug, warn};
 
 use crate::db::DbService;
 use crate::db::model::{build, build_event, drv_id};
+use crate::github::GitHubTask;
 use crate::scheduler::ingress::IngressTask;
 
 #[derive(Debug, Clone)]
@@ -17,6 +18,7 @@ pub struct RecorderTask {
 pub struct RecorderService {
     db_service: DbService,
     recorder_receiver: mpsc::Receiver<RecorderTask>,
+    github_sender: Option<mpsc::Sender<GitHubTask>>,
 }
 
 /// Encapsulation of the Recorder thread. May want to gracefully recover from
@@ -26,15 +28,20 @@ struct RecorderWorker {
     ingress_sender: mpsc::Sender<IngressTask>,
     recorder_receiver: mpsc::Receiver<RecorderTask>,
     db_service: DbService,
+    github_sender: Option<mpsc::Sender<GitHubTask>>,
 }
 
 impl RecorderService {
-    pub fn init(db_service: DbService) -> (Self, mpsc::Sender<RecorderTask>) {
+    pub fn init(
+        db_service: DbService,
+        github_sender: Option<mpsc::Sender<GitHubTask>>,
+    ) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
 
         let res = Self {
             db_service,
             recorder_receiver,
+            github_sender,
         };
 
         (res, recorder_sender)
@@ -45,6 +52,7 @@ impl RecorderService {
             self.db_service.clone(),
             ingress_sender,
             self.recorder_receiver,
+            self.github_sender,
         );
 
         tokio::spawn(async move {
@@ -58,11 +66,13 @@ impl RecorderWorker {
         db_service: DbService,
         ingress_sender: mpsc::Sender<IngressTask>,
         recorder_receiver: mpsc::Receiver<RecorderTask>,
+        github_sender: Option<mpsc::Sender<GitHubTask>>,
     ) -> Self {
         Self {
             db_service,
             ingress_sender,
             recorder_receiver,
+            github_sender,
         }
     }
 
@@ -97,13 +107,7 @@ impl RecorderWorker {
                 self.db_service
                     .update_drv_status(&drv, &task.result)
                     .await?;
-                //let event =
-                //    build_event::DrvBuildEvent::for_insert(build_id,
-                // DBS::Completed(DBR::Success)); self.db_service.
-                // new_drv_build_event(event).await?;
 
-                // Ask ingress service to check if all downstream
-                // drvs are now buildable
                 let referrers = self.db_service.drv_referrers(&drv).await?;
                 debug!(
                     "Got {:?} referrers for {}",
@@ -132,6 +136,20 @@ impl RecorderWorker {
                 // should be set to be a transitiveFailure
             },
             _ => {},
+        }
+
+        if let Some(github_sender) = &self.github_sender {
+            let github_task = GitHubTask::UpdateBuildStatus {
+                drv_id: drv.clone(),
+                status: task.result.clone(),
+            };
+            if let Err(e) = github_sender.send(github_task).await {
+                warn!(
+                    "Failed to send GitHub update for {}: {:?}",
+                    drv.store_path(),
+                    e
+                );
+            }
         }
 
         Ok(())

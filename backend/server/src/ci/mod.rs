@@ -67,6 +67,7 @@ impl AsyncService<RepoTask> for RepoReader {
                     let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
                     let eval_job = EvalJob {
                         file_path: file_path.to_string_lossy().into(),
+                        name: "local".to_string(),
                     };
                     self.eval_sender.send(EvalTask::Job(eval_job)).await?;
                 }
@@ -83,10 +84,12 @@ impl AsyncService<RepoTask> for RepoReader {
 
                 let root = path.clone();
                 if let Ok(config) = read_repo_toplevel(&mut path) {
-                    for (_job_name, job) in config.jobs {
+                    debug!("Found CI Config: {:?}", &config);
+                    for (job_name, job) in config.jobs {
                         let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
                         let eval_job = EvalJob {
                             file_path: file_path.to_string_lossy().into(),
+                            name: job_name,
                         };
                         // TODO: Add jobset to db
                         self.eval_sender

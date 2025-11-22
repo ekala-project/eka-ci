@@ -141,7 +141,7 @@ async fn handle_client(mut stream: UnixStream, dispatch: DispatchChannels) -> Re
 
     stream.write_all(response_message.as_bytes()).await?;
     stream.flush().await?;
-    println!("Shutting down socket");
+    info!("Shutting down socket");
     stream.shutdown().await?;
 
     Ok(())
@@ -200,6 +200,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
         req::Job(job_info) => {
             let job = crate::nix::EvalJob {
                 file_path: job_info.file_path,
+                name: "client".to_string(),
             };
             let task = EvalTask::Job(job);
             dispatch

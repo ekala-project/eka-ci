@@ -2,8 +2,9 @@
 -- However, we want to determine what drvs have been added or removed
 -- so we need a way to query (commit, job) on both the base and head commit
 CREATE TABLE IF NOT EXISTS GitHubJobSets (
+    ROWID INTEGER PRIMARY KEY,
     -- this is the git commit, github uses sha as the name
-    sha TEXT NOT NULL PRIMARY KEY ON CONFLICT IGNORE,
+    sha TEXT NOT NULL,
     -- "job name". Used to determine the drv difference between two shas
     job TEXT NOT NULL,
     UNIQUE (sha, job) ON CONFLICT IGNORE
@@ -15,11 +16,32 @@ CREATE INDEX IF NOT EXISTS JobName ON GitHubJobSets (job);
 
 -- This is just a join table between drvs and github jobsets, and used
 -- to determine which drvs are referenced by a jobset
-CREATE TABLE IF NOT EXISTS DrvRefs (
+CREATE TABLE IF NOT EXISTS Job (
     jobset INTEGER NOT NULL, -- identifier for a specific job on a commit
     drv_id INTEGER NOT NULL, -- drv which gets referenced by the jobset
-    UNIQUE (jobset, drv_id) ON CONFLICT IGNORE,
+    name TEXT NOT NULL, -- "job name" this will usually be the attrpath
+    UNIQUE (jobset, name, drv_id) ON CONFLICT IGNORE,
     FOREIGN KEY (jobset) REFERENCES GitHubJobSets(ROWID) ON DELETE CASCADE,
     FOREIGN KEY (drv_id) REFERENCES Drv(ROWID) ON DELETE CASCADE
 );
 
+-- These are GitHub CI check_run's where the status is associated with the
+-- build status of a drv
+CREATE TABLE IF NOT EXISTS CheckRunInfo (
+    check_run_id INTEGER PRIMARY KEY, -- identifier for a specific job on a commit
+    drv_id INTEGER NOT NULL, -- drv which gets referenced by the jobset
+    repo_name TEXT NOT NULL, -- "job name" this will usually be the attrpath
+    repo_owner TEXT NOT NULL, -- "job name" this will usually be the attrpath
+    FOREIGN KEY (drv_id) REFERENCES Drv(ROWID) ON DELETE CASCADE
+);
+
+-- See if a view is easier than just a query
+CREATE VIEW IF NOT EXISTS CheckRun AS
+SELECT
+  c.check_run_id,
+  c.repo_name,
+  c.repo_owner,
+  d.build_state,
+  d.drv_path
+FROM CheckRunInfo AS c
+JOIN Drv AS d ON d.ROWID = c.drv_id;
