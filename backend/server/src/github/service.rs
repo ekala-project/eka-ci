@@ -136,13 +136,13 @@ impl GitHubService {
                     .await?;
 
                 // We construct "a list of drvs" 3 times, probably can eliminate one of these
-                let drv_paths: HashMap<String, &NixEvalDrv> =
-                    jobs.iter().map(|x| (x.drv_path.clone(), x)).collect();
+                let drv_paths: HashMap<&str, &NixEvalDrv> =
+                    jobs.iter().map(|x| (x.drv_path.as_str(), x)).collect();
 
                 // TODO: parallelize this, and make it async
                 info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
                 for job in new_jobs {
-                    let maybe_eval_job = drv_paths.get(&job.drv_path.store_path());
+                    let maybe_eval_job = drv_paths.get(job.drv_path.store_path().as_str());
 
                     if let Some(eval_job) = maybe_eval_job {
                         let check_run = ci_check_info
