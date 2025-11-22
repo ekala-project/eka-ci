@@ -97,6 +97,66 @@ impl GitHubService {
         }
     }
 
+    async fn create_job_set(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+        name: &str,
+        jobs: &[NixEvalDrv],
+    ) -> Result<()> {
+        use octocrab::params::checks::CheckRunStatus;
+        use tracing::info;
+
+        let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+        info!(
+            "Inserting {} jobs for {}",
+            jobs.len(),
+            &ci_check_info.commit
+        );
+        let job_pairs: Vec<(String, NixEvalDrv)> = jobs
+            .iter()
+            .map(|x| (ci_check_info.commit.clone(), (*x).clone()))
+            .collect();
+        self.db_service
+            .create_github_jobset_with_jobs(&ci_check_info.commit, &name, &job_pairs)
+            .await?;
+
+        let new_jobs = self
+            .db_service
+            .new_jobs(&ci_check_info.commit, &ci_check_info.base_commit, &name)
+            .await?;
+
+        // We construct "a list of drvs" 3 times, probably can eliminate one of these
+        let drv_paths: HashMap<&str, &NixEvalDrv> =
+            jobs.iter().map(|x| (x.drv_path.as_str(), x)).collect();
+
+        // TODO: parallelize this, and make it async
+        info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
+        for job in new_jobs {
+            let maybe_eval_job = drv_paths.get(job.drv_path.store_path().as_str());
+
+            if let Some(eval_job) = maybe_eval_job {
+                let check_run = ci_check_info
+                    .create_gh_check_run(&octocrab, &eval_job.attr, CheckRunStatus::Queued)
+                    .await?;
+
+                self.db_service
+                    .insert_check_run_info(
+                        check_run.id.0 as i64,
+                        &job.drv_path,
+                        &ci_check_info.repo_name,
+                        &ci_check_info.owner,
+                    )
+                    .await?;
+            } else {
+                warn!(
+                    "Failed to find eval_job for {}:",
+                    &job.drv_path.store_path()
+                );
+            }
+        }
+        Ok(())
+    }
+
     async fn handle_github_task(&mut self, task: &GitHubTask) -> Result<()> {
         use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
 
@@ -114,56 +174,7 @@ impl GitHubService {
                 name,
                 jobs,
             } => {
-                use tracing::info;
-
-                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-                info!(
-                    "Inserting {} jobs for {}",
-                    jobs.len(),
-                    &ci_check_info.commit
-                );
-                let job_pairs: Vec<(String, NixEvalDrv)> = jobs
-                    .iter()
-                    .map(|x| (ci_check_info.commit.clone(), (*x).clone()))
-                    .collect();
-                self.db_service
-                    .create_github_jobset_with_jobs(&ci_check_info.commit, &name, &job_pairs)
-                    .await?;
-
-                let new_jobs = self
-                    .db_service
-                    .new_jobs(&ci_check_info.commit, &ci_check_info.base_commit, &name)
-                    .await?;
-
-                // We construct "a list of drvs" 3 times, probably can eliminate one of these
-                let drv_paths: HashMap<&str, &NixEvalDrv> =
-                    jobs.iter().map(|x| (x.drv_path.as_str(), x)).collect();
-
-                // TODO: parallelize this, and make it async
-                info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
-                for job in new_jobs {
-                    let maybe_eval_job = drv_paths.get(job.drv_path.store_path().as_str());
-
-                    if let Some(eval_job) = maybe_eval_job {
-                        let check_run = ci_check_info
-                            .create_gh_check_run(&octocrab, &eval_job.attr, CheckRunStatus::Queued)
-                            .await?;
-
-                        self.db_service
-                            .insert_check_run_info(
-                                check_run.id.0 as i64,
-                                &job.drv_path,
-                                &ci_check_info.repo_name,
-                                &ci_check_info.owner,
-                            )
-                            .await?;
-                    } else {
-                        warn!(
-                            "Failed to find eval_job for {}:",
-                            &job.drv_path.store_path()
-                        );
-                    }
-                }
+                self.create_job_set(ci_check_info, name, jobs).await?;
             },
             GitHubTask::CreateCIConfigureGate { ci_check_info } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
