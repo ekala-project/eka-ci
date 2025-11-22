@@ -76,6 +76,7 @@ impl EvalService {
         info!("Eval service shutdown gracefully");
     }
 
+    // TODO: Determine what drvs existed before, to avoid acting like everything is new
     async fn handle_eval_task(&mut self, task: EvalTask) -> Result<()> {
         match &task {
             EvalTask::Job(drv) => {
