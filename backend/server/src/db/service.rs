@@ -114,4 +114,32 @@ impl DbService {
         let jobset_id = github::create_jobset(sha, name, &self.pool).await?;
         github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await
     }
+
+    // Given a head and base sha, determine what only exists in the head sha
+    pub async fn new_jobs(
+        &self,
+        head_sha: &str,
+        base_sha: &str,
+        job_name: &str,
+    ) -> anyhow::Result<Vec<Drv>> {
+        github::new_jobs(head_sha, base_sha, job_name, &self.pool).await
+    }
+
+    pub async fn check_runs_for_drv_path(
+        &self,
+        drv_path: &DrvId,
+    ) -> anyhow::Result<Vec<github::CheckRun>> {
+        github::check_runs_for_drv_path(drv_path, &self.pool).await
+    }
+
+    pub async fn insert_check_run_info(
+        &self,
+        check_run_id: i64,
+        drv_path: &DrvId,
+        repo_name: &str,
+        repo_owner: &str,
+    ) -> anyhow::Result<()> {
+        github::insert_check_run_info(check_run_id, drv_path, repo_name, repo_owner, &self.pool)
+            .await
+    }
 }

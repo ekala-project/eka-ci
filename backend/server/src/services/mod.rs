@@ -24,10 +24,6 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let db_pool = db_service.pool.clone();
 
-    let scheduler_service =
-        SchedulerService::new(db_service.clone(), config.remote_builders).await?;
-    let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
-
     let maybe_github_service = match github::register_app().await {
         Ok(octocrab) => {
             let github_service = GitHubService::new(db_service.clone(), octocrab).await?;
@@ -52,11 +48,20 @@ pub async fn start_services(config: Config) -> Result<()> {
         },
     };
 
+    let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
+    let scheduler_service = SchedulerService::new(
+        db_service.clone(),
+        config.remote_builders,
+        maybe_github_sender.clone(),
+    )
+    .await?;
+    let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
+
     let eval_service = EvalService::new(
         eval_receiver,
         db_service.clone(),
         scheduler_service.ingress_request_sender(),
-        maybe_github_service.as_ref().map(|x| x.get_sender()),
+        maybe_github_sender.clone(),
     );
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());

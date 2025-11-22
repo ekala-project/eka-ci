@@ -6,6 +6,7 @@ use super::ingress::{IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
 use crate::config::RemoteBuilder;
 use crate::db::DbService;
+use crate::github::GitHubTask;
 
 /// SchedulerService spins up three smaller services:
 ///   RequestIngress:
@@ -40,9 +41,11 @@ impl SchedulerService {
     pub async fn new(
         db_service: DbService,
         remote_builders: Vec<RemoteBuilder>,
+        github_sender: Option<mpsc::Sender<GitHubTask>>,
     ) -> anyhow::Result<Self> {
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
-        let (recorder_service, recorder_sender) = RecorderService::init(db_service.clone());
+        let (recorder_service, recorder_sender) =
+            RecorderService::init(db_service.clone(), github_sender);
         let mut builders = Builder::local_from_env(recorder_sender.clone()).await?;
         for remote in remote_builders {
             for remote_platform in &remote.platforms {

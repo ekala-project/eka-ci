@@ -140,11 +140,12 @@ pub enum DrvBuildInterruptionKind {
 }
 
 mod state {
+    use octocrab::params::checks::{
+        CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus,
+    };
     use sqlx::{Decode, Encode, Sqlite, Type};
 
     use super::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
-    use octocrab::params::checks::CheckRunStatus as GHStatus;
-    use octocrab::params::checks::CheckRunConclusion as GHConclusion;
 
     #[derive(sqlx::Type)]
     #[repr(i8)]
@@ -193,7 +194,7 @@ mod state {
     }
 
     impl DrvBuildState {
-        fn as_gh_checkrun_state(&self) -> (GHStatus, Option<GHConclusion>) {
+        pub fn as_gh_checkrun_state(&self) -> (GHStatus, Option<GHConclusion>) {
             match self {
                 DrvBuildState::Queued => (GHStatus::Queued, None),
                 DrvBuildState::Buildable => (GHStatus::Queued, None),
@@ -223,9 +224,7 @@ mod state {
                     (GHStatus::Completed, Some(GHConclusion::Failure))
                 },
                 // I'm not actually sure what this would be
-                DrvBuildState::Blocked => {
-                    (GHStatus::Completed, Some(GHConclusion::ActionRequired))
-                }
+                DrvBuildState::Blocked => (GHStatus::Completed, Some(GHConclusion::ActionRequired)),
             }
         }
     }

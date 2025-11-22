@@ -1,18 +1,28 @@
 use anyhow::Result;
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{FromRow, Pool, Sqlite};
 
+use super::model::build_event::DrvBuildState;
+use super::model::{Drv, DrvId};
 use crate::nix::nix_eval_jobs::NixEvalDrv;
-use super::model::Drv;
+
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct CheckRun {
+    pub check_run_id: i64,
+    pub repo_name: String,
+    pub repo_owner: String,
+    pub build_state: DrvBuildState,
+    pub drv_path: DrvId,
+}
 
 pub async fn create_jobset(sha: &str, name: &str, pool: &Pool<Sqlite>) -> Result<i64> {
-    let result = sqlx::query("INSERT INTO GitHubJobSets (sha, job) VALUES (?, ?) RETURNING ROWID")
-        .bind(sha)
-        .bind(name)
-        .fetch_one(pool)
-        .await?;
+    let result =
+        sqlx::query_scalar("INSERT INTO GitHubJobSets (sha, job) VALUES (?, ?) RETURNING ROWID")
+            .bind(sha)
+            .bind(name)
+            .fetch_one(pool)
+            .await?;
 
-    let rowid: i64 = result.get("ROWID");
-    Ok(rowid)
+    Ok(result)
 }
 
 /// Insert jobs where they reference the job and the drv
@@ -45,11 +55,51 @@ pub async fn create_jobs_for_jobset(
     Ok(())
 }
 
-/// Select drvs which are present for a specific job
-pub async fn jobs_for_jobset_id(
-    job_id: i64,
+/// Insert a new CheckRunInfo record
+pub async fn insert_check_run_info(
+    check_run_id: i64,
+    drv_path: &DrvId,
+    repo_name: &str,
+    repo_owner: &str,
     pool: &Pool<Sqlite>,
-) -> anyhow::Result<Vec<Drv>> {
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO CheckRunInfo (check_run_id, drv_id, repo_name, repo_owner)
+        VALUES (?, (SELECT ROWID FROM Drv WHERE drv_path = ? LIMIT 1), ?, ?)
+        "#,
+    )
+    .bind(check_run_id)
+    .bind(drv_path)
+    .bind(repo_name)
+    .bind(repo_owner)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Return all checkruns which match a drv_path
+pub async fn check_runs_for_drv_path(
+    drv_path: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<CheckRun>> {
+    let check_runs = sqlx::query_as(
+        r#"
+        SELECT check_run_id, repo_name, repo_owner, build_state, drv_path
+        FROM CheckRun
+        WHERE drv_path = ?
+        "#,
+    )
+    .bind(drv_path)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(check_runs)
+}
+
+/// Select drvs which are present for a specific job
+pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
     let drvs = sqlx::query_as(
         r#"
         SELECT d.drv_path, d.system, d.required_system_features, d.build_state
@@ -75,18 +125,20 @@ pub async fn new_jobs(
     use anyhow::Context;
 
     // First, get the jobset IDs for both head and base
-    let head_jobset_id = sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
-        .bind(head_sha)
-        .bind(job_name)
-        .fetch_optional(pool)
-        .await?
-        .context("Failed to find jobset for head sha")?;
+    let head_jobset_id =
+        sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
+            .bind(head_sha)
+            .bind(job_name)
+            .fetch_optional(pool)
+            .await?
+            .context("Failed to find jobset for head sha")?;
 
-    let maybe_base_jobset_id = sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
-        .bind(base_sha)
-        .bind(job_name)
-        .fetch_optional(pool)
-        .await?;
+    let maybe_base_jobset_id =
+        sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
+            .bind(base_sha)
+            .bind(job_name)
+            .fetch_optional(pool)
+            .await?;
 
     // If there's no base jobset, treat all jobs as new values
     if let None = maybe_base_jobset_id {
@@ -108,12 +160,12 @@ pub async fn new_jobs(
           FROM Job
           WHERE jobset = ?
         ) j ON d.ROWID = j.drv_id
-        "#
+        "#,
     )
-        .bind(&head_jobset_id)
-        .bind(&base_jobset_id)
-        .fetch_all(pool)
-        .await?;
+    .bind(&head_jobset_id)
+    .bind(&base_jobset_id)
+    .fetch_all(pool)
+    .await?;
 
     Ok(drvs)
 }
@@ -137,8 +189,8 @@ mod tests {
 
         let eval_drv =
             serde_json::from_str::<NixEvalDrv>(eval_drv_str).expect("Failed to deserialize output");
-        let eval_drv2 =
-            serde_json::from_str::<NixEvalDrv>(eval_drv2_str).expect("Failed to deserialize output");
+        let eval_drv2 = serde_json::from_str::<NixEvalDrv>(eval_drv2_str)
+            .expect("Failed to deserialize output");
 
         let drv = Drv {
             drv_path: DrvId::from_str(&eval_drv.drv_path)?,
