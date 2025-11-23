@@ -9,6 +9,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::db::DbService;
+use crate::db::model::DrvId;
+use crate::db::model::build_event::DrvBuildState;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 mod actions;
@@ -103,15 +105,11 @@ impl GitHubService {
         name: &str,
         jobs: &[NixEvalDrv],
     ) -> Result<()> {
-        use octocrab::params::checks::CheckRunStatus;
+        use std::str::FromStr;
+
         use tracing::info;
 
         let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-        info!(
-            "Inserting {} jobs for {}",
-            jobs.len(),
-            &ci_check_info.commit
-        );
         let job_pairs: Vec<(String, NixEvalDrv)> = jobs
             .iter()
             .map(|x| (ci_check_info.commit.clone(), (*x).clone()))
@@ -135,8 +133,11 @@ impl GitHubService {
             let maybe_eval_job = drv_paths.get(job.drv_path.store_path().as_str());
 
             if let Some(eval_job) = maybe_eval_job {
+                let drv_id = DrvId::from_str(&eval_job.drv_path)?;
+                let drv = self.db_service.get_drv(&drv_id).await?;
+                let state = drv.map(|x| x.build_state).unwrap_or(DrvBuildState::Queued);
                 let check_run = ci_check_info
-                    .create_gh_check_run(&octocrab, &eval_job.attr, CheckRunStatus::Queued)
+                    .create_gh_check_run(&octocrab, &eval_job.attr, state)
                     .await?;
 
                 self.db_service

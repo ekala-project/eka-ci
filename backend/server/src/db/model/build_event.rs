@@ -311,12 +311,8 @@ WHERE referrer = ?
 /// as "successful"
 pub async fn is_drv_buildable(derivation: &DrvId, pool: &SqlitePool) -> anyhow::Result<bool> {
     let deps = get_drv_deps(derivation, pool).await?;
-
-    debug!("Got deps: {:?}", &deps);
     let result = deps
         .into_iter()
         .all(|x| x.build_state == DrvBuildState::Completed(DrvBuildResult::Success));
-
-    debug!("Is {:?} buildable?: {}", &derivation, result);
     Ok(result)
 }

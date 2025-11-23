@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{BuildRequest, Builder, Platform};
 
@@ -90,21 +90,47 @@ async fn loop_builds(
     builders: HashMap<SystemName, Builder>,
     mut receiver: mpsc::Receiver<BuildRequest>,
 ) {
+    use std::collections::VecDeque;
+
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    let mut build_buffer: VecDeque<BuildRequest> = VecDeque::new();
     let build_channels: Vec<mpsc::Sender<BuildRequest>> =
         builders.into_values().map(|x| x.run()).collect();
-    let mut timer = tokio::time::interval(std::time::Duration::from_millis(10));
+    let mut permit_timer = tokio::time::interval(std::time::Duration::from_millis(10));
+    let mut build_timer = tokio::time::interval(std::time::Duration::from_millis(100));
 
-    while let Some(work) = receiver.recv().await {
-        // Do a scan of the builder to see if they have capacity. Otherwise wait
-        let permit = 'outer: loop {
-            for channel in &build_channels {
-                if let Ok(permit) = channel.try_reserve() {
-                    break 'outer permit;
+    // TODO: This should be restructured to avoid starvation if builds cannot be submitted
+    loop {
+        match receiver.try_recv() {
+            Ok(work) => {
+                // Drain channel to ensure there's no back pressure
+                build_buffer.push_back(work);
+                continue;
+            },
+            Err(TryRecvError::Disconnected) => {
+                warn!("System queue closing due to disconnected build queue");
+                return;
+            },
+            // No one has submitted work, just fall through
+            Err(TryRecvError::Empty) => {},
+        }
+
+        if build_buffer.len() > 0 {
+            // Do a scan of the builder to see if they have capacity. Otherwise wait
+            // TODO: think of way to poll many builders for availability without doing scan
+            let permit = 'outer: loop {
+                for channel in &build_channels {
+                    if let Ok(permit) = channel.try_reserve() {
+                        break 'outer permit;
+                    }
                 }
-            }
-            timer.tick().await;
-        };
+                permit_timer.tick().await;
+            };
 
-        permit.send(work);
+            permit.send(build_buffer.pop_front().unwrap());
+        } else {
+            build_timer.tick().await;
+        }
     }
 }

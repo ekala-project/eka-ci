@@ -14,6 +14,7 @@ use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalItem};
 impl super::EvalService {
     pub async fn run_nix_eval_jobs(&mut self, file_path: &str) -> anyhow::Result<Vec<NixEvalDrv>> {
         let mut cmd = Command::new("nix-eval-jobs")
+            .arg("--show-input-drvs")
             .arg(file_path)
             .stdout(Stdio::piped())
             .spawn()?;
@@ -39,7 +40,7 @@ impl super::EvalService {
 
                 match output.unwrap() {
                     NixEvalItem::Drv(drv) => {
-                        if let Err(e) = self.traverse_drvs(&drv.drv_path).await {
+                        if let Err(e) = self.traverse_drvs(&drv.drv_path, &drv.input_drvs).await {
                             warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
                         };
                         jobs.push(drv);
