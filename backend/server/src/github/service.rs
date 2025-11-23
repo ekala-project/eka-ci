@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use crate::github::service::types::JobDifference;
+use crate::db::model::Drv;
 
 use anyhow::{Context, Result};
 use octocrab::Octocrab;
@@ -105,8 +107,6 @@ impl GitHubService {
         name: &str,
         jobs: &[NixEvalDrv],
     ) -> Result<()> {
-        use std::str::FromStr;
-
         use tracing::info;
 
         let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
@@ -118,9 +118,9 @@ impl GitHubService {
             .create_github_jobset_with_jobs(&ci_check_info.commit, &name, &job_pairs)
             .await?;
 
-        let new_jobs = self
+        let (new_jobs, changed_drvs, removed_jobs)  = self
             .db_service
-            .new_jobs(&ci_check_info.commit, &ci_check_info.base_commit, &name)
+            .job_difference(&ci_check_info.commit, &ci_check_info.base_commit, &name)
             .await?;
 
         // We construct "a list of drvs" 3 times, probably can eliminate one of these
@@ -129,7 +129,26 @@ impl GitHubService {
 
         // TODO: parallelize this, and make it async
         info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
-        for job in new_jobs {
+        self.emit_jobs(ci_check_info, &octocrab, new_jobs, &drv_paths, &JobDifference::New).await?;
+        self.emit_jobs(ci_check_info, &octocrab, changed_drvs, &drv_paths, &JobDifference::Changed).await?;
+
+        for job in removed_jobs {
+            ci_check_info.create_gh_check_run(&octocrab, &job, DrvBuildState::Queued, &JobDifference::Removed).await?;
+        }
+        Ok(())
+    }
+
+    async fn emit_jobs(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+        octocrab: &Octocrab,
+        jobs: Vec<Drv>,
+        drv_paths: &HashMap<&str, &NixEvalDrv>,
+        difference: &JobDifference
+    ) -> Result<()> {
+        use std::str::FromStr;
+
+        for job in jobs {
             let maybe_eval_job = drv_paths.get(job.drv_path.store_path().as_str());
 
             if let Some(eval_job) = maybe_eval_job {
@@ -137,7 +156,7 @@ impl GitHubService {
                 let drv = self.db_service.get_drv(&drv_id).await?;
                 let state = drv.map(|x| x.build_state).unwrap_or(DrvBuildState::Queued);
                 let check_run = ci_check_info
-                    .create_gh_check_run(&octocrab, &eval_job.attr, state)
+                    .create_gh_check_run(octocrab, &eval_job.attr, state, difference)
                     .await?;
 
                 self.db_service

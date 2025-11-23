@@ -115,14 +115,14 @@ impl DbService {
         github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await
     }
 
-    // Given a head and base sha, determine what only exists in the head sha
-    pub async fn new_jobs(
+    // Given a head and base sha, determine what has changed
+    pub async fn job_difference(
         &self,
         head_sha: &str,
         base_sha: &str,
         job_name: &str,
-    ) -> anyhow::Result<Vec<Drv>> {
-        github::new_jobs(head_sha, base_sha, job_name, &self.pool).await
+    ) -> anyhow::Result<(Vec<Drv>, Vec<Drv>, Vec<String>)> {
+        github::job_difference(head_sha, base_sha, job_name, &self.pool).await
     }
 
     pub async fn check_runs_for_drv_path(

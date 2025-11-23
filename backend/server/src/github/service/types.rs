@@ -2,10 +2,31 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::PullRequest;
+use std::fmt;
 
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
+use octocrab::params::checks::{
+    CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus,
+};
+
+#[derive(Debug, Clone)]
+pub enum JobDifference {
+    New,
+    Changed,
+    Removed,
+}
+
+impl fmt::Display for JobDifference {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            JobDifference::New => write!(f, "New"),
+            JobDifference::Changed => write!(f, "Changed"),
+            JobDifference::Removed => write!(f, "Removed"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 /// Information needed to create a CI check run gate
@@ -37,12 +58,29 @@ impl CICheckInfo {
         octocrab: &Octocrab,
         name: &str,
         initial_status: DrvBuildState,
+        difference: &JobDifference,
     ) -> Result<CheckRun> {
-        let (gh_status, gh_conclusion) = initial_status.as_gh_checkrun_state();
+        let title = format!("{} / {}", name, difference.to_string());
+        let (gh_status, gh_conclusion) = match difference {
+            // If it's been removed, we don't really care what the previous status was
+            JobDifference::Removed => {
+                (GHStatus::Completed, Some(GHConclusion::Neutral))
+            },
+            _ => initial_status.as_gh_checkrun_state(),
+        };
+        self.inner_gh_check_run(octocrab, &title, gh_status, gh_conclusion).await
+    }
 
+    async fn inner_gh_check_run(
+        &self,
+        octocrab: &Octocrab,
+        title: &str,
+        gh_status: GHStatus,
+        gh_conclusion: Option<GHConclusion>,
+    ) -> Result<CheckRun> {
         let check_builder = octocrab.checks(&self.owner, &self.repo_name);
         let mut create_check_run = check_builder
-            .create_check_run(&format!("{} / Changed Drv", name), &self.commit)
+            .create_check_run(title, &self.commit)
             .status(gh_status);
 
         if let Some(conclusion) = gh_conclusion {

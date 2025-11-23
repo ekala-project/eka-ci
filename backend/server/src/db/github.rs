@@ -157,11 +157,72 @@ pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Res
 
 /// Select drvs which are only present in the head_sha
 pub async fn new_jobs(
+    head_jobset_id: i64,
+    base_jobset_id: i64,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<Drv>> {
+    // Query for drvs only present in the head jobset
+    let new_drvs: Vec<Drv> = sqlx::query_as(
+        r#"
+        SELECT d.drv_path, d.system, d.required_system_features, d.build_state
+        FROM Drv d
+        INNER JOIN
+        (SELECT drv_id
+          FROM Job
+          WHERE jobset = ?
+          EXCEPT
+          SELECT a.drv_id
+          FROM Job AS a
+          INNER JOIN Job AS b
+          ON a.name = b.name
+          WHERE a.jobset = ?
+        ) j ON d.ROWID = j.drv_id
+        "#,
+    )
+    .bind(&head_jobset_id)
+    .bind(&base_jobset_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(new_drvs)
+}
+
+/// Select drvs which are only present in the head_sha
+pub async fn removed_jobs(
+    head_jobset_id: i64,
+    base_jobset_id: i64,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<String>> {
+    // Query for drvs only present in the head jobset
+    let removed_drvs: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT name
+        FROM Job
+        WHERE jobset = ?
+        EXCEPT
+        SELECT a.name
+        FROM Job AS a
+        INNER JOIN Job AS b
+        ON a.name = b.name
+        WHERE a.jobset = ?
+        "#,
+    )
+    .bind(&base_jobset_id)
+    .bind(&head_jobset_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(removed_drvs)
+}
+
+
+/// Select drvs which are only present in the head_sha
+pub async fn job_difference(
     head_sha: &str,
     base_sha: &str,
     job_name: &str,
     pool: &Pool<Sqlite>,
-) -> anyhow::Result<Vec<Drv>> {
+) -> anyhow::Result<(Vec<Drv>, Vec<Drv>, Vec<String>)> {
     use anyhow::Context;
 
     // First, get the jobset IDs for both head and base
@@ -182,23 +243,23 @@ pub async fn new_jobs(
 
     // If there's no base jobset, treat all jobs as new values
     if let None = maybe_base_jobset_id {
-        return jobs_for_jobset_id(head_jobset_id, pool).await;
+        let new_jobs = jobs_for_jobset_id(head_jobset_id, pool).await?;
+        return Ok((new_jobs, Vec::new(), Vec::new()));
     }
     let base_jobset_id: i64 = maybe_base_jobset_id.unwrap();
 
-    // Query for drvs only present in the head jobset
-    let drvs = sqlx::query_as(
+    // Query for drvs which differ in drv_id but share the same job name
+    let changed_drvs = sqlx::query_as(
         r#"
         SELECT d.drv_path, d.system, d.required_system_features, d.build_state
         FROM Drv d
         INNER JOIN
-        (SELECT drv_id
-          FROM Job
-          WHERE jobset = ?
-          EXCEPT
-          SELECT drv_id
-          FROM Job
-          WHERE jobset = ?
+        (
+          SELECT a.drv_id
+          FROM Job AS a
+          INNER JOIN Job AS b
+          ON a.name = b.name
+          WHERE a.jobset = ? AND a.drv_id <> b.drv_id
         ) j ON d.ROWID = j.drv_id
         "#,
     )
@@ -207,7 +268,20 @@ pub async fn new_jobs(
     .fetch_all(pool)
     .await?;
 
-    Ok(drvs)
+    let new_drvs = new_jobs(
+        head_jobset_id,
+        base_jobset_id,
+        pool
+    ).await?;
+
+    // Removed jobs are just "new" when you invert direction, however, we just need Job name
+    let removed_jobs = removed_jobs(
+        base_jobset_id,
+        head_jobset_id,
+        pool
+    ).await?;
+
+    Ok((new_drvs, changed_drvs, removed_jobs))
 }
 
 #[cfg(test)]
