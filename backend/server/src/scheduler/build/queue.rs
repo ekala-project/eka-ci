@@ -75,7 +75,6 @@ impl BuildQueue {
                     &build_request.0.system
                 };
 
-                debug!("Attempting to get queue for {}", platform);
                 if let Some(sender) = system_senders.get_mut(platform) {
                     if let Err(e) = sender.send(build_request).await {
                         error!("Failed to send build request: {:?}", e);

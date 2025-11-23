@@ -49,7 +49,7 @@ impl BuilderThread {
                 match build_set.join_next().await {
                     Some(Err(e)) => warn!("Failed to execute nix build, {:?}", e),
                     None => error!("Tried to await empty build queue"),
-                    _ => debug!("Successfully built a drv"),
+                    _ => {},
                 }
             }
 
@@ -108,6 +108,13 @@ impl NixBuild {
             .args(&self.build_args)
             .output()
             .await?;
+        if !build_output.status.success() {
+            warn!(
+                "{} failed with output {}",
+                self.drv_id.store_path(),
+                String::from_utf8_lossy(&build_output.stderr)
+            );
+        }
 
         Ok(build_output)
     }

@@ -2,6 +2,7 @@ pub mod derivation_show;
 pub mod jobs;
 pub mod nix_eval_jobs;
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 
 use anyhow::Result;
@@ -83,7 +84,7 @@ impl EvalService {
                 self.run_nix_eval_jobs(&drv.file_path).await?;
             },
             EvalTask::TraverseDrv(drv) => {
-                self.traverse_drvs(drv).await?;
+                self.traverse_drvs(drv, &None).await?;
             },
             EvalTask::GithubJobPR((drv, ci_info)) => {
                 let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
@@ -103,24 +104,82 @@ impl EvalService {
         Ok(())
     }
 
+    /// check the drv_map if it contains the drv_id, then check the database
+    /// if it's just not in the LRU cache.
+    async fn already_visited_drv(&mut self, drv_id: &DrvId) -> bool {
+        if self.drv_map.get(drv_id).is_some() {
+            return true;
+        }
+
+        // If not in cache, check the database
+        match self.db_service.get_drv(&drv_id).await {
+            Ok(Some(drv)) => {
+                // Found in database, add to cache for future lookups
+                self.drv_map.put(drv_id.clone(), drv);
+                true
+            },
+            _ => false,
+        }
+    }
+
     /// Given a drv, traverse all direct drv dependencies
-    async fn traverse_drvs(&mut self, drv_path: &str) -> Result<()> {
+    async fn traverse_drvs(
+        &mut self,
+        drv_path: &str,
+        references: &Option<HashMap<String, Vec<String>>>,
+    ) -> Result<()> {
+        use std::str::FromStr;
+
+        let drv_id = DrvId::from_str(drv_path)?;
+        if self.already_visited_drv(&drv_id).await {
+            return Ok(());
+        }
+
+        // TODO: see if we can leverage reference information
+        // For now, deeply traversing everything ensures we capture all drv
+        // dependencies
+        self.deep_traverse(drv_path).await
+
+        // let mut drv_pairs = Vec::new();
+        // match references {
+        //     None => self.deep_traverse(drv_path).await?,
+        //     Some(reference_map) => {
+        //         for reference in reference_map.keys() {
+        //             Box::pin(self.traverse_drvs(&reference, &None)).await?;
+        //             let reference_id = DrvId::from_str(drv_path)?;
+        //             drv_pairs.push((reference_id, drv_id.clone()));
+        //         }
+        //     },
+        // }
+
+        // let drv = Drv::fetch_info(drv_path, &self.db_service).await?;
+        // let drv_slice = &[drv.clone()];
+        // self.db_service
+        //     .insert_drvs_and_references(&drv_slice[..], &drv_pairs)
+        //     .await?;
+
+        // self.scheduler_sender
+        //     .send(IngressTask::EvalRequest(drv_id))
+        //     .await?;
+        // self.drv_map.put(drv.drv_path.clone(), drv);
+
+        // Ok(())
+    }
+
+    async fn deep_traverse(&mut self, drv_path: &str) -> Result<()> {
         use tokio::task::JoinSet;
 
         debug!("Traversing drv tree for {}", drv_path);
         let drvs: Vec<DrvId> = drv_requisites(drv_path).await?;
-        // Check if this drv has been visited in a previous evaluation.
         let new_drvids: Vec<DrvId> = drvs
             .into_iter()
             .filter(|x| self.drv_map.get(x).is_none())
             .collect();
         debug!("Found {} new drvs", new_drvids.len());
 
-        // resolve drv info in parallel
-        // If there's over ~400 concurrent processes, we quickly exhaust file handles, so take a
-        // slower path
         let mut new_drvs = Vec::new();
         let mut drv_refs: Vec<(DrvId, DrvId)> = Vec::new();
+
         for drvs_chunk in new_drvids.chunks(150) {
             let mut info_set: JoinSet<Result<Drv, anyhow::Error>> = JoinSet::new();
             let mut ref_set: JoinSet<Result<Vec<(Referrer, Reference)>, anyhow::Error>> =
@@ -128,14 +187,14 @@ impl EvalService {
 
             for drv in drvs_chunk {
                 let drv_to_fetch = drv.store_path();
-                info_set.spawn(async move { Drv::fetch_info(&drv_to_fetch).await });
+                let db_service = self.db_service.clone();
+                info_set.spawn(async move { Drv::fetch_info(&drv_to_fetch, &db_service).await });
                 let drv_clone = drv.clone();
                 ref_set.spawn(async move { drv_clone.reference_pairs().await });
             }
             let fetched_drvs = info_set.join_all().await;
             let new_drv_refs = ref_set.join_all().await;
 
-            // TODO: Vec -> iter -> vec may be expensive. Should cleanup
             let successful_fetches = fetched_drvs.into_iter().collect::<Result<Vec<_>>>()?;
             let successful_refs = new_drv_refs
                 .into_iter()

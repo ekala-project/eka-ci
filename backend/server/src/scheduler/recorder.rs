@@ -109,11 +109,6 @@ impl RecorderWorker {
                     .await?;
 
                 let referrers = self.db_service.drv_referrers(&drv).await?;
-                debug!(
-                    "Got {:?} referrers for {}",
-                    &referrers,
-                    &build_id.derivation.store_path()
-                );
                 for referrer in referrers {
                     let task = IngressTask::CheckBuildable(referrer);
                     self.ingress_sender.send(task).await?;

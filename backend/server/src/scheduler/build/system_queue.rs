@@ -91,9 +91,10 @@ async fn loop_builds(
     mut receiver: mpsc::Receiver<BuildRequest>,
 ) {
     use std::collections::VecDeque;
+
     use tokio::sync::mpsc::error::TryRecvError;
 
-    let mut build_buffer: VecDeque::<BuildRequest> = VecDeque::new();
+    let mut build_buffer: VecDeque<BuildRequest> = VecDeque::new();
     let build_channels: Vec<mpsc::Sender<BuildRequest>> =
         builders.into_values().map(|x| x.run()).collect();
     let mut permit_timer = tokio::time::interval(std::time::Duration::from_millis(10));
@@ -112,7 +113,7 @@ async fn loop_builds(
                 return;
             },
             // No one has submitted work, just fall through
-            Err(TryRecvError::Empty) => { }
+            Err(TryRecvError::Empty) => {},
         }
 
         if build_buffer.len() > 0 {

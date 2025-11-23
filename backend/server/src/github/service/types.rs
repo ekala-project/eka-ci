@@ -2,7 +2,6 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::PullRequest;
-use octocrab::params::checks::CheckRunStatus;
 
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
@@ -37,14 +36,20 @@ impl CICheckInfo {
         &self,
         octocrab: &Octocrab,
         name: &str,
-        initial_status: CheckRunStatus,
+        initial_status: DrvBuildState,
     ) -> Result<CheckRun> {
-        let check_run = octocrab
-            .checks(&self.owner, &self.repo_name)
-            .create_check_run(&format!("{} / jobs:{name}", name), &self.commit)
-            .status(initial_status)
-            .send()
-            .await?;
+        let (gh_status, gh_conclusion) = initial_status.as_gh_checkrun_state();
+
+        let check_builder = octocrab.checks(&self.owner, &self.repo_name);
+        let mut create_check_run = check_builder
+            .create_check_run(&format!("{} / Changed Drv", name), &self.commit)
+            .status(gh_status);
+
+        if let Some(conclusion) = gh_conclusion {
+            create_check_run = create_check_run.conclusion(conclusion);
+        }
+
+        let check_run = create_check_run.send().await?;
         Ok(check_run)
     }
 }

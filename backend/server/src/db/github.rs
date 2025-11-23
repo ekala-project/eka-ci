@@ -39,13 +39,19 @@ impl CheckRun {
 }
 
 pub async fn create_jobset(sha: &str, name: &str, pool: &Pool<Sqlite>) -> Result<i64> {
-    let result =
-        sqlx::query_scalar("INSERT INTO GitHubJobSets (sha, job) VALUES (?, ?) RETURNING ROWID")
-            .bind(sha)
-            .bind(name)
-            .fetch_one(pool)
-            .await?;
+    // Since the insert statement could be repetitive, we must separate inseration and rowid
+    // selection
+    sqlx::query("INSERT INTO GitHubJobSets (sha, job) VALUES (?, ?)")
+        .bind(sha)
+        .bind(name)
+        .execute(pool)
+        .await?;
 
+    let result = sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
+        .bind(sha)
+        .bind(name)
+        .fetch_one(pool)
+        .await?;
     Ok(result)
 }
 
@@ -58,6 +64,10 @@ pub async fn create_jobs_for_jobset(
     use std::str::FromStr;
 
     use crate::db::model::DrvId;
+
+    if jobs.is_empty() {
+        return Ok(());
+    }
 
     // Using a transaction should allow for the pool to batch statements
     // better than individual insertions + pool flush
@@ -219,7 +229,8 @@ mod tests {
         let eval_drv =
             serde_json::from_str::<NixEvalDrv>(eval_drv_str).expect("Failed to deserialize output");
         let mut eval_drv2 = eval_drv.clone();
-        eval_drv2.drv_path = "/nix/store/3fr8baalygv2a64ff7fq7564j4sxv4lc-cmake-3.29.6.drv".to_string();
+        eval_drv2.drv_path =
+            "/nix/store/3fr8baalygv2a64ff7fq7564j4sxv4lc-cmake-3.29.6.drv".to_string();
 
         let drv = Drv {
             drv_path: DrvId::from_str(&eval_drv.drv_path)?,

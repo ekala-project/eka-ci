@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use sqlx::{Pool, Sqlite, SqlitePool};
 use tracing::{debug, info};
 
@@ -30,55 +28,6 @@ pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool
         .fetch_one(pool)
         .await?;
     Ok(result)
-}
-
-/// This will insert a hashmap of <drv, Vec<referrences>> into
-/// the database. The assumption is that the keys are new drvs and the
-/// references may or may not already exist
-pub async fn insert_drv_graph(
-    pool: &Pool<Sqlite>,
-    drv_graph: &HashMap<DrvId, Vec<DrvId>>,
-) -> anyhow::Result<()> {
-    use sqlx::{QueryBuilder, Sqlite};
-
-    let mut drvs = Vec::new();
-    let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
-        "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
-    );
-
-    // TODO: try to parallel fetch
-    for id in drv_graph.keys() {
-        debug!("Inserting {:?} into Drv", id);
-        let drv = Drv::fetch_info(&id.store_path()).await?;
-        drvs.push(drv);
-    }
-
-    // We must first traverse the keys, add them all, then we can create
-    // the reference relationships
-    // TODO: have system be captured before this function
-    query_builder.push_values(drvs.into_iter(), |mut b, drv: Drv| {
-        b.push_bind(drv.drv_path)
-            .push_bind(drv.system)
-            .push_bind(drv.required_system_features)
-            .push_bind(DrvBuildState::Queued);
-    });
-    query_builder.build().execute(pool).await?;
-
-    // flatten the map into referrer+reference pairs
-    let drv_pairs = drv_graph
-        .iter()
-        .filter(|(_, references)| !references.is_empty())
-        .flat_map(|(referrer, references)| std::iter::repeat(referrer).zip(references));
-
-    let mut reference_builder: QueryBuilder<Sqlite> =
-        QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
-    reference_builder.push_values(drv_pairs, |mut sep, (referrer, reference)| {
-        sep.push_bind(referrer).push_bind(reference);
-    });
-
-    reference_builder.build().execute(pool).await?;
-
-    Ok(())
 }
 
 /// This will insert a slice of drvs and <referrer, reference> into
@@ -237,8 +186,6 @@ WHERE reference = ?1
     .bind(drv)
     .fetch_all(pool)
     .await?;
-
-    debug!("Got {:?} as referrers for {:?}", &result, drv);
 
     Ok(result)
 }

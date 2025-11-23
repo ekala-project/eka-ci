@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use sqlx::FromRow;
 
+use crate::db::DbService;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 
@@ -28,8 +29,17 @@ pub struct Drv {
 
 impl Drv {
     /// Calls `nix derivation show` to retrieve system and requiredSystemFeatures
-    pub async fn fetch_info(drv_path: &str) -> anyhow::Result<Self> {
+    pub async fn fetch_info(drv_path: &str, db_service: &DbService) -> anyhow::Result<Self> {
         use crate::nix::derivation_show::drv_output;
+
+        // Check to see if the drv has already been encountered
+        let drv_id = DrvId::from_str(drv_path)?;
+        let maybe_drv = db_service.get_drv(&drv_id).await?;
+        if let Some(drv) = maybe_drv {
+            return Ok(drv);
+        }
+
+        // This is the first time we have encountered this drv
         let drv_output = drv_output(drv_path).await?;
         Ok(Drv {
             drv_path: DrvId::from_str(drv_path)?,
