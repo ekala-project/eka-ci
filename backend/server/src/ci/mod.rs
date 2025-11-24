@@ -7,6 +7,7 @@ use config::CIConfig;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::db::DbService;
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::nix::{EvalJob, EvalTask};
 use crate::services::AsyncService;
@@ -14,8 +15,12 @@ use crate::services::AsyncService;
 #[derive(Debug, Clone)]
 pub enum RepoTask {
     Read(PathBuf),
-    ReadGitHub((PathBuf, CICheckInfo)),
+    ReadGitHub {
+        repo_path: PathBuf,
+        ci_info: CICheckInfo,
+    },
 }
+
 /// This service will receive a repo checkout and determine what CI jobs need
 /// to be ran.
 ///
@@ -30,12 +35,14 @@ pub struct RepoReader {
     repo_receiver: Option<mpsc::Receiver<RepoTask>>,
     eval_sender: mpsc::Sender<EvalTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    db_service: DbService,
 }
 
 impl RepoReader {
     pub fn new(
         eval_sender: mpsc::Sender<EvalTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        db_service: DbService,
     ) -> anyhow::Result<Self> {
         let (repo_sender, repo_receiver) = mpsc::channel(1000);
 
@@ -44,7 +51,42 @@ impl RepoReader {
             repo_receiver: Some(repo_receiver),
             eval_sender,
             github_sender,
+            db_service,
         })
+    }
+
+    async fn process_github_repo_config(
+        &self,
+        mut path: PathBuf,
+        ci_info: &CICheckInfo,
+    ) -> anyhow::Result<()> {
+        let root = path.clone();
+        if let Ok(config) = read_repo_toplevel(&mut path) {
+            debug!("Found CI Config: {:?}", &config);
+            for (job_name, job) in config.jobs {
+                if self
+                    .db_service
+                    .has_jobset(&job_name, &ci_info.commit)
+                    .await?
+                {
+                    // We don't need to revisit jobs which already been processed
+                    // For base commits, it's common that they could get processed multiple times
+                    continue;
+                }
+                let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
+                let eval_job = EvalJob {
+                    file_path: file_path.to_string_lossy().into(),
+                    name: job_name,
+                };
+                // TODO: Add jobset to db
+                self.eval_sender
+                    .send(EvalTask::GithubJobPR((eval_job, ci_info.clone())))
+                    .await?;
+            }
+        } else {
+            debug!("Repo was missing a CI config");
+        }
+        Ok(())
     }
 }
 
@@ -72,9 +114,9 @@ impl AsyncService<RepoTask> for RepoReader {
                     self.eval_sender.send(EvalTask::Job(eval_job)).await?;
                 }
             },
-            RepoTask::ReadGitHub((mut path, ci_check_info)) => {
+            RepoTask::ReadGitHub { repo_path, ci_info } => {
                 let configure_task = GitHubTask::CreateCIConfigureGate {
-                    ci_check_info: ci_check_info.clone(),
+                    ci_check_info: ci_info.clone(),
                 };
                 let github_sender = self
                     .github_sender
@@ -82,25 +124,10 @@ impl AsyncService<RepoTask> for RepoReader {
                     .context("GitHub app was not instantiated")?;
                 github_sender.send(configure_task).await?;
 
-                let root = path.clone();
-                if let Ok(config) = read_repo_toplevel(&mut path) {
-                    debug!("Found CI Config: {:?}", &config);
-                    for (job_name, job) in config.jobs {
-                        let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
-                        let eval_job = EvalJob {
-                            file_path: file_path.to_string_lossy().into(),
-                            name: job_name,
-                        };
-                        // TODO: Add jobset to db
-                        self.eval_sender
-                            .send(EvalTask::GithubJobPR((eval_job, ci_check_info.clone())))
-                            .await?;
-                    }
-                } else {
-                    debug!("Repo was missing a CI config");
-                }
+                self.process_github_repo_config(repo_path, &ci_info).await?;
+
                 let finish_configure_task = GitHubTask::CompleteCIConfigureGate {
-                    ci_check_info: ci_check_info.clone(),
+                    ci_check_info: ci_info,
                 };
                 github_sender.send(finish_configure_task).await?;
             },

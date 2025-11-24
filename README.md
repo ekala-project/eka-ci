@@ -35,7 +35,7 @@ Server + evaluator + build queue
 - PR Review workflow
   - [x] Git checkout
   - [x] Evaluate derivation differences between head and base branch
-  - [ ] Queue changed derivations for build
+  - [x] Queue changed derivations for build
   - [ ] Allow successful builds to push outputs to attic
   - [ ] Calculate changed metrics between builds: build and runtime closure size, dependencies
 - Push built artifacts

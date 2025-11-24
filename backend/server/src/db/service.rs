@@ -109,20 +109,20 @@ impl DbService {
         &self,
         sha: &str,
         name: &str,
-        jobs: &Vec<(String, NixEvalDrv)>,
+        jobs: &[NixEvalDrv],
     ) -> anyhow::Result<()> {
         let jobset_id = github::create_jobset(sha, name, &self.pool).await?;
         github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await
     }
 
-    // Given a head and base sha, determine what only exists in the head sha
-    pub async fn new_jobs(
+    // Given a head and base sha, determine what has changed
+    pub async fn job_difference(
         &self,
         head_sha: &str,
         base_sha: &str,
         job_name: &str,
-    ) -> anyhow::Result<Vec<Drv>> {
-        github::new_jobs(head_sha, base_sha, job_name, &self.pool).await
+    ) -> anyhow::Result<(Vec<Drv>, Vec<Drv>, Vec<String>)> {
+        github::job_difference(head_sha, base_sha, job_name, &self.pool).await
     }
 
     pub async fn check_runs_for_drv_path(
@@ -141,5 +141,9 @@ impl DbService {
     ) -> anyhow::Result<()> {
         github::insert_check_run_info(check_run_id, drv_path, repo_name, repo_owner, &self.pool)
             .await
+    }
+
+    pub async fn has_jobset(&self, sha: &str, name: &str) -> anyhow::Result<bool> {
+        github::has_jobset(sha, name, &self.pool).await
     }
 }
