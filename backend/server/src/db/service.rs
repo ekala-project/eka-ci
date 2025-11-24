@@ -109,7 +109,7 @@ impl DbService {
         &self,
         sha: &str,
         name: &str,
-        jobs: &Vec<(String, NixEvalDrv)>,
+        jobs: &[NixEvalDrv],
     ) -> anyhow::Result<()> {
         let jobset_id = github::create_jobset(sha, name, &self.pool).await?;
         github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await
@@ -141,5 +141,9 @@ impl DbService {
     ) -> anyhow::Result<()> {
         github::insert_check_run_info(check_run_id, drv_path, repo_name, repo_owner, &self.pool)
             .await
+    }
+
+    pub async fn has_jobset(&self, sha: &str, name: &str) -> anyhow::Result<bool> {
+        github::has_jobset(sha, name, &self.pool).await
     }
 }

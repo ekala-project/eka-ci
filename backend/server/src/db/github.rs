@@ -38,6 +38,16 @@ impl CheckRun {
     }
 }
 
+pub async fn has_jobset(sha: &str, name: &str, pool: &Pool<Sqlite>) -> Result<bool> {
+    let result: Option<i64> =
+        sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
+            .bind(sha)
+            .bind(name)
+            .fetch_optional(pool)
+            .await?;
+    Ok(result.is_some())
+}
+
 pub async fn create_jobset(sha: &str, name: &str, pool: &Pool<Sqlite>) -> Result<i64> {
     // Since the insert statement could be repetitive, we must separate inseration and rowid
     // selection
@@ -58,7 +68,7 @@ pub async fn create_jobset(sha: &str, name: &str, pool: &Pool<Sqlite>) -> Result
 /// Insert jobs where they reference the job and the drv
 pub async fn create_jobs_for_jobset(
     jobset_id: i64,
-    jobs: &Vec<(String, NixEvalDrv)>,
+    jobs: &[NixEvalDrv],
     pool: &Pool<Sqlite>,
 ) -> anyhow::Result<()> {
     use std::str::FromStr;
@@ -74,7 +84,7 @@ pub async fn create_jobs_for_jobset(
     let mut tx = pool.begin().await?;
 
     // TODO: convert to using query builder
-    for (name, job) in jobs {
+    for job in jobs {
         // Convert drv_path to DrvId
         let drv_id = DrvId::from_str(&job.drv_path)?;
 
@@ -85,7 +95,7 @@ pub async fn create_jobs_for_jobset(
         )
         .bind(jobset_id)
         .bind(drv_id)
-        .bind(&name)
+        .bind(&job.attr)
         .execute(&mut *tx)
         .await?;
     }
@@ -175,10 +185,11 @@ pub async fn new_jobs(
           FROM Job AS a
           INNER JOIN Job AS b
           ON a.name = b.name
-          WHERE a.jobset = ?
+          WHERE a.jobset = ? AND b.jobset = ?
         ) j ON d.ROWID = j.drv_id
         "#,
     )
+    .bind(&head_jobset_id)
     .bind(&head_jobset_id)
     .bind(&base_jobset_id)
     .fetch_all(pool)
@@ -207,14 +218,13 @@ pub async fn removed_jobs(
         WHERE a.jobset = ?
         "#,
     )
-    .bind(&base_jobset_id)
     .bind(&head_jobset_id)
+    .bind(&base_jobset_id)
     .fetch_all(pool)
     .await?;
 
     Ok(removed_drvs)
 }
-
 
 /// Select drvs which are only present in the head_sha
 pub async fn job_difference(
@@ -259,7 +269,7 @@ pub async fn job_difference(
           FROM Job AS a
           INNER JOIN Job AS b
           ON a.name = b.name
-          WHERE a.jobset = ? AND a.drv_id <> b.drv_id
+          WHERE a.jobset = ? AND b.jobset = ? AND a.drv_id <> b.drv_id
         ) j ON d.ROWID = j.drv_id
         "#,
     )
@@ -268,18 +278,10 @@ pub async fn job_difference(
     .fetch_all(pool)
     .await?;
 
-    let new_drvs = new_jobs(
-        head_jobset_id,
-        base_jobset_id,
-        pool
-    ).await?;
+    let new_drvs = new_jobs(head_jobset_id, base_jobset_id, pool).await?;
 
     // Removed jobs are just "new" when you invert direction, however, we just need Job name
-    let removed_jobs = removed_jobs(
-        base_jobset_id,
-        head_jobset_id,
-        pool
-    ).await?;
+    let removed_jobs = removed_jobs(base_jobset_id, head_jobset_id, pool).await?;
 
     Ok((new_drvs, changed_drvs, removed_jobs))
 }
@@ -314,20 +316,17 @@ mod tests {
             build_state: DrvBuildState::Queued,
         };
         insert_drv(&pool, &drv).await?;
-        let jobs = &vec![("foo".to_string(), eval_drv)];
+        let jobs = [eval_drv];
 
         println!("creating jobset");
         let jobset_id = create_jobset("abcdef", "fake-name", &pool).await?;
-        create_jobs_for_jobset(jobset_id, jobs, &pool).await?;
+        create_jobs_for_jobset(jobset_id, &jobs[..], &pool).await?;
 
         // These two queries should return the same result if there's no jobset associated with the
         // base commit
         let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs.into_iter().next(), Some(drv.clone()));
-        let newer_jobs = new_jobs("abcdef", "g1cdef", "fake-name", &pool).await?;
-        assert_eq!(newer_jobs.len(), 1);
-        assert_eq!(newer_jobs.into_iter().next(), Some(drv.clone()));
 
         // Create a second jobset, ensure we get just one result back
         let drv2 = Drv {
@@ -338,18 +337,13 @@ mod tests {
             build_state: DrvBuildState::Queued,
         };
         insert_drv(&pool, &drv2).await?;
-        let jobs = &vec![("foo".to_string(), eval_drv2)];
+        let jobs = [eval_drv2];
 
         let second_jobset_id = create_jobset("g1cdef", "fake-name", &pool).await?;
-        create_jobs_for_jobset(second_jobset_id, jobs, &pool).await?;
-        let newer_jobs = new_jobs("abcdef", "g1cdef", "fake-name", &pool).await?;
-        assert_eq!(newer_jobs.len(), 1);
-        assert_eq!(newer_jobs.into_iter().next(), Some(drv));
-
-        // If we reverse the commit order, we should get the other result
-        let newer_jobs2: Vec<Drv> = new_jobs("g1cdef", "abcdef", "fake-name", &pool).await?;
-        assert_eq!(newer_jobs2.len(), 1);
-        assert_eq!(newer_jobs2.into_iter().next(), Some(drv2));
+        create_jobs_for_jobset(second_jobset_id, &jobs[..], &pool).await?;
+        let (_, changed_jobs, _) = job_difference("abcdef", "g1cdef", "fake-name", &pool).await?;
+        assert_eq!(changed_jobs.len(), 1);
+        assert_eq!(changed_jobs.into_iter().next(), Some(drv));
 
         Ok(())
     }

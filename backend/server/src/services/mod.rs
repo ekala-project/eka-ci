@@ -65,7 +65,8 @@ pub async fn start_services(config: Config) -> Result<()> {
     );
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
-    let repo_service = RepoReader::new(eval_sender.clone(), maybe_github_sender)?;
+    let repo_service =
+        RepoReader::new(eval_sender.clone(), maybe_github_sender, db_service.clone())?;
     let repo_sender = repo_service.get_sender();
 
     let git_service = GitService::new(repo_sender.clone())?;

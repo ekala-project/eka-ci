@@ -1,15 +1,14 @@
+use std::fmt;
+
 use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::PullRequest;
-use std::fmt;
+use octocrab::params::checks::{CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus};
 
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
-use octocrab::params::checks::{
-    CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus,
-};
 
 #[derive(Debug, Clone)]
 pub enum JobDifference {
@@ -32,13 +31,27 @@ impl fmt::Display for JobDifference {
 /// Information needed to create a CI check run gate
 pub struct CICheckInfo {
     pub commit: String,
-    pub base_commit: String,
+    pub base_commit: Option<String>,
     pub owner: String,
     pub repo_name: String,
 }
 
 impl CICheckInfo {
-    pub fn from_gh_pr(pr: &PullRequest) -> Self {
+    pub fn from_gh_pr_base(pr: &PullRequest) -> Self {
+        let commit = pr.base.sha.clone();
+        let repo = (*pr.base).repo.as_ref().unwrap();
+        let owner = repo.owner.as_ref().unwrap().login.clone();
+        let repo_name = repo.name.clone();
+
+        Self {
+            commit,
+            base_commit: None,
+            owner,
+            repo_name,
+        }
+    }
+
+    pub fn from_gh_pr_head(pr: &PullRequest) -> Self {
         let commit = pr.head.sha.clone();
         let base_commit = pr.base.sha.clone();
         let repo = (*pr.head).repo.as_ref().unwrap();
@@ -47,7 +60,7 @@ impl CICheckInfo {
 
         Self {
             commit,
-            base_commit,
+            base_commit: Some(base_commit),
             owner,
             repo_name,
         }
@@ -63,12 +76,11 @@ impl CICheckInfo {
         let title = format!("{} / {}", name, difference.to_string());
         let (gh_status, gh_conclusion) = match difference {
             // If it's been removed, we don't really care what the previous status was
-            JobDifference::Removed => {
-                (GHStatus::Completed, Some(GHConclusion::Neutral))
-            },
+            JobDifference::Removed => (GHStatus::Completed, Some(GHConclusion::Neutral)),
             _ => initial_status.as_gh_checkrun_state(),
         };
-        self.inner_gh_check_run(octocrab, &title, gh_status, gh_conclusion).await
+        self.inner_gh_check_run(octocrab, &title, gh_status, gh_conclusion)
+            .await
     }
 
     async fn inner_gh_check_run(
