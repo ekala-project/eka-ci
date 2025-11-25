@@ -22,21 +22,26 @@ This doesn't scale well, and is error prone.
 See the [design document](./DESIGN.md) for details about a high-level overview
 of EkaCI.
 
-# MVP Roadmap
+# MVP Roadmap (Corepkgs bootstrapping usage)
 
 Server + evaluator + build queue
 
-- GitHub OAuth
-  - [ ] Allow users to register through GitHub
-- GitHub webhooks
+- GitHub 
   - [x] App registration workflow
-  - [ ] Receive PR review events
+  - [ ] Receive PR review events through webhooks
   - [x] Send check gates
 - PR Review workflow
   - [x] Git checkout
   - [x] Evaluate derivation differences between head and base branch
   - [x] Queue changed derivations for build
-  - [ ] Allow successful builds to push outputs to attic
+
+# Beta (Public Corepkgs usage)
+
+Backend
+- GitHub OAuth
+  - [ ] Allow users to register through GitHub
+- PR Checks
+  - [ ] Allow successful builds to push to a cache
   - [ ] Calculate changed metrics between builds: build and runtime closure size, dependencies
 - Push built artifacts
   - [ ] Allow for a time-lease to be configured for "jobsets", to enable attic integration
