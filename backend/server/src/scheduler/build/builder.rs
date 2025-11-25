@@ -15,6 +15,7 @@ use crate::scheduler::recorder::RecorderTask;
 pub struct Builder {
     is_local: bool,
     pub max_jobs: u8,
+    pub remote_uri: Option<String>,
     pub builder_name: String,
     pub platform: Platform,
     recorder_sender: mpsc::Sender<RecorderTask>,
@@ -24,6 +25,7 @@ impl Builder {
     fn new_inner(
         is_local: bool,
         max_jobs: u8,
+        remote_uri: Option<String>,
         builder_name: String,
         platform: Platform,
         recorder_sender: Sender<RecorderTask>,
@@ -31,6 +33,7 @@ impl Builder {
         Self {
             is_local,
             max_jobs,
+            remote_uri,
             builder_name,
             platform,
             recorder_sender,
@@ -39,6 +42,27 @@ impl Builder {
 
     pub fn is_local(&self) -> bool {
         self.is_local
+    }
+
+    /// Check to see if remote builder/store is even available
+    /// This prevent scheduling builds for a remote builder which
+    /// will just fail because it's not available
+    pub async fn is_available(&self) -> bool {
+        if self.is_local {
+            return true;
+        }
+
+        Command::new("nix")
+            .args([
+                "store",
+                "ping",
+                "--store",
+                self.remote_uri.as_ref().unwrap(),
+            ])
+            .output()
+            .await
+            .map(|x| x.status.success())
+            .unwrap_or(false)
     }
 
     pub fn run(self) -> mpsc::Sender<BuildRequest> {
@@ -65,6 +89,7 @@ impl Builder {
                 Self::new_inner(
                     true,
                     40,
+                    None,
                     "localhost".to_string(),
                     platform.to_string(),
                     recorder_sender.clone(),
@@ -83,6 +108,7 @@ impl Builder {
         Self::new_inner(
             false,
             remote_builder.max_jobs,
+            Some(remote_builder.uri.clone()),
             format!(
                 "'{} {}'",
                 remote_builder.uri,

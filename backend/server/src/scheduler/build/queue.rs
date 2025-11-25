@@ -23,7 +23,7 @@ pub struct BuildQueue {
 
 impl BuildQueue {
     /// Immediately starts builder service
-    pub fn init(builders: Vec<Builder>) -> (Self, mpsc::Sender<BuildRequest>) {
+    pub async fn init(builders: Vec<Builder>) -> (Self, mpsc::Sender<BuildRequest>) {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);
         let system_queues = HashMap::new();
 
@@ -33,20 +33,20 @@ impl BuildQueue {
         };
 
         for builder in builders {
-            queue.add_builder(builder);
+            queue.add_builder(builder).await;
         }
 
         (queue, build_request_sender)
     }
 
-    fn add_builder(&mut self, builder: Builder) {
+    async fn add_builder(&mut self, builder: Builder) {
         if !self.system_queues.contains_key(&builder.platform) {
             let queue = PlatformQueue::new(builder.platform.clone());
             self.system_queues.insert(builder.platform.clone(), queue);
         }
 
         let system_queue = self.system_queues.get_mut(&builder.platform).unwrap();
-        system_queue.add_builder(builder);
+        system_queue.add_builder(builder).await;
     }
 
     pub fn run(self) -> JoinHandle<()> {

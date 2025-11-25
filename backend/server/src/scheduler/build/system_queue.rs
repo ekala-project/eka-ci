@@ -25,7 +25,15 @@ impl PlatformQueue {
         }
     }
 
-    pub fn add_builder(&mut self, builder: Builder) {
+    pub async fn add_builder(&mut self, builder: Builder) {
+        if !builder.is_available().await {
+            warn!(
+                "{} was rejected as a builder because it was unable to be reached.",
+                builder.builder_name
+            );
+            return;
+        }
+
         if builder.is_local() {
             self.local_builder = Some(builder);
         } else {
