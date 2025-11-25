@@ -9,6 +9,17 @@ The EkaCI tool will provide two "interfaces". One as a CI/CD tool which can emit
 PR check information. The other interface will be a web SPA which acts as review
 portal for maintainers to easily review PRs.
 
+## EkaCI, Conceptual design
+
+EkaCI works by creating a global addressed space for visted Nix derivations. These
+derivations are treated as unique builds across all repositories or time. This allows
+us to "cache" build results of a drv without having to associate with a particular
+commit, repository or package.
+
+EkaCI is designed to be an actor-based service, generally there is an actor ("service")
+per responsibility. This allows for good asynchronosity of logic flow, especially
+when much of the business logic is event based (e.g. webhooks, builds, gates, etc).
+
 ## EkaCI, the CI experience
 
 "As a PR Author, I would like to be informed as to when my PR fails eval, its build, or causes regressions"
