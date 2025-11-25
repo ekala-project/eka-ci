@@ -58,7 +58,7 @@ impl SchedulerService {
             }
         }
 
-        let (builder_service, builder_sender) = BuildQueue::init(builders);
+        let (builder_service, builder_sender) = BuildQueue::init(builders).await;
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run();
