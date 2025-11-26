@@ -230,12 +230,12 @@ impl GitHubService {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run_id = self
                     .github_configure_checks
-                    .get(&ci_check_info.commit)
+                    .remove(&ci_check_info.commit)
                     .context("No configure gate check run found for commit")?;
                 actions::update_ci_configure_gate(
                     &octocrab,
                     ci_check_info,
-                    *check_run_id,
+                    check_run_id,
                     CheckRunStatus::Completed,
                     CheckRunConclusion::Success,
                 )
