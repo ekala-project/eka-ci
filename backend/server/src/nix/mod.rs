@@ -88,21 +88,22 @@ impl EvalService {
             EvalTask::TraverseDrv(drv) => {
                 self.traverse_drvs(drv, &None).await?;
             },
-            EvalTask::GithubJobPR((drv, ci_info)) => {
+            EvalTask::GithubJobPR((eval_job, ci_info)) => {
                 if self.github_sender.is_some() {
-                    let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
+                    let jobs = self.run_nix_eval_jobs(&eval_job.file_path).await?;
                     let gh_sender = self
                         .github_sender
                         .as_mut()
                         .context("github sender missing")?;
                     let create_task = GitHubTask::CreateCIEvalJob {
                         ci_check_info: ci_info.clone(),
+                        job_title: eval_job.name.clone(),
                     };
                     gh_sender.send(create_task).await?;
 
                     let gh_task = GitHubTask::CreateJobSet {
                         ci_check_info: ci_info.clone(),
-                        name: drv.name.to_string(),
+                        name: eval_job.name.to_string(),
                         jobs,
                     };
                     gh_sender.send(gh_task).await?;

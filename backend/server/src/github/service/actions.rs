@@ -69,6 +69,7 @@ pub async fn update_ci_configure_gate(
 /// are being evaluated for a PR
 pub async fn create_ci_eval_job(
     octocrab: &Octocrab,
+    job_title: &str,
     ci_check_info: &CICheckInfo,
 ) -> Result<CheckRun> {
     use octocrab::params::checks::CheckRunStatus;
@@ -78,10 +79,11 @@ pub async fn create_ci_eval_job(
         &ci_check_info.commit
     );
 
+    let title = format!("EkaCI: Evaluate Job ({})", job_title);
     // Create a check run for the CI eval job gate
     let check_run = octocrab
         .checks(&ci_check_info.owner, &ci_check_info.repo_name)
-        .create_check_run("EkaCI: Eval", &ci_check_info.commit)
+        .create_check_run(&title, &ci_check_info.commit)
         .status(CheckRunStatus::InProgress)
         .send()
         .await?;

@@ -135,6 +135,7 @@ impl GitHubService {
             self.emit_jobs(
                 ci_check_info,
                 &octocrab,
+                name,
                 new_jobs,
                 &drv_paths,
                 &JobDifference::New,
@@ -143,6 +144,7 @@ impl GitHubService {
             self.emit_jobs(
                 ci_check_info,
                 &octocrab,
+                name,
                 changed_drvs,
                 &drv_paths,
                 &JobDifference::Changed,
@@ -153,6 +155,7 @@ impl GitHubService {
                 ci_check_info
                     .create_gh_check_run(
                         &octocrab,
+                        name,
                         &job,
                         DrvBuildState::Queued,
                         &JobDifference::Removed,
@@ -167,6 +170,7 @@ impl GitHubService {
         &mut self,
         ci_check_info: &CICheckInfo,
         octocrab: &Octocrab,
+        jobset_name: &str,
         jobs: Vec<Drv>,
         drv_paths: &HashMap<&str, &NixEvalDrv>,
         difference: &JobDifference,
@@ -181,7 +185,7 @@ impl GitHubService {
                 let drv = self.db_service.get_drv(&drv_id).await?;
                 let state = drv.map(|x| x.build_state).unwrap_or(DrvBuildState::Queued);
                 let check_run = ci_check_info
-                    .create_gh_check_run(octocrab, &eval_job.attr, state, difference)
+                    .create_gh_check_run(octocrab, jobset_name, &eval_job.attr, state, difference)
                     .await?;
 
                 self.db_service
@@ -243,9 +247,9 @@ impl GitHubService {
                 )
                 .await?;
             },
-            GitHubTask::CreateCIEvalJob { ci_check_info } => {
+            GitHubTask::CreateCIEvalJob { ci_check_info , job_title } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-                let check_run = actions::create_ci_eval_job(&octocrab, ci_check_info).await?;
+                let check_run = actions::create_ci_eval_job(&octocrab, job_title, ci_check_info).await?;
                 self.github_eval_checks
                     .insert(ci_check_info.commit.clone(), check_run.id);
             },

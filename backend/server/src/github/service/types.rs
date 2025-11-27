@@ -69,11 +69,12 @@ impl CICheckInfo {
     pub async fn create_gh_check_run(
         &self,
         octocrab: &Octocrab,
+        jobset_name: &str,
         name: &str,
         initial_status: DrvBuildState,
         difference: &JobDifference,
     ) -> Result<CheckRun> {
-        let title = format!("{} / {}", name, difference.to_string());
+        let title = format!("{} / {} ({})", name, difference.to_string(), jobset_name);
         let (gh_status, gh_conclusion) = match difference {
             // If it's been removed, we don't really care what the previous status was
             JobDifference::Removed => (GHStatus::Completed, Some(GHConclusion::Neutral)),
@@ -123,6 +124,7 @@ pub enum GitHubTask {
     },
     CreateCIEvalJob {
         ci_check_info: CICheckInfo,
+        job_title: String,
     },
     CompleteCIEvalJob {
         ci_check_info: CICheckInfo,
