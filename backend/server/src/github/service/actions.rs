@@ -64,3 +64,62 @@ pub async fn update_ci_configure_gate(
 
     Ok(())
 }
+
+/// This will send an initial ci eval job gate which is used to determine what jobs
+/// are being evaluated for a PR
+pub async fn create_ci_eval_job(
+    octocrab: &Octocrab,
+    job_title: &str,
+    ci_check_info: &CICheckInfo,
+) -> Result<CheckRun> {
+    use octocrab::params::checks::CheckRunStatus;
+
+    debug!(
+        "Creating CI eval job check run for commit {}",
+        &ci_check_info.commit
+    );
+
+    let title = format!("EkaCI: Evaluate Job ({})", job_title);
+    // Create a check run for the CI eval job gate
+    let check_run = octocrab
+        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+        .create_check_run(&title, &ci_check_info.commit)
+        .status(CheckRunStatus::InProgress)
+        .send()
+        .await?;
+
+    debug!(
+        "Successfully created CI eval job check run for commit #{}",
+        &ci_check_info.commit
+    );
+
+    Ok(check_run)
+}
+
+pub async fn update_ci_eval_job(
+    octocrab: &Octocrab,
+    ci_check_info: &CICheckInfo,
+    check_run_id: CheckRunId,
+    status: octocrab::params::checks::CheckRunStatus,
+    conclusion: CheckRunConclusion,
+) -> Result<()> {
+    debug!(
+        "Updating CI eval job check run {} with status {:?}",
+        check_run_id, status
+    );
+
+    octocrab
+        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+        .update_check_run(check_run_id)
+        .status(status)
+        .conclusion(conclusion)
+        .send()
+        .await?;
+
+    debug!(
+        "Successfully updated CI eval job check run {}",
+        check_run_id
+    );
+
+    Ok(())
+}

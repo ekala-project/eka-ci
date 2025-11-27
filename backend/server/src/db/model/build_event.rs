@@ -1,5 +1,4 @@
 use sqlx::{FromRow, SqlitePool};
-use tracing::debug;
 
 use super::ForInsert;
 use super::build::DrvBuildId;
