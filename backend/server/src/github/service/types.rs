@@ -121,6 +121,12 @@ pub enum GitHubTask {
     CompleteCIConfigureGate {
         ci_check_info: CICheckInfo,
     },
+    CreateCIEvalJob {
+        ci_check_info: CICheckInfo,
+    },
+    CompleteCIEvalJob {
+        ci_check_info: CICheckInfo,
+    },
 }
 
 pub type Owner = String;

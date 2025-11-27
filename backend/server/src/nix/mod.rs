@@ -79,6 +79,8 @@ impl EvalService {
 
     // TODO: Determine what drvs existed before, to avoid acting like everything is new
     async fn handle_eval_task(&mut self, task: EvalTask) -> Result<()> {
+        use anyhow::Context;
+
         match &task {
             EvalTask::Job(drv) => {
                 self.run_nix_eval_jobs(&drv.file_path).await?;
@@ -87,14 +89,28 @@ impl EvalService {
                 self.traverse_drvs(drv, &None).await?;
             },
             EvalTask::GithubJobPR((drv, ci_info)) => {
-                let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
-                if let Some(gh_sender) = self.github_sender.as_ref() {
+                if self.github_sender.is_some() {
+                    let jobs = self.run_nix_eval_jobs(&drv.file_path).await?;
+                    let gh_sender = self
+                        .github_sender
+                        .as_mut()
+                        .context("github sender missing")?;
+                    let create_task = GitHubTask::CreateCIEvalJob {
+                        ci_check_info: ci_info.clone(),
+                    };
+                    gh_sender.send(create_task).await?;
+
                     let gh_task = GitHubTask::CreateJobSet {
                         ci_check_info: ci_info.clone(),
                         name: drv.name.to_string(),
                         jobs,
                     };
                     gh_sender.send(gh_task).await?;
+
+                    let complete_task = GitHubTask::CompleteCIEvalJob {
+                        ci_check_info: ci_info.clone(),
+                    };
+                    gh_sender.send(complete_task).await?;
                 } else {
                     warn!("GitHub service was never initialized, skipping task to create a jobset")
                 }
@@ -126,7 +142,7 @@ impl EvalService {
     async fn traverse_drvs(
         &mut self,
         drv_path: &str,
-        references: &Option<HashMap<String, Vec<String>>>,
+        _references: &Option<HashMap<String, Vec<String>>>,
     ) -> Result<()> {
         use std::str::FromStr;
 

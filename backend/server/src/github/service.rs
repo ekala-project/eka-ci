@@ -30,6 +30,7 @@ pub struct GitHubService {
     github_receiver: mpsc::Receiver<GitHubTask>,
     github_sender: mpsc::Sender<GitHubTask>,
     github_configure_checks: HashMap<Commit, CheckRunId>,
+    github_eval_checks: HashMap<Commit, CheckRunId>,
 }
 
 impl GitHubService {
@@ -60,6 +61,7 @@ impl GitHubService {
             github_receiver,
             github_sender,
             github_configure_checks: HashMap::new(),
+            github_eval_checks: HashMap::new(),
         })
     }
 
@@ -233,6 +235,27 @@ impl GitHubService {
                     .remove(&ci_check_info.commit)
                     .context("No configure gate check run found for commit")?;
                 actions::update_ci_configure_gate(
+                    &octocrab,
+                    ci_check_info,
+                    check_run_id,
+                    CheckRunStatus::Completed,
+                    CheckRunConclusion::Success,
+                )
+                .await?;
+            },
+            GitHubTask::CreateCIEvalJob { ci_check_info } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+                let check_run = actions::create_ci_eval_job(&octocrab, ci_check_info).await?;
+                self.github_eval_checks
+                    .insert(ci_check_info.commit.clone(), check_run.id);
+            },
+            GitHubTask::CompleteCIEvalJob { ci_check_info } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+                let check_run_id = self
+                    .github_eval_checks
+                    .remove(&ci_check_info.commit)
+                    .context("No eval job check run found for commit")?;
+                actions::update_ci_eval_job(
                     &octocrab,
                     ci_check_info,
                     check_run_id,
