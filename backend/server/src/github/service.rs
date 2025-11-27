@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::db::DbService;
-use crate::db::model::build_event::DrvBuildState;
+use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::{Drv, DrvId};
 use crate::github::service::types::JobDifference;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
@@ -132,7 +132,7 @@ impl GitHubService {
 
             // TODO: parallelize this, and make it async
             info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
-            self.emit_jobs(
+            self.emit_jobs_with_collapsing(
                 ci_check_info,
                 &octocrab,
                 name,
@@ -141,7 +141,7 @@ impl GitHubService {
                 &JobDifference::New,
             )
             .await?;
-            self.emit_jobs(
+            self.emit_jobs_with_collapsing(
                 ci_check_info,
                 &octocrab,
                 name,
@@ -151,17 +151,8 @@ impl GitHubService {
             )
             .await?;
 
-            for job in removed_jobs {
-                ci_check_info
-                    .create_gh_check_run(
-                        &octocrab,
-                        name,
-                        &job,
-                        DrvBuildState::Queued,
-                        &JobDifference::Removed,
-                    )
-                    .await?;
-            }
+            self.emit_removed_jobs_with_collapsing(ci_check_info, &octocrab, name, removed_jobs)
+                .await?;
         }
         Ok(())
     }
@@ -203,6 +194,131 @@ impl GitHubService {
                 );
             }
         }
+        Ok(())
+    }
+
+    async fn emit_jobs_with_collapsing(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        jobs: Vec<Drv>,
+        drv_paths: &HashMap<&str, &NixEvalDrv>,
+        difference: &JobDifference,
+    ) -> Result<()> {
+        const COLLAPSE_THRESHOLD: usize = 10;
+
+        if jobs.len() <= COLLAPSE_THRESHOLD {
+            return self
+                .emit_jobs(
+                    ci_check_info,
+                    octocrab,
+                    jobset_name,
+                    jobs,
+                    drv_paths,
+                    difference,
+                )
+                .await;
+        }
+
+        // Collapse gates - create a summary gate and emit individual failures
+        let summary_title = format!("{} {} jobs", jobs.len(), difference);
+        let check_run = ci_check_info
+            .create_gh_collapsed_check_run(octocrab, jobset_name, &summary_title, difference)
+            .await?;
+
+        // Still emit individual failures and transitive failures
+        use std::str::FromStr;
+        for job in jobs {
+            let maybe_eval_job = drv_paths.get(job.drv_path.store_path().as_str());
+
+            if let Some(eval_job) = maybe_eval_job {
+                let drv_id = DrvId::from_str(&eval_job.drv_path)?;
+                let drv = self.db_service.get_drv(&drv_id).await?;
+                let state = drv.map(|x| x.build_state).unwrap_or(DrvBuildState::Queued);
+
+                // Only create individual gates for failures
+                if matches!(
+                    state,
+                    DrvBuildState::Completed(DrvBuildResult::Failure)
+                        | DrvBuildState::TransitiveFailure
+                        | DrvBuildState::Interrupted(_)
+                ) {
+                    let individual_check_run = ci_check_info
+                        .create_gh_check_run(
+                            octocrab,
+                            jobset_name,
+                            &eval_job.attr,
+                            state,
+                            difference,
+                        )
+                        .await?;
+
+                    self.db_service
+                        .insert_check_run_info(
+                            individual_check_run.id.0 as i64,
+                            &job.drv_path,
+                            &ci_check_info.repo_name,
+                            &ci_check_info.owner,
+                        )
+                        .await?;
+                } else {
+                    // For non-failures, just track them in the database without creating individual
+                    // gates
+                    self.db_service
+                        .insert_check_run_info(
+                            check_run.id.0 as i64,
+                            &job.drv_path,
+                            &ci_check_info.repo_name,
+                            &ci_check_info.owner,
+                        )
+                        .await?;
+                }
+            } else {
+                warn!(
+                    "Failed to find eval_job for {}:",
+                    &job.drv_path.store_path()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn emit_removed_jobs_with_collapsing(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        job_names: Vec<String>,
+    ) -> Result<()> {
+        const COLLAPSE_THRESHOLD: usize = 10;
+
+        if job_names.len() <= COLLAPSE_THRESHOLD {
+            for job_name in job_names {
+                ci_check_info
+                    .create_gh_check_run(
+                        &octocrab,
+                        jobset_name,
+                        &job_name,
+                        DrvBuildState::Queued,
+                        &JobDifference::Removed,
+                    )
+                    .await?;
+            }
+        } else {
+            // Collapse removed jobs
+            let summary_title = format!("{} {} jobs", job_names.len(), JobDifference::Removed);
+            ci_check_info
+                .create_gh_collapsed_check_run(
+                    octocrab,
+                    jobset_name,
+                    &summary_title,
+                    &JobDifference::Removed,
+                )
+                .await?;
+        }
+
         Ok(())
     }
 

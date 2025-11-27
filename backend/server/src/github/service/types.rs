@@ -84,6 +84,27 @@ impl CICheckInfo {
             .await
     }
 
+    pub async fn create_gh_collapsed_check_run(
+        &self,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        summary_title: &str,
+        difference: &JobDifference,
+    ) -> Result<CheckRun> {
+        let title = format!(
+            "{} / {} ({})",
+            summary_title,
+            difference.to_string(),
+            jobset_name
+        );
+        let (gh_status, gh_conclusion) = match difference {
+            JobDifference::Removed => (GHStatus::Completed, Some(GHConclusion::Neutral)),
+            _ => (GHStatus::InProgress, None),
+        };
+        self.inner_gh_check_run(octocrab, &title, gh_status, gh_conclusion)
+            .await
+    }
+
     async fn inner_gh_check_run(
         &self,
         octocrab: &Octocrab,
