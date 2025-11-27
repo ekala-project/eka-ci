@@ -247,9 +247,13 @@ impl GitHubService {
                 )
                 .await?;
             },
-            GitHubTask::CreateCIEvalJob { ci_check_info , job_title } => {
+            GitHubTask::CreateCIEvalJob {
+                ci_check_info,
+                job_title,
+            } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-                let check_run = actions::create_ci_eval_job(&octocrab, job_title, ci_check_info).await?;
+                let check_run =
+                    actions::create_ci_eval_job(&octocrab, job_title, ci_check_info).await?;
                 self.github_eval_checks
                     .insert(ci_check_info.commit.clone(), check_run.id);
             },
