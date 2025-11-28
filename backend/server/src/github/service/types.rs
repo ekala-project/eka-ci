@@ -86,7 +86,7 @@ impl CICheckInfo {
             .await
     }
 
-    pub async fn create_gh_collapsed_check_run(
+    pub async fn create_gh_summary_check_run(
         &self,
         octocrab: &Octocrab,
         jobset_name: &str,
@@ -100,11 +100,9 @@ impl CICheckInfo {
             difference.to_string(),
             jobset_name
         );
-        let (gh_status, gh_conclusion) = match difference {
-            JobDifference::Removed => (GHStatus::Completed, Some(GHConclusion::Neutral)),
-            _ => (GHStatus::InProgress, None),
-        };
-        self.inner_gh_check_run_with_output(
+        let (gh_status, gh_conclusion) = difference.as_gh_checkrun_state();
+        let output =
+        self.inner_gh_check_run(
             octocrab,
             &title,
             gh_status,
@@ -121,6 +119,7 @@ impl CICheckInfo {
         title: &str,
         gh_status: GHStatus,
         gh_conclusion: Option<GHConclusion>,
+        output: Option<String>,
     ) -> Result<CheckRun> {
         let check_builder = octocrab.checks(&self.owner, &self.repo_name);
         let mut create_check_run = check_builder
@@ -130,53 +129,22 @@ impl CICheckInfo {
         if let Some(conclusion) = gh_conclusion {
             create_check_run = create_check_run.conclusion(conclusion);
         }
+        if let Some(output) = output {
+            let check_run_output = CheckRunOutput {
+                title: title.to_string(),
+                summary: title.to_string(),
+                text: Some(output),
+                annotations: vec![],
+                images: vec![],
+            };
 
-        let check_run = create_check_run.send().await?;
-        Ok(check_run)
-    }
-
-    async fn inner_gh_check_run_with_output(
-        &self,
-        octocrab: &Octocrab,
-        title: &str,
-        gh_status: GHStatus,
-        gh_conclusion: Option<GHConclusion>,
-        job_names: &[String],
-        difference: &JobDifference,
-    ) -> Result<CheckRun> {
-        let check_builder = octocrab.checks(&self.owner, &self.repo_name);
-        let mut create_check_run = check_builder
-            .create_check_run(title, &self.commit)
-            .status(gh_status);
-
-        if let Some(conclusion) = gh_conclusion {
-            create_check_run = create_check_run.conclusion(conclusion);
+            create_check_run = create_check_run.output(check_run_output);
         }
 
-        // Create output with job listing
-        let summary = format!(
-            "{} {} jobs in this commit",
-            job_names.len(),
-            difference.to_string().to_lowercase()
-        );
-        let text = if job_names.is_empty() {
-            format!("No {} jobs found.", difference.to_string().to_lowercase())
-        } else {
-            format!("**{} Jobs:**\n- {}", difference, job_names.join("\n- "))
-        };
-
-        let output = CheckRunOutput {
-            title: format!("{} Jobs", difference),
-            summary,
-            text: Some(text),
-            annotations: vec![],
-            images: vec![],
-        };
-        create_check_run = create_check_run.output(output);
-
         let check_run = create_check_run.send().await?;
         Ok(check_run)
     }
+
 }
 
 #[derive(Debug)]

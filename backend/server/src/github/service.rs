@@ -221,7 +221,7 @@ impl GitHubService {
         Ok(())
     }
 
-    async fn emit_jobs_with_collapsing(
+    async fn emit_jobs_collapsed(
         &mut self,
         ci_check_info: &CICheckInfo,
         octocrab: &Octocrab,
@@ -249,7 +249,7 @@ impl GitHubService {
         }
     }
 
-    async fn emit_removed_jobs_with_collapsing(
+    async fn emit_removed_jobs_collapsed(
         &mut self,
         ci_check_info: &CICheckInfo,
         octocrab: &Octocrab,
@@ -306,18 +306,6 @@ impl GitHubService {
             )
             .await?;
 
-        // Track all jobs in the database under this summary check run
-        for job in jobs {
-            if drv_paths.get(job.drv_path.store_path().as_str()).is_some() {
-                self.db_service
-                    .insert_check_run_info(
-                        check_run.id.0 as i64,
-                        &job.drv_path,
-                        &ci_check_info.repo_name,
-                        &ci_check_info.owner,
-                    )
-                    .await?;
-            }
         }
 
         Ok(())
