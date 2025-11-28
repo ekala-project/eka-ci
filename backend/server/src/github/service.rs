@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::db::DbService;
-use crate::db::model::build_event::DrvBuildState;
+use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::{Drv, DrvId};
 use crate::github::service::types::JobDifference;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
@@ -132,7 +132,31 @@ impl GitHubService {
 
             // TODO: parallelize this, and make it async
             info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
-            self.emit_jobs(
+
+            // Emit summary gates for each job type
+            self.emit_jobset_summary(
+                ci_check_info,
+                &octocrab,
+                name,
+                &new_jobs,
+                &drv_paths,
+                &JobDifference::New,
+            )
+            .await?;
+            self.emit_jobset_summary(
+                ci_check_info,
+                &octocrab,
+                name,
+                &changed_drvs,
+                &drv_paths,
+                &JobDifference::Changed,
+            )
+            .await?;
+            self.emit_removed_jobset_summary(ci_check_info, &octocrab, name, &removed_jobs)
+                .await?;
+
+            // Emit individual gates if there are fewer than 10 jobs of each type
+            self.emit_jobs_with_collapsing(
                 ci_check_info,
                 &octocrab,
                 name,
@@ -141,7 +165,7 @@ impl GitHubService {
                 &JobDifference::New,
             )
             .await?;
-            self.emit_jobs(
+            self.emit_jobs_with_collapsing(
                 ci_check_info,
                 &octocrab,
                 name,
@@ -151,17 +175,8 @@ impl GitHubService {
             )
             .await?;
 
-            for job in removed_jobs {
-                ci_check_info
-                    .create_gh_check_run(
-                        &octocrab,
-                        name,
-                        &job,
-                        DrvBuildState::Queued,
-                        &JobDifference::Removed,
-                    )
-                    .await?;
-            }
+            self.emit_removed_jobs_with_collapsing(ci_check_info, &octocrab, name, removed_jobs)
+                .await?;
         }
         Ok(())
     }
@@ -203,6 +218,121 @@ impl GitHubService {
                 );
             }
         }
+        Ok(())
+    }
+
+    async fn emit_jobs_collapsed(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        jobs: Vec<Drv>,
+        drv_paths: &HashMap<&str, &NixEvalDrv>,
+        difference: &JobDifference,
+    ) -> Result<()> {
+        const COLLAPSE_THRESHOLD: usize = 10;
+
+        // Only emit individual gates if there are fewer than 10 jobs
+        if jobs.len() < COLLAPSE_THRESHOLD {
+            self.emit_jobs(
+                ci_check_info,
+                octocrab,
+                jobset_name,
+                jobs,
+                drv_paths,
+                difference,
+            )
+            .await
+        } else {
+            // For 10 or more jobs, don't create individual gates
+            Ok(())
+        }
+    }
+
+    async fn emit_removed_jobs_collapsed(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        job_names: Vec<String>,
+    ) -> Result<()> {
+        const COLLAPSE_THRESHOLD: usize = 10;
+
+        // Only emit individual gates if there are fewer than 10 jobs
+        if job_names.len() < COLLAPSE_THRESHOLD {
+            for job_name in job_names {
+                ci_check_info
+                    .create_gh_check_run(
+                        &octocrab,
+                        jobset_name,
+                        &job_name,
+                        DrvBuildState::Queued,
+                        &JobDifference::Removed,
+                    )
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn emit_jobset_summary(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        jobs: &[Drv],
+        drv_paths: &HashMap<&str, &NixEvalDrv>,
+        difference: &JobDifference,
+    ) -> Result<()> {
+        if jobs.is_empty() {
+            return Ok(());
+        }
+
+        let summary_title = format!("{} {} jobs", jobs.len(), difference);
+        let job_names: Vec<String> = jobs
+            .iter()
+            .filter_map(|job| drv_paths.get(job.drv_path.store_path().as_str()))
+            .map(|eval_job| eval_job.attr.clone())
+            .collect();
+
+        let check_run = ci_check_info
+            .create_gh_collapsed_check_run(
+                octocrab,
+                jobset_name,
+                &summary_title,
+                difference,
+                &job_names,
+            )
+            .await?;
+
+        }
+
+        Ok(())
+    }
+
+    async fn emit_removed_jobset_summary(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        job_names: &[String],
+    ) -> Result<()> {
+        if job_names.is_empty() {
+            return Ok(());
+        }
+
+        let summary_title = format!("{} {} jobs", job_names.len(), JobDifference::Removed);
+        ci_check_info
+            .create_gh_collapsed_check_run(
+                octocrab,
+                jobset_name,
+                &summary_title,
+                &JobDifference::Removed,
+                job_names,
+            )
+            .await?;
+
         Ok(())
     }
 
