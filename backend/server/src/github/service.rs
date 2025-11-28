@@ -208,7 +208,25 @@ impl GitHubService {
     ) -> Result<()> {
         const COLLAPSE_THRESHOLD: usize = 10;
 
-        if jobs.len() <= COLLAPSE_THRESHOLD {
+        // Always emit a summary gate
+        let summary_title = format!("{} {} jobs", jobs.len(), difference);
+        let job_names: Vec<String> = jobs
+            .iter()
+            .filter_map(|job| drv_paths.get(job.drv_path.store_path().as_str()))
+            .map(|eval_job| eval_job.attr.clone())
+            .collect();
+        let check_run = ci_check_info
+            .create_gh_collapsed_check_run(
+                octocrab,
+                jobset_name,
+                &summary_title,
+                difference,
+                &job_names,
+            )
+            .await?;
+
+        // Only emit individual gates if there are fewer than 10 jobs
+        if jobs.len() < COLLAPSE_THRESHOLD {
             return self
                 .emit_jobs(
                     ci_check_info,
@@ -221,59 +239,17 @@ impl GitHubService {
                 .await;
         }
 
-        // Collapse gates - create a summary gate and emit individual failures
-        let summary_title = format!("{} {} jobs", jobs.len(), difference);
-        let check_run = ci_check_info
-            .create_gh_collapsed_check_run(octocrab, jobset_name, &summary_title, difference)
-            .await?;
-
-        // Still emit individual failures and transitive failures
-        use std::str::FromStr;
+        // For 10 or more jobs, just track them in the database without individual gates
         for job in jobs {
-            let maybe_eval_job = drv_paths.get(job.drv_path.store_path().as_str());
-
-            if let Some(eval_job) = maybe_eval_job {
-                let drv_id = DrvId::from_str(&eval_job.drv_path)?;
-                let drv = self.db_service.get_drv(&drv_id).await?;
-                let state = drv.map(|x| x.build_state).unwrap_or(DrvBuildState::Queued);
-
-                // Only create individual gates for failures
-                if matches!(
-                    state,
-                    DrvBuildState::Completed(DrvBuildResult::Failure)
-                        | DrvBuildState::TransitiveFailure
-                        | DrvBuildState::Interrupted(_)
-                ) {
-                    let individual_check_run = ci_check_info
-                        .create_gh_check_run(
-                            octocrab,
-                            jobset_name,
-                            &eval_job.attr,
-                            state,
-                            difference,
-                        )
-                        .await?;
-
-                    self.db_service
-                        .insert_check_run_info(
-                            individual_check_run.id.0 as i64,
-                            &job.drv_path,
-                            &ci_check_info.repo_name,
-                            &ci_check_info.owner,
-                        )
-                        .await?;
-                } else {
-                    // For non-failures, just track them in the database without creating individual
-                    // gates
-                    self.db_service
-                        .insert_check_run_info(
-                            check_run.id.0 as i64,
-                            &job.drv_path,
-                            &ci_check_info.repo_name,
-                            &ci_check_info.owner,
-                        )
-                        .await?;
-                }
+            if drv_paths.get(job.drv_path.store_path().as_str()).is_some() {
+                self.db_service
+                    .insert_check_run_info(
+                        check_run.id.0 as i64,
+                        &job.drv_path,
+                        &ci_check_info.repo_name,
+                        &ci_check_info.owner,
+                    )
+                    .await?;
             } else {
                 warn!(
                     "Failed to find eval_job for {}:",
@@ -294,7 +270,20 @@ impl GitHubService {
     ) -> Result<()> {
         const COLLAPSE_THRESHOLD: usize = 10;
 
-        if job_names.len() <= COLLAPSE_THRESHOLD {
+        // Always emit a summary gate
+        let summary_title = format!("{} {} jobs", job_names.len(), JobDifference::Removed);
+        ci_check_info
+            .create_gh_collapsed_check_run(
+                octocrab,
+                jobset_name,
+                &summary_title,
+                &JobDifference::Removed,
+                &job_names,
+            )
+            .await?;
+
+        // Only emit individual gates if there are fewer than 10 jobs
+        if job_names.len() < COLLAPSE_THRESHOLD {
             for job_name in job_names {
                 ci_check_info
                     .create_gh_check_run(
@@ -306,17 +295,6 @@ impl GitHubService {
                     )
                     .await?;
             }
-        } else {
-            // Collapse removed jobs
-            let summary_title = format!("{} {} jobs", job_names.len(), JobDifference::Removed);
-            ci_check_info
-                .create_gh_collapsed_check_run(
-                    octocrab,
-                    jobset_name,
-                    &summary_title,
-                    &JobDifference::Removed,
-                )
-                .await?;
         }
 
         Ok(())

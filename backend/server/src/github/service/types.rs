@@ -4,7 +4,9 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::PullRequest;
-use octocrab::params::checks::{CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus};
+use octocrab::params::checks::{
+    CheckRunConclusion as GHConclusion, CheckRunOutput, CheckRunStatus as GHStatus,
+};
 
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
@@ -90,6 +92,7 @@ impl CICheckInfo {
         jobset_name: &str,
         summary_title: &str,
         difference: &JobDifference,
+        job_names: &[String],
     ) -> Result<CheckRun> {
         let title = format!(
             "{} / {} ({})",
@@ -101,8 +104,15 @@ impl CICheckInfo {
             JobDifference::Removed => (GHStatus::Completed, Some(GHConclusion::Neutral)),
             _ => (GHStatus::InProgress, None),
         };
-        self.inner_gh_check_run(octocrab, &title, gh_status, gh_conclusion)
-            .await
+        self.inner_gh_check_run_with_output(
+            octocrab,
+            &title,
+            gh_status,
+            gh_conclusion,
+            job_names,
+            difference,
+        )
+        .await
     }
 
     async fn inner_gh_check_run(
@@ -120,6 +130,49 @@ impl CICheckInfo {
         if let Some(conclusion) = gh_conclusion {
             create_check_run = create_check_run.conclusion(conclusion);
         }
+
+        let check_run = create_check_run.send().await?;
+        Ok(check_run)
+    }
+
+    async fn inner_gh_check_run_with_output(
+        &self,
+        octocrab: &Octocrab,
+        title: &str,
+        gh_status: GHStatus,
+        gh_conclusion: Option<GHConclusion>,
+        job_names: &[String],
+        difference: &JobDifference,
+    ) -> Result<CheckRun> {
+        let check_builder = octocrab.checks(&self.owner, &self.repo_name);
+        let mut create_check_run = check_builder
+            .create_check_run(title, &self.commit)
+            .status(gh_status);
+
+        if let Some(conclusion) = gh_conclusion {
+            create_check_run = create_check_run.conclusion(conclusion);
+        }
+
+        // Create output with job listing
+        let summary = format!(
+            "{} {} jobs in this commit",
+            job_names.len(),
+            difference.to_string().to_lowercase()
+        );
+        let text = if job_names.is_empty() {
+            format!("No {} jobs found.", difference.to_string().to_lowercase())
+        } else {
+            format!("**{} Jobs:**\n- {}", difference, job_names.join("\n- "))
+        };
+
+        let output = CheckRunOutput {
+            title: format!("{} Jobs", difference),
+            summary,
+            text: Some(text),
+            annotations: vec![],
+            images: vec![],
+        };
+        create_check_run = create_check_run.output(output);
 
         let check_run = create_check_run.send().await?;
         Ok(check_run)
