@@ -11,8 +11,8 @@ mod serialization {
         assert_eq!(drv_info.system, "x86_64-linux");
         matches!(drv_info.env, EnvAttrs::StructuredAttrs { __json: _ });
 
-        // let drv = drv_info.to_drv_info().unwrap();
-        // assert_eq!(drv.pname, Some("python".to_owned()));
+        let drv = drv_info.into_drv_info().unwrap();
+        assert_eq!(drv.pname, Some("python3-minimal".to_owned()));
     }
 
     #[test]
