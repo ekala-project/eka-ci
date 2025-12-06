@@ -80,8 +80,7 @@ fn api_routes() -> Router<AppState> {
 async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_payload): Json<WEP>) {
     use crate::github::handle_webhook_payload;
 
-    handle_webhook_payload(webhook_payload, state.git_sender, state.github_sender)
-        .await;
+    handle_webhook_payload(webhook_payload, state.git_sender, state.github_sender).await;
 }
 
 async fn get_derivation_log(axum::extract::Path(drv): axum::extract::Path<String>) -> String {

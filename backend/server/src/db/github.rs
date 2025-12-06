@@ -148,7 +148,8 @@ pub async fn check_runs_for_drv_path(
     Ok(check_runs)
 }
 
-/// Return all checkruns for a specific commit SHA that are still active (queued, buildable, or building)
+/// Return all checkruns for a specific commit SHA that are still active (queued, buildable, or
+/// building)
 pub async fn check_runs_for_commit(
     sha: &str,
     pool: &Pool<Sqlite>,
