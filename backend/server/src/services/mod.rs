@@ -65,15 +65,22 @@ pub async fn start_services(config: Config) -> Result<()> {
     );
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
-    let repo_service =
-        RepoReader::new(eval_sender.clone(), maybe_github_sender, db_service.clone())?;
+    let repo_service = RepoReader::new(
+        eval_sender.clone(),
+        maybe_github_sender.clone(),
+        db_service.clone(),
+    )?;
     let repo_sender = repo_service.get_sender();
 
     let git_service = GitService::new(repo_sender.clone())?;
 
-    let web_service = WebService::bind_to_address(&config.web.address, git_service.get_sender())
-        .await
-        .context("failed to start web service")?;
+    let web_service = WebService::bind_to_address(
+        &config.web.address,
+        git_service.get_sender(),
+        maybe_github_sender.clone(),
+    )
+    .await
+    .context("failed to start web service")?;
 
     let unix_service = UnixService::bind_to_path(
         &config.unix.socket_path,

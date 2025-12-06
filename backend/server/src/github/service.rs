@@ -272,6 +272,69 @@ impl GitHubService {
                 )
                 .await?;
             },
+            GitHubTask::CancelCheckRunsForCommit { ci_check_info } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+
+                // Cancel any in-progress configure gate
+                if let Some(check_run_id) =
+                    self.github_configure_checks.remove(&ci_check_info.commit)
+                {
+                    if let Err(e) = actions::update_ci_configure_gate(
+                        &octocrab,
+                        ci_check_info,
+                        check_run_id,
+                        CheckRunStatus::Completed,
+                        CheckRunConclusion::Cancelled,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Failed to cancel configure gate for {}: {:?}",
+                            &ci_check_info.commit, e
+                        );
+                    }
+                }
+
+                // Cancel any in-progress eval gate
+                if let Some(check_run_id) = self.github_eval_checks.remove(&ci_check_info.commit) {
+                    if let Err(e) = actions::update_ci_eval_job(
+                        &octocrab,
+                        ci_check_info,
+                        check_run_id,
+                        CheckRunStatus::Completed,
+                        CheckRunConclusion::Cancelled,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Failed to cancel eval gate for {}: {:?}",
+                            &ci_check_info.commit, e
+                        );
+                    }
+                }
+
+                // Cancel all job check_runs for this commit
+                let check_runs = self
+                    .db_service
+                    .check_runs_for_commit(&ci_check_info.commit)
+                    .await?;
+                for check_run in check_runs {
+                    if let Err(e) = check_run
+                        .send_gh_update(
+                            &octocrab,
+                            &DrvBuildState::Interrupted(
+                                crate::db::model::build_event::DrvBuildInterruptionKind::Cancelled,
+                            ),
+                        )
+                        .await
+                    {
+                        warn!(
+                            "Failed to cancel check_run {} for {}: {:?}",
+                            check_run.check_run_id, &ci_check_info.commit, e
+                        );
+                    }
+                }
+            },
         }
         Ok(())
     }

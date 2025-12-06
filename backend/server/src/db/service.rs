@@ -132,6 +132,10 @@ impl DbService {
         github::check_runs_for_drv_path(drv_path, &self.pool).await
     }
 
+    pub async fn check_runs_for_commit(&self, sha: &str) -> anyhow::Result<Vec<github::CheckRun>> {
+        github::check_runs_for_commit(sha, &self.pool).await
+    }
+
     pub async fn insert_check_run_info(
         &self,
         check_run_id: i64,
