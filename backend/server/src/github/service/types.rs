@@ -129,6 +129,9 @@ pub enum GitHubTask {
     CompleteCIEvalJob {
         ci_check_info: CICheckInfo,
     },
+    CancelCheckRunsForCommit {
+        ci_check_info: CICheckInfo,
+    },
 }
 
 pub type Owner = String;

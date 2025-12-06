@@ -148,6 +148,29 @@ pub async fn check_runs_for_drv_path(
     Ok(check_runs)
 }
 
+/// Return all checkruns for a specific commit SHA that are still active (queued, buildable, or
+/// building)
+pub async fn check_runs_for_commit(
+    sha: &str,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<CheckRun>> {
+    let check_runs = sqlx::query_as(
+        r#"
+        SELECT DISTINCT c.check_run_id, c.repo_name, c.repo_owner, d.build_state, d.drv_path
+        FROM CheckRunInfo c
+        INNER JOIN Drv d ON c.drv_id = d.ROWID
+        INNER JOIN Job j ON j.drv_id = d.ROWID
+        INNER JOIN GitHubJobSets g ON j.jobset = g.ROWID
+        WHERE g.sha = ? AND d.build_state IN (0, 1, 7)
+        "#,
+    )
+    .bind(sha)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(check_runs)
+}
+
 /// Select drvs which are present for a specific job
 pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
     let drvs = sqlx::query_as(

@@ -11,16 +11,24 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::git::GitTask;
+use crate::github::GitHubTask;
+
+#[derive(Clone)]
+struct AppState {
+    git_sender: mpsc::Sender<GitTask>,
+    github_sender: Option<mpsc::Sender<GitHubTask>>,
+}
 
 pub struct WebService {
     listener: TcpListener,
-    git_sender: mpsc::Sender<GitTask>,
+    state: AppState,
 }
 
 impl WebService {
     pub async fn bind_to_address(
         socket: &SocketAddrV4,
         git_sender: mpsc::Sender<GitTask>,
+        github_sender: Option<mpsc::Sender<GitHubTask>>,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -28,7 +36,10 @@ impl WebService {
 
         Ok(Self {
             listener,
-            git_sender,
+            state: AppState {
+                git_sender,
+                github_sender,
+            },
         })
     }
 
@@ -43,7 +54,7 @@ impl WebService {
     pub async fn run(self, cancellation_token: CancellationToken) {
         let app = Router::new()
             .nest("/v1", api_routes())
-            .with_state(self.git_sender);
+            .with_state(self.state);
 
         if let Err(e) = axum::serve(self.listener, app)
             .with_graceful_shutdown(async move {
@@ -60,18 +71,16 @@ impl WebService {
     }
 }
 
-fn api_routes() -> Router<mpsc::Sender<GitTask>> {
+fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/logs/{drv}", get(get_derivation_log))
         .route("/github/webhook", post(handle_github_webhook))
 }
 
-async fn handle_github_webhook(
-    State(git_sender): State<mpsc::Sender<GitTask>>,
-    Json(webhook_payload): Json<WEP>,
-) {
-    // We can assume that handling this route means that the git sender is available
-    crate::github::handle_webhook_payload(webhook_payload, git_sender).await;
+async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_payload): Json<WEP>) {
+    use crate::github::handle_webhook_payload;
+
+    handle_webhook_payload(webhook_payload, state.git_sender, state.github_sender).await;
 }
 
 async fn get_derivation_log(axum::extract::Path(drv): axum::extract::Path<String>) -> String {
