@@ -2,9 +2,16 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use serde_json::value::Value;
 use tokio::process::Command;
 use tracing::debug;
+
+fn deserialize_json_string<'de, D>(deserializer: D) -> Result<LegacyAttrsStruct, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    serde_json::from_str(&s).map_err(serde::de::Error::custom)
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DrvOutput {
@@ -17,7 +24,12 @@ pub(crate) struct DrvOutput {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum EnvAttrs {
-    StructuredAttrs { __json: Value },
+    StructuredAttrs {
+        // nix derivation show renders `__structuredAttrs` as an escaped JSON string
+        // which contains the inner env attr set. So we have to deserialize it twice.
+        #[serde(deserialize_with = "deserialize_json_string")]
+        __json: LegacyAttrsStruct,
+    },
     LegacyAttrs(LegacyAttrsStruct),
 }
 
@@ -45,12 +57,12 @@ pub struct RawDrvInfo {
 impl RawDrvInfo {
     pub fn into_drv_info(self) -> Result<DrvInfo> {
         let (name, pname, prefer_local, output_hash) = match self.env {
-            // TODO: properly deserialize this. serde_json is getting caught up on
-            // some 'unexpected integer'
-            EnvAttrs::StructuredAttrs { __json: _ } => {
-                ("<structuredAttrs>".to_owned(), None, false, None)
+            EnvAttrs::StructuredAttrs { __json: attrs } => {
+                let prefer_local = attrs.prefer_local.map(|x| x == "1").unwrap_or(false);
+                (attrs.name, attrs.pname, prefer_local, attrs.output_hash)
             },
             EnvAttrs::LegacyAttrs(attrs) => {
+                println!("attrs: {:?}", &attrs);
                 let prefer_local = attrs.prefer_local.map(|x| x == "1").unwrap_or(false);
                 (attrs.name, attrs.pname, prefer_local, attrs.output_hash)
             },
@@ -126,5 +138,5 @@ pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
         .next()
         .context("Invalid derivation show information")?
         .1;
-    drv_info.into_drv_info()
+    Ok(drv_info.into_drv_info()?)
 }
