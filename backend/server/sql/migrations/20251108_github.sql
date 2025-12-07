@@ -7,6 +7,10 @@ CREATE TABLE IF NOT EXISTS GitHubJobSets (
     sha TEXT NOT NULL,
     -- "job name". Used to determine the drv difference between two shas
     job TEXT NOT NULL,
+    -- repository owner, e.g. github.com/{owner}/{repo}
+    owner TEXT NOT NULL,
+    -- repository name, e.g. github.com/{owner}/{repo}
+    repo_name TEXT NOT NULL,
     UNIQUE (sha, job) ON CONFLICT IGNORE
 );
 

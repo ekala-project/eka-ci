@@ -111,7 +111,13 @@ impl GitHubService {
 
         let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
         self.db_service
-            .create_github_jobset_with_jobs(&ci_check_info.commit, &name, &jobs)
+            .create_github_jobset_with_jobs(
+                &ci_check_info.commit,
+                &name,
+                &ci_check_info.owner,
+                &ci_check_info.repo_name,
+                &jobs,
+            )
             .await?;
 
         // This is only relevant on PRs, missing a base commit denotes that

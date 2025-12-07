@@ -66,7 +66,12 @@ impl RepoReader {
             for (job_name, job) in config.jobs {
                 if self
                     .db_service
-                    .has_jobset(&job_name, &ci_info.commit)
+                    .has_jobset(
+                        &ci_info.commit,
+                        &job_name,
+                        &ci_info.owner,
+                        &ci_info.repo_name,
+                    )
                     .await?
                 {
                     // We don't need to revisit jobs which already been processed
