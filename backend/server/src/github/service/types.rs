@@ -4,7 +4,9 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::PullRequest;
-use octocrab::params::checks::{CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus};
+use octocrab::params::checks::{
+    CheckRunConclusion as GHConclusion, CheckRunOutput, CheckRunStatus as GHStatus,
+};
 
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
@@ -84,12 +86,40 @@ impl CICheckInfo {
             .await
     }
 
+    pub async fn create_gh_summary_check_run(
+        &self,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        summary_title: &str,
+        difference: &JobDifference,
+        job_names: &[String],
+    ) -> Result<CheckRun> {
+        let title = format!(
+            "{} / {} ({})",
+            summary_title,
+            difference.to_string(),
+            jobset_name
+        );
+        let (gh_status, gh_conclusion) = difference.as_gh_checkrun_state();
+        let output =
+        self.inner_gh_check_run(
+            octocrab,
+            &title,
+            gh_status,
+            gh_conclusion,
+            job_names,
+            difference,
+        )
+        .await
+    }
+
     async fn inner_gh_check_run(
         &self,
         octocrab: &Octocrab,
         title: &str,
         gh_status: GHStatus,
         gh_conclusion: Option<GHConclusion>,
+        output: Option<String>,
     ) -> Result<CheckRun> {
         let check_builder = octocrab.checks(&self.owner, &self.repo_name);
         let mut create_check_run = check_builder
@@ -99,10 +129,22 @@ impl CICheckInfo {
         if let Some(conclusion) = gh_conclusion {
             create_check_run = create_check_run.conclusion(conclusion);
         }
+        if let Some(output) = output {
+            let check_run_output = CheckRunOutput {
+                title: title.to_string(),
+                summary: title.to_string(),
+                text: Some(output),
+                annotations: vec![],
+                images: vec![],
+            };
+
+            create_check_run = create_check_run.output(check_run_output);
+        }
 
         let check_run = create_check_run.send().await?;
         Ok(check_run)
     }
+
 }
 
 #[derive(Debug)]
