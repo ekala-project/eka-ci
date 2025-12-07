@@ -38,30 +38,51 @@ impl CheckRun {
     }
 }
 
-pub async fn has_jobset(sha: &str, name: &str, pool: &Pool<Sqlite>) -> Result<bool> {
-    let result: Option<i64> =
-        sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
-            .bind(sha)
-            .bind(name)
-            .fetch_optional(pool)
-            .await?;
+pub async fn has_jobset(
+    sha: &str,
+    name: &str,
+    owner: &str,
+    repo_name: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
+    let result: Option<i64> = sqlx::query_scalar(
+        "SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ? AND owner = ? AND repo_name = ?",
+    )
+    .bind(sha)
+    .bind(name)
+    .bind(owner)
+    .bind(repo_name)
+    .fetch_optional(pool)
+    .await?;
     Ok(result.is_some())
 }
 
-pub async fn create_jobset(sha: &str, name: &str, pool: &Pool<Sqlite>) -> Result<i64> {
+pub async fn create_jobset(
+    sha: &str,
+    name: &str,
+    owner: &str,
+    repo_name: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<i64> {
     // Since the insert statement could be repetitive, we must separate inseration and rowid
     // selection
-    sqlx::query("INSERT INTO GitHubJobSets (sha, job) VALUES (?, ?)")
+    sqlx::query("INSERT INTO GitHubJobSets (sha, job, owner, repo_name) VALUES (?, ?, ?, ?)")
         .bind(sha)
         .bind(name)
+        .bind(owner)
+        .bind(repo_name)
         .execute(pool)
         .await?;
 
-    let result = sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
-        .bind(sha)
-        .bind(name)
-        .fetch_one(pool)
-        .await?;
+    let result = sqlx::query_scalar(
+        "SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ? AND owner = ? AND repo_name = ?",
+    )
+    .bind(sha)
+    .bind(name)
+    .bind(owner)
+    .bind(repo_name)
+    .fetch_one(pool)
+    .await?;
     Ok(result)
 }
 
@@ -342,7 +363,8 @@ mod tests {
         let jobs = [eval_drv];
 
         println!("creating jobset");
-        let jobset_id = create_jobset("abcdef", "fake-name", &pool).await?;
+        let jobset_id =
+            create_jobset("abcdef", "fake-name", "test-owner", "test-repo", &pool).await?;
         create_jobs_for_jobset(jobset_id, &jobs[..], &pool).await?;
 
         // These two queries should return the same result if there's no jobset associated with the
@@ -362,7 +384,8 @@ mod tests {
         insert_drv(&pool, &drv2).await?;
         let jobs = [eval_drv2];
 
-        let second_jobset_id = create_jobset("g1cdef", "fake-name", &pool).await?;
+        let second_jobset_id =
+            create_jobset("g1cdef", "fake-name", "test-owner", "test-repo", &pool).await?;
         create_jobs_for_jobset(second_jobset_id, &jobs[..], &pool).await?;
         let (_, changed_jobs, _) = job_difference("abcdef", "g1cdef", "fake-name", &pool).await?;
         assert_eq!(changed_jobs.len(), 1);

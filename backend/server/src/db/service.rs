@@ -109,9 +109,11 @@ impl DbService {
         &self,
         sha: &str,
         name: &str,
+        owner: &str,
+        repo_name: &str,
         jobs: &[NixEvalDrv],
     ) -> anyhow::Result<()> {
-        let jobset_id = github::create_jobset(sha, name, &self.pool).await?;
+        let jobset_id = github::create_jobset(sha, name, owner, repo_name, &self.pool).await?;
         github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await
     }
 
@@ -147,7 +149,13 @@ impl DbService {
             .await
     }
 
-    pub async fn has_jobset(&self, sha: &str, name: &str) -> anyhow::Result<bool> {
-        github::has_jobset(sha, name, &self.pool).await
+    pub async fn has_jobset(
+        &self,
+        sha: &str,
+        name: &str,
+        owner: &str,
+        repo_name: &str,
+    ) -> anyhow::Result<bool> {
+        github::has_jobset(sha, name, owner, repo_name, &self.pool).await
     }
 }
