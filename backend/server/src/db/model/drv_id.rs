@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::path::Path;
 
 use anyhow::Result;
+use serde::Serialize;
 use sqlx::encode::IsNull;
 use sqlx::sqlite::SqliteArgumentValue;
 use sqlx::{Decode, Encode, FromRow, Sqlite, Type};
@@ -36,7 +37,7 @@ use sqlx::{Decode, Encode, FromRow, Sqlite, Type};
 /// derivation identifier matches the `hash-name.drv` pattern. It also works with `&Path` inputs.
 ///
 /// [^nix-by-hand]: <https://bernsteinbear.com/blog/nix-by-hand/>
-#[derive(Clone, Debug, Hash, PartialEq, Eq, FromRow)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, FromRow, Serialize)]
 pub struct DrvId(String);
 
 pub type Referrer = DrvId;

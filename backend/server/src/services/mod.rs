@@ -78,6 +78,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         &config.web.address,
         git_service.get_sender(),
         maybe_github_sender.clone(),
+        db_pool.clone(),
     )
     .await
     .context("failed to start web service")?;

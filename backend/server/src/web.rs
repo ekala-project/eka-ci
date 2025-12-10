@@ -2,14 +2,16 @@ use std::net::{SocketAddr, SocketAddrV4};
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Json, State};
+use axum::extract::{Json, Path, State};
 use axum::routing::{get, post};
 use octocrab::models::webhook_events::WebhookEventPayload as WEP;
+use sqlx::{Pool, Sqlite};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use crate::db::github::CheckRun;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
 
@@ -17,6 +19,7 @@ use crate::github::GitHubTask;
 struct AppState {
     git_sender: mpsc::Sender<GitTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    db_pool: Pool<Sqlite>,
 }
 
 pub struct WebService {
@@ -29,6 +32,7 @@ impl WebService {
         socket: &SocketAddrV4,
         git_sender: mpsc::Sender<GitTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        db_pool: Pool<Sqlite>,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -39,6 +43,7 @@ impl WebService {
             state: AppState {
                 git_sender,
                 github_sender,
+                db_pool,
             },
         })
     }
@@ -75,6 +80,7 @@ fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/logs/{drv}", get(get_derivation_log))
         .route("/github/webhook", post(handle_github_webhook))
+        .route("/commits/{sha}/check_runs", get(get_check_runs_for_commit))
 }
 
 async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_payload): Json<WEP>) {
@@ -85,4 +91,30 @@ async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_paylo
 
 async fn get_derivation_log(axum::extract::Path(drv): axum::extract::Path<String>) -> String {
     format!("Dummy log data for {drv}")
+}
+
+async fn get_check_runs_for_commit(
+    State(state): State<AppState>,
+    Path(sha): Path<String>,
+) -> Json<Vec<CheckRun>> {
+    // Query for all check_runs for this commit (not just active ones)
+    let check_runs = sqlx::query_as::<Sqlite, CheckRun>(
+        r#"
+        SELECT DISTINCT c.check_run_id, c.repo_name, c.repo_owner, d.build_state, d.drv_path
+        FROM CheckRunInfo c
+        INNER JOIN Drv d ON c.drv_id = d.ROWID
+        INNER JOIN Job j ON j.drv_id = d.ROWID
+        INNER JOIN GitHubJobSets g ON j.jobset = g.ROWID
+        WHERE g.sha = ?
+        "#,
+    )
+    .bind(&sha)
+    .fetch_all(&state.db_pool)
+    .await
+    .unwrap_or_else(|e| {
+        error!("Failed to fetch check_runs for commit {}: {}", sha, e);
+        vec![]
+    });
+
+    Json(check_runs)
 }
