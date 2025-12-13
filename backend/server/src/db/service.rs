@@ -112,9 +112,10 @@ impl DbService {
         owner: &str,
         repo_name: &str,
         jobs: &[NixEvalDrv],
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<i64> {
         let jobset_id = github::create_jobset(sha, name, owner, repo_name, &self.pool).await?;
-        github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await
+        github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await?;
+        Ok(jobset_id)
     }
 
     // Given a head and base sha, determine what has changed
@@ -157,5 +158,33 @@ impl DbService {
         repo_name: &str,
     ) -> anyhow::Result<bool> {
         github::has_jobset(sha, name, owner, repo_name, &self.pool).await
+    }
+
+    pub async fn update_job_differences(
+        &self,
+        jobset_id: i64,
+        new_drv_ids: &[DrvId],
+        changed_drv_ids: &[DrvId],
+    ) -> anyhow::Result<()> {
+        github::update_job_differences(jobset_id, new_drv_ids, changed_drv_ids, &self.pool).await
+    }
+
+    pub async fn get_job_info_for_drv(
+        &self,
+        drv_id: &DrvId,
+    ) -> anyhow::Result<Vec<github::JobInfo>> {
+        github::get_job_info_for_drv(drv_id, &self.pool).await
+    }
+
+    pub async fn all_jobs_concluded(&self, jobset_id: i64) -> anyhow::Result<bool> {
+        github::all_jobs_concluded(jobset_id, &self.pool).await
+    }
+
+    pub async fn jobset_has_new_or_changed_failures(&self, jobset_id: i64) -> anyhow::Result<bool> {
+        github::jobset_has_new_or_changed_failures(jobset_id, &self.pool).await
+    }
+
+    pub async fn get_jobset_info(&self, jobset_id: i64) -> anyhow::Result<github::JobSetInfo> {
+        github::get_jobset_info(jobset_id, &self.pool).await
     }
 }

@@ -10,7 +10,7 @@ use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobDifference {
     New,
     Changed,
@@ -23,6 +23,72 @@ impl fmt::Display for JobDifference {
             JobDifference::New => write!(f, "New"),
             JobDifference::Changed => write!(f, "Changed"),
             JobDifference::Removed => write!(f, "Removed"),
+        }
+    }
+}
+
+// SQLx encoding/decoding implementation
+mod job_difference_encoding {
+    use sqlx::{Decode, Encode, Sqlite, Type};
+
+    use super::JobDifference;
+
+    #[derive(sqlx::Type)]
+    #[repr(i64)]
+    enum JobDifferenceRepr {
+        New = 0,
+        Changed = 1,
+        Removed = 2,
+    }
+
+    impl From<&JobDifference> for JobDifferenceRepr {
+        fn from(value: &JobDifference) -> Self {
+            match value {
+                JobDifference::New => Self::New,
+                JobDifference::Changed => Self::Changed,
+                JobDifference::Removed => Self::Removed,
+            }
+        }
+    }
+
+    impl From<JobDifferenceRepr> for JobDifference {
+        fn from(value: JobDifferenceRepr) -> Self {
+            match value {
+                JobDifferenceRepr::New => Self::New,
+                JobDifferenceRepr::Changed => Self::Changed,
+                JobDifferenceRepr::Removed => Self::Removed,
+            }
+        }
+    }
+
+    impl<'q> Encode<'q, Sqlite> for JobDifference {
+        fn encode_by_ref(
+            &self,
+            buf: &mut <Sqlite as sqlx::Database>::ArgumentBuffer<'q>,
+        ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+            <JobDifferenceRepr as Encode<'q, Sqlite>>::encode_by_ref(&self.into(), buf)
+        }
+
+        fn size_hint(&self) -> usize {
+            <JobDifferenceRepr as Encode<'q, Sqlite>>::size_hint(&self.into())
+        }
+    }
+
+    impl<'r> Decode<'r, Sqlite> for JobDifference {
+        fn decode(
+            value: <Sqlite as sqlx::Database>::ValueRef<'r>,
+        ) -> Result<Self, sqlx::error::BoxDynError> {
+            Ok(<JobDifferenceRepr as Decode<Sqlite>>::decode(value)?.into())
+        }
+    }
+
+    impl Type<Sqlite> for JobDifference {
+        fn type_info() -> <Sqlite as sqlx::Database>::TypeInfo {
+            <JobDifferenceRepr as Type<Sqlite>>::type_info()
+        }
+
+        fn compatible(ty: &<Sqlite as sqlx::Database>::TypeInfo) -> bool {
+            <JobDifferenceRepr as Type<Sqlite>>::compatible(ty)
         }
     }
 }
@@ -128,9 +194,17 @@ pub enum GitHubTask {
     },
     CompleteCIEvalJob {
         ci_check_info: CICheckInfo,
+        job_name: String,
+        conclusion: octocrab::params::checks::CheckRunConclusion,
     },
     CancelCheckRunsForCommit {
         ci_check_info: CICheckInfo,
+    },
+    CreateFailureCheckRun {
+        drv_id: DrvId,
+        jobset_id: i64,
+        job_attr_name: String,
+        difference: JobDifference,
     },
 }
 

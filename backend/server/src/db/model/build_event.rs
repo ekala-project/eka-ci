@@ -193,6 +193,26 @@ mod state {
     }
 
     impl DrvBuildState {
+        /// Check if this state represents a failure
+        pub fn is_failure(&self) -> bool {
+            matches!(
+                self,
+                DrvBuildState::Completed(DrvBuildResult::Failure)
+                    | DrvBuildState::TransitiveFailure
+                    | DrvBuildState::Interrupted(_)
+            )
+        }
+
+        /// Check if this state is terminal (build won't change from this state)
+        pub fn is_terminal(&self) -> bool {
+            matches!(
+                self,
+                DrvBuildState::Completed(_)
+                    | DrvBuildState::TransitiveFailure
+                    | DrvBuildState::Interrupted(_)
+            )
+        }
+
         pub fn as_gh_checkrun_state(&self) -> (GHStatus, Option<GHConclusion>) {
             match self {
                 DrvBuildState::Queued => (GHStatus::Queued, None),

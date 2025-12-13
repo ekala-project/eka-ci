@@ -108,10 +108,8 @@ impl EvalService {
                     };
                     gh_sender.send(gh_task).await?;
 
-                    let complete_task = GitHubTask::CompleteCIEvalJob {
-                        ci_check_info: ci_info.clone(),
-                    };
-                    gh_sender.send(complete_task).await?;
+                    // The eval gate will remain InProgress until all jobs are concluded
+                    // It will be completed by the recorder when the last job finishes
                 } else {
                     warn!("GitHub service was never initialized, skipping task to create a jobset")
                 }

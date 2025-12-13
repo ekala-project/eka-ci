@@ -5,6 +5,7 @@ use sqlx::{FromRow, Pool, Sqlite};
 
 use super::model::build_event::DrvBuildState;
 use super::model::{Drv, DrvId};
+use crate::github::JobDifference;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
@@ -328,6 +329,143 @@ pub async fn job_difference(
     let removed_jobs = removed_jobs(base_jobset_id, head_jobset_id, pool).await?;
 
     Ok((new_drvs, changed_drvs, removed_jobs))
+}
+
+/// Update job difference types for a specific jobset
+/// This should be called after computing job_difference to mark which jobs are New/Changed/Removed
+pub async fn update_job_differences(
+    jobset_id: i64,
+    new_drv_ids: &[DrvId],
+    changed_drv_ids: &[DrvId],
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    // Mark new jobs (difference = New, which is already the default, so we could skip this)
+    for drv_id in new_drv_ids {
+        sqlx::query(
+            "UPDATE Job SET difference = ? WHERE jobset = ? AND drv_id = (SELECT ROWID FROM Drv \
+             WHERE drv_path = ?)",
+        )
+        .bind(JobDifference::New)
+        .bind(jobset_id)
+        .bind(drv_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // Mark changed jobs (difference = Changed)
+    for drv_id in changed_drv_ids {
+        sqlx::query(
+            "UPDATE Job SET difference = ? WHERE jobset = ? AND drv_id = (SELECT ROWID FROM Drv \
+             WHERE drv_path = ?)",
+        )
+        .bind(JobDifference::Changed)
+        .bind(jobset_id)
+        .bind(drv_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // Note: Removed jobs don't exist in the head commit's jobset, so we don't update them here
+    // They would only exist in the base commit's jobset
+
+    tx.commit().await?;
+    Ok(())
+}
+
+#[derive(Debug, FromRow)]
+pub struct JobInfo {
+    pub jobset_id: i64,
+    pub name: String,
+    pub difference: JobDifference,
+}
+
+/// Get job information for a specific drv
+/// Returns all jobsets that contain this drv, along with the job name and difference type
+pub async fn get_job_info_for_drv(
+    drv_id: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<JobInfo>> {
+    let jobs = sqlx::query_as(
+        r#"
+        SELECT j.jobset as jobset_id, j.name, j.difference
+        FROM Job j
+        WHERE j.drv_id = (SELECT ROWID FROM Drv WHERE drv_path = ?)
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(jobs)
+}
+
+/// Check if all jobs in a jobset have reached a terminal state
+/// Terminal states are: Completed (success or failure), TransitiveFailure, and Interrupted states
+pub async fn all_jobs_concluded(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<bool> {
+    // Query for jobs that are NOT in terminal states
+    // Non-terminal states: Queued (0), Buildable (1), Building (7), Blocked (100)
+    let non_terminal_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM Job j
+        JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE j.jobset = ? AND d.build_state IN (0, 1, 7, 100)
+        "#,
+    )
+    .bind(jobset_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(non_terminal_count == 0)
+}
+
+/// Determine if any new or changed jobs in a jobset have failed
+/// Returns true if there are failures in new or changed jobs
+pub async fn jobset_has_new_or_changed_failures(
+    jobset_id: i64,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<bool> {
+    // Query for jobs where difference is New or Changed and build_state indicates failure
+    // Failure states: Completed(Failure) (-1), TransitiveFailure (-2), and various Interrupted
+    // states (negative)
+    let failure_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM Job j
+        JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE j.jobset = ?
+          AND j.difference IN (?, ?)
+          AND d.build_state < 0
+        "#,
+    )
+    .bind(jobset_id)
+    .bind(JobDifference::New)
+    .bind(JobDifference::Changed)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(failure_count > 0)
+}
+
+/// Get the jobset name and commit for a jobset ID
+#[derive(Debug, FromRow)]
+pub struct JobSetInfo {
+    pub sha: String,
+    pub job: String,
+    pub owner: String,
+    pub repo_name: String,
+}
+
+pub async fn get_jobset_info(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<JobSetInfo> {
+    let info =
+        sqlx::query_as("SELECT sha, job, owner, repo_name FROM GitHubJobSets WHERE ROWID = ?")
+            .bind(jobset_id)
+            .fetch_one(pool)
+            .await?;
+
+    Ok(info)
 }
 
 #[cfg(test)]
