@@ -108,6 +108,29 @@ impl RecorderWorker {
                     .update_drv_status(&drv, &task.result)
                     .await?;
 
+                // Clear any transitive failures caused by this drv (if it was previously failed)
+                let unblocked_drvs = self.db_service.clear_transitive_failures(&drv).await?;
+
+                // Re-queue drvs that were blocked by this failure
+                for unblocked_drv in unblocked_drvs {
+                    // Check if there are any other failures blocking this drv
+                    let other_failures = self
+                        .db_service
+                        .get_failed_dependencies(&unblocked_drv)
+                        .await?;
+
+                    if other_failures.is_empty() {
+                        // No other failures blocking, update state to Queued and check buildability
+                        self.db_service
+                            .update_drv_status(&unblocked_drv, &DBS::Queued)
+                            .await?;
+
+                        let task = IngressTask::CheckBuildable(unblocked_drv);
+                        self.ingress_sender.send(task).await?;
+                    }
+                }
+
+                // Check direct referrers for buildability
                 let referrers = self.db_service.drv_referrers(&drv).await?;
                 for referrer in referrers {
                     let task = IngressTask::CheckBuildable(referrer);
@@ -115,8 +138,6 @@ impl RecorderWorker {
                 }
             },
             DBS::Completed(DBR::Failure) => {
-                // TODO: update status as failure, mark all downstream drvs as
-                // dependency failure, and add this drv as cause
                 debug!(
                     "Attempting to record failed build of {}",
                     build_id.derivation.store_path()
@@ -124,11 +145,24 @@ impl RecorderWorker {
                 self.db_service
                     .update_drv_status(&drv, &task.result)
                     .await?;
-                //let event =
-                //    build_event::DrvBuildEvent::for_insert(build_id,
-                // DBS::Completed(DBR::Failure)); self.db_service.
-                // new_drv_build_event(event).await?; TODO: all downstream packages
-                // should be set to be a transitiveFailure
+
+                // Get all transitive referrers (downstream packages that depend on this)
+                let transitive_referrers =
+                    self.db_service.get_all_transitive_referrers(&drv).await?;
+
+                if !transitive_referrers.is_empty() {
+                    debug!(
+                        "Marking {} transitive referrers as TransitiveFailure for {}",
+                        transitive_referrers.len(),
+                        drv.store_path()
+                    );
+
+                    // Record the transitive failure relationships and update build states
+                    // This updates both the TransitiveFailure table and each drv's build_state
+                    self.db_service
+                        .insert_transitive_failures(&drv, &transitive_referrers)
+                        .await?;
+                }
             },
             _ => {},
         }

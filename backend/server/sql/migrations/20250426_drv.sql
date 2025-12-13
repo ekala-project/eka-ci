@@ -31,3 +31,20 @@ CREATE TABLE IF NOT EXISTS DrvRefs (
 -- We will be querying these frequently to determine dependency state
 CREATE INDEX IF NOT EXISTS DrvReferrer ON DrvRefs (referrer);
 CREATE INDEX IF NOT EXISTS DrvReferrer ON DrvRefs (reference);
+
+-- Tracks which drvs are blocked by failed dependencies
+-- When a drv fails, all transitive referrers are marked as TransitiveFailure
+-- and entries are added to this table showing the dependency chain
+CREATE TABLE IF NOT EXISTS TransitiveFailure (
+    failed_drv TEXT NOT NULL,     -- The drv that failed and is blocking others
+    drv_referrer TEXT NOT NULL,   -- A drv that transitively depends on failed_drv
+    UNIQUE (failed_drv, drv_referrer) ON CONFLICT IGNORE,
+    FOREIGN KEY (failed_drv) REFERENCES Drv(drv_path) ON DELETE CASCADE,
+    FOREIGN KEY (drv_referrer) REFERENCES Drv(drv_path) ON DELETE CASCADE
+);
+
+-- Index for quick lookups of what failed dependencies affect a drv
+CREATE INDEX IF NOT EXISTS TransitiveFailureByReferrer ON TransitiveFailure (drv_referrer);
+
+-- Index for quick lookups of what drvs are affected by a failure
+CREATE INDEX IF NOT EXISTS TransitiveFailureByFailed ON TransitiveFailure (failed_drv);

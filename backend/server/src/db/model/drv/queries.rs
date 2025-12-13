@@ -208,6 +208,102 @@ WHERE build_state = ?
     Ok(res)
 }
 
+/// Get all transitive referrers (downstream packages) of a drv
+/// Uses recursive CTE to find all drvs that transitively depend on the given drv
+pub async fn get_all_transitive_referrers(
+    drv: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<DrvId>> {
+    let result = sqlx::query_as(
+        r#"
+WITH RECURSIVE transitive_referrers(drv) AS (
+    -- Base case: direct referrers
+    SELECT referrer FROM DrvRefs WHERE reference = ?1
+    UNION
+    -- Recursive case: referrers of referrers
+    SELECT dr.referrer
+    FROM DrvRefs dr
+    INNER JOIN transitive_referrers tr ON dr.reference = tr.drv
+)
+SELECT DISTINCT drv FROM transitive_referrers
+"#,
+    )
+    .bind(drv)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(result)
+}
+
+/// Insert transitive failure records for a failed drv and all its transitive referrers
+/// Also updates the build state of each referrer to TransitiveFailure
+pub async fn insert_transitive_failures(
+    failed_drv: &DrvId,
+    transitive_referrers: &[DrvId],
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<()> {
+    if transitive_referrers.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+
+    for referrer in transitive_referrers {
+        // Insert the transitive failure record
+        sqlx::query("INSERT INTO TransitiveFailure (failed_drv, drv_referrer) VALUES (?, ?)")
+            .bind(failed_drv)
+            .bind(referrer)
+            .execute(&mut *tx)
+            .await?;
+
+        // Update the drv's build state to TransitiveFailure
+        sqlx::query("UPDATE Drv SET build_state = ? WHERE drv_path = ?")
+            .bind(DrvBuildState::TransitiveFailure)
+            .bind(referrer)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Clear all transitive failure records where the given drv was the failure cause
+/// This should be called when a previously failed drv is successfully rebuilt
+pub async fn clear_transitive_failures(
+    failed_drv: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<DrvId>> {
+    // First, get all the drvs that were blocked by this failure
+    let unblocked_drvs: Vec<DrvId> =
+        sqlx::query_as("SELECT drv_referrer FROM TransitiveFailure WHERE failed_drv = ?")
+            .bind(failed_drv)
+            .fetch_all(pool)
+            .await?;
+
+    // Then delete the records
+    sqlx::query("DELETE FROM TransitiveFailure WHERE failed_drv = ?")
+        .bind(failed_drv)
+        .execute(pool)
+        .await?;
+
+    Ok(unblocked_drvs)
+}
+
+/// Get all failed dependencies that are blocking a given drv
+/// Returns the list of failed drvs that this drv transitively depends on
+pub async fn get_failed_dependencies(
+    drv: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<DrvId>> {
+    let result = sqlx::query_as("SELECT failed_drv FROM TransitiveFailure WHERE drv_referrer = ?")
+        .bind(drv)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::bail;
