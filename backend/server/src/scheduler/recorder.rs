@@ -134,6 +134,35 @@ impl RecorderWorker {
         }
 
         if let Some(github_sender) = &self.github_sender {
+            // Check if we need to create check_runs for failures
+            // Only create check_runs if the build failed and no check_run exists yet
+            if task.result.is_failure() {
+                let existing_check_runs = self.db_service.check_runs_for_drv_path(&drv).await?;
+
+                if existing_check_runs.is_empty() {
+                    // No check_run exists, we need to create one
+                    // Get job info to know which jobsets this drv belongs to
+                    let job_infos = self.db_service.get_job_info_for_drv(&drv).await?;
+
+                    for job_info in job_infos {
+                        let create_task = GitHubTask::CreateFailureCheckRun {
+                            drv_id: drv.clone(),
+                            jobset_id: job_info.jobset_id,
+                            job_attr_name: job_info.name.clone(),
+                            difference: job_info.difference,
+                        };
+                        if let Err(e) = github_sender.send(create_task).await {
+                            warn!(
+                                "Failed to send CreateFailureCheckRun for {}: {:?}",
+                                drv.store_path(),
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Send update for existing check_runs
             let github_task = GitHubTask::UpdateBuildStatus {
                 drv_id: drv.clone(),
                 status: task.result.clone(),
@@ -144,6 +173,55 @@ impl RecorderWorker {
                     drv.store_path(),
                     e
                 );
+            }
+
+            // Check if this drv completion concludes any jobsets
+            // Only check if we've reached a terminal state
+            if task.result.is_terminal() {
+                let job_infos = self.db_service.get_job_info_for_drv(&drv).await?;
+
+                for job_info in job_infos {
+                    // Check if all jobs in this jobset are concluded
+                    if self
+                        .db_service
+                        .all_jobs_concluded(job_info.jobset_id)
+                        .await?
+                    {
+                        // Determine conclusion based on new/changed job failures
+                        let has_failures = self
+                            .db_service
+                            .jobset_has_new_or_changed_failures(job_info.jobset_id)
+                            .await?;
+
+                        let conclusion = if has_failures {
+                            octocrab::params::checks::CheckRunConclusion::Failure
+                        } else {
+                            octocrab::params::checks::CheckRunConclusion::Success
+                        };
+
+                        // Get jobset info to get the job name
+                        let jobset_info =
+                            self.db_service.get_jobset_info(job_info.jobset_id).await?;
+
+                        let complete_task = GitHubTask::CompleteCIEvalJob {
+                            ci_check_info: crate::github::CICheckInfo {
+                                commit: jobset_info.sha.clone(),
+                                base_commit: None,
+                                owner: jobset_info.owner.clone(),
+                                repo_name: jobset_info.repo_name.clone(),
+                            },
+                            job_name: jobset_info.job.clone(),
+                            conclusion,
+                        };
+
+                        if let Err(e) = github_sender.send(complete_task).await {
+                            warn!(
+                                "Failed to send CompleteCIEvalJob for jobset {}: {:?}",
+                                job_info.jobset_id, e
+                            );
+                        }
+                    }
+                }
             }
         }
 

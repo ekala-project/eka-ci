@@ -9,15 +9,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::db::DbService;
+use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::{Drv, DrvId};
-use crate::github::service::types::JobDifference;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 mod actions;
 mod types;
 
-pub use types::{CICheckInfo, Commit, GitHubTask, Owner};
+pub use types::{CICheckInfo, Commit, GitHubTask, JobDifference, Owner};
 
 /// This service will be response for pushing/posting events to GitHub
 pub struct GitHubService {
@@ -30,7 +29,7 @@ pub struct GitHubService {
     github_receiver: mpsc::Receiver<GitHubTask>,
     github_sender: mpsc::Sender<GitHubTask>,
     github_configure_checks: HashMap<Commit, CheckRunId>,
-    github_eval_checks: HashMap<Commit, CheckRunId>,
+    github_eval_checks: HashMap<(Commit, String), CheckRunId>,
 }
 
 impl GitHubService {
@@ -107,10 +106,8 @@ impl GitHubService {
         name: &str,
         jobs: &[NixEvalDrv],
     ) -> Result<()> {
-        use tracing::info;
-
-        let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-        self.db_service
+        let jobset_id = self
+            .db_service
             .create_github_jobset_with_jobs(
                 &ci_check_info.commit,
                 &name,
@@ -121,9 +118,9 @@ impl GitHubService {
             .await?;
 
         // This is only relevant on PRs, missing a base commit denotes that
-        // this jobset creation is done for a base_commit which
+        // this jobset creation is done for a base_commit
         if ci_check_info.base_commit.is_some() {
-            let (new_jobs, changed_drvs, removed_jobs) = self
+            let (new_jobs, changed_drvs, _removed_jobs) = self
                 .db_service
                 .job_difference(
                     &ci_check_info.commit,
@@ -132,82 +129,17 @@ impl GitHubService {
                 )
                 .await?;
 
-            // We construct "a list of drvs" 3 times, probably can eliminate one of these
-            let drv_paths: HashMap<&str, &NixEvalDrv> =
-                jobs.iter().map(|x| (x.drv_path.as_str(), x)).collect();
+            // Update the Job table to mark which jobs are new/changed
+            let new_drv_ids: Vec<DrvId> = new_jobs.iter().map(|d| d.drv_path.clone()).collect();
+            let changed_drv_ids: Vec<DrvId> =
+                changed_drvs.iter().map(|d| d.drv_path.clone()).collect();
 
-            // TODO: parallelize this, and make it async
-            info!("Emitting {} jobs for {}", jobs.len(), &ci_check_info.commit);
-            self.emit_jobs(
-                ci_check_info,
-                &octocrab,
-                name,
-                new_jobs,
-                &drv_paths,
-                &JobDifference::New,
-            )
-            .await?;
-            self.emit_jobs(
-                ci_check_info,
-                &octocrab,
-                name,
-                changed_drvs,
-                &drv_paths,
-                &JobDifference::Changed,
-            )
-            .await?;
+            self.db_service
+                .update_job_differences(jobset_id, &new_drv_ids, &changed_drv_ids)
+                .await?;
 
-            for job in removed_jobs {
-                ci_check_info
-                    .create_gh_check_run(
-                        &octocrab,
-                        name,
-                        &job,
-                        DrvBuildState::Queued,
-                        &JobDifference::Removed,
-                    )
-                    .await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn emit_jobs(
-        &mut self,
-        ci_check_info: &CICheckInfo,
-        octocrab: &Octocrab,
-        jobset_name: &str,
-        jobs: Vec<Drv>,
-        drv_paths: &HashMap<&str, &NixEvalDrv>,
-        difference: &JobDifference,
-    ) -> Result<()> {
-        use std::str::FromStr;
-
-        for job in jobs {
-            let maybe_eval_job = drv_paths.get(job.drv_path.store_path().as_str());
-
-            if let Some(eval_job) = maybe_eval_job {
-                let drv_id = DrvId::from_str(&eval_job.drv_path)?;
-                let drv = self.db_service.get_drv(&drv_id).await?;
-                let state = drv.map(|x| x.build_state).unwrap_or(DrvBuildState::Queued);
-                let check_run = ci_check_info
-                    .create_gh_check_run(octocrab, jobset_name, &eval_job.attr, state, difference)
-                    .await?;
-
-                self.db_service
-                    .insert_check_run_info(
-                        check_run.id.0 as i64,
-                        &job.drv_path,
-                        &ci_check_info.repo_name,
-                        &ci_check_info.owner,
-                    )
-                    .await?;
-            } else {
-                warn!(
-                    "Failed to find eval_job for {}:",
-                    &job.drv_path.store_path()
-                );
-            }
+            // Note: We no longer create check_runs eagerly here
+            // Check_runs will be created lazily when jobs fail
         }
         Ok(())
     }
@@ -260,21 +192,27 @@ impl GitHubService {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run =
                     actions::create_ci_eval_job(&octocrab, job_title, ci_check_info).await?;
-                self.github_eval_checks
-                    .insert(ci_check_info.commit.clone(), check_run.id);
+                self.github_eval_checks.insert(
+                    (ci_check_info.commit.clone(), job_title.clone()),
+                    check_run.id,
+                );
             },
-            GitHubTask::CompleteCIEvalJob { ci_check_info } => {
+            GitHubTask::CompleteCIEvalJob {
+                ci_check_info,
+                job_name,
+                conclusion,
+            } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run_id = self
                     .github_eval_checks
-                    .remove(&ci_check_info.commit)
+                    .remove(&(ci_check_info.commit.clone(), job_name.clone()))
                     .context("No eval job check run found for commit")?;
                 actions::update_ci_eval_job(
                     &octocrab,
                     ci_check_info,
                     check_run_id,
                     CheckRunStatus::Completed,
-                    CheckRunConclusion::Success,
+                    *conclusion,
                 )
                 .await?;
             },
@@ -301,21 +239,30 @@ impl GitHubService {
                     }
                 }
 
-                // Cancel any in-progress eval gate
-                if let Some(check_run_id) = self.github_eval_checks.remove(&ci_check_info.commit) {
-                    if let Err(e) = actions::update_ci_eval_job(
-                        &octocrab,
-                        ci_check_info,
-                        check_run_id,
-                        CheckRunStatus::Completed,
-                        CheckRunConclusion::Cancelled,
-                    )
-                    .await
-                    {
-                        warn!(
-                            "Failed to cancel eval gate for {}: {:?}",
-                            &ci_check_info.commit, e
-                        );
+                // Cancel any in-progress eval gates (there may be multiple for different jobs)
+                let keys_to_remove: Vec<_> = self
+                    .github_eval_checks
+                    .keys()
+                    .filter(|(commit, _)| commit == &ci_check_info.commit)
+                    .cloned()
+                    .collect();
+
+                for key in keys_to_remove {
+                    if let Some(check_run_id) = self.github_eval_checks.remove(&key) {
+                        if let Err(e) = actions::update_ci_eval_job(
+                            &octocrab,
+                            ci_check_info,
+                            check_run_id,
+                            CheckRunStatus::Completed,
+                            CheckRunConclusion::Cancelled,
+                        )
+                        .await
+                        {
+                            warn!(
+                                "Failed to cancel eval gate for {}: {:?}",
+                                &ci_check_info.commit, e
+                            );
+                        }
                     }
                 }
 
@@ -340,6 +287,53 @@ impl GitHubService {
                         );
                     }
                 }
+            },
+            GitHubTask::CreateFailureCheckRun {
+                drv_id,
+                jobset_id,
+                job_attr_name,
+                difference,
+            } => {
+                // Get jobset info to get commit, repo, etc.
+                let jobset_info = self.db_service.get_jobset_info(*jobset_id).await?;
+                let octocrab = self.octocrab_for_owner(&jobset_info.owner)?;
+
+                // Get current build state
+                let drv = self.db_service.get_drv(drv_id).await?;
+                let state = drv
+                    .map(|x| x.build_state)
+                    .unwrap_or(DrvBuildState::Completed(
+                        crate::db::model::build_event::DrvBuildResult::Failure,
+                    ));
+
+                // Create CICheckInfo
+                let ci_check_info = CICheckInfo {
+                    commit: jobset_info.sha.clone(),
+                    base_commit: None,
+                    owner: jobset_info.owner.clone(),
+                    repo_name: jobset_info.repo_name.clone(),
+                };
+
+                // Create the check_run
+                let check_run = ci_check_info
+                    .create_gh_check_run(
+                        &octocrab,
+                        &jobset_info.job,
+                        job_attr_name,
+                        state,
+                        difference,
+                    )
+                    .await?;
+
+                // Store the check_run info in the database
+                self.db_service
+                    .insert_check_run_info(
+                        check_run.id.0 as i64,
+                        drv_id,
+                        &jobset_info.repo_name,
+                        &jobset_info.owner,
+                    )
+                    .await?;
             },
         }
         Ok(())

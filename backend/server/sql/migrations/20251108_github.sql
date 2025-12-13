@@ -24,10 +24,14 @@ CREATE TABLE IF NOT EXISTS Job (
     jobset INTEGER NOT NULL, -- identifier for a specific job on a commit
     drv_id INTEGER NOT NULL, -- drv which gets referenced by the jobset
     name TEXT NOT NULL, -- "job name" this will usually be the attrpath
+    difference INTEGER NOT NULL DEFAULT 0, -- 0 = New, 1 = Changed, 2 = Removed
     UNIQUE (jobset, name, drv_id) ON CONFLICT IGNORE,
     FOREIGN KEY (jobset) REFERENCES GitHubJobSets(ROWID) ON DELETE CASCADE,
     FOREIGN KEY (drv_id) REFERENCES Drv(ROWID) ON DELETE CASCADE
 );
+
+-- Index for querying jobs by difference type
+CREATE INDEX IF NOT EXISTS JobDifference ON Job (jobset, difference);
 
 -- These are GitHub CI check_run's where the status is associated with the
 -- build status of a drv
