@@ -326,6 +326,10 @@ WHERE referrer = ?
 }
 
 /// Determine if a Drv can be built
+/// A drv is buildable if all its direct dependencies have been successfully built.
+/// Transitive failures are already reflected in the direct dependencies' build states,
+/// so we don't need to separately check the TransitiveFailure table.
+///
 /// One issue with this logic is a missing dependency drv in the db would be treated
 /// as "successful"
 pub async fn is_drv_buildable(derivation: &DrvId, pool: &SqlitePool) -> anyhow::Result<bool> {
