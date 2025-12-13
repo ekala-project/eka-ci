@@ -405,13 +405,13 @@ pub async fn get_job_info_for_drv(
 /// Terminal states are: Completed (success or failure), TransitiveFailure, and Interrupted states
 pub async fn all_jobs_concluded(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<bool> {
     // Query for jobs that are NOT in terminal states
-    // Non-terminal states: Queued (0), Buildable (1), Building (7), Blocked (100)
+    // Non-terminal states: Queued (0), Buildable (1), FailedRetry (2), Building (7), Blocked (100)
     let non_terminal_count: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
         FROM Job j
         JOIN Drv d ON j.drv_id = d.ROWID
-        WHERE j.jobset = ? AND d.build_state IN (0, 1, 7, 100)
+        WHERE j.jobset = ? AND d.build_state IN (0, 1, 2, 7, 100)
         "#,
     )
     .bind(jobset_id)
