@@ -67,6 +67,26 @@ impl DbService {
         drv::drv_referrers(&self.pool, drv).await
     }
 
+    pub async fn get_all_transitive_referrers(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        drv::get_all_transitive_referrers(drv, &self.pool).await
+    }
+
+    pub async fn insert_transitive_failures(
+        &self,
+        failed_drv: &DrvId,
+        transitive_referrers: &[DrvId],
+    ) -> anyhow::Result<()> {
+        drv::insert_transitive_failures(failed_drv, transitive_referrers, &self.pool).await
+    }
+
+    pub async fn clear_transitive_failures(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        drv::clear_transitive_failures(drv, &self.pool).await
+    }
+
+    pub async fn get_failed_dependencies(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        drv::get_failed_dependencies(drv, &self.pool).await
+    }
+
     pub async fn insert_drvs_and_references(
         &self,
         drvs: &[Drv],
@@ -102,7 +122,7 @@ impl DbService {
     }
 
     pub async fn get_buildable_drvs(&self) -> anyhow::Result<Vec<DrvId>> {
-        drv::get_derivations_in_state(build_event::DrvBuildState::Buildable, &self.pool).await
+        drv::get_buildable_and_retry_drvs(&self.pool).await
     }
 
     pub async fn create_github_jobset_with_jobs(
@@ -186,28 +206,5 @@ impl DbService {
 
     pub async fn get_jobset_info(&self, jobset_id: i64) -> anyhow::Result<github::JobSetInfo> {
         github::get_jobset_info(jobset_id, &self.pool).await
-    }
-
-    pub async fn get_all_transitive_referrers(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
-        drv::get_all_transitive_referrers(drv, &self.pool).await
-    }
-
-    pub async fn insert_transitive_failures(
-        &self,
-        failed_drv: &DrvId,
-        transitive_referrers: &[DrvId],
-    ) -> anyhow::Result<()> {
-        drv::insert_transitive_failures(failed_drv, transitive_referrers, &self.pool).await
-    }
-
-    pub async fn clear_transitive_failures(
-        &self,
-        failed_drv: &DrvId,
-    ) -> anyhow::Result<Vec<DrvId>> {
-        drv::clear_transitive_failures(failed_drv, &self.pool).await
-    }
-
-    pub async fn get_failed_dependencies(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
-        drv::get_failed_dependencies(drv, &self.pool).await
     }
 }

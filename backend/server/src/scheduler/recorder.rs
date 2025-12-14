@@ -142,26 +142,59 @@ impl RecorderWorker {
                     "Attempting to record failed build of {}",
                     build_id.derivation.store_path()
                 );
-                self.db_service
-                    .update_drv_status(&drv, &task.result)
-                    .await?;
 
-                // Get all transitive referrers (downstream packages that depend on this)
-                let transitive_referrers =
-                    self.db_service.get_all_transitive_referrers(&drv).await?;
+                // Check current state to determine if this is first or second failure
+                let current_drv = self
+                    .db_service
+                    .get_drv(&drv)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Drv not found: {}", drv.store_path()))?;
 
-                if !transitive_referrers.is_empty() {
-                    debug!(
-                        "Marking {} transitive referrers as TransitiveFailure for {}",
-                        transitive_referrers.len(),
-                        drv.store_path()
-                    );
+                match current_drv.build_state {
+                    DBS::Buildable => {
+                        // First failure - transition to FailedRetry and re-queue immediately
+                        debug!(
+                            "First failure for {}, transitioning to FailedRetry",
+                            drv.store_path()
+                        );
+                        self.db_service
+                            .update_drv_status(&drv, &DBS::FailedRetry)
+                            .await?;
 
-                    // Record the transitive failure relationships and update build states
-                    // This updates both the TransitiveFailure table and each drv's build_state
-                    self.db_service
-                        .insert_transitive_failures(&drv, &transitive_referrers)
-                        .await?;
+                        // Re-queue immediately for retry
+                        let task = IngressTask::CheckBuildable(drv.clone());
+                        self.ingress_sender.send(task).await?;
+                    },
+                    DBS::FailedRetry => {
+                        // Second failure - permanent failure, propagate to downstream
+                        debug!(
+                            "Second failure for {}, marking as permanent failure",
+                            drv.store_path()
+                        );
+                        self.db_service
+                            .update_drv_status(&drv, &task.result)
+                            .await?;
+
+                        // Get all transitive referrers and mark as TransitiveFailure
+                        let transitive_referrers =
+                            self.db_service.get_all_transitive_referrers(&drv).await?;
+                        if !transitive_referrers.is_empty() {
+                            self.db_service
+                                .insert_transitive_failures(&drv, &transitive_referrers)
+                                .await?;
+                        }
+                    },
+                    _ => {
+                        // Unexpected state - log warning but still record failure
+                        warn!(
+                            "Unexpected state {:?} when recording failure for {}",
+                            current_drv.build_state,
+                            drv.store_path()
+                        );
+                        self.db_service
+                            .update_drv_status(&drv, &task.result)
+                            .await?;
+                    },
                 }
             },
             _ => {},

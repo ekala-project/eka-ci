@@ -208,6 +208,23 @@ WHERE build_state = ?
     Ok(res)
 }
 
+/// Get all derivations that can be picked up by builders (Buildable or FailedRetry)
+pub async fn get_buildable_and_retry_drvs(pool: &SqlitePool) -> anyhow::Result<Vec<DrvId>> {
+    let res = sqlx::query_as(
+        r#"
+SELECT drv_path
+FROM Drv
+WHERE build_state = ? OR build_state = ?
+        "#,
+    )
+    .bind(DrvBuildState::Buildable)
+    .bind(DrvBuildState::FailedRetry)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(res)
+}
+
 /// Get all transitive referrers (downstream packages) of a drv
 /// Uses recursive CTE to find all drvs that transitively depend on the given drv
 pub async fn get_all_transitive_referrers(
@@ -303,7 +320,6 @@ pub async fn get_failed_dependencies(
 
     Ok(result)
 }
-
 #[cfg(test)]
 mod tests {
     use anyhow::bail;

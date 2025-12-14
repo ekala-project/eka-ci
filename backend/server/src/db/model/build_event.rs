@@ -50,6 +50,13 @@ pub enum DrvBuildState {
     /// The scheduler has determined that this derivation is ready to be built. The derivation
     /// stays in this state until a builder picks it up to perform the actual build step.
     Buildable,
+    /// Derivation failed once and is waiting to be retried.
+    ///
+    /// The derivation was attempted to be built but failed. This is a second chance before
+    /// marking it as permanently failed. Treated similar to Buildable - can be picked up by
+    /// builders for a retry attempt. If this retry also fails, the derivation will be marked
+    /// as Completed(Failure) and transitive failures will be propagated.
+    FailedRetry,
     /// Derivation is building.
     ///
     /// A builder has picked this derivation up and is now realizing the derivation. The derivation
@@ -151,6 +158,7 @@ mod state {
     enum DrvBuildStateRepr {
         Queued = 0,
         Buildable = 1,
+        FailedRetry = 2,
         Building = 7,
         CompletedSuccess = 42,
         CompletedFailure = -1,
@@ -168,6 +176,7 @@ mod state {
             match value {
                 DrvBuildState::Queued => Self::Queued,
                 DrvBuildState::Buildable => Self::Buildable,
+                DrvBuildState::FailedRetry => Self::FailedRetry,
                 DrvBuildState::Building => Self::Building,
                 DrvBuildState::Completed(DrvBuildResult::Success) => Self::CompletedSuccess,
                 DrvBuildState::Completed(DrvBuildResult::Failure) => Self::CompletedFailure,
@@ -217,6 +226,7 @@ mod state {
             match self {
                 DrvBuildState::Queued => (GHStatus::Queued, None),
                 DrvBuildState::Buildable => (GHStatus::Queued, None),
+                DrvBuildState::FailedRetry => (GHStatus::InProgress, None),
                 DrvBuildState::Building => (GHStatus::InProgress, None),
                 DrvBuildState::Completed(DrvBuildResult::Success) => {
                     (GHStatus::Completed, Some(GHConclusion::Success))
@@ -252,6 +262,7 @@ mod state {
             match value {
                 DrvBuildStateRepr::Queued => Self::Queued,
                 DrvBuildStateRepr::Buildable => Self::Buildable,
+                DrvBuildStateRepr::FailedRetry => Self::FailedRetry,
                 DrvBuildStateRepr::Building => Self::Building,
                 DrvBuildStateRepr::CompletedSuccess => Self::Completed(DrvBuildResult::Success),
                 DrvBuildStateRepr::CompletedFailure => Self::Completed(DrvBuildResult::Failure),
