@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use super::{BuildRequest, Builder, Platform};
+use crate::metrics::BuildMetrics;
 
 type SystemName = String;
 
@@ -14,14 +16,16 @@ pub struct PlatformQueue {
     /// This is done to prevent expensive fetches which get downloaded
     /// on remote machines, then get uploaded to the builder
     local_builder: Option<Builder>,
+    metrics: Arc<BuildMetrics>,
 }
 
 impl PlatformQueue {
-    pub fn new(platform: Platform) -> Self {
+    pub fn new(platform: Platform, metrics: Arc<BuildMetrics>) -> Self {
         Self {
             platform,
             builders: HashMap::new(),
             local_builder: None,
+            metrics,
         }
     }
 
@@ -61,13 +65,17 @@ impl PlatformQueue {
             let mut local_builders = HashMap::new();
             local_builders.insert("localhost".to_string(), local_builder);
 
+            let platform_clone = self.platform.clone();
+            let metrics_clone = self.metrics.clone();
             debug!("{} remote system queue started", &self.platform);
             tokio::spawn(async move {
-                loop_builds(self.builders, remote_rx).await;
+                loop_builds(self.builders, remote_rx, platform_clone, metrics_clone).await;
             });
+            let platform_clone = self.platform.clone();
+            let metrics_clone = self.metrics.clone();
             debug!("{} local system queue started", &self.platform);
             tokio::spawn(async move {
-                loop_builds(local_builders, local_rx).await;
+                loop_builds(local_builders, local_rx, platform_clone, metrics_clone).await;
             });
 
             while let Some(work) = receiver.recv().await {
@@ -89,7 +97,7 @@ impl PlatformQueue {
                 self.builders.insert("localhost".to_string(), local_builder);
             }
             debug!("{} system queue started", &self.platform);
-            loop_builds(self.builders, receiver).await;
+            loop_builds(self.builders, receiver, self.platform, self.metrics).await;
         }
     }
 }
@@ -97,6 +105,8 @@ impl PlatformQueue {
 async fn loop_builds(
     builders: HashMap<SystemName, Builder>,
     mut receiver: mpsc::Receiver<BuildRequest>,
+    platform: Platform,
+    metrics: Arc<BuildMetrics>,
 ) {
     use std::collections::VecDeque;
 
@@ -114,6 +124,11 @@ async fn loop_builds(
             Ok(work) => {
                 // Drain channel to ensure there's no back pressure
                 build_buffer.push_back(work);
+                // Update queued builds metric
+                metrics
+                    .queued_builds
+                    .with_label_values(&[&platform])
+                    .set(build_buffer.len() as f64);
                 continue;
             },
             Err(TryRecvError::Disconnected) => {
@@ -137,6 +152,11 @@ async fn loop_builds(
             };
 
             permit.send(build_buffer.pop_front().unwrap());
+            // Update queued builds metric
+            metrics
+                .queued_builds
+                .with_label_values(&[&platform])
+                .set(build_buffer.len() as f64);
         } else {
             build_timer.tick().await;
         }

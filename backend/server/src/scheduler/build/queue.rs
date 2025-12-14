@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -7,6 +8,7 @@ use tracing::{debug, error};
 
 use super::{Builder, Platform, PlatformQueue};
 use crate::db::model::drv::Drv;
+use crate::metrics::BuildMetrics;
 
 #[derive(Debug)]
 pub struct BuildRequest(pub Drv);
@@ -23,7 +25,10 @@ pub struct BuildQueue {
 
 impl BuildQueue {
     /// Immediately starts builder service
-    pub async fn init(builders: Vec<Builder>) -> (Self, mpsc::Sender<BuildRequest>) {
+    pub async fn init(
+        builders: Vec<Builder>,
+        metrics: Arc<BuildMetrics>,
+    ) -> (Self, mpsc::Sender<BuildRequest>) {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);
         let system_queues = HashMap::new();
 
@@ -33,15 +38,15 @@ impl BuildQueue {
         };
 
         for builder in builders {
-            queue.add_builder(builder).await;
+            queue.add_builder(builder, metrics.clone()).await;
         }
 
         (queue, build_request_sender)
     }
 
-    async fn add_builder(&mut self, builder: Builder) {
+    async fn add_builder(&mut self, builder: Builder, metrics: Arc<BuildMetrics>) {
         if !self.system_queues.contains_key(&builder.platform) {
-            let queue = PlatformQueue::new(builder.platform.clone());
+            let queue = PlatformQueue::new(builder.platform.clone(), metrics.clone());
             self.system_queues.insert(builder.platform.clone(), queue);
         }
 

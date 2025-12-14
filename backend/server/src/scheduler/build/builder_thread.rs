@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
@@ -8,8 +9,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{debug, error, warn};
 
-use super::BuildRequest;
+use super::{BuildRequest, Platform};
 use crate::db::model::{DrvId, build_event};
+use crate::metrics::BuildMetrics;
 use crate::scheduler::recorder::RecorderTask;
 
 pub struct BuilderThread {
@@ -17,6 +19,8 @@ pub struct BuilderThread {
     max_jobs: u8,
     logs_dir: PathBuf,
     recorder_sender: mpsc::Sender<RecorderTask>,
+    platform: Platform,
+    metrics: Arc<BuildMetrics>,
 }
 
 impl BuilderThread {
@@ -25,12 +29,16 @@ impl BuilderThread {
         max_jobs: u8,
         logs_dir: PathBuf,
         recorder_sender: mpsc::Sender<RecorderTask>,
+        platform: Platform,
+        metrics: Arc<BuildMetrics>,
     ) -> Self {
         Self {
             build_args,
             max_jobs,
             logs_dir,
             recorder_sender,
+            platform,
+            metrics,
         }
     }
 
@@ -57,11 +65,21 @@ impl BuilderThread {
                     None => error!("Tried to await empty build queue"),
                     _ => {},
                 }
+                // Update active builds metric after completing a build
+                self.metrics
+                    .active_builds
+                    .with_label_values(&[&self.platform])
+                    .set(build_set.len() as f64);
             }
 
             if let Some(build_request) = build_receiver.recv().await {
                 let new_build = self.create_build(build_request.0.drv_path);
                 build_set.spawn(async move { new_build.attempt_build().await });
+                // Update active builds metric after starting a new build
+                self.metrics
+                    .active_builds
+                    .with_label_values(&[&self.platform])
+                    .set(build_set.len() as f64);
             } else {
                 interval.tick().await;
             }

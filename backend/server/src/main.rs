@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod git;
 mod github;
+mod metrics;
 mod nix;
 mod scheduler;
 mod services;

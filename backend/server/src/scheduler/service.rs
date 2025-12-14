@@ -1,5 +1,7 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use prometheus::Registry;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -9,6 +11,7 @@ use super::recorder::{RecorderService, RecorderTask};
 use crate::config::RemoteBuilder;
 use crate::db::DbService;
 use crate::github::GitHubTask;
+use crate::metrics::BuildMetrics;
 
 /// SchedulerService spins up three smaller services:
 ///   RequestIngress:
@@ -26,6 +29,9 @@ use crate::github::GitHubTask;
 pub struct SchedulerService {
     // Handle to the db service, useful for persisting and querying build state
     db_service: DbService,
+
+    // Prometheus metrics registry
+    metrics_registry: Arc<Registry>,
 
     // Channels to individual services
     // We may in the future need to recover an individual service, so retaining
@@ -46,11 +52,19 @@ impl SchedulerService {
         remote_builders: Vec<RemoteBuilder>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
     ) -> anyhow::Result<Self> {
+        // Create metrics registry and build metrics
+        let metrics_registry = Arc::new(Registry::new());
+        let build_metrics = BuildMetrics::new(&metrics_registry)?;
+
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
         let (recorder_service, recorder_sender) =
             RecorderService::init(db_service.clone(), github_sender);
-        let mut builders =
-            Builder::local_from_env(logs_dir.clone(), recorder_sender.clone()).await?;
+        let mut builders = Builder::local_from_env(
+            logs_dir.clone(),
+            recorder_sender.clone(),
+            build_metrics.clone(),
+        )
+        .await?;
         for remote in remote_builders {
             for remote_platform in &remote.platforms {
                 let remote_builder = Builder::from_remote_builder(
@@ -58,18 +72,20 @@ impl SchedulerService {
                     &remote,
                     logs_dir.clone(),
                     recorder_sender.clone(),
+                    build_metrics.clone(),
                 );
                 builders.push(remote_builder);
             }
         }
 
-        let (builder_service, builder_sender) = BuildQueue::init(builders).await;
+        let (builder_service, builder_sender) = BuildQueue::init(builders, build_metrics).await;
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run();
 
         Ok(Self {
             db_service,
+            metrics_registry,
             ingress_sender,
             builder_sender,
             recorder_sender,
@@ -82,5 +98,10 @@ impl SchedulerService {
     /// Producer channel for sending build requests for eventual scheduling
     pub fn ingress_request_sender(&self) -> mpsc::Sender<IngressTask> {
         self.ingress_sender.clone()
+    }
+
+    /// Get the Prometheus metrics registry for exposing via HTTP
+    pub fn metrics_registry(&self) -> Arc<Registry> {
+        self.metrics_registry.clone()
     }
 }
