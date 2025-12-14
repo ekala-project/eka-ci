@@ -31,6 +31,10 @@ struct ConfigCli {
     #[arg(short, long)]
     pub db_path: Option<PathBuf>,
 
+    /// Directory for build logs. Defaults to $XDG_DATA_HOME/ekaci/build-logs
+    #[arg(short, long)]
+    pub logs_dir: Option<PathBuf>,
+
     /// Path for the configuration file. Can also be set using the $EKA_CI_CONFIG_FILE.
     /// If not provided a default path will be attempted, based on the XDG spec.
     #[arg(long)]
@@ -42,6 +46,7 @@ struct ConfigFile {
     web: ConfigFileWeb,
     unix: ConfigFileUnix,
     db_path: Option<PathBuf>,
+    logs_dir: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -67,6 +72,7 @@ pub struct Config {
     pub web: ConfigWeb,
     pub unix: ConfigUnix,
     pub db_path: PathBuf,
+    pub logs_dir: PathBuf,
     #[allow(dead_code)]
     pub remote_builders: Vec<RemoteBuilder>,
 }
@@ -121,7 +127,17 @@ impl Config {
                 .db_path
                 .or(file.db_path)
                 .unwrap_or_else(|| dirs.get_data_file("sqlite.db")),
+            logs_dir: args
+                .logs_dir
+                .or(file.logs_dir)
+                .unwrap_or_else(|| dirs.get_data_file("build-logs")),
             remote_builders,
         })
+    }
+
+    /// Ensure the logs directory exists, creating it if necessary
+    pub fn ensure_logs_dir(&self) -> anyhow::Result<()> {
+        std::fs::create_dir_all(&self.logs_dir)?;
+        Ok(())
     }
 }

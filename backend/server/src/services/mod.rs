@@ -51,6 +51,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
     let scheduler_service = SchedulerService::new(
         db_service.clone(),
+        config.logs_dir.clone(),
         config.remote_builders,
         maybe_github_sender.clone(),
     )
