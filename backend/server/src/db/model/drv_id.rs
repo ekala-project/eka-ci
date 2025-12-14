@@ -66,6 +66,12 @@ impl DrvId {
         format!("/nix/store/{}", self.0)
     }
 
+    /// Extract the hash component (first 32 characters) of the derivation identifier
+    pub fn drv_hash(&self) -> &str {
+        // DrvId is guaranteed to have format hash-name.drv where hash is 32 chars
+        &self.0[..32]
+    }
+
     /// (&self, reference) pairs, for easy inserting into DB
     pub async fn reference_pairs(&self) -> Result<Vec<(Referrer, Reference)>> {
         use std::str::FromStr;

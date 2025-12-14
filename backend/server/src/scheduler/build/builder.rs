@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use tokio::process::Command;
 use tokio::sync::mpsc::{self, Sender};
@@ -18,6 +20,7 @@ pub struct Builder {
     pub remote_uri: Option<String>,
     pub builder_name: String,
     pub platform: Platform,
+    logs_dir: PathBuf,
     recorder_sender: mpsc::Sender<RecorderTask>,
 }
 
@@ -28,6 +31,7 @@ impl Builder {
         remote_uri: Option<String>,
         builder_name: String,
         platform: Platform,
+        logs_dir: PathBuf,
         recorder_sender: Sender<RecorderTask>,
     ) -> Self {
         Self {
@@ -36,6 +40,7 @@ impl Builder {
             remote_uri,
             builder_name,
             platform,
+            logs_dir,
             recorder_sender,
         }
     }
@@ -69,13 +74,17 @@ impl Builder {
         let thread = BuilderThread::init(
             self.build_args(),
             self.max_jobs,
+            self.logs_dir,
             self.recorder_sender.clone(),
         );
 
         thread.run()
     }
 
-    pub async fn local_from_env(recorder_sender: mpsc::Sender<RecorderTask>) -> Result<Vec<Self>> {
+    pub async fn local_from_env(
+        logs_dir: PathBuf,
+        recorder_sender: mpsc::Sender<RecorderTask>,
+    ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
 
         info!(
@@ -92,6 +101,7 @@ impl Builder {
                     None,
                     "localhost".to_string(),
                     platform.to_string(),
+                    logs_dir.clone(),
                     recorder_sender.clone(),
                 )
             })
@@ -103,6 +113,7 @@ impl Builder {
     pub fn from_remote_builder(
         platform: Platform,
         remote_builder: &RemoteBuilder,
+        logs_dir: PathBuf,
         recorder_sender: mpsc::Sender<RecorderTask>,
     ) -> Self {
         Self::new_inner(
@@ -115,6 +126,7 @@ impl Builder {
                 remote_builder.platforms.join(",")
             ),
             platform,
+            logs_dir,
             recorder_sender,
         )
     }

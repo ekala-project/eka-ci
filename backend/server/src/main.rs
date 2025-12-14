@@ -34,6 +34,8 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     debug!("Using configuration {config:?}");
 
+    config.ensure_logs_dir()?;
+
     services::start_services(config).await?;
     Ok(())
 }

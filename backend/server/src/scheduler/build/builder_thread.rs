@@ -1,5 +1,8 @@
-use std::process::Output;
+use std::path::PathBuf;
+use std::process::Stdio;
 
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -12,6 +15,7 @@ use crate::scheduler::recorder::RecorderTask;
 pub struct BuilderThread {
     build_args: [String; 2],
     max_jobs: u8,
+    logs_dir: PathBuf,
     recorder_sender: mpsc::Sender<RecorderTask>,
 }
 
@@ -19,11 +23,13 @@ impl BuilderThread {
     pub fn init(
         build_args: [String; 2],
         max_jobs: u8,
+        logs_dir: PathBuf,
         recorder_sender: mpsc::Sender<RecorderTask>,
     ) -> Self {
         Self {
             build_args,
             max_jobs,
+            logs_dir,
             recorder_sender,
         }
     }
@@ -65,6 +71,7 @@ impl BuilderThread {
     fn create_build(&self, drv_id: DrvId) -> NixBuild {
         NixBuild {
             build_args: self.build_args.clone(),
+            logs_dir: self.logs_dir.clone(),
             recorder_sender: self.recorder_sender.clone(),
             drv_id,
         }
@@ -73,6 +80,7 @@ impl BuilderThread {
 
 struct NixBuild {
     build_args: [String; 2],
+    logs_dir: PathBuf,
     recorder_sender: mpsc::Sender<RecorderTask>,
     drv_id: DrvId,
 }
@@ -82,9 +90,9 @@ impl NixBuild {
         use build_event::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
 
         let drv_path = self.drv_id.store_path();
-        match self.build_drv().await {
-            Ok(output) => {
-                if output.status.success() {
+        match self.build_drv_with_logging().await {
+            Ok(success) => {
+                if success {
                     debug!("Successfully built {:?}", drv_path);
                     DrvBuildState::Completed(DrvBuildResult::Success)
                 } else {
@@ -93,7 +101,7 @@ impl NixBuild {
                 }
             },
 
-            // Err doesn't denote process failure, rather process construction
+            // Err doesn't denote process failure, rather process construction or logging error
             Err(e) => {
                 warn!("Failed to build {:?}, encountered error: {:?}", drv_path, e);
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath)
@@ -101,22 +109,95 @@ impl NixBuild {
         }
     }
 
-    async fn build_drv(&self) -> anyhow::Result<Output> {
+    /// Build the derivation and stream logs to disk
+    /// Returns Ok(true) if build succeeded, Ok(false) if build failed, Err if process died
+    async fn build_drv_with_logging(&self) -> anyhow::Result<bool> {
+        use tokio::io::AsyncBufReadExt;
+
         debug!("Building {} drv", self.drv_id.store_path());
-        let build_output = Command::new("nix-build")
+
+        // Create log directory: {logs_dir}/{drv_hash}/
+        let drv_hash = self.drv_id.drv_hash();
+        let log_subdir = self.logs_dir.join(drv_hash);
+        tokio::fs::create_dir_all(&log_subdir).await?;
+
+        // Create log file: {logs_dir}/{drv_hash}/build.log
+        let log_filename = "build.log";
+        let log_path = log_subdir.join(log_filename);
+        let log_file = File::create(&log_path).await?;
+        let mut log_writer = BufWriter::new(log_file);
+
+        // Spawn nix-build with stdout/stderr redirected
+        let mut child = Command::new("nix-build")
             .args([self.drv_id.store_path()])
             .args(&self.build_args)
-            .output()
-            .await?;
-        if !build_output.status.success() {
-            warn!(
-                "{} failed with output {}",
-                self.drv_id.store_path(),
-                String::from_utf8_lossy(&build_output.stderr)
-            );
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        // Stream stdout and stderr to log file
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        let mut stdout_reader = tokio::io::BufReader::new(stdout);
+        let mut stderr_reader = tokio::io::BufReader::new(stderr);
+
+        // Interleave stdout and stderr into log file
+        let mut stdout_buf = Vec::new();
+        let mut stderr_buf = Vec::new();
+
+        loop {
+            tokio::select! {
+                result = stdout_reader.read_until(b'\n', &mut stdout_buf) => {
+                    match result {
+                        Ok(0) => {}, // EOF
+                        Ok(_) => {
+                            log_writer.write_all(&stdout_buf).await?;
+                            stdout_buf.clear();
+                        },
+                        Err(e) => warn!("Error reading stdout: {}", e),
+                    }
+                },
+                result = stderr_reader.read_until(b'\n', &mut stderr_buf) => {
+                    match result {
+                        Ok(0) => {}, // EOF
+                        Ok(_) => {
+                            log_writer.write_all(&stderr_buf).await?;
+                            stderr_buf.clear();
+                        },
+                        Err(e) => warn!("Error reading stderr: {}", e),
+                    }
+                },
+            }
+
+            // Check if process has exited
+            if let Ok(Some(_)) = child.try_wait() {
+                // Drain remaining output
+                stdout_reader.read_to_end(&mut stdout_buf).await?;
+                log_writer.write_all(&stdout_buf).await?;
+
+                stderr_reader.read_to_end(&mut stderr_buf).await?;
+                log_writer.write_all(&stderr_buf).await?;
+
+                break;
+            }
         }
 
-        Ok(build_output)
+        // Wait for child process to complete
+        let status = child.wait().await?;
+
+        // Flush and sync log file
+        log_writer.flush().await?;
+        let log_file = log_writer.into_inner();
+        log_file.sync_all().await?;
+
+        debug!(
+            "Build log for {} written to {}",
+            self.drv_id.store_path(),
+            log_path.display()
+        );
+
+        Ok(status.success())
     }
 
     async fn attempt_build(self) -> anyhow::Result<()> {

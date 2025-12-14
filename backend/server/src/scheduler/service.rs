@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -40,18 +42,21 @@ pub struct SchedulerService {
 impl SchedulerService {
     pub async fn new(
         db_service: DbService,
+        logs_dir: PathBuf,
         remote_builders: Vec<RemoteBuilder>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
     ) -> anyhow::Result<Self> {
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
         let (recorder_service, recorder_sender) =
             RecorderService::init(db_service.clone(), github_sender);
-        let mut builders = Builder::local_from_env(recorder_sender.clone()).await?;
+        let mut builders =
+            Builder::local_from_env(logs_dir.clone(), recorder_sender.clone()).await?;
         for remote in remote_builders {
             for remote_platform in &remote.platforms {
                 let remote_builder = Builder::from_remote_builder(
                     remote_platform.to_string(),
                     &remote,
+                    logs_dir.clone(),
                     recorder_sender.clone(),
                 );
                 builders.push(remote_builder);
