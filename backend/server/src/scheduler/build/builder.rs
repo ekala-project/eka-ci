@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::process::Command;
@@ -8,6 +9,7 @@ use tracing::info;
 use super::builder_thread::BuilderThread;
 use super::{BuildRequest, Platform};
 use crate::config::RemoteBuilder;
+use crate::metrics::BuildMetrics;
 use crate::scheduler::recorder::RecorderTask;
 
 /// This is meant to be an abstraction over both local and remote builders
@@ -22,6 +24,7 @@ pub struct Builder {
     pub platform: Platform,
     logs_dir: PathBuf,
     recorder_sender: mpsc::Sender<RecorderTask>,
+    metrics: Arc<BuildMetrics>,
 }
 
 impl Builder {
@@ -33,6 +36,7 @@ impl Builder {
         platform: Platform,
         logs_dir: PathBuf,
         recorder_sender: Sender<RecorderTask>,
+        metrics: Arc<BuildMetrics>,
     ) -> Self {
         Self {
             is_local,
@@ -42,6 +46,7 @@ impl Builder {
             platform,
             logs_dir,
             recorder_sender,
+            metrics,
         }
     }
 
@@ -76,6 +81,8 @@ impl Builder {
             self.max_jobs,
             self.logs_dir,
             self.recorder_sender.clone(),
+            self.platform.clone(),
+            self.metrics.clone(),
         );
 
         thread.run()
@@ -84,6 +91,7 @@ impl Builder {
     pub async fn local_from_env(
         logs_dir: PathBuf,
         recorder_sender: mpsc::Sender<RecorderTask>,
+        metrics: Arc<BuildMetrics>,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
 
@@ -103,6 +111,7 @@ impl Builder {
                     platform.to_string(),
                     logs_dir.clone(),
                     recorder_sender.clone(),
+                    metrics.clone(),
                 )
             })
             .collect();
@@ -115,6 +124,7 @@ impl Builder {
         remote_builder: &RemoteBuilder,
         logs_dir: PathBuf,
         recorder_sender: mpsc::Sender<RecorderTask>,
+        metrics: Arc<BuildMetrics>,
     ) -> Self {
         Self::new_inner(
             false,
@@ -128,6 +138,7 @@ impl Builder {
             platform,
             logs_dir,
             recorder_sender,
+            metrics,
         )
     }
 
