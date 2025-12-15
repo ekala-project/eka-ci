@@ -21,6 +21,8 @@ struct AppState {
     git_sender: mpsc::Sender<GitTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     metrics_registry: Arc<Registry>,
+    require_approval: bool,
+    db_service: crate::db::DbService,
 }
 
 pub struct WebService {
@@ -34,6 +36,8 @@ impl WebService {
         git_sender: mpsc::Sender<GitTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         metrics_registry: Arc<Registry>,
+        require_approval: bool,
+        db_service: crate::db::DbService,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -45,6 +49,8 @@ impl WebService {
                 git_sender,
                 github_sender,
                 metrics_registry,
+                require_approval,
+                db_service,
             },
         })
     }
@@ -82,12 +88,25 @@ fn api_routes() -> Router<AppState> {
         .route("/logs/{drv}", get(get_derivation_log))
         .route("/github/webhook", post(handle_github_webhook))
         .route("/metrics", get(metrics_handler))
+        .route("/admin/approved-users", get(list_approved_users_handler))
+        .route("/admin/approved-users", post(add_approved_user_handler))
+        .route(
+            "/admin/approved-users/:username",
+            axum::routing::delete(remove_approved_user_handler),
+        )
 }
 
 async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_payload): Json<WEP>) {
     use crate::github::handle_webhook_payload;
 
-    handle_webhook_payload(webhook_payload, state.git_sender, state.github_sender).await;
+    handle_webhook_payload(
+        webhook_payload,
+        state.git_sender,
+        state.github_sender,
+        state.require_approval,
+        state.db_service,
+    )
+    .await;
 }
 
 async fn get_derivation_log(axum::extract::Path(drv): axum::extract::Path<String>) -> String {
@@ -115,6 +134,85 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to convert metrics to UTF-8".to_string(),
             )
+        },
+    }
+}
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct AddApprovedUserRequest {
+    username: String,
+    user_id: i64,
+    notes: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ApprovedUserResponse {
+    github_username: String,
+    github_id: i64,
+    approved_at: String,
+    notes: Option<String>,
+}
+
+impl From<crate::db::ApprovedUser> for ApprovedUserResponse {
+    fn from(user: crate::db::ApprovedUser) -> Self {
+        Self {
+            github_username: user.github_username,
+            github_id: user.github_id,
+            approved_at: user.approved_at,
+            notes: user.notes,
+        }
+    }
+}
+
+async fn list_approved_users_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ApprovedUserResponse>>, (axum::http::StatusCode, String)> {
+    match state.db_service.list_approved_users().await {
+        Ok(users) => Ok(Json(users.into_iter().map(Into::into).collect())),
+        Err(e) => {
+            error!("Failed to list approved users: {}", e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to list approved users: {}", e),
+            ))
+        },
+    }
+}
+
+async fn add_approved_user_handler(
+    State(state): State<AppState>,
+    Json(request): Json<AddApprovedUserRequest>,
+) -> Result<Json<&'static str>, (axum::http::StatusCode, String)> {
+    match state
+        .db_service
+        .add_approved_user(&request.username, request.user_id, request.notes.as_deref())
+        .await
+    {
+        Ok(_) => Ok(Json("User approved successfully")),
+        Err(e) => {
+            error!("Failed to add approved user: {}", e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to add approved user: {}", e),
+            ))
+        },
+    }
+}
+
+async fn remove_approved_user_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(username): axum::extract::Path<String>,
+) -> Result<Json<&'static str>, (axum::http::StatusCode, String)> {
+    match state.db_service.remove_approved_user(&username).await {
+        Ok(_) => Ok(Json("User removed successfully")),
+        Err(e) => {
+            error!("Failed to remove approved user: {}", e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to remove approved user: {}", e),
+            ))
         },
     }
 }

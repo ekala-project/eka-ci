@@ -206,6 +206,10 @@ pub enum GitHubTask {
         job_attr_name: String,
         difference: JobDifference,
     },
+    CreateApprovalRequiredCheckRun {
+        ci_check_info: CICheckInfo,
+        username: String,
+    },
 }
 
 pub type Owner = String;
