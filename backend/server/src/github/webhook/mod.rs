@@ -1,6 +1,8 @@
 use anyhow::{Context, bail};
+use octocrab::Octocrab;
 use octocrab::models::pulls::PullRequest;
 use octocrab::models::webhook_events::{WebhookEventPayload as WEP, payload};
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -19,11 +21,36 @@ pub async fn handle_webhook_payload(
         WEP::PullRequest(pr) => {
             handle_github_pr(*pr, git_sender, github_sender, require_approval, db_service).await
         },
+        WEP::WorkflowRun(workflow_run) => {
+            handle_github_workflow_run(*workflow_run, git_sender).await
+        },
         // We probably don't want to react to every push
         // WEP::Push(pr) => handle_github_push(*pr).await,
         _ => return,
     };
     return;
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowRunPullRequest {
+    number: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowRunData {
+    pull_requests: Vec<WorkflowRunPullRequest>,
+    repository: WorkflowRunRepository,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowRunRepository {
+    name: String,
+    owner: WorkflowRunOwner,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowRunOwner {
+    login: String,
 }
 
 async fn is_valid_user(pr: &PullRequest, db_service: &DbService) -> anyhow::Result<()> {
@@ -119,12 +146,64 @@ async fn handle_github_pr(
     }
 }
 
-#[allow(dead_code)]
-// base_ref is optional, so may actually be hard to determine what we can "diff"
-// the evaluation from
-async fn handle_github_push(push: payload::PushWebhookEventPayload) {
-    debug!("Received github push notification: {:?}", push.head_commit);
+async fn handle_github_workflow_requested(
+    payload: WorkflowRunData,
+    git_sender: mpsc::Sender<GitTask>,
+) -> anyhow::Result<()> {
+    // Check if there are any pull requests associated with this workflow run
+    if payload.pull_requests.is_empty() {
+        bail!("No pull requests associated with this workflow_run (likely from a fork or push)");
+    }
+
+    let owner = payload.repository.owner.login;
+    let repo_name = payload.repository.name;
+
+    // Fetch the full PR details using octocrab
+    // TODO: Use github app octocrab instance to avoid capacity
+    let octocrab = Octocrab::builder().build()?;
+
+    for pr_number in payload.pull_requests {
+        debug!(
+            "Workflow approved for PR #{} in {}/{}",
+            &pr_number.number, &owner, &repo_name
+        );
+        let pull_request = octocrab
+            .pulls(&owner, &repo_name)
+            .get(pr_number.number)
+            .await?;
+        // Workflow was approved by maintainer, send the PR for checkout
+        let git_task = GitTask::GitHubCheckout(pull_request);
+        git_sender.send(git_task).await?;
+    }
+
+    Ok(())
 }
 
-#[allow(dead_code)]
-async fn eval_pr(_pr: PullRequest) {}
+async fn handle_github_workflow_run(
+    workflow_run: payload::WorkflowRunWebhookEventPayload,
+    git_sender: mpsc::Sender<GitTask>,
+) {
+    use payload::WorkflowRunWebhookEventAction as WRWEA;
+
+    // Only handle "requested" action (when workflow is approved by maintainer)
+    if workflow_run.action != WRWEA::Requested {
+        debug!("Ignoring workflow_run action: {:?}", workflow_run.action);
+        return;
+    }
+
+    debug!("Received workflow_run requested event");
+
+    // Parse the workflow_run data to extract PR information
+    let workflow_run_data: WorkflowRunData = match serde_json::from_value(workflow_run.workflow_run)
+    {
+        Ok(data) => data,
+        Err(e) => {
+            warn!("Failed to parse workflow_run data: {:?}", e);
+            return;
+        },
+    };
+
+    if let Err(e) = handle_github_workflow_requested(workflow_run_data, git_sender).await {
+        warn!("Failed to process github workflow requested: {}", e);
+    }
+}
