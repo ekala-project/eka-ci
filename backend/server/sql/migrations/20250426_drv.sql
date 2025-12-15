@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS Drv (
     -- Allows for allocation of a build on a host which needs certain features
     -- For example, NixOS tests require "kvm nixos-test"
     required_system_features TEXT NULL,
+    -- Whether this is a Fixed-Output Derivation (has a known output hash)
+    -- FODs are fetches (fetchurl, fetchgit, etc.) that get dedicated build resources
+    is_fod BOOLEAN NOT NULL DEFAULT 0,
     build_state INTEGER NOT NULL,
     UNIQUE (drv_path) ON CONFLICT IGNORE
 );
@@ -31,6 +34,9 @@ CREATE TABLE IF NOT EXISTS DrvRefs (
 -- We will be querying these frequently to determine dependency state
 CREATE INDEX IF NOT EXISTS DrvReferrer ON DrvRefs (referrer);
 CREATE INDEX IF NOT EXISTS DrvReferrer ON DrvRefs (reference);
+
+-- Index for filtering FOD builds in queries
+CREATE INDEX IF NOT EXISTS DrvIsFod ON Drv (is_fod);
 
 -- Tracks which drvs are blocked by failed dependencies
 -- When a drv fails, all transitive referrers are marked as TransitiveFailure

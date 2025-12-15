@@ -125,6 +125,39 @@ impl Builder {
         Ok(builders)
     }
 
+    pub async fn local_from_env_fod(
+        logs_dir: PathBuf,
+        recorder_sender: mpsc::Sender<RecorderTask>,
+        metrics: Arc<BuildMetrics>,
+        no_output_timeout_seconds: u64,
+    ) -> Result<Vec<Self>> {
+        let local_platforms = local_platforms().await?;
+
+        info!(
+            "Creating FOD builders for these systems: {:?}",
+            &local_platforms
+        );
+
+        let builders = local_platforms
+            .iter()
+            .map(|platform| {
+                Self::new_inner(
+                    true,
+                    10, // Lower max_jobs for FOD builds
+                    None,
+                    "localhost-fod".to_string(),
+                    platform.to_string(),
+                    logs_dir.clone(),
+                    recorder_sender.clone(),
+                    metrics.clone(),
+                    no_output_timeout_seconds,
+                )
+            })
+            .collect();
+
+        Ok(builders)
+    }
+
     pub fn from_remote_builder(
         platform: Platform,
         remote_builder: &RemoteBuilder,

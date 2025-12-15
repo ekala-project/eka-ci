@@ -22,6 +22,10 @@ pub struct Drv {
     pub prefer_local_build: bool,
     pub required_system_features: Option<String>,
 
+    /// Whether this is a Fixed-Output Derivation (FOD)
+    /// FODs have a known output hash (e.g., fetchurl, fetchgit)
+    pub is_fod: bool,
+
     /// This is None when queried from Nix
     /// Otherwise, it is the latest build status
     pub build_state: DrvBuildState,
@@ -41,11 +45,13 @@ impl Drv {
 
         // This is the first time we have encountered this drv
         let drv_output = drv_output(drv_path).await?;
+        let is_fod = drv_output.is_fod();
         Ok(Drv {
             drv_path: DrvId::from_str(drv_path)?,
             system: drv_output.system,
             prefer_local_build: drv_output.prefer_local,
             required_system_features: drv_output.required_system_features_str,
+            is_fod,
             build_state: DrvBuildState::Queued,
         })
     }

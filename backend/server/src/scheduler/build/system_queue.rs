@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use super::{BuildRequest, Builder, Platform};
 use crate::metrics::BuildMetrics;
@@ -16,6 +16,9 @@ pub struct PlatformQueue {
     /// This is done to prevent expensive fetches which get downloaded
     /// on remote machines, then get uploaded to the builder
     local_builder: Option<Builder>,
+    /// Dedicated builder for Fixed-Output Derivations (FODs)
+    /// FODs are fetches (fetchurl, fetchgit, etc.) that have a known output hash
+    fod_builder: Option<Builder>,
     metrics: Arc<BuildMetrics>,
 }
 
@@ -25,6 +28,7 @@ impl PlatformQueue {
             platform,
             builders: HashMap::new(),
             local_builder: None,
+            fod_builder: None,
             metrics,
         }
     }
@@ -45,6 +49,10 @@ impl PlatformQueue {
         }
     }
 
+    pub async fn add_fod_builder(&mut self, builder: Builder) {
+        self.fod_builder = Some(builder);
+    }
+
     pub fn run(self) -> mpsc::Sender<BuildRequest> {
         let (tx, rx) = mpsc::channel(1000);
 
@@ -55,28 +63,119 @@ impl PlatformQueue {
         tx
     }
 
-    pub async fn loop_all_builds(mut self, mut receiver: mpsc::Receiver<BuildRequest>) {
-        // If we have both local and remote builders, try to separate the concerns.
-        if self.local_builder.is_some() && !self.builders.is_empty() {
-            let local_builder = self.local_builder.unwrap();
-            // TODO: buffer this so that one doesn't pause the other
-            let (remote_tx, remote_rx) = mpsc::channel(1000);
-            let (local_tx, local_rx) = mpsc::channel(1000);
-            let mut local_builders = HashMap::new();
-            local_builders.insert("localhost".to_string(), local_builder);
+    pub async fn spawn_builder_loop(
+        &self,
+        builder_name: &str,
+        maybe_builder: Option<Builder>,
+    ) -> Option<mpsc::Sender<BuildRequest>> {
+        if let Some(builder) = maybe_builder {
+            let mut builders = HashMap::new();
+            builders.insert(builder_name.to_string(), builder);
+            return Some(self.spawn_builders_loop(builders).await);
+        }
 
-            let platform_clone = self.platform.clone();
-            let metrics_clone = self.metrics.clone();
-            debug!("{} remote system queue started", &self.platform);
-            tokio::spawn(async move {
-                loop_builds(self.builders, remote_rx, platform_clone, metrics_clone).await;
-            });
-            let platform_clone = self.platform.clone();
-            let metrics_clone = self.metrics.clone();
-            debug!("{} local system queue started", &self.platform);
-            tokio::spawn(async move {
-                loop_builds(local_builders, local_rx, platform_clone, metrics_clone).await;
-            });
+        None
+    }
+
+    pub async fn spawn_builders_loop(
+        &self,
+        builders: HashMap<SystemName, Builder>,
+    ) -> mpsc::Sender<BuildRequest> {
+        let (tx, rx) = mpsc::channel(100);
+        let platform_clone = self.platform.clone();
+        let metrics_clone = self.metrics.clone();
+
+        tokio::spawn(async move {
+            loop_builds(builders, rx, platform_clone, metrics_clone).await;
+        });
+
+        return tx;
+    }
+
+    pub async fn loop_all_builds(mut self, mut receiver: mpsc::Receiver<BuildRequest>) {
+        let has_fod = self.fod_builder.is_some();
+        let has_local = self.local_builder.is_some();
+        let has_remote = !self.builders.is_empty();
+        let maybe_fod = self.fod_builder.take();
+        let maybe_local = self.local_builder.take();
+
+        let maybe_fod_tx = self.spawn_builder_loop("localhost_fod", maybe_fod).await;
+        let maybe_local_tx = self.spawn_builder_loop("localhost", maybe_local).await;
+
+        // Due to mut self, we need to provision this explicitly
+        let (remote_tx, remote_rx) = mpsc::channel(100);
+        let platform_clone = self.platform.clone();
+        let metrics_clone = self.metrics.clone();
+        let builders = self.builders;
+
+        tokio::spawn(async move {
+            loop_builds(builders, remote_rx, platform_clone, metrics_clone).await;
+        });
+
+        // Case 1: FOD + local + remote (3-way routing)
+        if has_fod && has_local && has_remote {
+            let fod_tx = maybe_fod_tx.unwrap();
+            let local_tx = maybe_local_tx.unwrap();
+
+            while let Some(work) = receiver.recv().await {
+                if work.0.is_fod {
+                    fod_tx
+                        .send(work)
+                        .await
+                        .expect("Failed to send to FOD builder");
+                } else if work.0.prefer_local_build {
+                    local_tx
+                        .send(work)
+                        .await
+                        .expect("Failed to send to local builder");
+                } else {
+                    remote_tx
+                        .send(work)
+                        .await
+                        .expect("Failed to send to remote builder pool");
+                }
+            }
+        }
+        // Case 2: FOD + local (no remote) - 2-way routing
+        else if has_fod && has_local {
+            let fod_tx = maybe_fod_tx.unwrap();
+            let local_tx = maybe_local_tx.unwrap();
+
+            while let Some(work) = receiver.recv().await {
+                if work.0.is_fod {
+                    fod_tx
+                        .send(work)
+                        .await
+                        .expect("Failed to send to FOD builder");
+                } else {
+                    local_tx
+                        .send(work)
+                        .await
+                        .expect("Failed to send to local builder");
+                }
+            }
+        }
+        // Case 3: FOD + remote (no local) - 2-way routing
+        else if has_fod && has_remote {
+            let fod_tx = maybe_fod_tx.unwrap();
+
+            while let Some(work) = receiver.recv().await {
+                if work.0.is_fod {
+                    fod_tx
+                        .send(work)
+                        .await
+                        .expect("Failed to send to FOD builder");
+                } else {
+                    remote_tx
+                        .send(work)
+                        .await
+                        .expect("Failed to send to remote builder pool");
+                }
+            }
+        }
+        // Case 4: local + remote (existing 2-way routing, no FOD)
+        else if has_local && has_remote {
+            let local_tx = maybe_local_tx.unwrap();
 
             while let Some(work) = receiver.recv().await {
                 if work.0.prefer_local_build {
@@ -91,13 +190,25 @@ impl PlatformQueue {
                         .expect("Failed to send to remote builder pool");
                 }
             }
-        } else {
-            // Collapse local and remote as we have one or the other. But not both
-            if let Some(local_builder) = self.local_builder {
-                self.builders.insert("localhost".to_string(), local_builder);
+        }
+        // Case 5: Remote only
+        else if has_remote {
+            while let Some(work) = receiver.recv().await {
+                remote_tx
+                    .send(work)
+                    .await
+                    .expect("Failed to send to remote builder pool");
             }
-            debug!("{} system queue started", &self.platform);
-            loop_builds(self.builders, receiver, self.platform, self.metrics).await;
+        }
+        // Case 6: Local only
+        else {
+            let local_tx = maybe_local_tx.expect("Failed to setup local builder");
+            while let Some(work) = receiver.recv().await {
+                local_tx
+                    .send(work)
+                    .await
+                    .expect("Failed to send to remote builder pool");
+            }
         }
     }
 }
