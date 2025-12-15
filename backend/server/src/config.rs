@@ -39,6 +39,11 @@ struct ConfigCli {
     /// If not provided a default path will be attempted, based on the XDG spec.
     #[arg(long)]
     pub config_file: Option<PathBuf>,
+
+    /// Require approval before allowing jobset creation for PRs. Defaults to false.
+    /// When enabled, only GitHub users in the ApprovedUsers table can trigger builds.
+    #[arg(long)]
+    pub require_approval: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -47,6 +52,7 @@ struct ConfigFile {
     unix: ConfigFileUnix,
     db_path: Option<PathBuf>,
     logs_dir: Option<PathBuf>,
+    require_approval: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -75,6 +81,7 @@ pub struct Config {
     pub logs_dir: PathBuf,
     #[allow(dead_code)]
     pub remote_builders: Vec<RemoteBuilder>,
+    pub require_approval: bool,
 }
 
 #[derive(Debug)]
@@ -132,6 +139,10 @@ impl Config {
                 .or(file.logs_dir)
                 .unwrap_or_else(|| dirs.get_data_file("build-logs")),
             remote_builders,
+            require_approval: args
+                .require_approval
+                .or(file.require_approval)
+                .unwrap_or(false),
         })
     }
 

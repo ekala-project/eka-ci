@@ -4,10 +4,10 @@ use sqlx::migrate;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use tracing::{debug, info};
 
-use super::github;
 use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
+use super::{approved_users, github};
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 #[derive(Clone)]
@@ -206,5 +206,27 @@ impl DbService {
 
     pub async fn get_jobset_info(&self, jobset_id: i64) -> anyhow::Result<github::JobSetInfo> {
         github::get_jobset_info(jobset_id, &self.pool).await
+    }
+
+    // Approved users methods
+    pub async fn is_user_approved(&self, username: &str, user_id: i64) -> anyhow::Result<bool> {
+        approved_users::is_user_approved(username, user_id, &self.pool).await
+    }
+
+    pub async fn add_approved_user(
+        &self,
+        username: &str,
+        user_id: i64,
+        notes: Option<&str>,
+    ) -> anyhow::Result<()> {
+        approved_users::add_approved_user(username, user_id, notes, &self.pool).await
+    }
+
+    pub async fn remove_approved_user(&self, username: &str) -> anyhow::Result<()> {
+        approved_users::remove_approved_user(username, &self.pool).await
+    }
+
+    pub async fn list_approved_users(&self) -> anyhow::Result<Vec<approved_users::ApprovedUser>> {
+        approved_users::list_approved_users(&self.pool).await
     }
 }

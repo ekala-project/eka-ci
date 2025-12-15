@@ -335,6 +335,14 @@ impl GitHubService {
                     )
                     .await?;
             },
+            GitHubTask::CreateApprovalRequiredCheckRun {
+                ci_check_info,
+                username,
+            } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+                actions::create_approval_required_check_run(&octocrab, ci_check_info, username)
+                    .await?;
+            },
         }
         Ok(())
     }

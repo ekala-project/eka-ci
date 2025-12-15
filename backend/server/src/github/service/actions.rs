@@ -123,3 +123,34 @@ pub async fn update_ci_eval_job(
 
     Ok(())
 }
+
+/// Create a neutral check run indicating that approval is required before builds can run
+pub async fn create_approval_required_check_run(
+    octocrab: &Octocrab,
+    ci_check_info: &CICheckInfo,
+    username: &str,
+) -> Result<CheckRun> {
+    use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+    debug!(
+        "Creating approval required check run for commit {} (user: {})",
+        &ci_check_info.commit, username
+    );
+
+    let title = format!("EkaCI: Approval Required (User: @{})", username);
+
+    let check_run = octocrab
+        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+        .create_check_run(&title, &ci_check_info.commit)
+        .status(CheckRunStatus::Completed)
+        .conclusion(CheckRunConclusion::Neutral)
+        .send()
+        .await?;
+
+    debug!(
+        "Successfully created approval required check run for commit #{}",
+        &ci_check_info.commit
+    );
+
+    Ok(check_run)
+}

@@ -80,6 +80,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         git_service.get_sender(),
         maybe_github_sender.clone(),
         scheduler_service.metrics_registry(),
+        config.require_approval,
+        db_service.clone(),
     )
     .await
     .context("failed to start web service")?;
