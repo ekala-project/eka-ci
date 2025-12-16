@@ -24,10 +24,10 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let db_pool = db_service.pool.clone();
 
-    let maybe_github_service = match github::register_app().await {
+    let (maybe_github_service, maybe_octocrab) = match github::register_app().await {
         Ok(octocrab) => {
-            let github_service = GitHubService::new(db_service.clone(), octocrab).await?;
-            Some(github_service)
+            let github_service = GitHubService::new(db_service.clone(), octocrab.clone()).await?;
+            (Some(github_service), Some(octocrab))
         },
         Err(e) => {
             // In dev environments, there usually is no authentication, but the server should still
@@ -44,7 +44,7 @@ pub async fn start_services(config: Config) -> Result<()> {
             } else {
                 Err(e).context("failed to register GitHub app")?;
             }
-            None
+            (None, None)
         },
     };
 
@@ -80,6 +80,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         &config.web.address,
         git_service.get_sender(),
         maybe_github_sender.clone(),
+        maybe_octocrab,
         scheduler_service.metrics_registry(),
         config.require_approval,
         db_service.clone(),

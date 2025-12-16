@@ -14,6 +14,7 @@ pub async fn handle_webhook_payload(
     webhook_payload: WEP,
     git_sender: mpsc::Sender<GitTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    octocrab: Option<Octocrab>,
     require_approval: bool,
     db_service: DbService,
 ) {
@@ -22,7 +23,7 @@ pub async fn handle_webhook_payload(
             handle_github_pr(*pr, git_sender, github_sender, require_approval, db_service).await
         },
         WEP::WorkflowRun(workflow_run) => {
-            handle_github_workflow_run(*workflow_run, git_sender).await
+            handle_github_workflow_run(*workflow_run, git_sender, octocrab).await
         },
         // We probably don't want to react to every push
         // WEP::Push(pr) => handle_github_push(*pr).await,
@@ -149,6 +150,7 @@ async fn handle_github_pr(
 async fn handle_github_workflow_requested(
     payload: WorkflowRunData,
     git_sender: mpsc::Sender<GitTask>,
+    octocrab: Option<Octocrab>,
 ) -> anyhow::Result<()> {
     // Check if there are any pull requests associated with this workflow run
     if payload.pull_requests.is_empty() {
@@ -159,8 +161,7 @@ async fn handle_github_workflow_requested(
     let repo_name = payload.repository.name;
 
     // Fetch the full PR details using octocrab
-    // TODO: Use github app octocrab instance to avoid capacity
-    let octocrab = Octocrab::builder().build()?;
+    let octocrab = octocrab.context("GitHub App octocrab instance not available")?;
 
     for pr_number in payload.pull_requests {
         debug!(
@@ -182,6 +183,7 @@ async fn handle_github_workflow_requested(
 async fn handle_github_workflow_run(
     workflow_run: payload::WorkflowRunWebhookEventPayload,
     git_sender: mpsc::Sender<GitTask>,
+    octocrab: Option<Octocrab>,
 ) {
     use payload::WorkflowRunWebhookEventAction as WRWEA;
 
@@ -203,7 +205,8 @@ async fn handle_github_workflow_run(
         },
     };
 
-    if let Err(e) = handle_github_workflow_requested(workflow_run_data, git_sender).await {
+    if let Err(e) = handle_github_workflow_requested(workflow_run_data, git_sender, octocrab).await
+    {
         warn!("Failed to process github workflow requested: {}", e);
     }
 }

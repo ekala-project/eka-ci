@@ -20,6 +20,7 @@ use crate::github::GitHubTask;
 struct AppState {
     git_sender: mpsc::Sender<GitTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    octocrab: Option<octocrab::Octocrab>,
     metrics_registry: Arc<Registry>,
     require_approval: bool,
     db_service: crate::db::DbService,
@@ -35,6 +36,7 @@ impl WebService {
         socket: &SocketAddrV4,
         git_sender: mpsc::Sender<GitTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        octocrab: Option<octocrab::Octocrab>,
         metrics_registry: Arc<Registry>,
         require_approval: bool,
         db_service: crate::db::DbService,
@@ -48,6 +50,7 @@ impl WebService {
             state: AppState {
                 git_sender,
                 github_sender,
+                octocrab,
                 metrics_registry,
                 require_approval,
                 db_service,
@@ -103,6 +106,7 @@ async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_paylo
         webhook_payload,
         state.git_sender,
         state.github_sender,
+        state.octocrab,
         state.require_approval,
         state.db_service,
     )
