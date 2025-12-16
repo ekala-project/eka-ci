@@ -54,6 +54,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.logs_dir.clone(),
         config.remote_builders,
         maybe_github_sender.clone(),
+        config.build_no_output_timeout_seconds,
     )
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);

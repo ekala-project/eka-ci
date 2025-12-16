@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::sleep;
 use tracing::{debug, error, warn};
 
 use super::{BuildRequest, Platform};
@@ -21,6 +23,7 @@ pub struct BuilderThread {
     recorder_sender: mpsc::Sender<RecorderTask>,
     platform: Platform,
     metrics: Arc<BuildMetrics>,
+    no_output_timeout_seconds: u64,
 }
 
 impl BuilderThread {
@@ -31,6 +34,7 @@ impl BuilderThread {
         recorder_sender: mpsc::Sender<RecorderTask>,
         platform: Platform,
         metrics: Arc<BuildMetrics>,
+        no_output_timeout_seconds: u64,
     ) -> Self {
         Self {
             build_args,
@@ -39,6 +43,7 @@ impl BuilderThread {
             recorder_sender,
             platform,
             metrics,
+            no_output_timeout_seconds,
         }
     }
 
@@ -92,6 +97,7 @@ impl BuilderThread {
             logs_dir: self.logs_dir.clone(),
             recorder_sender: self.recorder_sender.clone(),
             drv_id,
+            no_output_timeout_seconds: self.no_output_timeout_seconds,
         }
     }
 }
@@ -101,6 +107,13 @@ struct NixBuild {
     logs_dir: PathBuf,
     recorder_sender: mpsc::Sender<RecorderTask>,
     drv_id: DrvId,
+    no_output_timeout_seconds: u64,
+}
+
+enum BuildOutcome {
+    Success,
+    Failure,
+    Timeout,
 }
 
 impl NixBuild {
@@ -109,14 +122,20 @@ impl NixBuild {
 
         let drv_path = self.drv_id.store_path();
         match self.build_drv_with_logging().await {
-            Ok(success) => {
-                if success {
-                    debug!("Successfully built {:?}", drv_path);
-                    DrvBuildState::Completed(DrvBuildResult::Success)
-                } else {
-                    debug!("Build failed for {:?}", drv_path);
-                    DrvBuildState::Completed(DrvBuildResult::Failure)
-                }
+            Ok(BuildOutcome::Success) => {
+                debug!("Successfully built {:?}", drv_path);
+                DrvBuildState::Completed(DrvBuildResult::Success)
+            },
+            Ok(BuildOutcome::Failure) => {
+                debug!("Build failed for {:?}", drv_path);
+                DrvBuildState::Completed(DrvBuildResult::Failure)
+            },
+            Ok(BuildOutcome::Timeout) => {
+                warn!(
+                    "Build timed out for {:?} (no output for {} seconds)",
+                    drv_path, self.no_output_timeout_seconds
+                );
+                DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout)
             },
 
             // Err doesn't denote process failure, rather process construction or logging error
@@ -128,8 +147,8 @@ impl NixBuild {
     }
 
     /// Build the derivation and stream logs to disk
-    /// Returns Ok(true) if build succeeded, Ok(false) if build failed, Err if process died
-    async fn build_drv_with_logging(&self) -> anyhow::Result<bool> {
+    /// Returns BuildOutcome indicating success, failure, or timeout
+    async fn build_drv_with_logging(&self) -> anyhow::Result<BuildOutcome> {
         use tokio::io::AsyncBufReadExt;
 
         debug!("Building {} drv", self.drv_id.store_path());
@@ -164,6 +183,10 @@ impl NixBuild {
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
 
+        // Create a timeout that resets whenever we receive output
+        let timeout_duration = Duration::from_secs(self.no_output_timeout_seconds);
+        let mut timeout = Box::pin(sleep(timeout_duration));
+
         loop {
             tokio::select! {
                 result = stdout_reader.read_until(b'\n', &mut stdout_buf) => {
@@ -172,6 +195,8 @@ impl NixBuild {
                         Ok(_) => {
                             log_writer.write_all(&stdout_buf).await?;
                             stdout_buf.clear();
+                            // Reset timeout on output
+                            timeout.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
                         },
                         Err(e) => warn!("Error reading stdout: {}", e),
                     }
@@ -182,9 +207,23 @@ impl NixBuild {
                         Ok(_) => {
                             log_writer.write_all(&stderr_buf).await?;
                             stderr_buf.clear();
+                            // Reset timeout on output
+                            timeout.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
                         },
                         Err(e) => warn!("Error reading stderr: {}", e),
                     }
+                },
+                _ = &mut timeout => {
+                    // Timeout occurred - kill the process
+                    warn!("Build timed out after {} seconds of no output, killing process", self.no_output_timeout_seconds);
+                    let _ = child.kill().await;
+
+                    // Flush and close log file
+                    log_writer.flush().await?;
+                    let log_file = log_writer.into_inner();
+                    log_file.sync_all().await?;
+
+                    return Ok(BuildOutcome::Timeout);
                 },
             }
 
@@ -215,7 +254,11 @@ impl NixBuild {
             log_path.display()
         );
 
-        Ok(status.success())
+        if status.success() {
+            Ok(BuildOutcome::Success)
+        } else {
+            Ok(BuildOutcome::Failure)
+        }
     }
 
     async fn attempt_build(self) -> anyhow::Result<()> {

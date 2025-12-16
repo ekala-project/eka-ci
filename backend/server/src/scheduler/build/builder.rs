@@ -25,6 +25,7 @@ pub struct Builder {
     logs_dir: PathBuf,
     recorder_sender: mpsc::Sender<RecorderTask>,
     metrics: Arc<BuildMetrics>,
+    no_output_timeout_seconds: u64,
 }
 
 impl Builder {
@@ -37,6 +38,7 @@ impl Builder {
         logs_dir: PathBuf,
         recorder_sender: Sender<RecorderTask>,
         metrics: Arc<BuildMetrics>,
+        no_output_timeout_seconds: u64,
     ) -> Self {
         Self {
             is_local,
@@ -47,6 +49,7 @@ impl Builder {
             logs_dir,
             recorder_sender,
             metrics,
+            no_output_timeout_seconds,
         }
     }
 
@@ -83,6 +86,7 @@ impl Builder {
             self.recorder_sender.clone(),
             self.platform.clone(),
             self.metrics.clone(),
+            self.no_output_timeout_seconds,
         );
 
         thread.run()
@@ -92,6 +96,7 @@ impl Builder {
         logs_dir: PathBuf,
         recorder_sender: mpsc::Sender<RecorderTask>,
         metrics: Arc<BuildMetrics>,
+        no_output_timeout_seconds: u64,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
 
@@ -112,6 +117,7 @@ impl Builder {
                     logs_dir.clone(),
                     recorder_sender.clone(),
                     metrics.clone(),
+                    no_output_timeout_seconds,
                 )
             })
             .collect();
@@ -125,6 +131,7 @@ impl Builder {
         logs_dir: PathBuf,
         recorder_sender: mpsc::Sender<RecorderTask>,
         metrics: Arc<BuildMetrics>,
+        no_output_timeout_seconds: u64,
     ) -> Self {
         Self::new_inner(
             false,
@@ -139,6 +146,7 @@ impl Builder {
             logs_dir,
             recorder_sender,
             metrics,
+            no_output_timeout_seconds,
         )
     }
 

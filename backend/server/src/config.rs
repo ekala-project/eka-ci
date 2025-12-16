@@ -53,6 +53,7 @@ struct ConfigFile {
     db_path: Option<PathBuf>,
     logs_dir: Option<PathBuf>,
     require_approval: Option<bool>,
+    build_no_output_timeout_seconds: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -82,6 +83,7 @@ pub struct Config {
     #[allow(dead_code)]
     pub remote_builders: Vec<RemoteBuilder>,
     pub require_approval: bool,
+    pub build_no_output_timeout_seconds: u64,
 }
 
 #[derive(Debug)]
@@ -143,6 +145,7 @@ impl Config {
                 .require_approval
                 .or(file.require_approval)
                 .unwrap_or(false),
+            build_no_output_timeout_seconds: file.build_no_output_timeout_seconds.unwrap_or(1200),
         })
     }
 

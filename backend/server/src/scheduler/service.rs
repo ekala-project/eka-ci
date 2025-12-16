@@ -51,6 +51,7 @@ impl SchedulerService {
         logs_dir: PathBuf,
         remote_builders: Vec<RemoteBuilder>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        build_no_output_timeout_seconds: u64,
     ) -> anyhow::Result<Self> {
         // Create metrics registry and build metrics
         let metrics_registry = Arc::new(Registry::new());
@@ -63,6 +64,7 @@ impl SchedulerService {
             logs_dir.clone(),
             recorder_sender.clone(),
             build_metrics.clone(),
+            build_no_output_timeout_seconds,
         )
         .await?;
         for remote in remote_builders {
@@ -73,6 +75,7 @@ impl SchedulerService {
                     logs_dir.clone(),
                     recorder_sender.clone(),
                     build_metrics.clone(),
+                    build_no_output_timeout_seconds,
                 );
                 builders.push(remote_builder);
             }
