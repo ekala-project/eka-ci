@@ -27,6 +27,7 @@ impl BuildQueue {
     /// Immediately starts builder service
     pub async fn init(
         builders: Vec<Builder>,
+        fod_builders: Vec<Builder>,
         metrics: Arc<BuildMetrics>,
     ) -> (Self, mpsc::Sender<BuildRequest>) {
         let (build_request_sender, build_request_receiver) = mpsc::channel(100);
@@ -41,6 +42,10 @@ impl BuildQueue {
             queue.add_builder(builder, metrics.clone()).await;
         }
 
+        for fod_builder in fod_builders {
+            queue.add_fod_builder(fod_builder, metrics.clone()).await;
+        }
+
         (queue, build_request_sender)
     }
 
@@ -52,6 +57,16 @@ impl BuildQueue {
 
         let system_queue = self.system_queues.get_mut(&builder.platform).unwrap();
         system_queue.add_builder(builder).await;
+    }
+
+    async fn add_fod_builder(&mut self, builder: Builder, metrics: Arc<BuildMetrics>) {
+        if !self.system_queues.contains_key(&builder.platform) {
+            let queue = PlatformQueue::new(builder.platform.clone(), metrics.clone());
+            self.system_queues.insert(builder.platform.clone(), queue);
+        }
+
+        let system_queue = self.system_queues.get_mut(&builder.platform).unwrap();
+        system_queue.add_fod_builder(builder).await;
     }
 
     pub fn run(self) -> JoinHandle<()> {

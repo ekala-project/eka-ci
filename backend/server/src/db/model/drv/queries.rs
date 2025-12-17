@@ -8,7 +8,7 @@ use crate::db::model::{DrvId, Reference, Referrer, drv_id};
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
         r#"
-SELECT drv_path, system, required_system_features, build_state
+SELECT drv_path, system, required_system_features, is_fod, build_state
 FROM Drv
 WHERE drv_path = ?
         "#,
@@ -42,17 +42,19 @@ pub async fn insert_drvs_and_references(
 
     if !drvs.is_empty() {
         // Ensure we do not exceed SQLite's 32k limit for query variables
-        // 32766 / 4 ~= 8190
-        for drvs_chunk in drvs.chunks(8190) {
+        // 32766 / 5 ~= 6550
+        for drvs_chunk in drvs.chunks(6550) {
             let mut tx = pool.begin().await?;
             let mut query_builder = QueryBuilder::new(
-                "INSERT INTO Drv (drv_path, system, required_system_features, build_state) ",
+                "INSERT INTO Drv (drv_path, system, required_system_features, is_fod, \
+                 build_state) ",
             );
 
             query_builder.push_values(drvs_chunk, |mut row, drv| {
                 row.push_bind(&drv.drv_path)
                     .push_bind(&drv.system)
                     .push_bind(&drv.required_system_features)
+                    .push_bind(&drv.is_fod)
                     .push_bind(&drv.build_state);
             });
 
@@ -122,13 +124,14 @@ pub async fn insert_drv(pool: &Pool<Sqlite>, drv: &Drv) -> anyhow::Result<()> {
     sqlx::query(
         r#"
 INSERT INTO Drv
-    (drv_path, system, required_system_features, build_state)
-VALUES (?1, ?2, ?3, ?4)
+    (drv_path, system, required_system_features, is_fod, build_state)
+VALUES (?1, ?2, ?3, ?4, ?5)
     "#,
     )
     .bind(&drv.drv_path)
     .bind(&drv.system)
     .bind(&drv.required_system_features)
+    .bind(&drv.is_fod)
     .bind(DrvBuildState::Queued)
     .execute(pool)
     .await?;
@@ -161,7 +164,7 @@ WHERE drv_path = ?2
 pub async fn drv_references(pool: &Pool<Sqlite>, drv: &DrvId) -> anyhow::Result<Vec<Drv>> {
     let result = sqlx::query_as(
         r#"
-SELECT drv_path, system, required_system_features, build_state
+SELECT drv_path, system, required_system_features, is_fod, build_state
 FROM Drv
 JOIN DrvRefs ON Drv.drv_path = DrvRefs.reference
 WHERE referrer = ?1
@@ -336,6 +339,7 @@ mod tests {
             system: "x86_64-linux".to_string(),
             prefer_local_build: false,
             required_system_features: None,
+            is_fod: false,
             build_state: DrvBuildState::Queued,
         };
         insert_drv(&pool, &drv).await?;
@@ -358,6 +362,7 @@ mod tests {
             system: "x86_64-linux".to_string(),
             prefer_local_build: false,
             required_system_features: None,
+            is_fod: false,
             build_state: DrvBuildState::Queued,
         };
         let drv2 = Drv {
@@ -367,6 +372,7 @@ mod tests {
             system: "x86_64-linux".to_string(),
             prefer_local_build: false,
             required_system_features: None,
+            is_fod: false,
             build_state: DrvBuildState::Queued,
         };
         let drv3 = Drv {
@@ -376,6 +382,7 @@ mod tests {
             system: "x86_64-linux".to_string(),
             prefer_local_build: false,
             required_system_features: None,
+            is_fod: false,
             build_state: DrvBuildState::Buildable,
         };
 

@@ -45,6 +45,8 @@ Backend
   - [ ] Calculate changed metrics between builds: build and runtime closure size, dependencies
 - Push built artifacts
   - [ ] Allow for a time-lease to be configured for "jobsets", to enable attic integration
+- Build behaviors
+  - [x] Dedicated FOD build queue
 
 Frontend
 

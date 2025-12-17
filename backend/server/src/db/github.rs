@@ -197,7 +197,7 @@ pub async fn check_runs_for_commit(
 pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
     let drvs = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.build_state
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state
         FROM Drv d
         INNER JOIN Job j ON d.ROWID = j.drv_id
         WHERE j.jobset = ?
@@ -219,7 +219,7 @@ pub async fn new_jobs(
     // Query for drvs only present in the head jobset
     let new_drvs: Vec<Drv> = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.build_state
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state
         FROM Drv d
         INNER JOIN
         (SELECT drv_id
@@ -306,7 +306,7 @@ pub async fn job_difference(
     // Query for drvs which differ in drv_id but share the same job name
     let changed_drvs = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.build_state
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state
         FROM Drv d
         INNER JOIN
         (
@@ -495,6 +495,7 @@ mod tests {
             system: "x86_64-linux".to_string(),
             prefer_local_build: false,
             required_system_features: None,
+            is_fod: false,
             build_state: DrvBuildState::Queued,
         };
         insert_drv(&pool, &drv).await?;
@@ -517,6 +518,7 @@ mod tests {
             system: "x86_64-linux".to_string(),
             prefer_local_build: false,
             required_system_features: None,
+            is_fod: false,
             build_state: DrvBuildState::Queued,
         };
         insert_drv(&pool, &drv2).await?;

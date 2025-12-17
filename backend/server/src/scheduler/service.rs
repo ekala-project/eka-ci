@@ -67,6 +67,13 @@ impl SchedulerService {
             build_no_output_timeout_seconds,
         )
         .await?;
+        let fod_builders = Builder::local_from_env_fod(
+            logs_dir.clone(),
+            recorder_sender.clone(),
+            build_metrics.clone(),
+            build_no_output_timeout_seconds,
+        )
+        .await?;
         for remote in remote_builders {
             for remote_platform in &remote.platforms {
                 let remote_builder = Builder::from_remote_builder(
@@ -81,7 +88,8 @@ impl SchedulerService {
             }
         }
 
-        let (builder_service, builder_sender) = BuildQueue::init(builders, build_metrics).await;
+        let (builder_service, builder_sender) =
+            BuildQueue::init(builders, fod_builders, build_metrics).await;
         let ingress_thread = ingress_service.run(builder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run();
