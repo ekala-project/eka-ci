@@ -50,6 +50,7 @@ struct ConfigCli {
 struct ConfigFile {
     web: ConfigFileWeb,
     unix: ConfigFileUnix,
+    oauth: ConfigFileOAuth,
     db_path: Option<PathBuf>,
     logs_dir: Option<PathBuf>,
     require_approval: Option<bool>,
@@ -68,6 +69,14 @@ struct ConfigFileUnix {
     pub socket_path: Option<PathBuf>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct ConfigFileOAuth {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub redirect_url: Option<String>,
+    pub jwt_secret: Option<String>,
+}
+
 #[derive(Deserialize, Debug)]
 struct ConfigEnv {
     #[serde(rename = "eka_ci_config_file")]
@@ -78,12 +87,21 @@ struct ConfigEnv {
 pub struct Config {
     pub web: ConfigWeb,
     pub unix: ConfigUnix,
+    pub oauth: ConfigOAuth,
     pub db_path: PathBuf,
     pub logs_dir: PathBuf,
     #[allow(dead_code)]
     pub remote_builders: Vec<RemoteBuilder>,
     pub require_approval: bool,
     pub build_no_output_timeout_seconds: u64,
+}
+
+#[derive(Debug)]
+pub struct ConfigOAuth {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_url: String,
+    pub jwt_secret: String,
 }
 
 #[derive(Debug)]
@@ -117,6 +135,44 @@ impl Config {
 
         let remote_builders = read_nix_machines_file();
 
+        // OAuth configuration from environment or file
+        let oauth_client_id = std::env::var("GITHUB_OAUTH_CLIENT_ID")
+            .ok()
+            .or(file.oauth.client_id)
+            .unwrap_or_else(|| {
+                info!("GITHUB_OAUTH_CLIENT_ID not set, OAuth will not work");
+                String::new()
+            });
+
+        let oauth_client_secret = std::env::var("GITHUB_OAUTH_CLIENT_SECRET")
+            .ok()
+            .or(file.oauth.client_secret)
+            .unwrap_or_else(|| {
+                info!("GITHUB_OAUTH_CLIENT_SECRET not set, OAuth will not work");
+                String::new()
+            });
+
+        let oauth_redirect_url = std::env::var("GITHUB_OAUTH_REDIRECT_URL")
+            .ok()
+            .or(file.oauth.redirect_url)
+            .unwrap_or_else(|| "http://localhost:8080/auth/callback".to_string());
+
+        let jwt_secret = std::env::var("JWT_SECRET")
+            .ok()
+            .or(file.oauth.jwt_secret)
+            .unwrap_or_else(|| {
+                info!(
+                    "JWT_SECRET not set, generating random secret (will not persist across \
+                     restarts!)"
+                );
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs();
+                format!("insecure-secret-{}", now)
+            });
+
         Ok(Config {
             web: ConfigWeb {
                 address: SocketAddrV4::new(
@@ -131,6 +187,12 @@ impl Config {
                     Some(p) => p,
                     None => dirs.get_runtime_file("ekaci.socket")?,
                 },
+            },
+            oauth: ConfigOAuth {
+                client_id: oauth_client_id,
+                client_secret: oauth_client_secret,
+                redirect_url: oauth_redirect_url,
+                jwt_secret,
             },
             db_path: args
                 .db_path

@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use crate::auth::{AdminUser, AuthUser, JwtService, OAuthConfig};
 use crate::db::github::CheckRun;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
@@ -25,6 +26,15 @@ struct AppState {
     metrics_registry: Arc<Registry>,
     require_approval: bool,
     db_service: crate::db::DbService,
+    jwt_service: JwtService,
+    oauth_config: OAuthConfig,
+}
+
+// Implement FromRef so extractors can access JwtService from AppState
+impl axum::extract::FromRef<AppState> for JwtService {
+    fn from_ref(state: &AppState) -> Self {
+        state.jwt_service.clone()
+    }
 }
 
 pub struct WebService {
@@ -41,6 +51,8 @@ impl WebService {
         metrics_registry: Arc<Registry>,
         require_approval: bool,
         db_service: crate::db::DbService,
+        jwt_service: JwtService,
+        oauth_config: OAuthConfig,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -55,6 +67,8 @@ impl WebService {
                 metrics_registry,
                 require_approval,
                 db_service,
+                jwt_service,
+                oauth_config,
             },
         })
     }
@@ -70,6 +84,7 @@ impl WebService {
     pub async fn run(self, cancellation_token: CancellationToken) {
         let app = Router::new()
             .nest("/v1", api_routes())
+            .nest("/github", github_routes())
             .with_state(self.state);
 
         if let Err(e) = axum::serve(self.listener, app)
@@ -87,11 +102,24 @@ impl WebService {
     }
 }
 
+/// Prefixed with /github/ path
+fn github_routes() -> Router<AppState> {
+    Router::new()
+        // Public routes
+        .route("/webhook", post(handle_github_webhook))
+        // Auth routes
+        .route("/auth/login", get(auth_login_handler))
+        .route("/auth/callback", get(auth_callback_handler))
+        .route("/auth/me", get(auth_me_handler))
+}
+
+/// Prefixed with /v1 path
 fn api_routes() -> Router<AppState> {
     Router::new()
+        // Public routes
         .route("/logs/{drv}", get(get_derivation_log))
-        .route("/github/webhook", post(handle_github_webhook))
         .route("/metrics", get(metrics_handler))
+        // Admin routes (protected)
         .route("/admin/approved-users", get(list_approved_users_handler))
         .route("/admin/approved-users", post(add_approved_user_handler))
         .route(
@@ -117,6 +145,37 @@ async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_paylo
 
 async fn get_derivation_log(axum::extract::Path(drv): axum::extract::Path<String>) -> String {
     format!("Dummy log data for {drv}")
+}
+
+// Auth handlers
+async fn auth_login_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let oauth_state = crate::auth::oauth::AppState {
+        db: state.db_service.pool.clone(),
+        jwt_service: state.jwt_service.clone(),
+        oauth_config: state.oauth_config.clone(),
+    };
+    crate::auth::handle_login(State(oauth_state)).await
+}
+
+async fn auth_callback_handler(
+    query: axum::extract::Query<crate::auth::oauth::CallbackParams>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let oauth_state = crate::auth::oauth::AppState {
+        db: state.db_service.pool.clone(),
+        jwt_service: state.jwt_service.clone(),
+        oauth_config: state.oauth_config.clone(),
+    };
+    crate::auth::handle_callback(query, State(oauth_state)).await
+}
+
+async fn auth_me_handler(user: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+    let oauth_state = crate::auth::oauth::AppState {
+        db: state.db_service.pool.clone(),
+        jwt_service: state.jwt_service.clone(),
+        oauth_config: state.oauth_config.clone(),
+    };
+    crate::auth::handle_me(user, State(oauth_state)).await
 }
 
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -173,6 +232,7 @@ impl From<crate::db::ApprovedUser> for ApprovedUserResponse {
 }
 
 async fn list_approved_users_handler(
+    _admin: AdminUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ApprovedUserResponse>>, (axum::http::StatusCode, String)> {
     match state.db_service.list_approved_users().await {
@@ -188,6 +248,7 @@ async fn list_approved_users_handler(
 }
 
 async fn add_approved_user_handler(
+    _admin: AdminUser,
     State(state): State<AppState>,
     Json(request): Json<AddApprovedUserRequest>,
 ) -> Result<Json<&'static str>, (axum::http::StatusCode, String)> {
@@ -208,6 +269,7 @@ async fn add_approved_user_handler(
 }
 
 async fn remove_approved_user_handler(
+    _admin: AdminUser,
     State(state): State<AppState>,
     axum::extract::Path(username): axum::extract::Path<String>,
 ) -> Result<Json<&'static str>, (axum::http::StatusCode, String)> {

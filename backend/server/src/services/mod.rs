@@ -4,6 +4,7 @@ use tokio::sync::mpsc::{Sender, channel};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::auth::{JwtService, OAuthConfig};
 use crate::ci::RepoReader;
 use crate::client::UnixService;
 use crate::config::Config;
@@ -76,6 +77,14 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let git_service = GitService::new(repo_sender.clone())?;
 
+    // Create JWT service and OAuth config for authentication
+    let jwt_service = JwtService::new(&config.oauth.jwt_secret);
+    let oauth_config = OAuthConfig {
+        client_id: config.oauth.client_id.clone(),
+        client_secret: config.oauth.client_secret.clone(),
+        redirect_url: config.oauth.redirect_url.clone(),
+    };
+
     let web_service = WebService::bind_to_address(
         &config.web.address,
         git_service.get_sender(),
@@ -84,6 +93,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         scheduler_service.metrics_registry(),
         config.require_approval,
         db_service.clone(),
+        jwt_service,
+        oauth_config,
     )
     .await
     .context("failed to start web service")?;
