@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Json, State};
+use axum::extract::{Json, Path, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use octocrab::models::webhook_events::WebhookEventPayload as WEP;
@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use crate::db::github::CheckRun;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
 
@@ -94,9 +95,10 @@ fn api_routes() -> Router<AppState> {
         .route("/admin/approved-users", get(list_approved_users_handler))
         .route("/admin/approved-users", post(add_approved_user_handler))
         .route(
-            "/admin/approved-users/:username",
+            "/admin/approved-users/{username}",
             axum::routing::delete(remove_approved_user_handler),
         )
+        .route("/commits/{sha}/check_runs", get(get_check_runs_for_commit))
 }
 
 async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_payload): Json<WEP>) {
@@ -217,6 +219,19 @@ async fn remove_approved_user_handler(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to remove approved user: {}", e),
             ))
+        },
+    }
+}
+
+async fn get_check_runs_for_commit(
+    State(state): State<AppState>,
+    Path(sha): Path<String>,
+) -> Json<Vec<CheckRun>> {
+    match state.db_service.check_runs_for_commit(&sha).await {
+        Ok(check_runs) => Json(check_runs),
+        Err(e) => {
+            error!("Failed to fetch check_runs for commit {}: {}", sha, e);
+            Json(vec![])
         },
     }
 }

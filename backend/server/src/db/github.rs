@@ -1,6 +1,7 @@
 use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun as GHCheckRun;
+use serde::Serialize;
 use sqlx::{FromRow, Pool, Sqlite};
 
 use super::model::build_event::DrvBuildState;
@@ -8,7 +9,7 @@ use super::model::{Drv, DrvId};
 use crate::github::JobDifference;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
-#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+#[derive(Clone, Debug, PartialEq, Eq, FromRow, Serialize)]
 pub struct CheckRun {
     pub check_run_id: i64,
     pub repo_name: String,
