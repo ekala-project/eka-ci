@@ -1,3 +1,4 @@
+use serde::Serialize;
 use sqlx::{FromRow, SqlitePool};
 
 use super::ForInsert;
@@ -37,7 +38,7 @@ impl DrvBuildEvent {
 }
 
 /// Describes the possible states a derivation build can be in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum DrvBuildState {
     /// Derivation is waiting to be scheduled for building.
     ///
@@ -99,7 +100,7 @@ pub enum DrvBuildState {
 ///
 /// In essence, this enum captures whether the status code returned by the build command was `0`
 /// or not.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum DrvBuildResult {
     /// The derivation built successfully.
     Success,
@@ -128,7 +129,7 @@ impl DrvBuildResult {
 }
 
 /// Possible causes for why the derivation build was interrupted.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum DrvBuildInterruptionKind {
     /// Build process ran out of memory and was killed by the system.
     OutOfMemory,
@@ -323,7 +324,7 @@ mod state {
 pub async fn get_drv_deps(derivation: &DrvId, pool: &SqlitePool) -> anyhow::Result<Vec<Drv>> {
     let events = sqlx::query_as(
         r#"
-SELECT drv_path, system, required_system_features, build_state
+SELECT drv_path, system, required_system_features, is_fod, build_state
 FROM Drv
 JOIN DrvRefs ON Drv.drv_path = DrvRefs.reference
 WHERE referrer = ?
