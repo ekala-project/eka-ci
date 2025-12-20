@@ -103,7 +103,17 @@ impl IngressWorker {
     /// This attempts to update the status of a drv by inspecting the
     /// status of the dependencies.
     async fn handle_eval_task(&self, drv_id: drv_id::DrvId) -> anyhow::Result<()> {
-        // TODO: check if drv is already in a terminal state
+        // Check if drv is already in a terminal state
+        if let Some(drv) = self.db_service.get_drv(&drv_id).await? {
+            if drv.build_state.is_terminal() {
+                debug!(
+                    "{:?} is already in terminal state {:?}, skipping build",
+                    &drv_id, drv.build_state
+                );
+                return Ok(());
+            }
+        }
+
         self.handle_check_buildable_task(drv_id).await?;
 
         Ok(())
