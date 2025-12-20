@@ -95,6 +95,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         db_service.clone(),
         jwt_service,
         oauth_config,
+        config.logs_dir.clone(),
     )
     .await
     .context("failed to start web service")?;

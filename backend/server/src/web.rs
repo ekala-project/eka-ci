@@ -1,4 +1,5 @@
 use std::net::{SocketAddr, SocketAddrV4};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -28,6 +29,7 @@ struct AppState {
     db_service: crate::db::DbService,
     jwt_service: JwtService,
     oauth_config: OAuthConfig,
+    logs_dir: PathBuf,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState
@@ -53,6 +55,7 @@ impl WebService {
         db_service: crate::db::DbService,
         jwt_service: JwtService,
         oauth_config: OAuthConfig,
+        logs_dir: PathBuf,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -69,6 +72,7 @@ impl WebService {
                 db_service,
                 jwt_service,
                 oauth_config,
+                logs_dir,
             },
         })
     }
@@ -143,8 +147,70 @@ async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_paylo
     .await;
 }
 
-async fn get_derivation_log(axum::extract::Path(drv): axum::extract::Path<String>) -> String {
-    format!("Dummy log data for {drv}")
+async fn get_derivation_log(
+    State(state): State<AppState>,
+    axum::extract::Path(drv): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    use tracing::warn;
+
+    use crate::db::model::drv_id::DrvId;
+
+    // Parse the drv parameter into a DrvId
+    let drv_id = match DrvId::try_from(drv.as_str()) {
+        Ok(id) => id,
+        Err(e) => {
+            warn!("Invalid drv format: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                format!("Invalid derivation format: {}", e),
+            )
+                .into_response();
+        },
+    };
+
+    // Construct the log file path: {logs_dir}/{drv_hash}/build.log
+    let drv_hash = drv_id.drv_hash();
+    let log_path = state.logs_dir.join(drv_hash).join("build.log");
+
+    // Read the log file
+    match tokio::fs::read_to_string(&log_path).await {
+        Ok(contents) => (
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            contents,
+        )
+            .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            warn!(
+                "Log file not found for {}: {}",
+                drv_id.store_path(),
+                log_path.display()
+            );
+            (
+                StatusCode::NOT_FOUND,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                format!(
+                    "Build log not found for derivation: {}",
+                    drv_id.store_path()
+                ),
+            )
+                .into_response()
+        },
+        Err(e) => {
+            error!("Failed to read log file for {}: {}", drv_id.store_path(), e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                format!("Failed to read build log: {}", e),
+            )
+                .into_response()
+        },
+    }
 }
 
 // Auth handlers
