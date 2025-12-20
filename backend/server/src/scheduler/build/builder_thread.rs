@@ -255,6 +255,33 @@ impl NixBuild {
         );
 
         if status.success() {
+            // For successful builds, try to get logs from `nix log`
+            // This captures logs from substituted derivations
+            match get_nix_log(&self.drv_id).await {
+                Ok(nix_log_output) if !nix_log_output.is_empty() => {
+                    // Replace log file with nix log output
+                    debug!(
+                        "Replacing build log with nix log output for {}",
+                        self.drv_id.store_path()
+                    );
+                    tokio::fs::write(&log_path, nix_log_output).await?;
+                },
+                Ok(_) => {
+                    // nix log returned empty, keep the streamed build output
+                    debug!(
+                        "nix log returned empty for {}, keeping streamed output",
+                        self.drv_id.store_path()
+                    );
+                },
+                Err(e) => {
+                    // nix log failed, keep the streamed build output
+                    debug!(
+                        "nix log failed for {}: {}, keeping streamed output",
+                        self.drv_id.store_path(),
+                        e
+                    );
+                },
+            }
             Ok(BuildOutcome::Success)
         } else {
             Ok(BuildOutcome::Failure)
@@ -286,4 +313,19 @@ impl NixBuild {
 
         Ok(())
     }
+}
+
+/// Retrieve build logs from nix's log storage
+/// This is particularly useful for substituted derivations where we don't build locally
+async fn get_nix_log(drv_id: &DrvId) -> anyhow::Result<String> {
+    let output = Command::new("nix")
+        .args(["log", &drv_id.store_path()])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        anyhow::bail!("nix log command failed with status: {}", output.status);
+    }
+    let str = String::from_utf8(output.stdout)?;
+    Ok(str)
 }
