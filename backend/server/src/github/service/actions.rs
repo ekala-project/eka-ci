@@ -6,6 +6,7 @@ use octocrab::params::checks::CheckRunConclusion;
 use tracing::debug;
 
 use crate::github::CICheckInfo;
+use crate::nix::nix_eval_jobs::NixEvalError;
 
 /// This will send an initial ci gate which is used to determine what gates
 /// are relevant for a PR
@@ -149,6 +150,60 @@ pub async fn create_approval_required_check_run(
 
     debug!(
         "Successfully created approval required check run for commit #{}",
+        &ci_check_info.commit
+    );
+
+    Ok(check_run)
+}
+
+/// Fail a CI eval job gate due to evaluation errors
+pub async fn fail_ci_eval_job(
+    octocrab: &Octocrab,
+    ci_check_info: &CICheckInfo,
+    job_name: &str,
+    errors: &[NixEvalError],
+) -> Result<CheckRun> {
+    use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+    debug!(
+        "Creating failed CI eval job check run for job {} on commit {} with {} errors",
+        job_name,
+        &ci_check_info.commit,
+        errors.len()
+    );
+
+    let title = format!("EkaCI: Evaluate Job ({})", job_name);
+
+    // Format error details for the check run output
+    let mut summary = format!(
+        "# Evaluation Failed\n\n{} evaluation error(s) occurred:\n\n",
+        errors.len()
+    );
+
+    for (idx, error) in errors.iter().enumerate() {
+        summary.push_str(&format!("## Error {}\n\n", idx + 1));
+        summary.push_str(&format!("**Attribute:** `{}`\n\n", error.attr));
+        summary.push_str(&format!("**Error:**\n```\n{}\n```\n\n", error.error));
+    }
+
+    let check_run_output = octocrab::params::checks::CheckRunOutput {
+        title: "Evaluation errors".to_string(),
+        summary,
+        text: None,
+        annotations: vec![],
+        images: vec![],
+    };
+    let check_run = octocrab
+        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+        .create_check_run(&title, &ci_check_info.commit)
+        .status(CheckRunStatus::Completed)
+        .conclusion(CheckRunConclusion::Failure)
+        .output(check_run_output)
+        .send()
+        .await?;
+
+    debug!(
+        "Successfully created failed CI eval job check run for commit #{}",
         &ci_check_info.commit
     );
 

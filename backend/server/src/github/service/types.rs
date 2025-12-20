@@ -8,7 +8,7 @@ use octocrab::params::checks::{CheckRunConclusion as GHConclusion, CheckRunStatu
 
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
-use crate::nix::nix_eval_jobs::NixEvalDrv;
+use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobDifference {
@@ -209,6 +209,11 @@ pub enum GitHubTask {
     CreateApprovalRequiredCheckRun {
         ci_check_info: CICheckInfo,
         username: String,
+    },
+    FailCIEvalJob {
+        ci_check_info: CICheckInfo,
+        job_name: String,
+        errors: Vec<NixEvalError>,
     },
 }
 
