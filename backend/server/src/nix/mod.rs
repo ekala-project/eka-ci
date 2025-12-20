@@ -22,6 +22,7 @@ use crate::scheduler::IngressTask;
 pub struct EvalJob {
     pub file_path: String,
     pub name: String,
+    pub allow_failures: bool,
     // TODO: support arguments
 }
 
@@ -83,18 +84,37 @@ impl EvalService {
 
         match &task {
             EvalTask::Job(drv) => {
-                self.run_nix_eval_jobs(&drv.file_path).await?;
+                let (_jobs, _errors) = self.run_nix_eval_jobs(&drv.file_path).await?;
             },
             EvalTask::TraverseDrv(drv) => {
                 self.traverse_drvs(drv, &None).await?;
             },
             EvalTask::GithubJobPR((eval_job, ci_info)) => {
                 if self.github_sender.is_some() {
-                    let jobs = self.run_nix_eval_jobs(&eval_job.file_path).await?;
+                    let (jobs, errors) = self.run_nix_eval_jobs(&eval_job.file_path).await?;
                     let gh_sender = self
                         .github_sender
                         .as_mut()
                         .context("github sender missing")?;
+
+                    // Check if we should fail due to eval errors
+                    if !eval_job.allow_failures && !errors.is_empty() {
+                        debug!(
+                            "Eval job {} has {} errors and allow_failures is false, failing eval \
+                             gate",
+                            eval_job.name,
+                            errors.len()
+                        );
+                        let fail_task = GitHubTask::FailCIEvalJob {
+                            ci_check_info: ci_info.clone(),
+                            job_name: eval_job.name.clone(),
+                            errors,
+                        };
+                        gh_sender.send(fail_task).await?;
+                        // Don't create jobset or queue builds when eval fails
+                        return Ok(());
+                    }
+
                     let create_task = GitHubTask::CreateCIEvalJob {
                         ci_check_info: ci_info.clone(),
                         job_title: eval_job.name.clone(),

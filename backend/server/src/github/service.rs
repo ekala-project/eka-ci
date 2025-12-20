@@ -343,6 +343,14 @@ impl GitHubService {
                 actions::create_approval_required_check_run(&octocrab, ci_check_info, username)
                     .await?;
             },
+            GitHubTask::FailCIEvalJob {
+                ci_check_info,
+                job_name,
+                errors,
+            } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+                actions::fail_ci_eval_job(&octocrab, ci_check_info, job_name, errors).await?;
+            },
         }
         Ok(())
     }

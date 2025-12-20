@@ -201,6 +201,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             let job = crate::nix::EvalJob {
                 file_path: job_info.file_path,
                 name: "client".to_string(),
+                allow_failures: true,
             };
             let task = EvalTask::Job(job);
             dispatch

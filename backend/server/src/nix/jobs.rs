@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 use tracing::{debug, warn};
 
-use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalItem};
+use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalError, NixEvalItem};
 
 /// This file is meant to handle the evaluation of a "job" which is similar
 /// to the "jobset" by hydra, in particular:
@@ -12,7 +12,10 @@ use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalItem};
 ///   receives an attrset of inputs
 /// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
 impl super::EvalService {
-    pub async fn run_nix_eval_jobs(&mut self, file_path: &str) -> anyhow::Result<Vec<NixEvalDrv>> {
+    pub async fn run_nix_eval_jobs(
+        &mut self,
+        file_path: &str,
+    ) -> anyhow::Result<(Vec<NixEvalDrv>, Vec<NixEvalError>)> {
         let mut cmd = Command::new("nix-eval-jobs")
             .arg("--show-input-drvs")
             .arg(file_path)
@@ -20,6 +23,7 @@ impl super::EvalService {
             .spawn()?;
 
         let mut jobs = Vec::new();
+        let mut errors = Vec::new();
 
         {
             // TODO: handle failure case more nicely
@@ -46,13 +50,13 @@ impl super::EvalService {
                         jobs.push(drv);
                     },
                     NixEvalItem::Error(e) => {
-                        // TODO: Collect evaluation errors, these are still very useful
-                        debug!("error: {:?}", e);
+                        debug!("Collected evaluation error: {:?}", e);
+                        errors.push(e);
                     },
                 }
             }
         }
 
-        Ok(jobs)
+        Ok((jobs, errors))
     }
 }

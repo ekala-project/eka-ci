@@ -3,9 +3,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Job {
     pub file: PathBuf,
+    #[serde(default = "default_true")]
+    pub allow_eval_failures: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -28,7 +34,8 @@ mod tests {
         let example_config = r#"{
   "jobs": {
     "stdenv": {
-      "file": "../stdenv.nix"
+      "file": "../stdenv.nix",
+      "allow-eval-failures": false
     }
   }
 }"#;
