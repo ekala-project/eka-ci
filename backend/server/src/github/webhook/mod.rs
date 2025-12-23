@@ -1,5 +1,6 @@
 use anyhow::{Context, bail};
 use octocrab::Octocrab;
+use octocrab::models::Installation;
 use octocrab::models::pulls::PullRequest;
 use octocrab::models::webhook_events::{WebhookEventPayload as WEP, payload};
 use serde::Deserialize;
@@ -9,6 +10,14 @@ use tracing::{debug, warn};
 use crate::db::DbService;
 use crate::git::GitTask;
 use crate::github::{CICheckInfo, GitHubTask};
+
+// Custom struct to properly deserialize installation webhooks from GitHub
+// octocrab's InstallationWebhookEventPayload is incomplete and missing the installation field
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstallationWebhookPayload {
+    pub action: String,
+    pub installation: Installation,
+}
 
 pub async fn handle_webhook_payload(
     webhook_payload: WEP,
@@ -25,6 +34,15 @@ pub async fn handle_webhook_payload(
         WEP::WorkflowRun(workflow_run) => {
             handle_github_workflow_run(*workflow_run, git_sender, octocrab).await
         },
+        // Installation webhooks are handled separately via web.rs
+        // because octocrab's types are incomplete
+        WEP::Installation(_installation) => {
+            // This should not be reached as installation webhooks are
+            // intercepted in web.rs before octocrab deserialization
+            warn!("Installation webhook reached octocrab handler - this shouldn't happen");
+        },
+        // Installation webhooks are handled separately in handle_installation_webhook
+        // due to incomplete octocrab types
         // We probably don't want to react to every push
         // WEP::Push(pr) => handle_github_push(*pr).await,
         _ => return,
@@ -208,5 +226,101 @@ async fn handle_github_workflow_run(
     if let Err(e) = handle_github_workflow_requested(workflow_run_data, git_sender, octocrab).await
     {
         warn!("Failed to process github workflow requested: {}", e);
+    }
+}
+
+pub async fn handle_installation_webhook(
+    payload: InstallationWebhookEventPayload,
+    db_service: DbService,
+) {
+    use octocrab::models::webhook_events::payload::InstallationWebhookEventAction as IWEA;
+    let installation_id = payload.installation.id.0 as i64;
+    let account_login = &payload.installation.account.login;
+
+    match &payload.action {
+        IWEA::Created => {
+            debug!(
+                "GitHub App installed: {} (ID: {})",
+                account_login, installation_id
+            );
+
+            if let Err(e) = db_service
+                .upsert_github_installation(&payload.installation)
+                .await
+            {
+                warn!(
+                    "Failed to persist installation {} to database: {:?}",
+                    installation_id, e
+                );
+            } else {
+                debug!(
+                    "Successfully persisted installation {} to database",
+                    installation_id
+                );
+            }
+        },
+        IWEA::Deleted => {
+            debug!(
+                "GitHub App uninstalled: {} (ID: {})",
+                account_login, installation_id
+            );
+
+            if let Err(e) = db_service.delete_github_installation(installation_id).await {
+                warn!(
+                    "Failed to delete installation {} from database: {:?}",
+                    installation_id, e
+                );
+            } else {
+                debug!(
+                    "Successfully deleted installation {} from database",
+                    installation_id
+                );
+            }
+        },
+        IWEA::Suspend => {
+            debug!(
+                "GitHub App suspended: {} (ID: {})",
+                account_login, installation_id
+            );
+
+            if let Err(e) = db_service
+                .suspend_github_installation(installation_id)
+                .await
+            {
+                warn!(
+                    "Failed to suspend installation {} in database: {:?}",
+                    installation_id, e
+                );
+            } else {
+                debug!(
+                    "Successfully suspended installation {} in database",
+                    installation_id
+                );
+            }
+        },
+        IWEA::Unsuspend => {
+            debug!(
+                "GitHub App unsuspended: {} (ID: {})",
+                account_login, installation_id
+            );
+
+            if let Err(e) = db_service
+                .unsuspend_github_installation(installation_id)
+                .await
+            {
+                warn!(
+                    "Failed to unsuspend installation {} in database: {:?}",
+                    installation_id, e
+                );
+            } else {
+                debug!(
+                    "Successfully unsuspended installation {} in database",
+                    installation_id
+                );
+            }
+        },
+        action => {
+            debug!("Ignoring installation action: {}", action);
+        },
     }
 }

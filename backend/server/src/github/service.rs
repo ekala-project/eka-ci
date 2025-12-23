@@ -47,6 +47,13 @@ impl GitHubService {
             .into_stream(&octoclone);
         pin!(installations_stream);
         while let Some(installation) = installations_stream.try_next().await? {
+            // Persist installation to database
+            if let Err(e) = db_service.upsert_github_installation(&installation).await {
+                warn!(
+                    "Failed to persist installation {} to database: {:?}",
+                    installation.id, e
+                );
+            }
             installations.insert(installation.account.login.clone(), installation);
         }
 
