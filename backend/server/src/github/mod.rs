@@ -4,7 +4,7 @@ use thiserror::Error;
 use tracing::info;
 
 mod service;
-mod webhook;
+pub mod webhook;
 
 pub use service::{CICheckInfo, GitHubService, GitHubTask, JobDifference};
 pub use webhook::handle_webhook_payload;

@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
-use super::{approved_users, github};
+use super::{approved_users, github, github_installations};
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 #[derive(Clone)]
@@ -228,5 +228,51 @@ impl DbService {
 
     pub async fn list_approved_users(&self) -> anyhow::Result<Vec<approved_users::ApprovedUser>> {
         approved_users::list_approved_users(&self.pool).await
+    }
+
+    // GitHub installations methods
+    pub async fn upsert_github_installation(
+        &self,
+        installation: &octocrab::models::Installation,
+    ) -> anyhow::Result<()> {
+        github_installations::upsert_installation(installation, &self.pool).await
+    }
+
+    pub async fn suspend_github_installation(&self, installation_id: i64) -> anyhow::Result<()> {
+        github_installations::suspend_installation(installation_id, &self.pool).await
+    }
+
+    pub async fn unsuspend_github_installation(&self, installation_id: i64) -> anyhow::Result<()> {
+        github_installations::unsuspend_installation(installation_id, &self.pool).await
+    }
+
+    pub async fn delete_github_installation(&self, installation_id: i64) -> anyhow::Result<()> {
+        github_installations::delete_installation(installation_id, &self.pool).await
+    }
+
+    pub async fn get_github_installation_by_id(
+        &self,
+        installation_id: i64,
+    ) -> anyhow::Result<Option<github_installations::GitHubInstallation>> {
+        github_installations::get_installation_by_id(installation_id, &self.pool).await
+    }
+
+    pub async fn get_github_installation_by_login(
+        &self,
+        account_login: &str,
+    ) -> anyhow::Result<Option<github_installations::GitHubInstallation>> {
+        github_installations::get_installation_by_login(account_login, &self.pool).await
+    }
+
+    pub async fn list_all_github_installations(
+        &self,
+    ) -> anyhow::Result<Vec<github_installations::GitHubInstallation>> {
+        github_installations::list_all_installations(&self.pool).await
+    }
+
+    pub async fn list_active_github_installations(
+        &self,
+    ) -> anyhow::Result<Vec<github_installations::GitHubInstallation>> {
+        github_installations::list_active_installations(&self.pool).await
     }
 }

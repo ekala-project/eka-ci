@@ -7,7 +7,6 @@ use axum::Router;
 use axum::extract::{Json, Path, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use octocrab::models::webhook_events::WebhookEventPayload as WEP;
 use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -133,18 +132,51 @@ fn api_routes() -> Router<AppState> {
         .route("/commits/{sha}/check_runs", get(get_check_runs_for_commit))
 }
 
-async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_payload): Json<WEP>) {
+async fn handle_github_webhook(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) {
     use crate::github::handle_webhook_payload;
+    use crate::github::webhook::handle_installation_webhook;
 
-    handle_webhook_payload(
-        webhook_payload,
-        state.git_sender,
-        state.github_sender,
-        state.octocrab,
-        state.require_approval,
-        state.db_service,
-    )
-    .await;
+    // Check if this is an installation webhook (octocrab's types are incomplete for this)
+    if let Some(action) = payload.get("action").and_then(|v| v.as_str()) {
+        if matches!(
+            action,
+            "created" | "deleted" | "suspend" | "unsuspend" | "new_permissions_accepted"
+        ) && payload.get("installation").is_some()
+        {
+            // This is an installation webhook, handle it specially
+            match serde_json::from_value(payload) {
+                Ok(installation_payload) => {
+                    handle_installation_webhook(installation_payload, state.db_service).await;
+                    return;
+                },
+                Err(e) => {
+                    error!("Failed to deserialize installation webhook: {}", e);
+                    return;
+                },
+            }
+        }
+    }
+
+    // For all other webhooks, use the standard octocrab deserialization
+    match serde_json::from_value(payload) {
+        Ok(webhook_payload) => {
+            handle_webhook_payload(
+                webhook_payload,
+                state.git_sender,
+                state.github_sender,
+                state.octocrab,
+                state.require_approval,
+                state.db_service,
+            )
+            .await;
+        },
+        Err(e) => {
+            error!("Failed to deserialize webhook payload: {}", e);
+        },
+    }
 }
 
 async fn get_derivation_log(
