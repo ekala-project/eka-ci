@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use prometheus::Registry;
+use prometheus::process_collector::ProcessCollector;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -56,6 +57,10 @@ impl SchedulerService {
         // Create metrics registry and build metrics
         let metrics_registry = Arc::new(Registry::new());
         let build_metrics = BuildMetrics::new(&metrics_registry)?;
+
+        // Register process metrics collector
+        let process_collector = ProcessCollector::for_self();
+        metrics_registry.register(Box::new(process_collector))?;
 
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
         let (recorder_service, recorder_sender) =
