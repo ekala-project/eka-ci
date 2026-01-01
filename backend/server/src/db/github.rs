@@ -106,22 +106,33 @@ pub async fn create_jobs_for_jobset(
     // better than individual insertions + pool flush
     let mut tx = pool.begin().await?;
 
-    // TODO: convert to using query builder
-    for job in jobs {
-        // Convert drv_path to DrvId
-        let drv_id = DrvId::from_str(&job.drv_path)?;
+    // Convert all drv_paths to DrvIds first, collecting any errors
+    let job_data: Vec<(DrvId, &str)> = jobs
+        .iter()
+        .map(|job| {
+            let drv_id = DrvId::from_str(&job.drv_path)?;
+            Ok((drv_id, job.attr.as_str()))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
-        // Insert into DrvRefs table
-        sqlx::query(
-            "INSERT INTO Job (jobset, drv_id, name) VALUES (?, (SELECT rowid FROM Drv WHERE \
-             drv_path = ? LIMIT 1), ?)",
-        )
-        .bind(jobset_id)
-        .bind(drv_id)
-        .bind(&job.attr)
-        .execute(&mut *tx)
-        .await?;
+    // Use QueryBuilder for batch insert with subqueries
+    let mut query_builder =
+        sqlx::QueryBuilder::new("INSERT INTO Job (jobset, drv_id, name) VALUES ");
+
+    for (i, (drv_id, attr)) in job_data.iter().enumerate() {
+        if i > 0 {
+            query_builder.push(", ");
+        }
+        query_builder.push("(");
+        query_builder.push_bind(jobset_id);
+        query_builder.push(", (SELECT rowid FROM Drv WHERE drv_path = ");
+        query_builder.push_bind(drv_id);
+        query_builder.push(" LIMIT 1), ");
+        query_builder.push_bind(attr);
+        query_builder.push(")");
     }
+
+    query_builder.build().execute(&mut *tx).await?;
 
     tx.commit().await?;
 
@@ -531,6 +542,233 @@ mod tests {
         let (_, changed_jobs, _) = job_difference("abcdef", "g1cdef", "fake-name", &pool).await?;
         assert_eq!(changed_jobs.len(), 1);
         assert_eq!(changed_jobs.into_iter().next(), Some(drv));
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_create_jobs_for_jobset_empty(pool: SqlitePool) -> anyhow::Result<()> {
+        // Create a jobset
+        let jobset_id =
+            create_jobset("test-sha", "test-job", "test-owner", "test-repo", &pool).await?;
+
+        // Call with empty jobs list - should not error
+        let empty_jobs: Vec<NixEvalDrv> = vec![];
+        create_jobs_for_jobset(jobset_id, &empty_jobs, &pool).await?;
+
+        // Verify no jobs were created
+        let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
+        assert_eq!(jobs.len(), 0);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_create_jobs_for_jobset_multiple_jobs_batch(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        use std::str::FromStr;
+
+        // Create multiple test drvs and eval_drvs
+        let drv_paths = vec![
+            "/nix/store/1fr8b3xlygv2a64ff7fq7564j4sxv4lc-package1.drv",
+            "/nix/store/2fr8b3xlygv2a64ff7fq7564j4sxv4lc-package2.drv",
+            "/nix/store/3fr8b3xlygv2a64ff7fq7564j4sxv4lc-package3.drv",
+            "/nix/store/4fr8b3xlygv2a64ff7fq7564j4sxv4lc-package4.drv",
+        ];
+
+        let attrs = vec!["package1", "package2", "package3", "package4"];
+
+        // Insert the Drvs first
+        for (drv_path, _) in drv_paths.iter().zip(attrs.iter()) {
+            let drv = Drv {
+                drv_path: DrvId::from_str(drv_path)?,
+                system: "x86_64-linux".to_string(),
+                prefer_local_build: false,
+                required_system_features: None,
+                is_fod: false,
+                build_state: DrvBuildState::Queued,
+            };
+            insert_drv(&pool, &drv).await?;
+        }
+
+        // Create NixEvalDrv objects
+        let eval_drvs: Vec<NixEvalDrv> = drv_paths
+            .iter()
+            .zip(attrs.iter())
+            .map(|(drv_path, attr)| NixEvalDrv {
+                attr: attr.to_string(),
+                attr_path: vec![attr.to_string()],
+                drv_path: drv_path.to_string(),
+                input_drvs: None,
+                name: format!("{}-1.0.0", attr),
+                system: "x86_64-linux".to_string(),
+                outputs: std::collections::HashMap::new(),
+            })
+            .collect();
+
+        // Create a jobset and insert all jobs in one batch
+        let jobset_id =
+            create_jobset("batch-sha", "batch-job", "test-owner", "test-repo", &pool).await?;
+        create_jobs_for_jobset(jobset_id, &eval_drvs, &pool).await?;
+
+        // Verify all jobs were created
+        let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
+        assert_eq!(jobs.len(), 4);
+
+        // Verify all drv_paths are present
+        let retrieved_paths: std::collections::HashSet<_> =
+            jobs.iter().map(|j| j.drv_path.clone()).collect();
+        for drv_path in &drv_paths {
+            assert!(retrieved_paths.contains(&DrvId::from_str(drv_path)?));
+        }
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_create_jobs_for_jobset_verifies_relationships(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        use std::str::FromStr;
+
+        let drv_path = "/nix/store/5fr8b3xlygv2a64ff7fq7564j4sxv4lc-test-package.drv";
+        let attr = "test.package";
+
+        // Insert the Drv first
+        let drv = Drv {
+            drv_path: DrvId::from_str(drv_path)?,
+            system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
+            required_system_features: None,
+            is_fod: false,
+            build_state: DrvBuildState::Queued,
+        };
+        insert_drv(&pool, &drv).await?;
+
+        // Create NixEvalDrv
+        let eval_drv = NixEvalDrv {
+            attr: attr.to_string(),
+            attr_path: vec!["test".to_string(), "package".to_string()],
+            drv_path: drv_path.to_string(),
+            input_drvs: None,
+            name: "test-package-1.0.0".to_string(),
+            system: "x86_64-linux".to_string(),
+            outputs: std::collections::HashMap::new(),
+        };
+
+        // Create a jobset and insert the job
+        let jobset_id = create_jobset("rel-sha", "rel-job", "rel-owner", "rel-repo", &pool).await?;
+        create_jobs_for_jobset(jobset_id, &[eval_drv], &pool).await?;
+
+        // Query the Job table directly to verify relationships
+        #[derive(sqlx::FromRow)]
+        struct JobRecord {
+            jobset: i64,
+            drv_id: i64,
+            name: String,
+        }
+
+        let job: JobRecord =
+            sqlx::query_as("SELECT jobset, drv_id, name FROM Job WHERE jobset = ? AND name = ?")
+                .bind(jobset_id)
+                .bind(attr)
+                .fetch_one(&pool)
+                .await?;
+
+        // Verify jobset FK is correct
+        assert_eq!(job.jobset, jobset_id);
+
+        // Verify the name (attr) is stored correctly
+        assert_eq!(job.name, attr);
+
+        // Verify drv_id points to the correct Drv
+        let drv_rowid: i64 = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
+            .bind(&DrvId::from_str(drv_path)?)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(job.drv_id, drv_rowid);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_create_jobs_for_jobset_large_batch(pool: SqlitePool) -> anyhow::Result<()> {
+        use std::str::FromStr;
+
+        // Create 15 test jobs to ensure batch insert scales
+        let num_jobs = 15;
+        let mut drv_paths = Vec::new();
+        let mut attrs = Vec::new();
+
+        // Generate unique drv paths and attributes
+        // Base hash: 3fr8b3xlygv2a64ff7fq7564j4sxv4lc (32 chars)
+        // We'll vary the first two characters to create unique hashes
+        let base_hashes = vec![
+            "0fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "1fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "2fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "3fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "4fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "5fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "6fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "7fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "8fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "9fr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "afr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "bfr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "cfr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "dfr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "efr8b3xlygv2a64ff7fq7564j4sxv4lc",
+        ];
+
+        for (i, hash) in base_hashes.iter().enumerate() {
+            let drv_path = format!("/nix/store/{}-pkg{}.drv", hash, i);
+            drv_paths.push(drv_path);
+            attrs.push(format!("packages.pkg{}", i));
+        }
+
+        // Insert all Drvs
+        for drv_path in &drv_paths {
+            let drv = Drv {
+                drv_path: DrvId::from_str(drv_path)?,
+                system: "x86_64-linux".to_string(),
+                prefer_local_build: false,
+                required_system_features: None,
+                is_fod: false,
+                build_state: DrvBuildState::Queued,
+            };
+            insert_drv(&pool, &drv).await?;
+        }
+
+        // Create NixEvalDrv objects
+        let eval_drvs: Vec<NixEvalDrv> = drv_paths
+            .iter()
+            .zip(attrs.iter())
+            .map(|(drv_path, attr)| NixEvalDrv {
+                attr: attr.to_string(),
+                attr_path: vec![attr.to_string()],
+                drv_path: drv_path.to_string(),
+                input_drvs: None,
+                name: format!("{}-1.0.0", attr),
+                system: "x86_64-linux".to_string(),
+                outputs: std::collections::HashMap::new(),
+            })
+            .collect();
+
+        // Create a jobset and insert all jobs in one large batch
+        let jobset_id =
+            create_jobset("large-sha", "large-job", "test-owner", "test-repo", &pool).await?;
+        create_jobs_for_jobset(jobset_id, &eval_drvs, &pool).await?;
+
+        // Verify all jobs were created
+        let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
+        assert_eq!(jobs.len(), num_jobs);
+
+        // Verify all drv_paths are present
+        let retrieved_paths: std::collections::HashSet<_> =
+            jobs.iter().map(|j| j.drv_path.clone()).collect();
+        assert_eq!(retrieved_paths.len(), num_jobs);
 
         Ok(())
     }
