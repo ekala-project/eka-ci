@@ -12,6 +12,8 @@ pub struct Job {
     pub file: PathBuf,
     #[serde(default = "default_true")]
     pub allow_eval_failures: bool,
+    #[serde(default)]
+    pub push_command: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

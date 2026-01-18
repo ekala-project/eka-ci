@@ -181,6 +181,7 @@ pub enum GitHubTask {
         ci_check_info: CICheckInfo,
         name: String,
         jobs: Vec<NixEvalDrv>,
+        push_command: Option<String>,
     },
     CreateCIConfigureGate {
         ci_check_info: CICheckInfo,

@@ -83,6 +83,7 @@ impl RepoReader {
                     file_path: file_path.to_string_lossy().into(),
                     name: job_name,
                     allow_failures: job.allow_eval_failures,
+                    push_command: job.push_command,
                 };
                 // TODO: Add jobset to db
                 self.eval_sender
@@ -117,6 +118,7 @@ impl AsyncService<RepoTask> for RepoReader {
                         file_path: file_path.to_string_lossy().into(),
                         name: "local".to_string(),
                         allow_failures: job.allow_eval_failures,
+                        push_command: job.push_command,
                     };
                     self.eval_sender.send(EvalTask::Job(eval_job)).await?;
                 }

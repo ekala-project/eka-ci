@@ -202,6 +202,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 file_path: job_info.file_path,
                 name: "client".to_string(),
                 allow_failures: true,
+                push_command: None,
             };
             let task = EvalTask::Job(job);
             dispatch
