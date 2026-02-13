@@ -20,8 +20,10 @@ pub struct Job {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Check {
-    /// Nix packages to include in the environment (e.g., ["nixfmt", "statix"])
-    pub packages: Vec<String>,
+    /// Optional dev shell from the repository's flake.nix (e.g., "foo" maps to `nix develop .#foo`)
+    /// If not specified, uses the default dev shell (`nix develop .`)
+    #[serde(default)]
+    pub dev_shell: Option<String>,
     /// Command to execute in the sandboxed checkout
     pub command: String,
     /// Whether to allow network access in the sandbox
@@ -72,12 +74,11 @@ mod tests {
   },
   "checks": {
     "nixfmt": {
-      "packages": ["nixfmt"],
+      "dev_shell": "formatting",
       "command": "nixfmt --check **/*.nix",
       "allow_network": false
     },
     "cargo-test": {
-      "packages": ["cargo", "rustc"],
       "command": "cargo test --workspace",
       "allow_network": true
     }
@@ -89,5 +90,9 @@ mod tests {
         assert_eq!(config.checks.len(), 2);
         assert!(config.checks.contains_key("nixfmt"));
         assert!(config.checks.contains_key("cargo-test"));
+
+        // Verify dev_shell field
+        assert_eq!(config.checks.get("nixfmt").unwrap().dev_shell, Some("formatting".to_string()));
+        assert_eq!(config.checks.get("cargo-test").unwrap().dev_shell, None);
     }
 }

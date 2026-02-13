@@ -1,17 +1,16 @@
 {
   "checks": {
     "nixfmt": {
-      "packages": ["nixfmt"],
+      "dev_shell": "formatting",
       "command": "nixfmt --check **/*.nix",
       "allow_network": false
     },
     "echo-test": {
-      "packages": ["coreutils"],
       "command": "echo 'Hello from sandboxed check!'",
       "allow_network": false
     },
     "network-test": {
-      "packages": ["curl"],
+      "dev_shell": "networking",
       "command": "curl -I https://example.com",
       "allow_network": true
     }

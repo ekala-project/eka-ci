@@ -13,7 +13,7 @@ use super::{CheckResult, parse_env_output};
 ///
 /// This function:
 /// 1. Creates a temporary checkout directory
-/// 2. Gets the nix-shell environment for the specified packages
+/// 2. Gets the nix develop environment from the repository's flake
 /// 3. Creates a birdcage sandbox with appropriate mounts
 /// 4. Executes the command in the sandboxed checkout
 pub async fn execute_check(
@@ -30,9 +30,9 @@ pub async fn execute_check(
     // Copy repository to temp directory
     copy_repository(repo_path, checkout_path).await?;
 
-    // Step 2: Get nix-shell environment
-    debug!("Fetching nix-shell environment for packages: {:?}", check.packages);
-    let env_vars = get_nix_shell_env(&check.packages).await?;
+    // Step 2: Get nix develop environment
+    debug!("Fetching nix develop environment for dev_shell: {:?}", check.dev_shell);
+    let env_vars = get_nix_develop_env(check.dev_shell.as_deref(), checkout_path).await?;
 
     // Step 3 & 4: Execute in sandbox
     let start = Instant::now();
@@ -101,33 +101,50 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Get environment variables from nix-shell
-async fn get_nix_shell_env(packages: &[String]) -> Result<std::collections::HashMap<String, String>> {
+/// Get environment variables from nix develop
+async fn get_nix_develop_env(
+    dev_shell: Option<&str>,
+    checkout_path: &Path,
+) -> Result<std::collections::HashMap<String, String>> {
     use std::process::Stdio;
 
-    let packages_arg = packages.join(" ");
+    // Check if flake.nix exists in the checkout
+    let flake_path = checkout_path.join("flake.nix");
+    if !flake_path.exists() {
+        anyhow::bail!(
+            "No flake.nix found in repository. The checks feature requires a flake.nix file. \
+             Please add a flake.nix with devShells to use checks."
+        );
+    }
 
-    debug!("Running nix-shell -p {} --run 'env'", packages_arg);
+    // Build the flake reference
+    let flake_ref = match dev_shell {
+        Some(shell_name) => format!(".#{}", shell_name),
+        None => ".".to_string(),
+    };
 
-    let output = tokio::process::Command::new("nix-shell")
+    debug!("Running nix develop {} --command env", flake_ref);
+
+    let output = tokio::process::Command::new("nix")
         .env_clear() // Start with empty environment
-        .arg("-p")
-        .arg(&packages_arg)
-        .arg("--run")
+        .current_dir(checkout_path) // Run in the checkout directory
+        .arg("develop")
+        .arg(&flake_ref)
+        .arg("--command")
         .arg("env")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .context("Failed to execute nix-shell")?;
+        .context("Failed to execute nix develop")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("nix-shell failed: {}", stderr);
+        anyhow::bail!("nix develop failed: {}", stderr);
     }
 
     let stdout = String::from_utf8(output.stdout)
-        .context("Failed to parse nix-shell output as UTF-8")?;
+        .context("Failed to parse nix develop output as UTF-8")?;
 
     Ok(parse_env_output(&stdout))
 }
@@ -219,11 +236,23 @@ mod tests {
     use std::fs;
 
     #[tokio::test]
-    #[ignore] // Requires nix-shell to be available
-    async fn test_get_nix_shell_env() {
-        // This test requires nix-shell to be available
-        let packages = vec!["hello".to_string()];
-        let env = get_nix_shell_env(&packages).await;
+    #[ignore] // Requires nix develop to be available and a flake.nix
+    async fn test_get_nix_develop_env() {
+        // This test requires a repository with a flake.nix
+        // Create a temporary directory with a minimal flake
+        let temp_dir = tempfile::tempdir().unwrap();
+        let flake_content = r#"{
+  description = "Test flake";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  outputs = { nixpkgs, ... }: {
+    devShells.x86_64-linux.default = nixpkgs.legacyPackages.x86_64-linux.mkShell {
+      packages = [ nixpkgs.legacyPackages.x86_64-linux.hello ];
+    };
+  };
+}"#;
+        fs::write(temp_dir.path().join("flake.nix"), flake_content).unwrap();
+
+        let env = get_nix_develop_env(None, temp_dir.path()).await;
 
         // Should succeed if nix is installed
         if let Ok(env_vars) = env {
@@ -235,16 +264,28 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires nix-shell and creates temporary files
+    #[ignore] // Requires nix develop and creates temporary files
     async fn test_execute_check_basic() {
-        // Create a temporary directory with a simple test file
+        // Create a temporary directory with a simple test file and flake
         let temp_dir = tempfile::tempdir().unwrap();
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "test content").unwrap();
 
+        // Create a minimal flake.nix
+        let flake_content = r#"{
+  description = "Test flake";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  outputs = { nixpkgs, ... }: {
+    devShells.x86_64-linux.default = nixpkgs.legacyPackages.x86_64-linux.mkShell {
+      packages = [ nixpkgs.legacyPackages.x86_64-linux.coreutils ];
+    };
+  };
+}"#;
+        fs::write(temp_dir.path().join("flake.nix"), flake_content).unwrap();
+
         // Create a check that reads the file
         let check = Check {
-            packages: vec!["coreutils".to_string()],
+            dev_shell: None,
             command: "cat test.txt".to_string(),
             allow_network: false,
         };
@@ -261,14 +302,26 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires nix-shell
+    #[ignore] // Requires nix develop
     async fn test_execute_check_failure() {
         // Create a temporary directory
         let temp_dir = tempfile::tempdir().unwrap();
 
+        // Create a minimal flake.nix
+        let flake_content = r#"{
+  description = "Test flake";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  outputs = { nixpkgs, ... }: {
+    devShells.x86_64-linux.default = nixpkgs.legacyPackages.x86_64-linux.mkShell {
+      packages = [ nixpkgs.legacyPackages.x86_64-linux.coreutils ];
+    };
+  };
+}"#;
+        fs::write(temp_dir.path().join("flake.nix"), flake_content).unwrap();
+
         // Create a check that will fail
         let check = Check {
-            packages: vec!["coreutils".to_string()],
+            dev_shell: None,
             command: "cat nonexistent-file.txt".to_string(),
             allow_network: false,
         };
