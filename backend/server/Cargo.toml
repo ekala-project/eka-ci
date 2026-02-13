@@ -10,6 +10,7 @@ repository = "https://github.com/ekala-project/eka-ci"
 anyhow = { workspace = true }
 async-trait = "0.1"
 axum = { version = "0.8.3", features = ["tokio", "tracing", "json"] }
+birdcage = "0.8.1"
 bstr = "1.12.0"
 chrono = { version = "0.4.40", default-features = false, features = ["now", "std"] }
 clap = { workspace = true }
@@ -29,6 +30,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { workspace = true }
 sqlx = { version = "0.8.5", features = [ "runtime-tokio", "sqlite", "migrate", "macros", "chrono" ], default-features = false }
+tempfile = "3.14"
 thiserror = { workspace = true }
 tokio = { version = "1.41.0", features = ["full"] }
 tokio-util = "0.7.15"
