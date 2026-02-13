@@ -14,7 +14,13 @@ pub struct CheckResult {
 }
 
 impl CheckResult {
-    pub fn new(success: bool, exit_code: i32, stdout: String, stderr: String, duration_ms: u64) -> Self {
+    pub fn new(
+        success: bool,
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+        duration_ms: u64,
+    ) -> Self {
         Self {
             success,
             exit_code,
@@ -47,7 +53,10 @@ mod tests {
         let output = "PATH=/nix/store/abc-hello/bin:/usr/bin\nHOME=/home/user\nFOO=bar";
         let env = parse_env_output(output);
 
-        assert_eq!(env.get("PATH"), Some(&"/nix/store/abc-hello/bin:/usr/bin".to_string()));
+        assert_eq!(
+            env.get("PATH"),
+            Some(&"/nix/store/abc-hello/bin:/usr/bin".to_string())
+        );
         assert_eq!(env.get("HOME"), Some(&"/home/user".to_string()));
         assert_eq!(env.get("FOO"), Some(&"bar".to_string()));
     }

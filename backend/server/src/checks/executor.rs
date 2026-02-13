@@ -2,12 +2,12 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use birdcage::{Birdcage, Exception, Sandbox};
 use birdcage::process::Command;
+use birdcage::{Birdcage, Exception, Sandbox};
 use tracing::{debug, info};
 
-use crate::ci::config::Check;
 use super::{CheckResult, parse_env_output};
+use crate::ci::config::Check;
 
 /// Execute a check in a sandboxed environment
 ///
@@ -31,7 +31,10 @@ pub async fn execute_check(
     copy_repository(repo_path, checkout_path).await?;
 
     // Step 2: Get nix develop environment
-    debug!("Fetching nix develop environment for dev_shell: {:?}", check.dev_shell);
+    debug!(
+        "Fetching nix develop environment for dev_shell: {:?}",
+        check.dev_shell
+    );
     let env_vars = get_nix_develop_env(check.dev_shell.as_deref(), checkout_path).await?;
 
     // Step 3 & 4: Execute in sandbox
@@ -60,18 +63,20 @@ pub async fn execute_check(
 
 /// Copy repository contents to a temporary directory
 async fn copy_repository(src: &Path, dst: &Path) -> Result<()> {
-    debug!("Copying repository from {} to {}", src.display(), dst.display());
+    debug!(
+        "Copying repository from {} to {}",
+        src.display(),
+        dst.display()
+    );
 
     // Use tokio to spawn blocking copy operation
     let src = src.to_path_buf();
     let dst = dst.to_path_buf();
 
-    tokio::task::spawn_blocking(move || {
-        copy_dir_all(&src, &dst)
-    })
-    .await
-    .context("Failed to spawn copy task")?
-    .context("Failed to copy repository")?;
+    tokio::task::spawn_blocking(move || copy_dir_all(&src, &dst))
+        .await
+        .context("Failed to spawn copy task")?
+        .context("Failed to copy repository")?;
 
     Ok(())
 }
@@ -143,8 +148,8 @@ async fn get_nix_develop_env(
         anyhow::bail!("nix develop failed: {}", stderr);
     }
 
-    let stdout = String::from_utf8(output.stdout)
-        .context("Failed to parse nix develop output as UTF-8")?;
+    let stdout =
+        String::from_utf8(output.stdout).context("Failed to parse nix develop output as UTF-8")?;
 
     Ok(parse_env_output(&stdout))
 }

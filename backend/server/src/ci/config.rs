@@ -92,7 +92,10 @@ mod tests {
         assert!(config.checks.contains_key("cargo-test"));
 
         // Verify dev_shell field
-        assert_eq!(config.checks.get("nixfmt").unwrap().dev_shell, Some("formatting".to_string()));
+        assert_eq!(
+            config.checks.get("nixfmt").unwrap().dev_shell,
+            Some("formatting".to_string())
+        );
         assert_eq!(config.checks.get("cargo-test").unwrap().dev_shell, None);
     }
 }
