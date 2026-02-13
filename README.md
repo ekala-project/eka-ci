@@ -22,6 +22,9 @@ This doesn't scale well, and is error prone.
 See the [design document](./DESIGN.md) for details about a high-level overview
 of EkaCI.
 
+See the [architecture document](./docs/ARCHITECTURE.md) for details about EkaCI's
+current implementation
+
 # MVP Roadmap (Corepkgs bootstrapping usage)
 
 Server + evaluator + build queue
