@@ -20,8 +20,8 @@ pub struct Job {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Check {
-    /// Optional dev shell from the repository's flake.nix (e.g., "foo" maps to `nix develop .#foo`)
-    /// If not specified, uses the default dev shell (`nix develop .`)
+    /// Optional dev shell from the repository's flake.nix (e.g., "foo" maps to `nix develop
+    /// .#foo`) If not specified, uses the default dev shell (`nix develop .`)
     #[serde(default)]
     pub dev_shell: Option<String>,
     /// Command to execute in the sandboxed checkout

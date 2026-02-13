@@ -237,8 +237,9 @@ fn execute_in_sandbox(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
+
+    use super::*;
 
     #[tokio::test]
     #[ignore] // Requires nix develop to be available and a flake.nix
