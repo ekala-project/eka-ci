@@ -1,4 +1,5 @@
 mod auth;
+mod checks;
 mod ci;
 mod client;
 mod config;
