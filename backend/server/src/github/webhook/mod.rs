@@ -12,6 +12,7 @@ use crate::github::{CICheckInfo, GitHubTask};
 
 pub async fn handle_webhook_payload(
     webhook_payload: WEP,
+    repository_info: Option<(String, String)>, // (owner, repo_name)
     git_sender: mpsc::Sender<GitTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     octocrab: Option<Octocrab>,
@@ -24,6 +25,17 @@ pub async fn handle_webhook_payload(
         },
         WEP::WorkflowRun(workflow_run) => {
             handle_github_workflow_run(*workflow_run, git_sender, octocrab).await
+        },
+        WEP::MergeGroup(merge_group) => {
+            handle_github_merge_group(
+                *merge_group,
+                repository_info,
+                git_sender,
+                github_sender,
+                require_approval,
+                db_service,
+            )
+            .await
         },
         // We probably don't want to react to every push
         // WEP::Push(pr) => handle_github_push(*pr).await,
@@ -52,6 +64,29 @@ struct WorkflowRunRepository {
 #[derive(Debug, Deserialize)]
 struct WorkflowRunOwner {
     login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MergeGroupData {
+    head_sha: String,
+    head_ref: String,
+    base_sha: String,
+    base_ref: String,
+    head_commit: MergeGroupCommit,
+}
+
+#[derive(Debug, Deserialize)]
+struct MergeGroupCommit {
+    id: String,
+    message: String,
+    author: MergeGroupUser,
+    committer: MergeGroupUser,
+}
+
+#[derive(Debug, Deserialize)]
+struct MergeGroupUser {
+    name: String,
+    email: String,
 }
 
 async fn is_valid_user(pr: &PullRequest, db_service: &DbService) -> anyhow::Result<()> {
@@ -139,7 +174,36 @@ async fn handle_github_pr(
             }
         },
         PRWEA::Enqueued => {
-            // TODO: Determine what to do for merge queues. If ever relevant
+            debug!(
+                "Received enqueued event for PR #{}",
+                &pr.pull_request.number
+            );
+
+            if require_approval && (!is_valid_user(&pr.pull_request, &db_service).await.is_ok()) {
+                if let Err(e) = github_sender
+                    .send(GitHubTask::CreateApprovalRequiredCheckRun {
+                        ci_check_info: CICheckInfo::from_gh_pr_head(&pr.pull_request),
+                        username: pr.pull_request.user.unwrap().login.clone(),
+                    })
+                    .await
+                {
+                    warn!("Failed to send approval required check run task: {:?}", e);
+                }
+
+                // Don't proceed until workflow is approved
+                return;
+            }
+
+            let git_task = GitTask::GitHubCheckout(pr.pull_request.clone());
+
+            if let Err(e) = git_sender.send(git_task).await {
+                warn!("Failed to send PR checkout task for enqueued PR: {:?}", e);
+            } else {
+                debug!(
+                    "Successfully queued PR checkout task for enqueued PR #{}",
+                    pr.pull_request.number
+                );
+            }
         },
         action => {
             debug!("Ignoring non-actionable PR action: {:?}", &action);
@@ -208,5 +272,144 @@ async fn handle_github_workflow_run(
     if let Err(e) = handle_github_workflow_requested(workflow_run_data, git_sender, octocrab).await
     {
         warn!("Failed to process github workflow requested: {}", e);
+    }
+}
+
+async fn handle_github_merge_group(
+    merge_group_payload: payload::MergeGroupWebhookEventPayload,
+    repository_info: Option<(String, String)>,
+    git_sender: mpsc::Sender<GitTask>,
+    github_sender: Option<mpsc::Sender<GitHubTask>>,
+    _require_approval: bool,
+    _db_service: DbService,
+) {
+    use payload::MergeGroupWebhookEventAction as MGWEA;
+
+    // This handler should only exist if a valid github_sender also exists
+    let _github_sender = match github_sender {
+        Some(sender) => sender,
+        _ => {
+            warn!("GitHub service is down, unable to service merge_group webhook. Restart Eka-CI");
+            return;
+        },
+    };
+
+    // Only handle "checks_requested" action
+    if merge_group_payload.action != MGWEA::ChecksRequested {
+        debug!(
+            "Ignoring merge_group action: {:?}",
+            merge_group_payload.action
+        );
+        return;
+    }
+
+    debug!("Received merge_group checks_requested event");
+
+    // Extract repository info
+    let (owner, repo_name) = match repository_info {
+        Some(info) => info,
+        None => {
+            warn!("Missing repository info in merge_group webhook");
+            return;
+        },
+    };
+
+    // Parse the merge_group data
+    let merge_group: MergeGroupData = match serde_json::from_value(merge_group_payload.merge_group)
+    {
+        Ok(data) => data,
+        Err(e) => {
+            warn!("Failed to parse merge_group data: {:?}", e);
+            return;
+        },
+    };
+
+    debug!(
+        "Processing merge queue commit {} for ref {} in {}/{}",
+        merge_group.head_sha, merge_group.head_ref, owner, repo_name
+    );
+
+    // Merge queue commits are already merge commits created by GitHub,
+    // so we don't need approval checking - they've already passed PR checks.
+
+    // Create a synthetic PullRequest to reuse the existing GitTask::GitHubCheckout flow
+    // This allows us to leverage all the existing git checkout and CI evaluation logic
+    use octocrab::models::Repository as OctoRepo;
+    use octocrab::models::pulls::{Head, PullRequest};
+
+    // Create minimal repository object
+    let repo_value = serde_json::json!({
+        "name": repo_name,
+        "owner": {
+            "login": owner
+        },
+        "clone_url": format!("https://github.com/{}/{}.git", owner, repo_name),
+    });
+    let repo: OctoRepo = match serde_json::from_value(repo_value) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to create repository object: {:?}", e);
+            return;
+        },
+    };
+
+    // Create head and base objects for the merge queue commit
+    let head_value = serde_json::json!({
+        "ref": merge_group.head_ref,
+        "sha": merge_group.head_sha,
+        "repo": repo.clone(),
+    });
+    let head: Head = match serde_json::from_value(head_value) {
+        Ok(h) => h,
+        Err(e) => {
+            warn!("Failed to create head object: {:?}", e);
+            return;
+        },
+    };
+
+    let base_value = serde_json::json!({
+        "ref": merge_group.base_ref,
+        "sha": merge_group.base_sha,
+        "repo": repo.clone(),
+    });
+    let base: Head = match serde_json::from_value(base_value) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("Failed to create base object: {:?}", e);
+            return;
+        },
+    };
+
+    // Create a synthetic PullRequest object
+    let pr_value = serde_json::json!({
+        "number": 0, // Merge queue doesn't have a PR number in this context
+        "state": "open",
+        "title": format!("Merge queue for {}", merge_group.base_ref),
+        "head": head,
+        "base": base,
+        "user": {
+            "login": merge_group.head_commit.author.name,
+            "id": 0,
+        },
+    });
+
+    let pr: PullRequest = match serde_json::from_value(pr_value) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("Failed to create synthetic PullRequest: {:?}", e);
+            return;
+        },
+    };
+
+    // Send the checkout task using the existing flow
+    let git_task = GitTask::GitHubCheckout(pr);
+
+    if let Err(e) = git_sender.send(git_task).await {
+        warn!("Failed to send merge queue checkout task: {:?}", e);
+    } else {
+        debug!(
+            "Successfully queued merge queue checkout task for commit {}",
+            merge_group.head_sha
+        );
     }
 }
