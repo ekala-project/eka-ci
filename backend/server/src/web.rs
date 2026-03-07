@@ -133,11 +133,40 @@ fn api_routes() -> Router<AppState> {
         .route("/commits/{sha}/check_runs", get(get_check_runs_for_commit))
 }
 
-async fn handle_github_webhook(State(state): State<AppState>, Json(webhook_payload): Json<WEP>) {
+async fn handle_github_webhook(State(state): State<AppState>, body: axum::body::Bytes) {
+    use serde_json::Value;
+    use tracing::warn;
+
     use crate::github::handle_webhook_payload;
+
+    // Deserialize as generic JSON first to extract repository info
+    let webhook_json: Value = match serde_json::from_slice(&body) {
+        Ok(json) => json,
+        Err(e) => {
+            warn!("Failed to parse webhook JSON: {:?}", e);
+            return;
+        },
+    };
+
+    // Extract repository owner and name if present
+    let repository_info = webhook_json.get("repository").and_then(|repo| {
+        let owner = repo.get("owner")?.get("login")?.as_str()?;
+        let name = repo.get("name")?.as_str()?;
+        Some((owner.to_string(), name.to_string()))
+    });
+
+    // Deserialize the full webhook payload
+    let webhook_payload: WEP = match serde_json::from_slice(&body) {
+        Ok(payload) => payload,
+        Err(e) => {
+            warn!("Failed to deserialize webhook payload: {:?}", e);
+            return;
+        },
+    };
 
     handle_webhook_payload(
         webhook_payload,
+        repository_info,
         state.git_sender,
         state.github_sender,
         state.octocrab,
