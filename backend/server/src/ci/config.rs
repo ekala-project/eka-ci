@@ -18,7 +18,7 @@ pub struct Job {
     pub allow_eval_failures: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Check {
     /// Optional shell name
     /// - When shell_nix=false: maps to flake devShells (e.g., "foo" → `nix develop .#foo`)

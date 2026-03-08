@@ -7,6 +7,7 @@ use config::CIConfig;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::checks::service::CheckTask;
 use crate::db::DbService;
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::nix::{EvalJob, EvalTask};
@@ -34,6 +35,7 @@ pub struct RepoReader {
     repo_sender: mpsc::Sender<RepoTask>,
     repo_receiver: Option<mpsc::Receiver<RepoTask>>,
     eval_sender: mpsc::Sender<EvalTask>,
+    checks_sender: Option<mpsc::Sender<CheckTask>>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     db_service: DbService,
 }
@@ -41,6 +43,7 @@ pub struct RepoReader {
 impl RepoReader {
     pub fn new(
         eval_sender: mpsc::Sender<EvalTask>,
+        checks_sender: Option<mpsc::Sender<CheckTask>>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         db_service: DbService,
     ) -> anyhow::Result<Self> {
@@ -50,6 +53,7 @@ impl RepoReader {
             repo_sender,
             repo_receiver: Some(repo_receiver),
             eval_sender,
+            checks_sender,
             github_sender,
             db_service,
         })
@@ -88,6 +92,20 @@ impl RepoReader {
                 self.eval_sender
                     .send(EvalTask::GithubJobPR((eval_job, ci_info.clone())))
                     .await?;
+            }
+
+            // Process checks if ChecksExecutor is available
+            if let Some(checks_sender) = &self.checks_sender {
+                debug!("Processing {} checks", config.checks.len());
+                for (check_name, check) in config.checks {
+                    let check_task = CheckTask {
+                        check_name,
+                        check,
+                        repo_path: root.clone(),
+                        ci_info: ci_info.clone(),
+                    };
+                    checks_sender.send(check_task).await?;
+                }
             }
         } else {
             debug!("Repo was missing a CI config");

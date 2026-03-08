@@ -1,6 +1,8 @@
 pub mod executor;
+pub mod service;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -59,5 +61,19 @@ mod tests {
         );
         assert_eq!(env.get("HOME"), Some(&"/home/user".to_string()));
         assert_eq!(env.get("FOO"), Some(&"bar".to_string()));
+    }
+}
+
+/// Get the cache directory for EkaCI gcroots following XDG Base Directory specification
+/// Returns $XDG_CACHE_HOME/eka-ci if XDG_CACHE_HOME is set,
+/// otherwise $HOME/.cache/eka-ci if HOME is set,
+/// otherwise /tmp/eka-ci-cache as a fallback
+pub fn get_cache_dir() -> PathBuf {
+    if let Ok(xdg_cache) = std::env::var("XDG_CACHE_HOME") {
+        PathBuf::from(xdg_cache).join("eka-ci")
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".cache").join("eka-ci")
+    } else {
+        PathBuf::from("/tmp/eka-ci-cache")
     }
 }
