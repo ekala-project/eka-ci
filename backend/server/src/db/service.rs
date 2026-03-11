@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
-use super::{approved_users, github};
+use super::{approved_users, github, installations};
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 #[derive(Clone)]
@@ -228,5 +228,139 @@ impl DbService {
 
     pub async fn list_approved_users(&self) -> anyhow::Result<Vec<approved_users::ApprovedUser>> {
         approved_users::list_approved_users(&self.pool).await
+    }
+
+    // Repository management methods
+    pub async fn list_repositories(&self) -> anyhow::Result<Vec<github::RepositoryInfo>> {
+        github::list_repositories(&self.pool).await
+    }
+
+    pub async fn get_repository(
+        &self,
+        owner: &str,
+        repo_name: &str,
+    ) -> anyhow::Result<Option<github::RepositoryInfo>> {
+        github::get_repository(owner, repo_name, &self.pool).await
+    }
+
+    pub async fn list_repository_commits(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<github::CommitInfo>> {
+        github::list_repository_commits(owner, repo_name, limit, &self.pool).await
+    }
+
+    // Job and build status methods
+    pub async fn get_commit_jobs(&self, sha: &str) -> anyhow::Result<Vec<github::CommitJob>> {
+        github::get_commit_jobs(sha, &self.pool).await
+    }
+
+    pub async fn get_jobset_details(&self, jobset_id: i64) -> anyhow::Result<github::JobSetDetails> {
+        github::get_jobset_details(jobset_id, &self.pool).await
+    }
+
+    pub async fn get_jobset_drvs(
+        &self,
+        jobset_id: i64,
+        state_filter: Option<build_event::DrvBuildState>,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<github::JobSetDrv>> {
+        github::get_jobset_drvs(jobset_id, state_filter, limit, offset, &self.pool).await
+    }
+
+    pub async fn count_jobset_drvs(&self, jobset_id: i64) -> anyhow::Result<i64> {
+        github::count_jobset_drvs(jobset_id, &self.pool).await
+    }
+
+    // Derivation details methods
+    pub async fn get_drv_details(&self, drv_id: &DrvId) -> anyhow::Result<Option<drv::DrvDetails>> {
+        drv::get_drv_details(drv_id, &self.pool).await
+    }
+
+    pub async fn get_drv_dependencies(&self, drv_id: &DrvId) -> anyhow::Result<Vec<drv::DrvDependency>> {
+        drv::get_drv_dependencies(drv_id, &self.pool).await
+    }
+
+    pub async fn count_drv_dependencies(&self, drv_id: &DrvId) -> anyhow::Result<i64> {
+        drv::count_drv_dependencies(drv_id, &self.pool).await
+    }
+
+    // GitHub installation methods
+    pub async fn upsert_installation(
+        &self,
+        installation_id: i64,
+        account_type: &str,
+        account_login: &str,
+    ) -> anyhow::Result<()> {
+        installations::upsert_installation(installation_id, account_type, account_login, &self.pool)
+            .await
+    }
+
+    pub async fn suspend_installation(&self, installation_id: i64) -> anyhow::Result<()> {
+        installations::suspend_installation(installation_id, &self.pool).await
+    }
+
+    pub async fn unsuspend_installation(&self, installation_id: i64) -> anyhow::Result<()> {
+        installations::unsuspend_installation(installation_id, &self.pool).await
+    }
+
+    pub async fn delete_installation(&self, installation_id: i64) -> anyhow::Result<()> {
+        installations::delete_installation(installation_id, &self.pool).await
+    }
+
+    pub async fn upsert_installation_repository(
+        &self,
+        installation_id: i64,
+        repo_id: i64,
+        repo_name: &str,
+        repo_owner: &str,
+    ) -> anyhow::Result<()> {
+        installations::upsert_installation_repository(
+            installation_id,
+            repo_id,
+            repo_name,
+            repo_owner,
+            &self.pool,
+        )
+        .await
+    }
+
+    pub async fn delete_installation_repository(
+        &self,
+        installation_id: i64,
+        repo_id: i64,
+    ) -> anyhow::Result<()> {
+        installations::delete_installation_repository(installation_id, repo_id, &self.pool).await
+    }
+
+    pub async fn is_repository_installed(
+        &self,
+        owner: &str,
+        repo_name: &str,
+    ) -> anyhow::Result<bool> {
+        installations::is_repository_installed(owner, repo_name, &self.pool).await
+    }
+
+    pub async fn list_installed_repositories(
+        &self,
+    ) -> anyhow::Result<Vec<installations::InstallationRepository>> {
+        installations::list_installed_repositories(&self.pool).await
+    }
+
+    pub async fn get_installation_repositories(
+        &self,
+        installation_id: i64,
+    ) -> anyhow::Result<Vec<installations::InstallationRepository>> {
+        installations::get_installation_repositories(installation_id, &self.pool).await
+    }
+
+    pub async fn get_installation(
+        &self,
+        installation_id: i64,
+    ) -> anyhow::Result<Option<installations::GitHubInstallation>> {
+        installations::get_installation(installation_id, &self.pool).await
     }
 }

@@ -123,6 +123,18 @@ fn api_routes() -> Router<AppState> {
         // Public routes
         .route("/logs/{drv}", get(get_derivation_log))
         .route("/metrics", get(metrics_handler))
+        .route("/commits/{sha}/check_runs", get(get_check_runs_for_commit))
+        // Repository management routes
+        .route("/repositories", get(list_repositories_handler))
+        .route("/repositories/{owner}/{repo}", get(get_repository_handler))
+        .route("/repositories/{owner}/{repo}/commits", get(list_repository_commits_handler))
+        // Job and build status routes
+        .route("/commits/{sha}/jobs", get(get_commit_jobs_handler))
+        .route("/jobs/{jobset_id}", get(get_jobset_details_handler))
+        .route("/jobs/{jobset_id}/drvs", get(get_jobset_drvs_handler))
+        // Derivation details routes
+        .route("/drvs/{drv}", get(get_drv_details_handler))
+        .route("/drvs/{drv}/dependencies", get(get_drv_dependencies_handler))
         // Admin routes (protected)
         .route("/admin/approved-users", get(list_approved_users_handler))
         .route("/admin/approved-users", post(add_approved_user_handler))
@@ -130,16 +142,16 @@ fn api_routes() -> Router<AppState> {
             "/admin/approved-users/{username}",
             axum::routing::delete(remove_approved_user_handler),
         )
-        .route("/commits/{sha}/check_runs", get(get_check_runs_for_commit))
 }
 
 async fn handle_github_webhook(State(state): State<AppState>, body: axum::body::Bytes) {
+    use octocrab::models::webhook_events::EventInstallation;
     use serde_json::Value;
     use tracing::warn;
 
     use crate::github::handle_webhook_payload;
 
-    // Deserialize as generic JSON first to extract repository info
+    // First deserialize as generic JSON to extract top-level fields
     let webhook_json: Value = match serde_json::from_slice(&body) {
         Ok(json) => json,
         Err(e) => {
@@ -148,14 +160,19 @@ async fn handle_github_webhook(State(state): State<AppState>, body: axum::body::
         },
     };
 
-    // Extract repository owner and name if present
+    // Extract repository info from top level
     let repository_info = webhook_json.get("repository").and_then(|repo| {
         let owner = repo.get("owner")?.get("login")?.as_str()?;
         let name = repo.get("name")?.as_str()?;
         Some((owner.to_string(), name.to_string()))
     });
 
-    // Deserialize the full webhook payload
+    // Extract installation from top level if present
+    let installation: Option<EventInstallation> = webhook_json
+        .get("installation")
+        .and_then(|inst| serde_json::from_value(inst.clone()).ok());
+
+    // Deserialize the specific payload
     let webhook_payload: WEP = match serde_json::from_slice(&body) {
         Ok(payload) => payload,
         Err(e) => {
@@ -167,6 +184,7 @@ async fn handle_github_webhook(State(state): State<AppState>, body: axum::body::
     handle_webhook_payload(
         webhook_payload,
         repository_info,
+        installation,
         state.git_sender,
         state.github_sender,
         state.octocrab,
@@ -389,6 +407,234 @@ async fn get_check_runs_for_commit(
         Err(e) => {
             error!("Failed to fetch check_runs for commit {}: {}", sha, e);
             Json(vec![])
+        },
+    }
+}
+
+// Repository management handlers
+async fn list_repositories_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::db::github::RepositoryInfo>>, (axum::http::StatusCode, String)> {
+    match state.db_service.list_repositories().await {
+        Ok(repos) => Ok(Json(repos)),
+        Err(e) => {
+            error!("Failed to list repositories: {}", e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to list repositories: {}", e),
+            ))
+        },
+    }
+}
+
+async fn get_repository_handler(
+    State(state): State<AppState>,
+    Path((owner, repo)): Path<(String, String)>,
+) -> Result<Json<crate::db::github::RepositoryInfo>, (axum::http::StatusCode, String)> {
+    match state.db_service.get_repository(&owner, &repo).await {
+        Ok(Some(repo_info)) => Ok(Json(repo_info)),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("Repository {}/{} not found", owner, repo),
+        )),
+        Err(e) => {
+            error!("Failed to get repository {}/{}: {}", owner, repo, e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get repository: {}", e),
+            ))
+        },
+    }
+}
+
+#[derive(Deserialize)]
+struct CommitsQuery {
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+fn default_limit() -> i64 {
+    20
+}
+
+async fn list_repository_commits_handler(
+    State(state): State<AppState>,
+    Path((owner, repo)): Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<CommitsQuery>,
+) -> Result<Json<Vec<crate::db::github::CommitInfo>>, (axum::http::StatusCode, String)> {
+    match state.db_service.list_repository_commits(&owner, &repo, query.limit).await {
+        Ok(commits) => Ok(Json(commits)),
+        Err(e) => {
+            error!("Failed to list commits for {}/{}: {}", owner, repo, e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to list commits: {}", e),
+            ))
+        },
+    }
+}
+
+// Job and build status handlers
+async fn get_commit_jobs_handler(
+    State(state): State<AppState>,
+    Path(sha): Path<String>,
+) -> Result<Json<Vec<crate::db::github::CommitJob>>, (axum::http::StatusCode, String)> {
+    match state.db_service.get_commit_jobs(&sha).await {
+        Ok(jobs) => Ok(Json(jobs)),
+        Err(e) => {
+            error!("Failed to get jobs for commit {}: {}", sha, e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get commit jobs: {}", e),
+            ))
+        },
+    }
+}
+
+async fn get_jobset_details_handler(
+    State(state): State<AppState>,
+    Path(jobset_id): Path<i64>,
+) -> Result<Json<crate::db::github::JobSetDetails>, (axum::http::StatusCode, String)> {
+    match state.db_service.get_jobset_details(jobset_id).await {
+        Ok(details) => Ok(Json(details)),
+        Err(e) => {
+            error!("Failed to get jobset details for {}: {}", jobset_id, e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get jobset details: {}", e),
+            ))
+        },
+    }
+}
+
+#[derive(Deserialize)]
+struct DrvsQuery {
+    #[serde(default = "default_drv_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+fn default_drv_limit() -> i64 {
+    100
+}
+
+async fn get_jobset_drvs_handler(
+    State(state): State<AppState>,
+    Path(jobset_id): Path<i64>,
+    axum::extract::Query(query): axum::extract::Query<DrvsQuery>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // TODO: Add state filter support when DrvBuildState implements FromStr
+    let state_filter = None;
+
+    match state.db_service.get_jobset_drvs(jobset_id, state_filter, query.limit, query.offset).await {
+        Ok(drvs) => {
+            // Also get total count
+            match state.db_service.count_jobset_drvs(jobset_id).await {
+                Ok(total) => Ok(Json(serde_json::json!({
+                    "total": total,
+                    "drvs": drvs,
+                }))),
+                Err(e) => {
+                    error!("Failed to count drvs for jobset {}: {}", jobset_id, e);
+                    Ok(Json(serde_json::json!({
+                        "drvs": drvs,
+                    })))
+                },
+            }
+        },
+        Err(e) => {
+            error!("Failed to get drvs for jobset {}: {}", jobset_id, e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get jobset drvs: {}", e),
+            ))
+        },
+    }
+}
+
+// Derivation details handlers
+async fn get_drv_details_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(drv): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    use crate::db::model::drv_id::DrvId;
+
+    // Parse the drv parameter into a DrvId
+    let drv_id = match DrvId::try_from(drv.as_str()) {
+        Ok(id) => id,
+        Err(e) => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("Invalid derivation format: {}", e),
+            ))
+        },
+    };
+
+    match state.db_service.get_drv_details(&drv_id).await {
+        Ok(Some(details)) => {
+            // Also get dependency count
+            match state.db_service.count_drv_dependencies(&drv_id).await {
+                Ok(dep_count) => Ok(Json(serde_json::json!({
+                    "drv_path": details.drv_path,
+                    "system": details.system,
+                    "build_state": details.build_state,
+                    "is_fod": details.is_fod,
+                    "required_system_features": details.required_system_features,
+                    "dependency_count": dep_count,
+                }))),
+                Err(e) => {
+                    error!("Failed to count dependencies for {}: {}", drv, e);
+                    Ok(Json(serde_json::to_value(details).unwrap()))
+                },
+            }
+        },
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("Derivation not found: {}", drv),
+        )),
+        Err(e) => {
+            error!("Failed to get drv details for {}: {}", drv, e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get derivation details: {}", e),
+            ))
+        },
+    }
+}
+
+async fn get_drv_dependencies_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(drv): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    use crate::db::model::drv_id::DrvId;
+
+    // Parse the drv parameter into a DrvId
+    let drv_id = match DrvId::try_from(drv.as_str()) {
+        Ok(id) => id,
+        Err(e) => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("Invalid derivation format: {}", e),
+            ))
+        },
+    };
+
+    match state.db_service.get_drv_dependencies(&drv_id).await {
+        Ok(deps) => {
+            let count = deps.len() as i64;
+            Ok(Json(serde_json::json!({
+                "drv_path": drv,
+                "dependencies": deps,
+                "dependency_count": count,
+            })))
+        },
+        Err(e) => {
+            error!("Failed to get dependencies for {}: {}", drv, e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get derivation dependencies: {}", e),
+            ))
         },
     }
 }
