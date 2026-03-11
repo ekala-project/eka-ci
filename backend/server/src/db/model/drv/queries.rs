@@ -323,6 +323,78 @@ pub async fn get_failed_dependencies(
 
     Ok(result)
 }
+
+use serde::Serialize;
+use sqlx::FromRow;
+
+/// Detailed drv information with dependency info
+#[derive(Debug, FromRow, Serialize)]
+pub struct DrvDetails {
+    pub drv_path: DrvId,
+    pub system: String,
+    pub build_state: DrvBuildState,
+    pub is_fod: bool,
+    pub required_system_features: Option<String>,
+}
+
+/// Get detailed information about a drv (same as get_drv, but as a serializable struct)
+pub async fn get_drv_details(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<DrvDetails>> {
+    let details = sqlx::query_as(
+        r#"
+        SELECT drv_path, system, build_state, is_fod, required_system_features
+        FROM Drv
+        WHERE drv_path = ?
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(details)
+}
+
+/// Drv dependency information
+#[derive(Debug, FromRow, Serialize)]
+pub struct DrvDependency {
+    pub drv_path: DrvId,
+    pub system: String,
+    pub build_state: DrvBuildState,
+}
+
+/// Get all dependencies of a drv with their build states
+pub async fn get_drv_dependencies(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<DrvDependency>> {
+    let deps = sqlx::query_as(
+        r#"
+        SELECT d.drv_path, d.system, d.build_state
+        FROM Drv d
+        JOIN DrvRefs dr ON d.drv_path = dr.reference
+        WHERE dr.referrer = ?
+        ORDER BY d.drv_path
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(deps)
+}
+
+/// Count dependencies
+pub async fn count_drv_dependencies(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<i64> {
+    let count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM DrvRefs
+        WHERE referrer = ?
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::bail;
