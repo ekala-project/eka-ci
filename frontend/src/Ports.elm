@@ -7,6 +7,7 @@ port module Ports exposing
     , JobCompleteEvent
     , LogLineEvent
     , encodeSubscribeMessage
+    , encodeUnsubscribeMessage
     , decodeIncomingMessage
     , storeToken
     , clearToken
@@ -49,12 +50,23 @@ type WebSocketMessage
     | Unsubscribe String String -- resource type, id
 
 
-{-| Encode a message to send to the WebSocket.
+{-| Encode a subscribe message to send to the WebSocket.
 -}
 encodeSubscribeMessage : String -> String -> E.Value
 encodeSubscribeMessage resource id =
     E.object
         [ ( "type", E.string "subscribe" )
+        , ( "resource", E.string resource )
+        , ( "id", E.string id )
+        ]
+
+
+{-| Encode an unsubscribe message to send to the WebSocket.
+-}
+encodeUnsubscribeMessage : String -> String -> E.Value
+encodeUnsubscribeMessage resource id =
+    E.object
+        [ ( "type", E.string "unsubscribe" )
         , ( "resource", E.string resource )
         , ( "id", E.string id )
         ]

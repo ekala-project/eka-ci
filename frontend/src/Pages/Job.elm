@@ -1,6 +1,6 @@
 module Pages.Job exposing
-    ( Model
-    , Msg
+    ( Model(..)
+    , Msg(..)
     , init
     , update
     , view
@@ -26,6 +26,7 @@ import Html.Attributes exposing (class, href)
 import Http
 import Models.BuildState as BS
 import Models.Job exposing (JobSetDetails, JobSetDrv)
+import Ports
 import Route
 
 
@@ -51,6 +52,8 @@ type alias JobData =
 type Msg
     = GotJobSetDetails (Result Http.Error JobSetDetails)
     | GotJobSetDrvs (Result Http.Error (List JobSetDrv))
+    | BuildStateChanged Ports.BuildStateChangeEvent
+    | JobCompleted Ports.JobCompleteEvent
 
 
 {-| Initialize the page with a jobset ID.
@@ -61,6 +64,7 @@ init jobsetId =
     , Cmd.batch
         [ Api.getJobSetDetails jobsetId GotJobSetDetails
         , Api.getJobSetDrvs jobsetId GotJobSetDrvs
+        , Ports.websocketOut (Ports.encodeSubscribeMessage "job" (String.fromInt jobsetId))
         ]
     )
 
@@ -113,6 +117,43 @@ update msg model =
 
                 Err error ->
                     ( Failed error, Cmd.none )
+
+        BuildStateChanged event ->
+            case model of
+                Loaded data ->
+                    let
+                        updatedDrvs =
+                            updateDrvState event.drvPath event.newState data.drvs
+
+                        updatedDetails =
+                            recalculateStats updatedDrvs data.details
+                    in
+                    ( Loaded
+                        { data
+                            | drvs = updatedDrvs
+                            , details = updatedDetails
+                        }
+                    , Cmd.none
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        JobCompleted event ->
+            -- Job completed, could refetch or show notification
+            case model of
+                Loaded data ->
+                    if data.jobsetId == event.jobsetId then
+                        -- Refresh job details to get final state
+                        ( model
+                        , Api.getJobSetDetails data.jobsetId GotJobSetDetails
+                        )
+
+                    else
+                        ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
 
 
 {-| View the page.
@@ -286,3 +327,92 @@ viewDrvRow drv =
         , td [ class "monospace f7 gray truncate-path" ]
             [ text drv.drvPath ]
         ]
+
+
+
+{- HELPER FUNCTIONS FOR REAL-TIME UPDATES -}
+
+
+{-| Update a single derivation's build state in the list.
+-}
+updateDrvState : String -> BS.DrvBuildState -> List JobSetDrv -> List JobSetDrv
+updateDrvState drvPath newState drvs =
+    List.map
+        (\drv ->
+            if drv.drvPath == drvPath then
+                { drv | buildState = newState }
+
+            else
+                drv
+        )
+        drvs
+
+
+{-| Recalculate job statistics based on current derivation states.
+-}
+recalculateStats : List JobSetDrv -> JobSetDetails -> JobSetDetails
+recalculateStats drvs details =
+    let
+        counts =
+            List.foldl countDrvState initialCounts drvs
+    in
+    { details
+        | queuedDrvs = counts.queued
+        , buildableDrvs = counts.buildable
+        , buildingDrvs = counts.building
+        , completedDrvs = counts.completed
+        , failedDrvs = counts.failed
+        , transitiveFailureDrvs = counts.transitive
+    }
+
+
+type alias DrvCounts =
+    { queued : Int
+    , buildable : Int
+    , building : Int
+    , completed : Int
+    , failed : Int
+    , transitive : Int
+    }
+
+
+initialCounts : DrvCounts
+initialCounts =
+    { queued = 0
+    , buildable = 0
+    , building = 0
+    , completed = 0
+    , failed = 0
+    , transitive = 0
+    }
+
+
+countDrvState : JobSetDrv -> DrvCounts -> DrvCounts
+countDrvState drv counts =
+    case drv.buildState of
+        BS.Queued ->
+            { counts | queued = counts.queued + 1 }
+
+        BS.Buildable ->
+            { counts | buildable = counts.buildable + 1 }
+
+        BS.Building ->
+            { counts | building = counts.building + 1 }
+
+        BS.Completed BS.Success ->
+            { counts | completed = counts.completed + 1 }
+
+        BS.Completed BS.Failure ->
+            { counts | failed = counts.failed + 1 }
+
+        BS.TransitiveFailure ->
+            { counts | transitive = counts.transitive + 1 }
+
+        BS.FailedRetry ->
+            { counts | queued = counts.queued + 1 }
+
+        BS.Interrupted _ ->
+            { counts | failed = counts.failed + 1 }
+
+        BS.Blocked ->
+            counts

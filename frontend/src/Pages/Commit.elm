@@ -1,6 +1,6 @@
 module Pages.Commit exposing
-    ( Model
-    , Msg
+    ( Model(..)
+    , Msg(..)
     , init
     , update
     , view
@@ -26,6 +26,7 @@ import Html.Events exposing (onClick, stopPropagationOn)
 import Http
 import Json.Decode
 import Models.Job exposing (CommitJob, JobSetDetails)
+import Ports
 import Route
 import Set exposing (Set)
 
@@ -54,6 +55,7 @@ type Msg
     = GotCommitJobs (Result Http.Error (List CommitJob))
     | ToggleJobExpanded Int
     | GotJobDetails Int (Result Http.Error JobSetDetails)
+    | JobCompleted Ports.JobCompleteEvent
 
 
 {-| Initialize the page with a commit SHA.
@@ -61,7 +63,10 @@ type Msg
 init : String -> ( Model, Cmd Msg )
 init sha =
     ( Loading sha
-    , Api.getCommitJobs sha GotCommitJobs
+    , Cmd.batch
+        [ Api.getCommitJobs sha GotCommitJobs
+        , Ports.websocketOut (Ports.encodeSubscribeMessage "commit" sha)
+        ]
     )
 
 
@@ -136,6 +141,23 @@ update msg model =
                         Err _ ->
                             -- Keep the Nothing entry, don't retry
                             ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        JobCompleted event ->
+            -- Job completed, refresh job details if we have them loaded
+            case model of
+                Loaded data ->
+                    if hasJobDetails event.jobsetId data.jobDetails then
+                        -- Refetch the job details to get final state
+                        ( model
+                        , Api.getJobSetDetails event.jobsetId (GotJobDetails event.jobsetId)
+                        )
+
+                    else
+                        -- Job not expanded, just ignore the event
+                        ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
