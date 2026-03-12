@@ -7,11 +7,14 @@ the overall application structure.
 
 -}
 
+import Auth exposing (AuthState, User)
 import Browser
 import Browser.Navigation as Nav
 import Components.Header as Header
 import Html exposing (Html, div, text)
 import Html.Attributes exposing (class)
+import Http
+import Json.Decode as D
 import Json.Encode as E
 import Pages.Admin as Admin
 import Pages.Commit as Commit
@@ -42,12 +45,13 @@ main =
 -- MODEL
 
 
-{-| Application model tracking navigation and current page.
+{-| Application model tracking navigation, current page, and auth state.
 -}
 type alias Model =
     { navKey : Nav.Key
     , route : Route
     , page : Page
+    , authState : AuthState
     }
 
 
@@ -77,6 +81,7 @@ init _ url navKey =
     ( { navKey = navKey
       , route = route
       , page = page
+      , authState = Auth.init
       }
     , cmd
     )
@@ -122,6 +127,13 @@ initPage route =
             in
             ( DrvPage model, Cmd.map DrvMsg cmd )
 
+        Route.Admin ->
+            let
+                ( model, cmd ) =
+                    Admin.init
+            in
+            ( AdminPage model, Cmd.map AdminMsg cmd )
+
         Route.NotFound ->
             ( NotFoundPage, Cmd.none )
 
@@ -142,6 +154,9 @@ type Msg
     | DrvMsg Drv.Msg
     | AdminMsg Admin.Msg
     | WebSocketMessage Ports.IncomingMessage
+    | TokenReceived (Maybe String)
+    | GotUserInfo (Result Http.Error User)
+    | LogoutRequested
 
 
 {-| Update the application state.
@@ -310,6 +325,66 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
+        TokenReceived maybeToken ->
+            case maybeToken of
+                Just token ->
+                    -- Token found in localStorage, fetch user info
+                    let
+                        newAuthState =
+                            Auth.updateToken (Just token) model.authState
+                    in
+                    ( { model | authState = newAuthState }
+                    , fetchUserInfo token
+                    )
+
+                Nothing ->
+                    -- No token in localStorage
+                    ( model, Cmd.none )
+
+        GotUserInfo result ->
+            case result of
+                Ok user ->
+                    let
+                        newAuthState =
+                            Auth.updateUser (Just user) model.authState
+                    in
+                    ( { model | authState = newAuthState }
+                    , Cmd.none
+                    )
+
+                Err _ ->
+                    -- Failed to get user info, clear token
+                    ( { model | authState = Auth.logout model.authState }
+                    , Ports.clearToken ()
+                    )
+
+        LogoutRequested ->
+            ( { model | authState = Auth.logout model.authState }
+            , Cmd.batch
+                [ Ports.clearToken ()
+                , Nav.pushUrl model.navKey (Route.toHref Route.Home)
+                ]
+            )
+
+
+
+-- HELPERS
+
+
+{-| Fetch user info from the backend using the JWT token.
+-}
+fetchUserInfo : String -> Cmd Msg
+fetchUserInfo token =
+    Http.request
+        { method = "GET"
+        , headers = [ Http.header "Authorization" ("Bearer " ++ token) ]
+        , url = "/github/auth/me"
+        , body = Http.emptyBody
+        , expect = Http.expectJson GotUserInfo Auth.decodeUser
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
 
 
 -- SUBSCRIPTIONS
@@ -319,7 +394,10 @@ update msg model =
 -}
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Ports.websocketIn handleWebSocketMessage
+    Sub.batch
+        [ Ports.websocketIn handleWebSocketMessage
+        , Ports.tokenReceived TokenReceived
+        ]
 
 
 {-| Handle incoming WebSocket messages.
@@ -347,8 +425,8 @@ view model =
     { title = pageTitle model.route
     , body =
         [ div []
-            [ Header.view
-            , viewPage model.page
+            [ Header.view model.authState LogoutRequested
+            , viewPage model.authState model.page
             ]
         ]
     }
@@ -374,14 +452,17 @@ pageTitle route =
         Route.Drv drvPath ->
             "Derivation - EkaCI"
 
+        Route.Admin ->
+            "Admin - EkaCI"
+
         Route.NotFound ->
             "Not Found - EkaCI"
 
 
-{-| View the current page.
+{-| View the current page with auth protection.
 -}
-viewPage : Page -> Html Msg
-viewPage page =
+viewPage : AuthState -> Page -> Html Msg
+viewPage authState page =
     case page of
         HomePage model ->
             Html.map HomeMsg (Home.view model)
@@ -399,7 +480,15 @@ viewPage page =
             Html.map DrvMsg (Drv.view model)
 
         AdminPage model ->
-            Html.map AdminMsg (Admin.view model)
+            -- Protect Admin page: only show to authenticated admins
+            if Auth.isAdmin authState then
+                Html.map AdminMsg (Admin.view model)
+
+            else if Auth.isAuthenticated authState then
+                viewUnauthorized
+
+            else
+                viewNotAuthenticated
 
         NotFoundPage ->
             viewNotFound
@@ -415,5 +504,40 @@ viewNotFound =
                 [ text "404 - Not Found" ]
             , Html.p [ class "gray" ]
                 [ text "The page you're looking for doesn't exist." ]
+            ]
+        ]
+
+
+{-| View unauthorized page (authenticated but not admin).
+-}
+viewUnauthorized : Html Msg
+viewUnauthorized =
+    div [ class "pa4" ]
+        [ div [ class "card pa4 tc" ]
+            [ Html.h1 [ class "f2 fw6 mb2" ]
+                [ text "403 - Unauthorized" ]
+            , Html.p [ class "gray" ]
+                [ text "You don't have permission to access this page." ]
+            , Html.p [ class "gray f6 mt3" ]
+                [ text "This page is only accessible to administrators." ]
+            ]
+        ]
+
+
+{-| View not authenticated page (need to log in).
+-}
+viewNotAuthenticated : Html Msg
+viewNotAuthenticated =
+    div [ class "pa4" ]
+        [ div [ class "card pa4 tc" ]
+            [ Html.h1 [ class "f2 fw6 mb2" ]
+                [ text "Authentication Required" ]
+            , Html.p [ class "gray mb3" ]
+                [ text "You must be logged in to access this page." ]
+            , Html.a
+                [ Html.Attributes.href "/github/auth/login"
+                , class "link blue hover-dark-blue fw6"
+                ]
+                [ text "Login with GitHub →" ]
             ]
         ]

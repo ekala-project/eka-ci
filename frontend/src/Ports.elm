@@ -8,12 +8,15 @@ port module Ports exposing
     , LogLineEvent
     , encodeSubscribeMessage
     , decodeIncomingMessage
+    , storeToken
+    , clearToken
+    , tokenReceived
     )
 
-{-| Ports for WebSocket communication with JavaScript.
+{-| Ports for WebSocket communication and localStorage management.
 
-The WebSocket is managed on the JavaScript side, and Elm sends/receives
-messages via these ports.
+WebSocket: Managed on the JavaScript side, Elm sends/receives messages via ports.
+LocalStorage: JWT token persistence for authentication.
 
 -}
 
@@ -232,3 +235,31 @@ interruptionKindDecoder =
                     _ ->
                         D.fail ("Unknown interruption kind: " ++ str)
             )
+
+
+
+{- LocalStorage Ports -}
+
+
+{-| Store JWT token in localStorage.
+
+Send a token to JavaScript to persist in localStorage.
+
+-}
+port storeToken : String -> Cmd msg
+
+
+{-| Clear JWT token from localStorage.
+
+Tell JavaScript to remove the token.
+
+-}
+port clearToken : () -> Cmd msg
+
+
+{-| Receive token from localStorage on app init.
+
+JavaScript will send the stored token (if any) when the app starts.
+
+-}
+port tokenReceived : (Maybe String -> msg) -> Sub msg
