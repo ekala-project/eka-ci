@@ -2,6 +2,10 @@ port module Ports exposing
     ( websocketOut
     , websocketIn
     , WebSocketMessage(..)
+    , IncomingMessage(..)
+    , BuildStateChangeEvent
+    , JobCompleteEvent
+    , LogLineEvent
     , encodeSubscribeMessage
     , decodeIncomingMessage
     )
