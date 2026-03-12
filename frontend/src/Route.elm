@@ -25,6 +25,7 @@ type Route
     | Commit String -- sha
     | Job Int -- jobset_id
     | Drv String -- drv_path
+    | Admin
     | NotFound
 
 
@@ -46,6 +47,7 @@ routeParser =
         , P.map Commit (P.s "commits" </> P.string)
         , P.map Job (P.s "jobs" </> P.int)
         , P.map Drv (P.s "drvs" </> P.string)
+        , P.map Admin (P.s "admin")
         ]
 
 
@@ -68,6 +70,9 @@ toHref route =
 
         Drv drvPath ->
             UB.absolute [ "drvs", drvPath ] []
+
+        Admin ->
+            "/admin"
 
         NotFound ->
             "/"
