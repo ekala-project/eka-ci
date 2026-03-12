@@ -257,8 +257,58 @@ update msg model =
                     ( model, Cmd.none )
 
         WebSocketMessage wsMsg ->
-            -- TODO: Handle WebSocket messages (build state changes, etc.)
-            ( model, Cmd.none )
+            case wsMsg of
+                Ports.Connected ->
+                    -- WebSocket connected, no action needed
+                    ( model, Cmd.none )
+
+                Ports.Disconnected ->
+                    -- WebSocket disconnected, no action needed
+                    -- TODO: Show connection status indicator
+                    ( model, Cmd.none )
+
+                Ports.Error errorMsg ->
+                    -- WebSocket error, no action needed
+                    -- TODO: Log error or show to user
+                    ( model, Cmd.none )
+
+                Ports.BuildStateChange event ->
+                    -- Route to Job or Drv pages
+                    case model.page of
+                        JobPage jobModel ->
+                            -- TODO: Add BuildStateChanged message to Job.elm
+                            ( model, Cmd.none )
+
+                        DrvPage drvModel ->
+                            -- TODO: Add BuildStateChanged message to Drv.elm
+                            ( model, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ports.JobComplete event ->
+                    -- Route to Job or Commit pages
+                    case model.page of
+                        JobPage jobModel ->
+                            -- TODO: Add JobCompleted message to Job.elm
+                            ( model, Cmd.none )
+
+                        CommitPage commitModel ->
+                            -- TODO: Add JobCompleted message to Commit.elm
+                            ( model, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ports.LogLine event ->
+                    -- Route to Drv page for log viewer
+                    case model.page of
+                        DrvPage drvModel ->
+                            -- TODO: Add LogLineReceived message to Drv.elm
+                            ( model, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
 
 
 
