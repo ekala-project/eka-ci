@@ -22,16 +22,34 @@
         />
 
         <!--
+        Tachyons CSS: utility-first CSS framework for fast, responsive UI development.
+        -->
+        <link
+            rel="stylesheet"
+            href="https://unpkg.com/tachyons@4.12.0/css/tachyons.min.css"
+        />
+
+        <!--
+        Custom EkaCI styles for status badges, progress bars, and log viewer.
+        -->
+        <link rel="stylesheet" href="styles/custom.css" />
+
+        <!--
         The server is configured to try and serve all files that are in this directory
         first. It will only fall back to serving this index file if it cannot find the
         requested path.
         -->
         <script src="main.js"></script>
+        <script type="module">
+            import { setupPorts } from './ports.js';
+
+            // Initialize the Elm application
+            const app = Elm.Main.init();
+
+            // Set up WebSocket ports
+            setupPorts(app);
+        </script>
     </head>
     <body>
-        <script>
-            // No further setup required, straight into Elm we go.
-            Elm.Main.init();
-        </script>
     </body>
 </html>
