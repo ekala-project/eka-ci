@@ -86,14 +86,22 @@ impl IngressWorker {
 
         if self.db_service.is_drv_buildable(&drv_id).await? {
             debug!("{:?} is now buildable", &drv_id);
-            self.db_service
-                .update_drv_status(&drv_id, &DrvBuildState::Buildable)
-                .await?;
+
+            // Get current drv to check its state
             let drv: drv::Drv = self
                 .db_service
                 .get_drv(&drv_id)
                 .await?
                 .context("drv is missing")?;
+
+            // Only update state to Buildable if it's not already in FailedRetry
+            // FailedRetry state should be preserved so the recorder can detect second failures
+            if drv.build_state != DrvBuildState::FailedRetry {
+                self.db_service
+                    .update_drv_status(&drv_id, &DrvBuildState::Buildable)
+                    .await?;
+            }
+
             self.buildable_sender.send(BuildRequest(drv)).await?;
         }
 
