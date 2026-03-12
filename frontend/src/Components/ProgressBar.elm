@@ -1,4 +1,4 @@
-module Components.ProgressBar exposing (view)
+module Components.ProgressBar exposing (Segment, fromJobStats, view)
 
 {-| Progress bar component for visualizing job progress.
 
