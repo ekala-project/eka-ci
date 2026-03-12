@@ -15,7 +15,10 @@ import Html.Attributes exposing (class)
 import Json.Encode as E
 import Pages.Admin as Admin
 import Pages.Commit as Commit
+import Pages.Drv as Drv
 import Pages.Home as Home
+import Pages.Job as Job
+import Pages.Repository as Repository
 import Ports
 import Route exposing (Route)
 import Url exposing (Url)
@@ -52,7 +55,10 @@ type alias Model =
 -}
 type Page
     = HomePage Home.Model
+    | RepositoryPage Repository.Model
     | CommitPage Commit.Model
+    | JobPage Job.Model
+    | DrvPage Drv.Model
     | AdminPage Admin.Model
     | NotFoundPage
 
@@ -88,6 +94,13 @@ initPage route =
             in
             ( HomePage model, Cmd.map HomeMsg cmd )
 
+        Route.Repository owner repo ->
+            let
+                ( model, cmd ) =
+                    Repository.init owner repo
+            in
+            ( RepositoryPage model, Cmd.map RepositoryMsg cmd )
+
         Route.Commit sha ->
             let
                 ( model, cmd ) =
@@ -95,17 +108,19 @@ initPage route =
             in
             ( CommitPage model, Cmd.map CommitMsg cmd )
 
-        Route.Repository _ _ ->
-            -- TODO: Implement repository page
-            ( NotFoundPage, Cmd.none )
+        Route.Job jobsetId ->
+            let
+                ( model, cmd ) =
+                    Job.init jobsetId
+            in
+            ( JobPage model, Cmd.map JobMsg cmd )
 
-        Route.Job _ ->
-            -- TODO: Implement job page
-            ( NotFoundPage, Cmd.none )
-
-        Route.Drv _ ->
-            -- TODO: Implement derivation page
-            ( NotFoundPage, Cmd.none )
+        Route.Drv drvPath ->
+            let
+                ( model, cmd ) =
+                    Drv.init drvPath
+            in
+            ( DrvPage model, Cmd.map DrvMsg cmd )
 
         Route.NotFound ->
             ( NotFoundPage, Cmd.none )
@@ -121,7 +136,10 @@ type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url
     | HomeMsg Home.Msg
+    | RepositoryMsg Repository.Msg
     | CommitMsg Commit.Msg
+    | JobMsg Job.Msg
+    | DrvMsg Drv.Msg
     | AdminMsg Admin.Msg
     | WebSocketMessage Ports.IncomingMessage
 
@@ -191,6 +209,48 @@ update msg model =
                     in
                     ( { model | page = AdminPage newModel }
                     , Cmd.map AdminMsg cmd
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        RepositoryMsg repoMsg ->
+            case model.page of
+                RepositoryPage repoModel ->
+                    let
+                        ( newModel, cmd ) =
+                            Repository.update repoMsg repoModel
+                    in
+                    ( { model | page = RepositoryPage newModel }
+                    , Cmd.map RepositoryMsg cmd
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        JobMsg jobMsg ->
+            case model.page of
+                JobPage jobModel ->
+                    let
+                        ( newModel, cmd ) =
+                            Job.update jobMsg jobModel
+                    in
+                    ( { model | page = JobPage newModel }
+                    , Cmd.map JobMsg cmd
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        DrvMsg drvMsg ->
+            case model.page of
+                DrvPage drvModel ->
+                    let
+                        ( newModel, cmd ) =
+                            Drv.update drvMsg drvModel
+                    in
+                    ( { model | page = DrvPage newModel }
+                    , Cmd.map DrvMsg cmd
                     )
 
                 _ ->
@@ -276,8 +336,17 @@ viewPage page =
         HomePage model ->
             Html.map HomeMsg (Home.view model)
 
+        RepositoryPage model ->
+            Html.map RepositoryMsg (Repository.view model)
+
         CommitPage model ->
             Html.map CommitMsg (Commit.view model)
+
+        JobPage model ->
+            Html.map JobMsg (Job.view model)
+
+        DrvPage model ->
+            Html.map DrvMsg (Drv.view model)
 
         AdminPage model ->
             Html.map AdminMsg (Admin.view model)
