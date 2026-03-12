@@ -1,4 +1,5 @@
-use tokio::sync::mpsc;
+use chrono::Utc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -6,6 +7,7 @@ use crate::db::DbService;
 use crate::db::model::{build, build_event, drv_id};
 use crate::github::GitHubTask;
 use crate::scheduler::ingress::IngressTask;
+use crate::services::websocket::events::{BuildStateChange, ServerEvent};
 
 #[derive(Debug, Clone)]
 pub struct RecorderTask {
@@ -19,6 +21,7 @@ pub struct RecorderService {
     db_service: DbService,
     recorder_receiver: mpsc::Receiver<RecorderTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    websocket_sender: Option<broadcast::Sender<ServerEvent>>,
 }
 
 /// Encapsulation of the Recorder thread. May want to gracefully recover from
@@ -29,12 +32,14 @@ struct RecorderWorker {
     recorder_receiver: mpsc::Receiver<RecorderTask>,
     db_service: DbService,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    websocket_sender: Option<broadcast::Sender<ServerEvent>>,
 }
 
 impl RecorderService {
     pub fn init(
         db_service: DbService,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
 
@@ -42,6 +47,7 @@ impl RecorderService {
             db_service,
             recorder_receiver,
             github_sender,
+            websocket_sender,
         };
 
         (res, recorder_sender)
@@ -53,6 +59,7 @@ impl RecorderService {
             ingress_sender,
             self.recorder_receiver,
             self.github_sender,
+            self.websocket_sender,
         );
 
         tokio::spawn(async move {
@@ -67,12 +74,14 @@ impl RecorderWorker {
         ingress_sender: mpsc::Sender<IngressTask>,
         recorder_receiver: mpsc::Receiver<RecorderTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     ) -> Self {
         Self {
             db_service,
             ingress_sender,
             recorder_receiver,
             github_sender,
+            websocket_sender,
         }
     }
 
@@ -85,6 +94,38 @@ impl RecorderWorker {
                 }
             }
         }
+    }
+
+    /// Broadcast a build state change event to WebSocket clients
+    fn broadcast_state_change(
+        &self,
+        drv: &drv_id::DrvId,
+        old_state: &build_event::DrvBuildState,
+        new_state: &build_event::DrvBuildState,
+    ) {
+        if let Some(ref sender) = self.websocket_sender {
+            let event = ServerEvent::BuildStateChange(BuildStateChange {
+                drv_path: drv.store_path().to_string(),
+                old_state: old_state.clone(),
+                new_state: new_state.clone(),
+                timestamp: Utc::now(),
+            });
+
+            // Broadcast the event (ignore if no receivers)
+            let _ = sender.send(event);
+        }
+    }
+
+    /// Update drv status and broadcast the change
+    async fn update_and_broadcast(
+        &self,
+        drv: &drv_id::DrvId,
+        old_state: &build_event::DrvBuildState,
+        new_state: &build_event::DrvBuildState,
+    ) -> anyhow::Result<()> {
+        self.db_service.update_drv_status(drv, new_state).await?;
+        self.broadcast_state_change(drv, old_state, new_state);
+        Ok(())
     }
 
     async fn handle_recorder_request(&self, task: RecorderTask) -> anyhow::Result<()> {
@@ -104,9 +145,15 @@ impl RecorderWorker {
                     "Attempting to record successful build of {}",
                     build_id.derivation.store_path()
                 );
-                self.db_service
-                    .update_drv_status(&drv, &task.result)
-                    .await?;
+                // Get old state before updating
+                let old_state = self
+                    .db_service
+                    .get_drv(&drv)
+                    .await?
+                    .map(|d| d.build_state)
+                    .unwrap_or(DBS::Queued);
+
+                self.update_and_broadcast(&drv, &old_state, &task.result).await?;
 
                 // Clear any transitive failures caused by this drv (if it was previously failed)
                 let unblocked_drvs = self.db_service.clear_transitive_failures(&drv).await?;
@@ -121,9 +168,14 @@ impl RecorderWorker {
 
                     if other_failures.is_empty() {
                         // No other failures blocking, update state to Queued and check buildability
-                        self.db_service
-                            .update_drv_status(&unblocked_drv, &DBS::Queued)
-                            .await?;
+                        let old_state = self
+                            .db_service
+                            .get_drv(&unblocked_drv)
+                            .await?
+                            .map(|d| d.build_state)
+                            .unwrap_or(DBS::TransitiveFailure);
+
+                        self.update_and_broadcast(&unblocked_drv, &old_state, &DBS::Queued).await?;
 
                         let task = IngressTask::CheckBuildable(unblocked_drv);
                         self.ingress_sender.send(task).await?;
@@ -157,9 +209,8 @@ impl RecorderWorker {
                             "First failure for {}, transitioning to FailedRetry",
                             drv.store_path()
                         );
-                        self.db_service
-                            .update_drv_status(&drv, &DBS::FailedRetry)
-                            .await?;
+                        let old_state = current_drv.build_state.clone();
+                        self.update_and_broadcast(&drv, &old_state, &DBS::FailedRetry).await?;
 
                         // Re-queue immediately for retry
                         let task = IngressTask::CheckBuildable(drv.clone());
@@ -171,9 +222,8 @@ impl RecorderWorker {
                             "Second failure for {}, marking as permanent failure",
                             drv.store_path()
                         );
-                        self.db_service
-                            .update_drv_status(&drv, &task.result)
-                            .await?;
+                        let old_state = current_drv.build_state.clone();
+                        self.update_and_broadcast(&drv, &old_state, &task.result).await?;
 
                         // Get all transitive referrers and mark as TransitiveFailure
                         let transitive_referrers =
@@ -191,9 +241,8 @@ impl RecorderWorker {
                             current_drv.build_state,
                             drv.store_path()
                         );
-                        self.db_service
-                            .update_drv_status(&drv, &task.result)
-                            .await?;
+                        let old_state = current_drv.build_state.clone();
+                        self.update_and_broadcast(&drv, &old_state, &task.result).await?;
                     },
                 }
             },

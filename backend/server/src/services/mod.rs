@@ -18,6 +18,9 @@ use crate::web::WebService;
 mod async_service;
 pub use async_service::AsyncService;
 
+pub mod websocket;
+pub use websocket::WebSocketService;
+
 pub async fn start_services(config: Config) -> Result<()> {
     let db_service = DbService::new(&config.db_path)
         .await
@@ -49,6 +52,10 @@ pub async fn start_services(config: Config) -> Result<()> {
         },
     };
 
+    // Create WebSocket service for real-time updates
+    let websocket_service = WebSocketService::new();
+    let websocket_sender = Some(websocket_service.event_sender());
+
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
     let scheduler_service = SchedulerService::new(
         db_service.clone(),
@@ -56,6 +63,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.remote_builders,
         maybe_github_sender.clone(),
         config.build_no_output_timeout_seconds,
+        websocket_sender,
     )
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
@@ -96,6 +104,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         jwt_service,
         oauth_config,
         config.logs_dir.clone(),
+        websocket_service.clone(),
     )
     .await
     .context("failed to start web service")?;

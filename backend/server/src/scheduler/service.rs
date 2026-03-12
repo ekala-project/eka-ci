@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use prometheus::Registry;
 use prometheus::process_collector::ProcessCollector;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use super::build::{BuildQueue, BuildRequest, Builder};
@@ -13,6 +13,7 @@ use crate::config::RemoteBuilder;
 use crate::db::DbService;
 use crate::github::GitHubTask;
 use crate::metrics::BuildMetrics;
+use crate::services::websocket::events::ServerEvent;
 
 /// SchedulerService spins up three smaller services:
 ///   RequestIngress:
@@ -53,6 +54,7 @@ impl SchedulerService {
         remote_builders: Vec<RemoteBuilder>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         build_no_output_timeout_seconds: u64,
+        websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     ) -> anyhow::Result<Self> {
         // Create metrics registry and build metrics
         let metrics_registry = Arc::new(Registry::new());
@@ -64,7 +66,7 @@ impl SchedulerService {
 
         let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
         let (recorder_service, recorder_sender) =
-            RecorderService::init(db_service.clone(), github_sender);
+            RecorderService::init(db_service.clone(), github_sender, websocket_sender);
         let mut builders = Builder::local_from_env(
             logs_dir.clone(),
             recorder_sender.clone(),
