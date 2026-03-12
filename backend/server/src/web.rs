@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Json, Path, State};
+use axum::extract::{Json, Path, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use octocrab::models::webhook_events::WebhookEventPayload as WEP;
@@ -30,6 +30,7 @@ struct AppState {
     jwt_service: JwtService,
     oauth_config: OAuthConfig,
     logs_dir: PathBuf,
+    websocket_service: crate::services::WebSocketService,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState
@@ -56,6 +57,7 @@ impl WebService {
         jwt_service: JwtService,
         oauth_config: OAuthConfig,
         logs_dir: PathBuf,
+        websocket_service: crate::services::WebSocketService,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -73,6 +75,7 @@ impl WebService {
                 jwt_service,
                 oauth_config,
                 logs_dir,
+                websocket_service,
             },
         })
     }
@@ -124,6 +127,8 @@ fn api_routes() -> Router<AppState> {
         .route("/logs/{drv}", get(get_derivation_log))
         .route("/metrics", get(metrics_handler))
         .route("/commits/{sha}/check_runs", get(get_check_runs_for_commit))
+        // WebSocket route for real-time updates
+        .route("/ws/builds", get(websocket_handler))
         // Repository management routes
         .route("/repositories", get(list_repositories_handler))
         .route("/repositories/{owner}/{repo}", get(get_repository_handler))
@@ -637,4 +642,14 @@ async fn get_drv_dependencies_handler(
             ))
         },
     }
+}
+
+/// WebSocket handler for real-time build updates
+async fn websocket_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        state.websocket_service.handle_connection(socket).await
+    })
 }

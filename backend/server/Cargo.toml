@@ -9,7 +9,7 @@ repository = "https://github.com/ekala-project/eka-ci"
 [dependencies]
 anyhow = { workspace = true }
 async-trait = "0.1"
-axum = { version = "0.8.3", features = ["tokio", "tracing", "json"] }
+axum = { version = "0.8.3", features = ["tokio", "tracing", "json", "ws"] }
 birdcage = "0.8.1"
 bstr = "1.12.0"
 chrono = { version = "0.4.40", default-features = false, features = ["now", "std"] }
@@ -37,5 +37,6 @@ tokio-util = "0.7.15"
 tower-http = { version = "0.6.2", features = ["fs", "tracing"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+uuid = { version = "1.0", features = ["v4", "serde"] }
 xdg = { workspace = true }
 openssl = { version = "0.10.75", features = ["vendored"] }
