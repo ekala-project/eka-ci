@@ -25,12 +25,14 @@ use sqlx::{Decode, Encode, FromRow, Sqlite, Type};
 ///
 /// Derivation for the hello package, version 2.12.1:
 /// ```
-/// DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv")
+/// use eka_ci_server::db::model::DrvId;
+/// let id = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv").unwrap();
 /// ```
 ///
 /// Derivation for the source of an unknown other derivation:
 /// ```
-/// DrvId::try_from("0aykaqxhbby7mx7lgb217m9b3gkl52fn-source.drv")
+/// use eka_ci_server::db::model::DrvId;
+/// let id = DrvId::try_from("0aykaqxhbby7mx7lgb217m9b3gkl52fn-source.drv").unwrap();
 /// ```
 ///
 /// The `try_from` implementation strips any store paths from the input and enforces that the given
