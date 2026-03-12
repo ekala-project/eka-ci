@@ -177,6 +177,10 @@ update msg model =
                 newRoute =
                     Route.fromUrl url
 
+                -- Unsubscribe from old page resources
+                unsubscribeCmd =
+                    unsubscribeFromPage model.page
+
                 ( newPage, cmd ) =
                     initPage newRoute
             in
@@ -184,7 +188,7 @@ update msg model =
                 | route = newRoute
                 , page = newPage
               }
-            , cmd
+            , Cmd.batch [ unsubscribeCmd, cmd ]
             )
 
         HomeMsg homeMsg ->
@@ -291,12 +295,22 @@ update msg model =
                     -- Route to Job or Drv pages
                     case model.page of
                         JobPage jobModel ->
-                            -- TODO: Add BuildStateChanged message to Job.elm
-                            ( model, Cmd.none )
+                            let
+                                ( newModel, cmd ) =
+                                    Job.update (Job.BuildStateChanged event) jobModel
+                            in
+                            ( { model | page = JobPage newModel }
+                            , Cmd.map JobMsg cmd
+                            )
 
                         DrvPage drvModel ->
-                            -- TODO: Add BuildStateChanged message to Drv.elm
-                            ( model, Cmd.none )
+                            let
+                                ( newModel, cmd ) =
+                                    Drv.update (Drv.BuildStateChanged event) drvModel
+                            in
+                            ( { model | page = DrvPage newModel }
+                            , Cmd.map DrvMsg cmd
+                            )
 
                         _ ->
                             ( model, Cmd.none )
@@ -305,12 +319,22 @@ update msg model =
                     -- Route to Job or Commit pages
                     case model.page of
                         JobPage jobModel ->
-                            -- TODO: Add JobCompleted message to Job.elm
-                            ( model, Cmd.none )
+                            let
+                                ( newModel, cmd ) =
+                                    Job.update (Job.JobCompleted event) jobModel
+                            in
+                            ( { model | page = JobPage newModel }
+                            , Cmd.map JobMsg cmd
+                            )
 
                         CommitPage commitModel ->
-                            -- TODO: Add JobCompleted message to Commit.elm
-                            ( model, Cmd.none )
+                            let
+                                ( newModel, cmd ) =
+                                    Commit.update (Commit.JobCompleted event) commitModel
+                            in
+                            ( { model | page = CommitPage newModel }
+                            , Cmd.map CommitMsg cmd
+                            )
 
                         _ ->
                             ( model, Cmd.none )
@@ -319,8 +343,13 @@ update msg model =
                     -- Route to Drv page for log viewer
                     case model.page of
                         DrvPage drvModel ->
-                            -- TODO: Add LogLineReceived message to Drv.elm
-                            ( model, Cmd.none )
+                            let
+                                ( newModel, cmd ) =
+                                    Drv.update (Drv.LogLineReceived event) drvModel
+                            in
+                            ( { model | page = DrvPage newModel }
+                            , Cmd.map DrvMsg cmd
+                            )
 
                         _ ->
                             ( model, Cmd.none )
@@ -369,6 +398,42 @@ update msg model =
 
 
 -- HELPERS
+
+
+{-| Unsubscribe from WebSocket resources when leaving a page.
+-}
+unsubscribeFromPage : Page -> Cmd Msg
+unsubscribeFromPage page =
+    case page of
+        JobPage (Job.Loaded data) ->
+            -- Unsubscribe from job resource
+            Ports.websocketOut
+                (Ports.encodeUnsubscribeMessage "job" (String.fromInt data.jobsetId))
+
+        JobPage _ ->
+            -- Job page not loaded yet, nothing to unsubscribe
+            Cmd.none
+
+        CommitPage (Commit.Loaded data) ->
+            -- Unsubscribe from commit resource
+            Ports.websocketOut
+                (Ports.encodeUnsubscribeMessage "commit" data.sha)
+
+        CommitPage _ ->
+            -- Commit page not loaded yet, nothing to unsubscribe
+            Cmd.none
+
+        DrvPage (Drv.Loaded data) ->
+            -- Unsubscribe from drv resource
+            Ports.websocketOut
+                (Ports.encodeUnsubscribeMessage "drv" data.details.drvPath)
+
+        DrvPage _ ->
+            -- Drv page not loaded yet, nothing to unsubscribe
+            Cmd.none
+
+        _ ->
+            Cmd.none
 
 
 {-| Fetch user info from the backend using the JWT token.

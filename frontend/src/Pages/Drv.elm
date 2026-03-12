@@ -1,6 +1,6 @@
 module Pages.Drv exposing
-    ( Model
-    , Msg
+    ( Model(..)
+    , Msg(..)
     , init
     , update
     , view
@@ -27,6 +27,7 @@ import Html.Attributes exposing (class)
 import Http
 import Models.BuildState as BS
 import Models.Derivation exposing (DrvDependency, DrvDetails)
+import Ports
 
 
 {-| Page model.
@@ -54,6 +55,8 @@ type Msg
     | GotDrvDependencies (Result Http.Error (List DrvDependency))
     | LogViewerMsg LogViewer.Msg
     | DrvTreeMsg DrvTree.Msg
+    | BuildStateChanged Ports.BuildStateChangeEvent
+    | LogLineReceived Ports.LogLineEvent
 
 
 {-| Initialize the page with a derivation path.
@@ -64,6 +67,7 @@ init drvPath =
     , Cmd.batch
         [ Api.getDrvDetails drvPath GotDrvDetails
         , Api.getDrvDependencies drvPath GotDrvDependencies
+        , Ports.websocketOut (Ports.encodeSubscribeMessage "drv" drvPath)
         ]
     )
 
@@ -137,6 +141,47 @@ update msg model =
                     ( Loaded { data | drvTree = DrvTree.update treeMsg data.drvTree }
                     , Cmd.none
                     )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        BuildStateChanged event ->
+            -- Update build state in real-time
+            case model of
+                Loaded data ->
+                    if data.details.drvPath == event.drvPath then
+                        let
+                            currentDetails =
+                                data.details
+
+                            updatedDetails =
+                                { currentDetails | buildState = event.newState }
+                        in
+                        ( Loaded { data | details = updatedDetails }
+                        , Cmd.none
+                        )
+
+                    else
+                        ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        LogLineReceived event ->
+            -- Add log line to viewer in real-time
+            case model of
+                Loaded data ->
+                    if data.details.drvPath == event.drvPath then
+                        let
+                            updatedLogViewer =
+                                LogViewer.addLine event.line data.logViewer
+                        in
+                        ( Loaded { data | logViewer = updatedLogViewer }
+                        , Cmd.none
+                        )
+
+                    else
+                        ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
