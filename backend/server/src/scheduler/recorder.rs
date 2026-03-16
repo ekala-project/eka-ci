@@ -6,6 +6,7 @@ use crate::db::DbService;
 use crate::db::model::{build, build_event, drv_id};
 use crate::github::GitHubTask;
 use crate::scheduler::ingress::IngressTask;
+use crate::db::model::DrvId;
 
 #[derive(Debug, Clone)]
 pub struct RecorderTask {
@@ -76,6 +77,75 @@ impl RecorderWorker {
         }
     }
 
+    /// Get output paths for a derivation using nix-store
+    async fn get_output_paths(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<Vec<String>> {
+        use tokio::process::Command;
+
+        let output = Command::new("nix-store")
+            .args(["--query", "--outputs", &drv_id.store_path()])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to query output paths for {}: {}",
+                drv_id.store_path(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let paths = String::from_utf8(output.stdout)?
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+
+        Ok(paths)
+    }
+
+    /// Execute a push command with the given output paths
+    async fn execute_push_command(
+        &self,
+        push_command: &str,
+        output_paths: &[String],
+        drv_id: &drv_id::DrvId,
+    ) -> anyhow::Result<()> {
+        use std::time::Duration;
+        use tokio::process::Command;
+
+        debug!(
+            "Executing push command for {}: {}",
+            drv_id.store_path(),
+            push_command
+        );
+
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(push_command)
+            .env_clear() // Security: Clear all environment variables
+            .env("OUT_PATHS", output_paths.join(" "))
+            .env("DRV_PATH", drv_id.store_path())
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("PATH", "/usr/bin:/bin:/run/current-system/sw/bin") // Minimal PATH including NixOS path
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        // Security: 10 minute timeout for push commands
+        let timeout = Duration::from_secs(600);
+        match tokio::time::timeout(timeout, command.output()).await {
+            Ok(Ok(output)) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("Push command failed: {}", stderr);
+                }
+                debug!("Push command completed successfully for {}", drv_id.store_path());
+                Ok(())
+            },
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => anyhow::bail!("Push command timed out after 10 minutes"),
+        }
+    }
+
     async fn ingest_requests(mut self) {
         loop {
             if let Some(task) = self.recorder_receiver.recv().await {
@@ -107,6 +177,13 @@ impl RecorderWorker {
                 self.db_service
                     .update_drv_status(&drv, &task.result)
                     .await?;
+
+                // Execute push commands for all jobsets containing this drv
+                let job_infos = self.db_service.get_job_info_for_drv(&drv).await?;
+                for job_info in &job_infos {
+                    self.handle_completed_jobset(job_info.jobset_id, &drv).await
+                }
+
 
                 // Clear any transitive failures caused by this drv (if it was previously failed)
                 let unblocked_drvs = self.db_service.clear_transitive_failures(&drv).await?;
@@ -294,4 +371,44 @@ impl RecorderWorker {
 
         Ok(())
     }
+
+    async fn handle_completed_jobset(&self, jobset_id: i64, drv: &DrvId) {
+        match self.db_service.get_jobset_info(jobset_id).await {
+            Ok(jobset_info) => {
+                if let Some(push_cmd) = &jobset_info.push_command {
+                    // Get output paths
+                    match self.get_output_paths(&drv).await {
+                        Ok(output_paths) => {
+                            // Execute push command (warn on failure, don't fail build)
+                            if let Err(e) =
+                                self.execute_push_command(push_cmd, &output_paths, &drv)
+                                    .await
+                            {
+                                warn!(
+                                    "Push command failed for {} in jobset {}: {:?}",
+                                    drv.store_path(),
+                                    jobset_id,
+                                    e
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            warn!(
+                                "Failed to get output paths for {}: {:?}",
+                                drv.store_path(),
+                                e
+                            );
+                        },
+                    }
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to get jobset info for jobset {}: {:?}",
+                    jobset_id, e
+                );
+            },
+        }
+    }
+
 }

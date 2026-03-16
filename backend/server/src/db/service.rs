@@ -132,8 +132,10 @@ impl DbService {
         owner: &str,
         repo_name: &str,
         jobs: &[NixEvalDrv],
+        push_command: Option<&str>,
     ) -> anyhow::Result<i64> {
-        let jobset_id = github::create_jobset(sha, name, owner, repo_name, &self.pool).await?;
+        let jobset_id =
+            github::create_jobset(sha, name, owner, repo_name, push_command, &self.pool).await?;
         github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await?;
         Ok(jobset_id)
     }

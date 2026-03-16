@@ -23,6 +23,7 @@ pub struct EvalJob {
     pub file_path: String,
     pub name: String,
     pub allow_failures: bool,
+    pub push_command: Option<String>,
     // TODO: support arguments
 }
 
@@ -125,6 +126,7 @@ impl EvalService {
                         ci_check_info: ci_info.clone(),
                         name: eval_job.name.to_string(),
                         jobs,
+                        push_command: eval_job.push_command.clone(),
                     };
                     gh_sender.send(gh_task).await?;
 
