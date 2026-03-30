@@ -33,7 +33,7 @@ import Route
 {-| Page model.
 -}
 type Model
-    = Loading Int
+    = Loading String Int
     | Loaded JobData
     | Failed Http.Error
 
@@ -44,6 +44,7 @@ type alias JobData =
     { jobsetId : Int
     , details : JobSetDetails
     , drvs : List JobSetDrv
+    , apiBaseUrl : String
     }
 
 
@@ -58,12 +59,12 @@ type Msg
 
 {-| Initialize the page with a jobset ID.
 -}
-init : Int -> ( Model, Cmd Msg )
-init jobsetId =
-    ( Loading jobsetId
+init : String -> Int -> ( Model, Cmd Msg )
+init apiBaseUrl jobsetId =
+    ( Loading apiBaseUrl jobsetId
     , Cmd.batch
-        [ Api.getJobSetDetails jobsetId GotJobSetDetails
-        , Api.getJobSetDrvs jobsetId GotJobSetDrvs
+        [ Api.getJobSetDetails apiBaseUrl jobsetId GotJobSetDetails
+        , Api.getJobSetDrvs apiBaseUrl jobsetId GotJobSetDrvs
         , Ports.websocketOut (Ports.encodeSubscribeMessage "job" (String.fromInt jobsetId))
         ]
     )
@@ -78,12 +79,13 @@ update msg model =
             case result of
                 Ok details ->
                     case model of
-                        Loading jobsetId ->
+                        Loading apiBaseUrl jobsetId ->
                             -- Wait for drvs to load too
                             ( Loaded
                                 { jobsetId = jobsetId
                                 , details = details
                                 , drvs = []
+                                , apiBaseUrl = apiBaseUrl
                                 }
                             , Cmd.none
                             )
@@ -108,7 +110,7 @@ update msg model =
                             , Cmd.none
                             )
 
-                        Loading jobsetId ->
+                        Loading _ _ ->
                             -- Details haven't loaded yet, create partial state
                             ( model, Cmd.none )
 
@@ -146,7 +148,7 @@ update msg model =
                     if data.jobsetId == event.jobsetId then
                         -- Refresh job details to get final state
                         ( model
-                        , Api.getJobSetDetails data.jobsetId GotJobSetDetails
+                        , Api.getJobSetDetails data.apiBaseUrl data.jobsetId GotJobSetDetails
                         )
 
                     else
@@ -161,7 +163,7 @@ update msg model =
 view : Model -> Html Msg
 view model =
     case model of
-        Loading jobsetId ->
+        Loading _ jobsetId ->
             div [ class "pa4" ]
                 [ h1 [ class "f2 fw6 mb4" ]
                     [ text ("Job #" ++ String.fromInt jobsetId) ]

@@ -24,7 +24,7 @@ import Models.Repository exposing (Repository)
 {-| Page model.
 -}
 type Model
-    = Loading String String
+    = Loading String String String
     | Loaded Repository
     | Failed Http.Error
 
@@ -37,10 +37,10 @@ type Msg
 
 {-| Initialize the page with owner and repository name.
 -}
-init : String -> String -> ( Model, Cmd Msg )
-init owner repoName =
-    ( Loading owner repoName
-    , Api.getRepository owner repoName GotRepository
+init : String -> String -> String -> ( Model, Cmd Msg )
+init apiBaseUrl owner repoName =
+    ( Loading apiBaseUrl owner repoName
+    , Api.getRepository apiBaseUrl owner repoName GotRepository
     )
 
 
@@ -63,7 +63,7 @@ update msg model =
 view : Model -> Html Msg
 view model =
     case model of
-        Loading owner repoName ->
+        Loading _ owner repoName ->
             div [ class "pa4" ]
                 [ h1 [ class "f2 fw6 mb4" ]
                     [ text (owner ++ "/" ++ repoName) ]

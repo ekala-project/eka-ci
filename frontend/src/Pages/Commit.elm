@@ -34,7 +34,7 @@ import Set exposing (Set)
 {-| Page model with expandable job sections.
 -}
 type Model
-    = Loading String
+    = Loading String String
     | Loaded LoadedData
     | Failed Http.Error
 
@@ -46,6 +46,7 @@ type alias LoadedData =
     , jobs : List CommitJob
     , expandedJobs : Set Int
     , jobDetails : List ( Int, Maybe JobSetDetails )
+    , apiBaseUrl : String
     }
 
 
@@ -60,11 +61,11 @@ type Msg
 
 {-| Initialize the page with a commit SHA.
 -}
-init : String -> ( Model, Cmd Msg )
-init sha =
-    ( Loading sha
+init : String -> String -> ( Model, Cmd Msg )
+init apiBaseUrl sha =
+    ( Loading apiBaseUrl sha
     , Cmd.batch
-        [ Api.getCommitJobs sha GotCommitJobs
+        [ Api.getCommitJobs apiBaseUrl sha GotCommitJobs
         , Ports.websocketOut (Ports.encodeSubscribeMessage "commit" sha)
         ]
     )
@@ -76,24 +77,23 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         GotCommitJobs result ->
-            case result of
-                Ok jobs ->
-                    case model of
-                        Loading sha ->
-                            ( Loaded
-                                { sha = sha
-                                , jobs = jobs
-                                , expandedJobs = Set.empty
-                                , jobDetails = List.map (\job -> ( job.jobsetId, Nothing )) jobs
-                                }
-                            , Cmd.none
-                            )
+            case ( result, model ) of
+                ( Ok jobs, Loading apiBaseUrl sha ) ->
+                    ( Loaded
+                        { sha = sha
+                        , jobs = jobs
+                        , expandedJobs = Set.empty
+                        , jobDetails = List.map (\job -> ( job.jobsetId, Nothing )) jobs
+                        , apiBaseUrl = apiBaseUrl
+                        }
+                    , Cmd.none
+                    )
 
-                        _ ->
-                            ( model, Cmd.none )
-
-                Err error ->
+                ( Err error, _ ) ->
                     ( Failed error, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
 
         ToggleJobExpanded jobsetId ->
             case model of
@@ -113,7 +113,7 @@ update msg model =
 
                         cmd =
                             if shouldLoad then
-                                Api.getJobSetDetails jobsetId (GotJobDetails jobsetId)
+                                Api.getJobSetDetails data.apiBaseUrl jobsetId (GotJobDetails jobsetId)
 
                             else
                                 Cmd.none
@@ -152,7 +152,7 @@ update msg model =
                     if hasJobDetails event.jobsetId data.jobDetails then
                         -- Refetch the job details to get final state
                         ( model
-                        , Api.getJobSetDetails event.jobsetId (GotJobDetails event.jobsetId)
+                        , Api.getJobSetDetails data.apiBaseUrl event.jobsetId (GotJobDetails event.jobsetId)
                         )
 
                     else
@@ -190,7 +190,7 @@ updateJobDetails jobsetId newDetails detailsList =
 view : Model -> Html Msg
 view model =
     case model of
-        Loading sha ->
+        Loading _ sha ->
             div [ class "pa4" ]
                 [ viewCommitHeader sha Nothing Nothing
                 , Loader.viewWithMessage "Loading jobs..."
