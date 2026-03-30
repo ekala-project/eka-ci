@@ -12,6 +12,8 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info};
 
 use crate::auth::{AdminUser, AuthUser, JwtService, OAuthConfig};
@@ -89,9 +91,27 @@ impl WebService {
     }
 
     pub async fn run(self, cancellation_token: CancellationToken) {
+        // Determine the path to the frontend static files
+        // When running from the project root, this should be "frontend/static"
+        let static_dir = std::env::current_dir()
+            .expect("Failed to get current directory")
+            .join("frontend")
+            .join("static");
+
+        info!("Serving static files from: {:?}", static_dir);
+
+        // Create static file service with fallback to index.html for SPA routing
+        let serve_dir = ServeDir::new(&static_dir)
+            .not_found_service(ServeFile::new(static_dir.join("index.html")));
+
+        // Configure CORS to allow frontend requests
+        let cors = CorsLayer::permissive();
+
         let app = Router::new()
             .nest("/v1", api_routes())
             .nest("/github", github_routes())
+            .fallback_service(serve_dir)
+            .layer(cors)
             .with_state(self.state);
 
         if let Err(e) = axum::serve(self.listener, app)
