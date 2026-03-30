@@ -152,10 +152,19 @@ impl Config {
                 String::new()
             });
 
+        // Determine the actual bind address for the OAuth callback URL
+        let bind_addr = args.addr
+            .or(file.web.address)
+            .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1));
+        let bind_port = args.port.or(file.web.port).unwrap_or(3030);
+
         let oauth_redirect_url = std::env::var("GITHUB_OAUTH_REDIRECT_URL")
             .ok()
             .or(file.oauth.redirect_url)
-            .unwrap_or_else(|| "http://localhost:8080/auth/callback".to_string());
+            .unwrap_or_else(|| {
+                // Default to the actual server address and port
+                format!("http://{}:{}/github/auth/callback", bind_addr, bind_port)
+            });
 
         let jwt_secret = std::env::var("JWT_SECRET")
             .ok()
@@ -175,12 +184,7 @@ impl Config {
 
         Ok(Config {
             web: ConfigWeb {
-                address: SocketAddrV4::new(
-                    args.addr
-                        .or(file.web.address)
-                        .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1)),
-                    args.port.or(file.web.port).unwrap_or(3030),
-                ),
+                address: SocketAddrV4::new(bind_addr, bind_port),
             },
             unix: ConfigUnix {
                 socket_path: match args.socket.or(file.unix.socket_path) {
