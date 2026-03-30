@@ -9,10 +9,11 @@ module Pages.Drv exposing
 {-| Derivation details page.
 
 Shows comprehensive information about a specific derivation including:
-- Derivation metadata
-- Build status
-- Dependencies tree
-- Build logs (if available)
+
+  - Derivation metadata
+  - Build status
+  - Dependencies tree
+  - Build logs (if available)
 
 -}
 
@@ -33,7 +34,7 @@ import Ports
 {-| Page model.
 -}
 type Model
-    = Loading String
+    = Loading String String
     | Loaded DrvData
     | Failed Http.Error
 
@@ -45,6 +46,7 @@ type alias DrvData =
     , dependencies : List DrvDependency
     , logViewer : LogViewer.Model
     , drvTree : DrvTree.Model
+    , apiBaseUrl : String
     }
 
 
@@ -61,12 +63,12 @@ type Msg
 
 {-| Initialize the page with a derivation path.
 -}
-init : String -> ( Model, Cmd Msg )
-init drvPath =
-    ( Loading drvPath
+init : String -> String -> ( Model, Cmd Msg )
+init apiBaseUrl drvPath =
+    ( Loading apiBaseUrl drvPath
     , Cmd.batch
-        [ Api.getDrvDetails drvPath GotDrvDetails
-        , Api.getDrvDependencies drvPath GotDrvDependencies
+        [ Api.getDrvDetails apiBaseUrl drvPath GotDrvDetails
+        , Api.getDrvDependencies apiBaseUrl drvPath GotDrvDependencies
         , Ports.websocketOut (Ports.encodeSubscribeMessage "drv" drvPath)
         ]
     )
@@ -81,12 +83,13 @@ update msg model =
             case result of
                 Ok details ->
                     case model of
-                        Loading _ ->
+                        Loading apiBaseUrl _ ->
                             ( Loaded
                                 { details = details
                                 , dependencies = []
                                 , logViewer = LogViewer.init
                                 , drvTree = DrvTree.init
+                                , apiBaseUrl = apiBaseUrl
                                 }
                             , Cmd.none
                             )
@@ -192,7 +195,7 @@ update msg model =
 view : Model -> Html Msg
 view model =
     case model of
-        Loading drvPath ->
+        Loading _ drvPath ->
             div [ class "pa4" ]
                 [ h1 [ class "f2 fw6 mb4 monospace truncate" ]
                     [ text drvPath ]

@@ -27,7 +27,7 @@ import Route
 {-| Page model with search functionality.
 -}
 type Model
-    = Loading
+    = Loading String
     | Loaded LoadedData
     | Failed Http.Error
 
@@ -37,6 +37,7 @@ type Model
 type alias LoadedData =
     { repositories : List Repository
     , searchTerm : String
+    , apiBaseUrl : String
     }
 
 
@@ -49,10 +50,10 @@ type Msg
 
 {-| Initialize the page.
 -}
-init : ( Model, Cmd Msg )
-init =
-    ( Loading
-    , Api.getRepositories GotRepositories
+init : String -> ( Model, Cmd Msg )
+init apiBaseUrl =
+    ( Loading apiBaseUrl
+    , Api.getRepositories apiBaseUrl GotRepositories
     )
 
 
@@ -62,16 +63,27 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         GotRepositories result ->
-            case result of
-                Ok repos ->
+            case ( result, model ) of
+                ( Ok repos, Loading apiBaseUrl ) ->
                     ( Loaded
                         { repositories = repos
                         , searchTerm = ""
+                        , apiBaseUrl = apiBaseUrl
                         }
                     , Cmd.none
                     )
 
-                Err error ->
+                ( Ok repos, _ ) ->
+                    -- Shouldn't happen, but handle gracefully
+                    ( Loaded
+                        { repositories = repos
+                        , searchTerm = ""
+                        , apiBaseUrl = ""
+                        }
+                    , Cmd.none
+                    )
+
+                ( Err error, _ ) ->
                     ( Failed error, Cmd.none )
 
         SearchInput term ->
@@ -93,7 +105,7 @@ view model =
         [ h1 [ class "f2 fw6 mb4" ]
             [ text "Repositories" ]
         , case model of
-            Loading ->
+            Loading _ ->
                 Loader.viewWithMessage "Loading repositories..."
 
             Failed error ->

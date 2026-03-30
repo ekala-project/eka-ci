@@ -43,8 +43,16 @@
         <script type="module">
             import { setupPorts } from './ports.js';
 
-            // Initialize the Elm application
-            const app = Elm.Main.init();
+            // Calculate API base URL from current location
+            // This allows the frontend to work whether served directly or via reverse proxy
+            const apiBaseUrl = `${window.location.origin}/v1`;
+
+            // Initialize the Elm application with configuration
+            const app = Elm.Main.init({
+                flags: {
+                    apiBaseUrl: apiBaseUrl
+                }
+            });
 
             // Set up WebSocket ports
             setupPorts(app);

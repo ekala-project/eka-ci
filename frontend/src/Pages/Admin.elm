@@ -23,7 +23,8 @@ import Html.Attributes exposing (class)
 {-| Page model.
 -}
 type alias Model =
-    {}
+    { apiBaseUrl : String
+    }
 
 
 {-| Page messages.
@@ -34,9 +35,9 @@ type Msg
 
 {-| Initialize the page.
 -}
-init : ( Model, Cmd Msg )
-init =
-    ( {}, Cmd.none )
+init : String -> ( Model, Cmd Msg )
+init apiBaseUrl =
+    ( { apiBaseUrl = apiBaseUrl }, Cmd.none )
 
 
 {-| Update the page.

@@ -27,9 +27,16 @@ import Route exposing (Route)
 import Url exposing (Url)
 
 
+{-| Flags passed from JavaScript on initialization.
+-}
+type alias Flags =
+    { apiBaseUrl : String
+    }
+
+
 {-| Main program entry point.
 -}
-main : Program () Model Msg
+main : Program Flags Model Msg
 main =
     Browser.application
         { init = init
@@ -45,13 +52,14 @@ main =
 -- MODEL
 
 
-{-| Application model tracking navigation, current page, and auth state.
+{-| Application model tracking navigation, current page, auth state, and configuration.
 -}
 type alias Model =
     { navKey : Nav.Key
     , route : Route
     , page : Page
     , authState : AuthState
+    , apiBaseUrl : String
     }
 
 
@@ -69,19 +77,20 @@ type Page
 
 {-| Initialize the application.
 -}
-init : () -> Url -> Nav.Key -> ( Model, Cmd Msg )
-init _ url navKey =
+init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
+init flags url navKey =
     let
         route =
             Route.fromUrl url
 
         ( page, cmd ) =
-            initPage route
+            initPage flags.apiBaseUrl route
     in
     ( { navKey = navKey
       , route = route
       , page = page
       , authState = Auth.init
+      , apiBaseUrl = flags.apiBaseUrl
       }
     , cmd
     )
@@ -89,48 +98,48 @@ init _ url navKey =
 
 {-| Initialize a page based on the current route.
 -}
-initPage : Route -> ( Page, Cmd Msg )
-initPage route =
+initPage : String -> Route -> ( Page, Cmd Msg )
+initPage apiBaseUrl route =
     case route of
         Route.Home ->
             let
                 ( model, cmd ) =
-                    Home.init
+                    Home.init apiBaseUrl
             in
             ( HomePage model, Cmd.map HomeMsg cmd )
 
         Route.Repository owner repo ->
             let
                 ( model, cmd ) =
-                    Repository.init owner repo
+                    Repository.init apiBaseUrl owner repo
             in
             ( RepositoryPage model, Cmd.map RepositoryMsg cmd )
 
         Route.Commit sha ->
             let
                 ( model, cmd ) =
-                    Commit.init sha
+                    Commit.init apiBaseUrl sha
             in
             ( CommitPage model, Cmd.map CommitMsg cmd )
 
         Route.Job jobsetId ->
             let
                 ( model, cmd ) =
-                    Job.init jobsetId
+                    Job.init apiBaseUrl jobsetId
             in
             ( JobPage model, Cmd.map JobMsg cmd )
 
         Route.Drv drvPath ->
             let
                 ( model, cmd ) =
-                    Drv.init drvPath
+                    Drv.init apiBaseUrl drvPath
             in
             ( DrvPage model, Cmd.map DrvMsg cmd )
 
         Route.Admin ->
             let
                 ( model, cmd ) =
-                    Admin.init
+                    Admin.init apiBaseUrl
             in
             ( AdminPage model, Cmd.map AdminMsg cmd )
 
@@ -182,7 +191,7 @@ update msg model =
                     unsubscribeFromPage model.page
 
                 ( newPage, cmd ) =
-                    initPage newRoute
+                    initPage model.apiBaseUrl newRoute
             in
             ( { model
                 | route = newRoute
