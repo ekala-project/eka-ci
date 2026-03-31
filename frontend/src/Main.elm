@@ -17,6 +17,7 @@ import Http
 import Json.Decode as D
 import Json.Encode as E
 import Pages.Admin as Admin
+import Pages.AuthCallback as AuthCallback
 import Pages.Commit as Commit
 import Pages.Drv as Drv
 import Pages.Home as Home
@@ -72,6 +73,7 @@ type Page
     | JobPage Job.Model
     | DrvPage Drv.Model
     | AdminPage Admin.Model
+    | AuthCallbackPage AuthCallback.Model
     | NotFoundPage
 
 
@@ -84,7 +86,7 @@ init flags url navKey =
             Route.fromUrl url
 
         ( page, cmd ) =
-            initPage flags.apiBaseUrl route
+            initPage flags.apiBaseUrl url route
     in
     ( { navKey = navKey
       , route = route
@@ -98,8 +100,8 @@ init flags url navKey =
 
 {-| Initialize a page based on the current route.
 -}
-initPage : String -> Route -> ( Page, Cmd Msg )
-initPage apiBaseUrl route =
+initPage : String -> Url -> Route -> ( Page, Cmd Msg )
+initPage apiBaseUrl url route =
     case route of
         Route.Home ->
             let
@@ -143,6 +145,13 @@ initPage apiBaseUrl route =
             in
             ( AdminPage model, Cmd.map AdminMsg cmd )
 
+        Route.AuthCallback ->
+            let
+                ( model, cmd ) =
+                    AuthCallback.init apiBaseUrl url
+            in
+            ( AuthCallbackPage model, Cmd.map AuthCallbackMsg cmd )
+
         Route.NotFound ->
             ( NotFoundPage, Cmd.none )
 
@@ -162,6 +171,7 @@ type Msg
     | JobMsg Job.Msg
     | DrvMsg Drv.Msg
     | AdminMsg Admin.Msg
+    | AuthCallbackMsg AuthCallback.Msg
     | WebSocketMessage Ports.IncomingMessage
     | TokenReceived (Maybe String)
     | GotUserInfo (Result Http.Error User)
@@ -176,7 +186,12 @@ update msg model =
         LinkClicked urlRequest ->
             case urlRequest of
                 Browser.Internal url ->
-                    ( model, Nav.pushUrl model.navKey (Url.toString url) )
+                    -- Backend routes (like OAuth) need full page navigation
+                    if isBackendRoute url then
+                        ( model, Nav.load (Url.toString url) )
+
+                    else
+                        ( model, Nav.pushUrl model.navKey (Url.toString url) )
 
                 Browser.External href ->
                     ( model, Nav.load href )
@@ -191,7 +206,7 @@ update msg model =
                     unsubscribeFromPage model.page
 
                 ( newPage, cmd ) =
-                    initPage model.apiBaseUrl newRoute
+                    initPage model.apiBaseUrl url newRoute
             in
             ( { model
                 | route = newRoute
@@ -238,6 +253,39 @@ update msg model =
                     ( { model | page = AdminPage newModel }
                     , Cmd.map AdminMsg cmd
                     )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        AuthCallbackMsg authCallbackMsg ->
+            case model.page of
+                AuthCallbackPage authCallbackModel ->
+                    let
+                        ( newModel, cmd ) =
+                            AuthCallback.update authCallbackMsg authCallbackModel
+                    in
+                    -- Check if login was successful
+                    case newModel of
+                        AuthCallback.Success token user ->
+                            -- Login successful! Store token and redirect
+                            ( { model
+                                | page = AuthCallbackPage newModel
+                                , authState =
+                                    model.authState
+                                        |> Auth.updateToken (Just token)
+                                        |> Auth.updateUser (Just user)
+                              }
+                            , Cmd.batch
+                                [ Cmd.map AuthCallbackMsg cmd
+                                , Ports.storeToken token
+                                , Nav.pushUrl model.navKey (Route.toHref Route.Home)
+                                ]
+                            )
+
+                        _ ->
+                            ( { model | page = AuthCallbackPage newModel }
+                            , Cmd.map AuthCallbackMsg cmd
+                            )
 
                 _ ->
                     ( model, Cmd.none )
@@ -409,6 +457,17 @@ update msg model =
 -- HELPERS
 
 
+{-| Check if a URL path is a backend route that should trigger full page navigation.
+
+Backend routes are not handled by the Elm SPA and require a server redirect.
+For example, OAuth endpoints need to redirect to GitHub and back to the server.
+
+-}
+isBackendRoute : Url -> Bool
+isBackendRoute url =
+    String.startsWith "/github/auth/" url.path
+
+
 {-| Unsubscribe from WebSocket resources when leaving a page.
 -}
 unsubscribeFromPage : Page -> Cmd Msg
@@ -529,6 +588,9 @@ pageTitle route =
         Route.Admin ->
             "Admin - EkaCI"
 
+        Route.AuthCallback ->
+            "Authenticating - EkaCI"
+
         Route.NotFound ->
             "Not Found - EkaCI"
 
@@ -563,6 +625,9 @@ viewPage authState page =
 
             else
                 viewNotAuthenticated
+
+        AuthCallbackPage model ->
+            Html.map AuthCallbackMsg (AuthCallback.view model)
 
         NotFoundPage ->
             viewNotFound
