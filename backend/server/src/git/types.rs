@@ -99,7 +99,7 @@ impl GitWorkspace {
 
         let mut worktree_path = repo_path_prefix.clone();
         worktree_path.push("worktrees");
-        worktree_path.push(&rev_parse);
+        worktree_path.push(rev_parse);
 
         repo_path_prefix.push("master");
         Self {

@@ -47,9 +47,8 @@ pub async fn handle_webhook_payload(
         },
         // We probably don't want to react to every push
         // WEP::Push(pr) => handle_github_push(*pr).await,
-        _ => return,
-    };
-    return;
+        _ => (),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,7 +131,7 @@ async fn handle_github_pr(
         PRWEA::Opened | PRWEA::Synchronize | PRWEA::Reopened => {
             debug!("Received event for PR #{}", &pr.pull_request.number);
 
-            if require_approval && (!is_valid_user(&pr.pull_request, &db_service).await.is_ok()) {
+            if require_approval && is_valid_user(&pr.pull_request, &db_service).await.is_err() {
                 if let Err(e) = github_sender
                     .send(GitHubTask::CreateApprovalRequiredCheckRun {
                         ci_check_info: CICheckInfo::from_gh_pr_head(&pr.pull_request),
@@ -187,7 +186,7 @@ async fn handle_github_pr(
                 &pr.pull_request.number
             );
 
-            if require_approval && (!is_valid_user(&pr.pull_request, &db_service).await.is_ok()) {
+            if require_approval && is_valid_user(&pr.pull_request, &db_service).await.is_err() {
                 if let Err(e) = github_sender
                     .send(GitHubTask::CreateApprovalRequiredCheckRun {
                         ci_check_info: CICheckInfo::from_gh_pr_head(&pr.pull_request),

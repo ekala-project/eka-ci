@@ -106,7 +106,7 @@ pub struct CICheckInfo {
 impl CICheckInfo {
     pub fn from_gh_pr_base(pr: &PullRequest) -> Self {
         let commit = pr.base.sha.clone();
-        let repo = (*pr.base).repo.as_ref().unwrap();
+        let repo = pr.base.repo.as_ref().unwrap();
         let owner = repo.owner.as_ref().unwrap().login.clone();
         let repo_name = repo.name.clone();
 
@@ -121,7 +121,7 @@ impl CICheckInfo {
     pub fn from_gh_pr_head(pr: &PullRequest) -> Self {
         let commit = pr.head.sha.clone();
         let base_commit = pr.base.sha.clone();
-        let repo = (*pr.head).repo.as_ref().unwrap();
+        let repo = pr.head.repo.as_ref().unwrap();
         let owner = repo.owner.as_ref().unwrap().login.clone();
         let repo_name = repo.name.clone();
 
@@ -141,7 +141,7 @@ impl CICheckInfo {
         initial_status: DrvBuildState,
         difference: &JobDifference,
     ) -> Result<CheckRun> {
-        let title = format!("{} / {} ({})", name, difference.to_string(), jobset_name);
+        let title = format!("{} / {} ({})", name, difference, jobset_name);
         let (gh_status, gh_conclusion) = match difference {
             // If it's been removed, we don't really care what the previous status was
             JobDifference::Removed => (GHStatus::Completed, Some(GHConclusion::Neutral)),

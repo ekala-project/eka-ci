@@ -138,5 +138,5 @@ pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
         .next()
         .context("Invalid derivation show information")?
         .1;
-    Ok(drv_info.into_drv_info()?)
+    drv_info.into_drv_info()
 }

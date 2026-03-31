@@ -147,7 +147,7 @@ impl EvalService {
         }
 
         // If not in cache, check the database
-        match self.db_service.get_drv(&drv_id).await {
+        match self.db_service.get_drv(drv_id).await {
             Ok(Some(drv)) => {
                 // Found in database, add to cache for future lookups
                 self.drv_map.put(drv_id.clone(), drv);

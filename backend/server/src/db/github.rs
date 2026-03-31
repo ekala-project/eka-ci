@@ -246,9 +246,9 @@ pub async fn new_jobs(
         ) j ON d.ROWID = j.drv_id
         "#,
     )
-    .bind(&head_jobset_id)
-    .bind(&head_jobset_id)
-    .bind(&base_jobset_id)
+    .bind(head_jobset_id)
+    .bind(head_jobset_id)
+    .bind(base_jobset_id)
     .fetch_all(pool)
     .await?;
 
@@ -275,8 +275,8 @@ pub async fn removed_jobs(
         WHERE a.jobset = ?
         "#,
     )
-    .bind(&head_jobset_id)
-    .bind(&base_jobset_id)
+    .bind(head_jobset_id)
+    .bind(base_jobset_id)
     .fetch_all(pool)
     .await?;
 
@@ -309,7 +309,7 @@ pub async fn job_difference(
             .await?;
 
     // If there's no base jobset, treat all jobs as new values
-    if let None = maybe_base_jobset_id {
+    if maybe_base_jobset_id.is_none() {
         let new_jobs = jobs_for_jobset_id(head_jobset_id, pool).await?;
         return Ok((new_jobs, Vec::new(), Vec::new()));
     }
@@ -330,8 +330,8 @@ pub async fn job_difference(
         ) j ON d.ROWID = j.drv_id
         "#,
     )
-    .bind(&head_jobset_id)
-    .bind(&base_jobset_id)
+    .bind(head_jobset_id)
+    .bind(base_jobset_id)
     .fetch_all(pool)
     .await?;
 

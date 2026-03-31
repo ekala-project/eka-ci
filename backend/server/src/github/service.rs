@@ -110,10 +110,10 @@ impl GitHubService {
             .db_service
             .create_github_jobset_with_jobs(
                 &ci_check_info.commit,
-                &name,
+                name,
                 &ci_check_info.owner,
                 &ci_check_info.repo_name,
-                &jobs,
+                jobs,
             )
             .await?;
 
@@ -124,8 +124,8 @@ impl GitHubService {
                 .db_service
                 .job_difference(
                     &ci_check_info.commit,
-                    &ci_check_info.base_commit.as_ref().unwrap(),
-                    &name,
+                    ci_check_info.base_commit.as_ref().unwrap(),
+                    name,
                 )
                 .await?;
 
