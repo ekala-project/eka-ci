@@ -54,8 +54,7 @@ impl AsyncService<GitTask> for GitService {
                 self.repo_sender.send(repo_task).await?;
             },
             GitTask::GitHubCheckout(pr) => {
-                let pr_base_repo =
-                    GitRepo::from_gh_repo(pr.base.repo.as_ref().unwrap().clone())?;
+                let pr_base_repo = GitRepo::from_gh_repo(pr.base.repo.as_ref().unwrap().clone())?;
                 let head_repo = GitRepo::from_gh_repo(pr.head.repo.as_ref().unwrap().clone())?;
 
                 let base_repo = GitWorkspace::from_git_repo(pr_base_repo.clone(), &pr.base.sha);
