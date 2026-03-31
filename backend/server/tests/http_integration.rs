@@ -126,6 +126,7 @@ async fn test_get_drv_endpoint() {
 }
 
 #[tokio::test]
+#[ignore] // Requires Nix to create and build real derivations
 async fn test_drv_state_updates_via_api() {
     // Setup test environment
     let ctx = TestContext::new().await.unwrap();
