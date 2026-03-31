@@ -208,9 +208,12 @@ async fn local_platforms() -> Result<Vec<String>> {
         .filter(|x| x.starts_with("system ="))
         .collect();
 
-    let system_str = system_line.split(" ").nth(2).unwrap();
+    let system_str = system_line.split(" ").nth(2);
 
-    let systems = system_str.split(",").map(|x| x.to_string()).collect();
+    let systems = system_str
+        .iter()
+        .flat_map(|str| str.split(",").map(|x| x.to_string()))
+        .collect();
 
     Ok(systems)
 }
