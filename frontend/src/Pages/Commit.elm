@@ -9,10 +9,11 @@ module Pages.Commit exposing
 {-| Commit page displaying jobs for a commit with real-time updates.
 
 Shows all jobs (builds) associated with a specific commit SHA with:
-- Rich commit header
-- Expandable job sections
-- Progress bars for each job
-- Real-time WebSocket updates
+
+  - Rich commit header
+  - Expandable job sections
+  - Progress bars for each job
+  - Real-time WebSocket updates
 
 -}
 

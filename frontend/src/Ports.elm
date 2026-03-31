@@ -1,17 +1,17 @@
 port module Ports exposing
-    ( websocketOut
-    , websocketIn
-    , WebSocketMessage(..)
+    ( BuildStateChangeEvent
     , IncomingMessage(..)
-    , BuildStateChangeEvent
     , JobCompleteEvent
     , LogLineEvent
+    , WebSocketMessage(..)
+    , clearToken
+    , decodeIncomingMessage
     , encodeSubscribeMessage
     , encodeUnsubscribeMessage
-    , decodeIncomingMessage
     , storeToken
-    , clearToken
     , tokenReceived
+    , websocketIn
+    , websocketOut
     )
 
 {-| Ports for WebSocket communication and localStorage management.

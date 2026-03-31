@@ -1,7 +1,7 @@
 module Util.Time exposing
-    ( formatRelative
-    , formatAbsolute
+    ( formatAbsolute
     , formatDuration
+    , formatRelative
     )
 
 {-| Time formatting utilities for the EkaCI frontend.

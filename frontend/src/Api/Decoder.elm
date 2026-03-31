@@ -1,15 +1,15 @@
 module Api.Decoder exposing
-    ( repository
-    , repositoryList
+    ( buildState
     , commitJob
     , commitJobList
+    , drvDependency
+    , drvDependencyList
+    , drvDetails
     , jobSetDetails
     , jobSetDrv
     , jobSetDrvList
-    , drvDetails
-    , drvDependency
-    , drvDependencyList
-    , buildState
+    , repository
+    , repositoryList
     )
 
 {-| JSON decoders for backend API responses.
@@ -130,10 +130,11 @@ drvDependencyList =
 {-| Decode a DrvBuildState from JSON.
 
 The backend serializes this as a tagged union, e.g.:
-- "Queued"
-- "Buildable"
-- {"Completed": "Success"}
-- {"Interrupted": "Timeout"}
+
+  - "Queued"
+  - "Buildable"
+  - {"Completed": "Success"}
+  - {"Interrupted": "Timeout"}
 
 -}
 buildState : Decoder BS.DrvBuildState

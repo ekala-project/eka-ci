@@ -9,10 +9,11 @@ module Pages.Admin exposing
 {-| Admin page (placeholder for future functionality).
 
 Future features might include:
-- System settings
-- User management
-- Build worker status
-- System metrics and monitoring
+
+  - System settings
+  - User management
+  - Build worker status
+  - System metrics and monitoring
 
 -}
 

@@ -1,8 +1,8 @@
 module Route exposing
     ( Route(..)
     , fromUrl
-    , toHref
     , pushUrl
+    , toHref
     )
 
 {-| Routing for the application.

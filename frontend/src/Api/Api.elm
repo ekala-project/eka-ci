@@ -1,11 +1,11 @@
 module Api.Api exposing
-    ( getRepositories
-    , getRepository
-    , getCommitJobs
+    ( getCommitJobs
+    , getDrvDependencies
+    , getDrvDetails
     , getJobSetDetails
     , getJobSetDrvs
-    , getDrvDetails
-    , getDrvDependencies
+    , getRepositories
+    , getRepository
     )
 
 {-| HTTP API client for the EkaCI backend.
