@@ -153,7 +153,8 @@ impl RecorderWorker {
                     .map(|d| d.build_state)
                     .unwrap_or(DBS::Queued);
 
-                self.update_and_broadcast(&drv, &old_state, &task.result).await?;
+                self.update_and_broadcast(&drv, &old_state, &task.result)
+                    .await?;
 
                 // Clear any transitive failures caused by this drv (if it was previously failed)
                 let unblocked_drvs = self.db_service.clear_transitive_failures(&drv).await?;
@@ -175,7 +176,8 @@ impl RecorderWorker {
                             .map(|d| d.build_state)
                             .unwrap_or(DBS::TransitiveFailure);
 
-                        self.update_and_broadcast(&unblocked_drv, &old_state, &DBS::Queued).await?;
+                        self.update_and_broadcast(&unblocked_drv, &old_state, &DBS::Queued)
+                            .await?;
 
                         let task = IngressTask::CheckBuildable(unblocked_drv);
                         self.ingress_sender.send(task).await?;
@@ -210,7 +212,8 @@ impl RecorderWorker {
                             drv.store_path()
                         );
                         let old_state = current_drv.build_state.clone();
-                        self.update_and_broadcast(&drv, &old_state, &DBS::FailedRetry).await?;
+                        self.update_and_broadcast(&drv, &old_state, &DBS::FailedRetry)
+                            .await?;
 
                         // Re-queue immediately for retry
                         let task = IngressTask::CheckBuildable(drv.clone());
@@ -223,7 +226,8 @@ impl RecorderWorker {
                             drv.store_path()
                         );
                         let old_state = current_drv.build_state.clone();
-                        self.update_and_broadcast(&drv, &old_state, &task.result).await?;
+                        self.update_and_broadcast(&drv, &old_state, &task.result)
+                            .await?;
 
                         // Get all transitive referrers and mark as TransitiveFailure
                         let transitive_referrers =
@@ -242,7 +246,8 @@ impl RecorderWorker {
                             drv.store_path()
                         );
                         let old_state = current_drv.build_state.clone();
-                        self.update_and_broadcast(&drv, &old_state, &task.result).await?;
+                        self.update_and_broadcast(&drv, &old_state, &task.result)
+                            .await?;
                     },
                 }
             },

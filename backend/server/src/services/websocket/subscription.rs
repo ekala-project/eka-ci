@@ -30,8 +30,7 @@ impl SubscriptionManager {
 
     /// Add a subscription
     pub fn subscribe(&mut self, resource: ResourceType, id: String) {
-        self.subscriptions
-            .insert(Subscription::new(resource, id));
+        self.subscriptions.insert(Subscription::new(resource, id));
     }
 
     /// Remove a subscription
@@ -44,21 +43,23 @@ impl SubscriptionManager {
         match event {
             ServerEvent::BuildStateChange(change) => {
                 // Check if subscribed to this specific drv
-                self.subscriptions
-                    .contains(&Subscription::new(ResourceType::Drv, change.drv_path.clone()))
-            }
+                self.subscriptions.contains(&Subscription::new(
+                    ResourceType::Drv,
+                    change.drv_path.clone(),
+                ))
+            },
             ServerEvent::JobComplete(complete) => {
                 // Check if subscribed to this specific job
                 self.subscriptions.contains(&Subscription::new(
                     ResourceType::Job,
                     complete.jobset_id.to_string(),
                 ))
-            }
+            },
             ServerEvent::LogLine(log) => {
                 // Check if subscribed to this specific drv
                 self.subscriptions
                     .contains(&Subscription::new(ResourceType::Drv, log.drv_path.clone()))
-            }
+            },
         }
     }
 }

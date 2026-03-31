@@ -470,7 +470,12 @@ async fn handle_github_installation(
                     let repo_owner = repo.full_name.split('/').next().unwrap_or(account_login);
 
                     if let Err(e) = db_service
-                        .upsert_installation_repository(installation_id, repo_id, repo_name, repo_owner)
+                        .upsert_installation_repository(
+                            installation_id,
+                            repo_id,
+                            repo_name,
+                            repo_owner,
+                        )
                         .await
                     {
                         warn!(
@@ -497,10 +502,7 @@ async fn handle_github_installation(
         IWEA::Suspend => {
             // App was suspended
             if let Err(e) = db_service.suspend_installation(installation_id).await {
-                warn!(
-                    "Failed to suspend installation {}: {}",
-                    installation_id, e
-                );
+                warn!("Failed to suspend installation {}: {}", installation_id, e);
             } else {
                 debug!("Suspended installation {}", installation_id);
             }

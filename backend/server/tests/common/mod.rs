@@ -4,14 +4,13 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
-use tempfile::TempDir;
-use tokio::time::sleep;
-
+use anyhow::{Context, Result, anyhow};
+use eka_ci_server::db::DbService;
 use eka_ci_server::db::model::build_event::DrvBuildState;
 use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::db::model::drv_id::DrvId;
-use eka_ci_server::db::DbService;
+use tempfile::TempDir;
+use tokio::time::sleep;
 
 /// Test context containing temporary directories and services.
 pub struct TestContext {
@@ -112,10 +111,7 @@ fn current_system() -> &'static str {
 ///
 /// Useful for unit tests where you don't need actual nix derivations.
 pub fn test_drv(name: &str, system: &str) -> Drv {
-    let drv_id_str = format!(
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0-{}.drv",
-        name
-    );
+    let drv_id_str = format!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0-{}.drv", name);
     Drv {
         drv_path: DrvId::try_from(drv_id_str.as_str()).unwrap(),
         system: system.to_string(),

@@ -181,7 +181,9 @@ pub async fn is_repository_installed(
 }
 
 /// List all installed repositories
-pub async fn list_installed_repositories(pool: &Pool<Sqlite>) -> Result<Vec<InstallationRepository>> {
+pub async fn list_installed_repositories(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<InstallationRepository>> {
     let repos = sqlx::query_as(
         r#"
         SELECT installation_id, repo_id, repo_name, repo_owner, added_at

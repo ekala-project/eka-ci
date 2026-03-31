@@ -8,18 +8,16 @@ mod common;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
-use serde_json::Value;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-
+use common::{TestContext, create_simple_drv, insert_test_drv, test_drv, wait_for_drv_state};
 use eka_ci_server::auth::{JwtService, OAuthConfig};
 use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
 use eka_ci_server::services::WebSocketService;
 use eka_ci_server::web::WebService;
-
-use common::{create_simple_drv, insert_test_drv, test_drv, wait_for_drv_state, TestContext};
+use serde_json::Value;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Helper to create a test web server
 async fn create_test_server(
@@ -133,8 +131,8 @@ async fn test_drv_state_updates_via_api() {
     let ctx = TestContext::new().await.unwrap();
 
     // Create a simple derivation that will succeed
-    let drv_path = create_simple_drv("test-api-update", true)
-        .expect("Failed to create test derivation");
+    let drv_path =
+        create_simple_drv("test-api-update", true).expect("Failed to create test derivation");
 
     println!("Created test derivation: {}", drv_path);
 
@@ -195,7 +193,9 @@ async fn test_drv_state_updates_via_api() {
     let body: Value = response.json().await.expect("Failed to parse JSON");
 
     // Verify the API returns the updated state
-    let build_state = body["build_state"].as_object().expect("build_state should be object");
+    let build_state = body["build_state"]
+        .as_object()
+        .expect("build_state should be object");
     assert!(build_state.contains_key("Completed"));
     assert_eq!(build_state["Completed"], "Success");
 
@@ -229,7 +229,11 @@ async fn test_get_drv_not_found() {
     let client = reqwest::Client::new();
     let fake_drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0-nonexistent.drv";
     let url = format!("{}/v1/drvs/{}", base_url, fake_drv);
-    let response = client.get(&url).send().await.expect("Failed to send request");
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
 
     // Should return 404
     assert_eq!(response.status(), 404);
@@ -275,14 +279,20 @@ async fn test_get_drv_dependencies_endpoint() {
     // Get dependencies for drv_a
     let client = reqwest::Client::new();
     let url = format!("{}/v1/drvs/{}/dependencies", base_url, &*drv_a.drv_path);
-    let response = client.get(&url).send().await.expect("Failed to send request");
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
 
     assert_eq!(response.status(), 200);
 
     let body: Value = response.json().await.expect("Failed to parse JSON");
 
     // Should have one dependency (drv_b)
-    let dependencies = body["dependencies"].as_array().expect("dependencies should be an array");
+    let dependencies = body["dependencies"]
+        .as_array()
+        .expect("dependencies should be an array");
     assert_eq!(dependencies.len(), 1);
     assert_eq!(dependencies[0]["drv_path"], &*drv_b.drv_path);
     assert_eq!(body["dependency_count"], 1);
