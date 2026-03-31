@@ -54,7 +54,7 @@ pub async fn insert_drvs_and_references(
                 row.push_bind(&drv.drv_path)
                     .push_bind(&drv.system)
                     .push_bind(&drv.required_system_features)
-                    .push_bind(&drv.is_fod)
+                    .push_bind(drv.is_fod)
                     .push_bind(&drv.build_state);
             });
 
@@ -131,7 +131,7 @@ VALUES (?1, ?2, ?3, ?4, ?5)
     .bind(&drv.drv_path)
     .bind(&drv.system)
     .bind(&drv.required_system_features)
-    .bind(&drv.is_fod)
+    .bind(drv.is_fod)
     .bind(DrvBuildState::Queued)
     .execute(pool)
     .await?;

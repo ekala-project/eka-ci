@@ -89,7 +89,7 @@ impl PlatformQueue {
             loop_builds(builders, rx, platform_clone, metrics_clone).await;
         });
 
-        return tx;
+        tx
     }
 
     pub async fn loop_all_builds(mut self, mut receiver: mpsc::Receiver<BuildRequest>) {
@@ -250,7 +250,7 @@ async fn loop_builds(
             Err(TryRecvError::Empty) => {},
         }
 
-        if build_buffer.len() > 0 {
+        if !build_buffer.is_empty() {
             // Do a scan of the builder to see if they have capacity. Otherwise wait
             // TODO: think of way to poll many builders for availability without doing scan
             let permit = 'outer: loop {
