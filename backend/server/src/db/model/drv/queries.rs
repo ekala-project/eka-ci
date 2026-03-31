@@ -338,7 +338,10 @@ pub struct DrvDetails {
 }
 
 /// Get detailed information about a drv (same as get_drv, but as a serializable struct)
-pub async fn get_drv_details(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<DrvDetails>> {
+pub async fn get_drv_details(
+    drv_id: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Option<DrvDetails>> {
     let details = sqlx::query_as(
         r#"
         SELECT drv_path, system, build_state, is_fod, required_system_features
@@ -362,7 +365,10 @@ pub struct DrvDependency {
 }
 
 /// Get all dependencies of a drv with their build states
-pub async fn get_drv_dependencies(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<DrvDependency>> {
+pub async fn get_drv_dependencies(
+    drv_id: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<DrvDependency>> {
     let deps = sqlx::query_as(
         r#"
         SELECT d.drv_path, d.system, d.build_state

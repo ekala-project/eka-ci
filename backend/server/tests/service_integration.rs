@@ -7,11 +7,10 @@ mod common;
 
 use std::time::Duration;
 
+use common::{TestContext, create_simple_drv, insert_test_drv, test_drv, wait_for_drv_state};
 use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
-
-use common::{create_simple_drv, insert_test_drv, test_drv, wait_for_drv_state, TestContext};
 
 #[tokio::test]
 async fn test_build_simple_drv_success() {
@@ -19,8 +18,8 @@ async fn test_build_simple_drv_success() {
     let ctx = TestContext::new().await.unwrap();
 
     // Create a simple derivation that should succeed
-    let drv_path = create_simple_drv("test-success", true)
-        .expect("Failed to create test derivation");
+    let drv_path =
+        create_simple_drv("test-success", true).expect("Failed to create test derivation");
 
     println!("Created test derivation: {}", drv_path);
 
@@ -89,8 +88,8 @@ async fn test_build_failure_retry_logic() {
     let ctx = TestContext::new().await.unwrap();
 
     // Create a simple derivation that will fail
-    let drv_path = create_simple_drv("test-failure", false)
-        .expect("Failed to create test derivation");
+    let drv_path =
+        create_simple_drv("test-failure", false).expect("Failed to create test derivation");
 
     println!("Created test derivation that will fail: {}", drv_path);
 

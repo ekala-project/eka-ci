@@ -153,7 +153,8 @@ impl Config {
             });
 
         // Determine the actual bind address for the OAuth callback URL
-        let bind_addr = args.addr
+        let bind_addr = args
+            .addr
             .or(file.web.address)
             .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1));
         let bind_port = args.port.or(file.web.port).unwrap_or(3030);

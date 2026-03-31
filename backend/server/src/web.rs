@@ -487,7 +487,11 @@ async fn list_repository_commits_handler(
     Path((owner, repo)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<CommitsQuery>,
 ) -> Result<Json<Vec<crate::db::github::CommitInfo>>, (axum::http::StatusCode, String)> {
-    match state.db_service.list_repository_commits(&owner, &repo, query.limit).await {
+    match state
+        .db_service
+        .list_repository_commits(&owner, &repo, query.limit)
+        .await
+    {
         Ok(commits) => Ok(Json(commits)),
         Err(e) => {
             error!("Failed to list commits for {}/{}: {}", owner, repo, e);
@@ -552,7 +556,11 @@ async fn get_jobset_drvs_handler(
     // TODO: Add state filter support when DrvBuildState implements FromStr
     let state_filter = None;
 
-    match state.db_service.get_jobset_drvs(jobset_id, state_filter, query.limit, query.offset).await {
+    match state
+        .db_service
+        .get_jobset_drvs(jobset_id, state_filter, query.limit, query.offset)
+        .await
+    {
         Ok(drvs) => {
             // Also get total count
             match state.db_service.count_jobset_drvs(jobset_id).await {
@@ -592,7 +600,7 @@ async fn get_drv_details_handler(
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
                 format!("Invalid derivation format: {}", e),
-            ))
+            ));
         },
     };
 
@@ -641,7 +649,7 @@ async fn get_drv_dependencies_handler(
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
                 format!("Invalid derivation format: {}", e),
-            ))
+            ));
         },
     };
 
@@ -669,7 +677,7 @@ async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| async move {
-        state.websocket_service.handle_connection(socket).await
-    })
+    ws.on_upgrade(
+        move |socket| async move { state.websocket_service.handle_connection(socket).await },
+    )
 }

@@ -113,11 +113,11 @@ impl WebSocketService {
             ClientMessage::Subscribe(sub) => {
                 debug!("Client subscribed to {:?} {}", sub.resource, sub.id);
                 subscription_manager.subscribe(sub.resource, sub.id);
-            }
+            },
             ClientMessage::Unsubscribe(unsub) => {
                 debug!("Client unsubscribed from {:?} {}", unsub.resource, unsub.id);
                 subscription_manager.unsubscribe(unsub.resource, unsub.id);
-            }
+            },
         }
 
         Ok(())

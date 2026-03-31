@@ -257,7 +257,10 @@ impl DbService {
         github::get_commit_jobs(sha, &self.pool).await
     }
 
-    pub async fn get_jobset_details(&self, jobset_id: i64) -> anyhow::Result<github::JobSetDetails> {
+    pub async fn get_jobset_details(
+        &self,
+        jobset_id: i64,
+    ) -> anyhow::Result<github::JobSetDetails> {
         github::get_jobset_details(jobset_id, &self.pool).await
     }
 
@@ -280,7 +283,10 @@ impl DbService {
         drv::get_drv_details(drv_id, &self.pool).await
     }
 
-    pub async fn get_drv_dependencies(&self, drv_id: &DrvId) -> anyhow::Result<Vec<drv::DrvDependency>> {
+    pub async fn get_drv_dependencies(
+        &self,
+        drv_id: &DrvId,
+    ) -> anyhow::Result<Vec<drv::DrvDependency>> {
         drv::get_drv_dependencies(drv_id, &self.pool).await
     }
 
