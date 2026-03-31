@@ -13,6 +13,7 @@ use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
 
 #[tokio::test]
+#[ignore] // Requires Nix to create and build real derivations
 async fn test_build_simple_drv_success() {
     // Setup test environment
     let ctx = TestContext::new().await.unwrap();
@@ -83,6 +84,7 @@ async fn test_build_simple_drv_success() {
 }
 
 #[tokio::test]
+#[ignore] // Requires Nix to create and build real derivations
 async fn test_build_failure_retry_logic() {
     // Setup test environment
     let ctx = TestContext::new().await.unwrap();
