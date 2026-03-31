@@ -8,8 +8,8 @@ and login/logout functionality.
 -}
 
 import Auth exposing (AuthState)
-import Html exposing (Html, a, button, div, header, h1, img, nav, span, text)
-import Html.Attributes exposing (class, href, src, alt)
+import Html exposing (Html, a, button, div, h1, header, img, nav, span, text)
+import Html.Attributes exposing (alt, class, href, src)
 import Html.Events exposing (onClick)
 import Route exposing (Route)
 

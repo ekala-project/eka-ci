@@ -1,10 +1,10 @@
 module Models.BuildState exposing
-    ( DrvBuildState(..)
+    ( DrvBuildInterruptionKind(..)
     , DrvBuildResult(..)
-    , DrvBuildInterruptionKind(..)
-    , toString
-    , toColor
+    , DrvBuildState(..)
     , isTerminal
+    , toColor
+    , toString
     )
 
 {-| Build state types matching the backend Rust enums.

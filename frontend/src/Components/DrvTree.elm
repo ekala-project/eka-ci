@@ -2,9 +2,9 @@ module Components.DrvTree exposing
     ( Model
     , Msg
     , init
+    , setDependencies
     , update
     , view
-    , setDependencies
     )
 
 {-| Derivation dependency tree component.

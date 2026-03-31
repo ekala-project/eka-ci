@@ -9,10 +9,11 @@ module Pages.Job exposing
 {-| Job details page showing jobset information and all derivations.
 
 Displays comprehensive information about a specific job including:
-- Job metadata (SHA, name, repository)
-- Overall progress
-- List of all derivations with their states
-- Real-time updates via WebSocket
+
+  - Job metadata (SHA, name, repository)
+  - Overall progress
+  - List of all derivations with their states
+  - Real-time updates via WebSocket
 
 -}
 

@@ -1,16 +1,16 @@
 module Auth exposing
     ( AuthState
     , User
+    , decodeLoginResponse
+    , decodeUser
+    , getUserInfo
     , init
+    , isAdmin
+    , isAuthenticated
     , login
     , logout
-    , getUserInfo
     , updateToken
     , updateUser
-    , isAuthenticated
-    , isAdmin
-    , decodeUser
-    , decodeLoginResponse
     )
 
 {-| Authentication module for EkaCI.

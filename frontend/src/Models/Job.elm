@@ -22,7 +22,7 @@ type alias CommitJob =
     }
 
 
-{-| Detailed information about a jobset (from GET /v1/jobs/{jobset_id}).
+{-| Detailed information about a jobset (from GET /v1/jobs/{jobset\_id}).
 -}
 type alias JobSetDetails =
     { jobsetId : Int
@@ -40,7 +40,7 @@ type alias JobSetDetails =
     }
 
 
-{-| A derivation in a jobset (from GET /v1/jobs/{jobset_id}/drvs).
+{-| A derivation in a jobset (from GET /v1/jobs/{jobset\_id}/drvs).
 -}
 type alias JobSetDrv =
     { drvPath : String

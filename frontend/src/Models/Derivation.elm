@@ -1,6 +1,6 @@
 module Models.Derivation exposing
-    ( DrvDetails
-    , DrvDependency
+    ( DrvDependency
+    , DrvDetails
     )
 
 {-| Derivation models matching the backend API responses.

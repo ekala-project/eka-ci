@@ -1,11 +1,11 @@
 module Components.LogViewer exposing
     ( Model
     , Msg
+    , addLine
+    , addLines
     , init
     , update
     , view
-    , addLine
-    , addLines
     )
 
 {-| Real-time build log viewer component.
