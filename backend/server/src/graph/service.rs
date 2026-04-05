@@ -4,12 +4,11 @@ use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info};
 
+use super::graph::BuildGraph;
+use crate::db::DbService;
 use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::drv::Drv;
 use crate::db::model::drv_id::DrvId;
-use crate::db::DbService;
-
-use super::graph::BuildGraph;
 
 /// Cached read-only node data for lockfree concurrent access
 #[derive(Debug, Clone)]
@@ -143,7 +142,7 @@ impl GraphService {
                 debug!("UpdateState: {:?} -> {:?}", drv_id, new_state);
                 self.update_state(&drv_id, new_state.clone()).await?;
                 let _ = response.send(Ok(()));
-            }
+            },
 
             GraphCommand::InsertDrvs {
                 drvs,
@@ -153,7 +152,7 @@ impl GraphService {
                 debug!("InsertDrvs: {} drvs, {} refs", drvs.len(), refs.len());
                 self.insert_drvs(drvs, refs).await?;
                 let _ = response.send(Ok(()));
-            }
+            },
 
             GraphCommand::PropagateFailure {
                 failed_drv,
@@ -162,7 +161,7 @@ impl GraphService {
                 debug!("PropagateFailure: {:?}", failed_drv);
                 let blocked = self.propagate_failure(&failed_drv).await?;
                 let _ = response.send(Ok(blocked));
-            }
+            },
 
             GraphCommand::ClearFailure {
                 formerly_failed,
@@ -171,24 +170,28 @@ impl GraphService {
                 debug!("ClearFailure: {:?}", formerly_failed);
                 let unblocked = self.clear_failure(&formerly_failed).await?;
                 let _ = response.send(Ok(unblocked));
-            }
+            },
 
             GraphCommand::GetBuildableDrvs { response } => {
                 let buildable = self.graph.get_drvs_by_state(&DrvBuildState::Buildable);
                 let _ = response.send(buildable);
-            }
+            },
 
             GraphCommand::GetDependents { drv_id, response } => {
                 let dependents = self.graph.get_dependents(&drv_id);
                 let _ = response.send(dependents);
-            }
+            },
         }
 
         Ok(())
     }
 
     /// Update drv state in graph and cache
-    async fn update_state(&mut self, drv_id: &DrvId, new_state: DrvBuildState) -> anyhow::Result<()> {
+    async fn update_state(
+        &mut self,
+        drv_id: &DrvId,
+        new_state: DrvBuildState,
+    ) -> anyhow::Result<()> {
         // Update in-memory graph
         self.graph.update_state(drv_id, new_state.clone());
 
@@ -208,7 +211,11 @@ impl GraphService {
     }
 
     /// Insert new drvs and edges into the graph
-    async fn insert_drvs(&mut self, drvs: Vec<Drv>, refs: Vec<(DrvId, DrvId)>) -> anyhow::Result<()> {
+    async fn insert_drvs(
+        &mut self,
+        drvs: Vec<Drv>,
+        refs: Vec<(DrvId, DrvId)>,
+    ) -> anyhow::Result<()> {
         // Insert nodes into graph
         for drv in drvs {
             let drv_id = drv.drv_path.clone();
@@ -289,7 +296,9 @@ impl GraphServiceHandle {
 
     /// Get the build state of a drv
     pub fn get_build_state(&self, drv_id: &DrvId) -> Option<DrvBuildState> {
-        self.shared_view.get(drv_id).map(|node| node.build_state.clone())
+        self.shared_view
+            .get(drv_id)
+            .map(|node| node.build_state.clone())
     }
 
     /// Get a cached node

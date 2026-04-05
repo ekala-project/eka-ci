@@ -67,9 +67,14 @@ impl SchedulerService {
         let process_collector = ProcessCollector::for_self();
         metrics_registry.register(Box::new(process_collector))?;
 
-        let (ingress_service, ingress_sender) = IngressService::init(db_service.clone(), graph_handle.clone());
-        let (recorder_service, recorder_sender) =
-            RecorderService::init(db_service.clone(), github_sender, websocket_sender, graph_command_sender);
+        let (ingress_service, ingress_sender) =
+            IngressService::init(db_service.clone(), graph_handle.clone());
+        let (recorder_service, recorder_sender) = RecorderService::init(
+            db_service.clone(),
+            github_sender,
+            websocket_sender,
+            graph_command_sender,
+        );
         let mut builders = Builder::local_from_env(
             logs_dir.clone(),
             recorder_sender.clone(),
