@@ -6,6 +6,7 @@ use tracing::{debug, warn};
 use crate::db::DbService;
 use crate::db::model::{build, build_event, drv_id};
 use crate::github::GitHubTask;
+use crate::graph::GraphCommand;
 use crate::scheduler::ingress::IngressTask;
 use crate::services::websocket::events::{BuildStateChange, JobStatsUpdate, ServerEvent};
 
@@ -22,6 +23,7 @@ pub struct RecorderService {
     recorder_receiver: mpsc::Receiver<RecorderTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+    graph_command_sender: mpsc::Sender<GraphCommand>,
 }
 
 /// Encapsulation of the Recorder thread. May want to gracefully recover from
@@ -33,6 +35,7 @@ struct RecorderWorker {
     db_service: DbService,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+    graph_command_sender: mpsc::Sender<GraphCommand>,
 }
 
 impl RecorderService {
@@ -40,6 +43,7 @@ impl RecorderService {
         db_service: DbService,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+        graph_command_sender: mpsc::Sender<GraphCommand>,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
 
@@ -48,6 +52,7 @@ impl RecorderService {
             recorder_receiver,
             github_sender,
             websocket_sender,
+            graph_command_sender,
         };
 
         (res, recorder_sender)
@@ -60,6 +65,7 @@ impl RecorderService {
             self.recorder_receiver,
             self.github_sender,
             self.websocket_sender,
+            self.graph_command_sender,
         );
 
         tokio::spawn(async move {
@@ -75,6 +81,7 @@ impl RecorderWorker {
         recorder_receiver: mpsc::Receiver<RecorderTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+        graph_command_sender: mpsc::Sender<GraphCommand>,
     ) -> Self {
         Self {
             db_service,
@@ -82,6 +89,7 @@ impl RecorderWorker {
             recorder_receiver,
             github_sender,
             websocket_sender,
+            graph_command_sender,
         }
     }
 
