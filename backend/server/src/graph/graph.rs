@@ -43,7 +43,7 @@ impl GraphNode {
 #[derive(Debug)]
 pub struct BuildGraph {
     /// All nodes in the graph, indexed by drv_id
-    nodes: HashMap<DrvId, GraphNode>,
+    pub(crate) nodes: HashMap<DrvId, GraphNode>,
 
     /// Index of drvs by their build state for fast queries
     by_state: HashMap<DrvBuildState, HashSet<DrvId>>,
