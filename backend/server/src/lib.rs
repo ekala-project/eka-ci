@@ -10,6 +10,7 @@ pub mod config;
 pub mod db;
 pub mod git;
 pub mod github;
+pub mod graph;
 pub mod metrics;
 pub mod nix;
 pub mod scheduler;
