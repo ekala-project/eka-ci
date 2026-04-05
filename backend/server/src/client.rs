@@ -225,14 +225,34 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
         req::DrvStatus(drv_status_request) => {
             use std::str::FromStr;
 
+            use crate::db::model::build_event::DrvBuildState;
             use crate::db::model::drv_id;
 
             if let Ok(drv_id) = drv_id::DrvId::from_str(&drv_status_request.drv_path) {
                 let maybe_drv = dispatch.db_service.get_drv(&drv_id).await.unwrap();
-                let inner = maybe_drv.map(|x| DrvStatusResponse {
-                    drv_path: x.drv_path.store_path(),
-                    status: format!("{:?}", x.build_state),
-                });
+                let inner = match maybe_drv {
+                    Some(drv) => {
+                        // Query failed dependencies if in TransitiveFailure state
+                        let failed_deps =
+                            if matches!(drv.build_state, DrvBuildState::TransitiveFailure) {
+                                dispatch
+                                    .db_service
+                                    .get_failed_dependencies(&drv_id)
+                                    .await
+                                    .ok()
+                                    .map(|deps| deps.into_iter().map(|d| d.store_path()).collect())
+                            } else {
+                                None
+                            };
+
+                        Some(DrvStatusResponse {
+                            drv_path: drv.drv_path.store_path(),
+                            status: format!("{:?}", drv.build_state),
+                            failed_dependencies: failed_deps,
+                        })
+                    },
+                    None => None,
+                };
                 return resp::DrvStatus(inner);
             }
 
