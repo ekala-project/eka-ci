@@ -21,6 +21,7 @@ import Url.Parser as P exposing ((</>), Parser)
 -}
 type Route
     = Home
+    | Builds -- Active builds page
     | Repository String String -- owner, repo
     | Commit String -- sha
     | Job Int -- jobset_id
@@ -44,6 +45,7 @@ routeParser : Parser (Route -> a) a
 routeParser =
     P.oneOf
         [ P.map Home P.top
+        , P.map Builds (P.s "builds")
         , P.map Repository (P.s "repos" </> P.string </> P.string)
         , P.map Commit (P.s "commits" </> P.string)
         , P.map Job (P.s "jobs" </> P.int)
@@ -60,6 +62,9 @@ toHref route =
     case route of
         Home ->
             "/"
+
+        Builds ->
+            "/builds"
 
         Repository owner repo ->
             UB.absolute [ "repos", owner, repo ] []

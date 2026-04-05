@@ -1,5 +1,8 @@
 module Api.Decoder exposing
-    ( buildState
+    ( activeBuildsResponse
+    , buildState
+    , buildingDrv
+    , buildingDrvList
     , commitJob
     , commitJobList
     , drvDependency
@@ -65,16 +68,26 @@ jobSetDetails =
     D.succeed JobSetDetails
         |> andMap (D.field "jobset_id" D.int)
         |> andMap (D.field "sha" D.string)
-        |> andMap (D.field "job" D.string)
+        |> andMap (D.field "job_name" D.string)
         |> andMap (D.field "owner" D.string)
         |> andMap (D.field "repo_name" D.string)
         |> andMap (D.field "total_drvs" D.int)
         |> andMap (D.field "queued_drvs" D.int)
         |> andMap (D.field "buildable_drvs" D.int)
         |> andMap (D.field "building_drvs" D.int)
-        |> andMap (D.field "completed_drvs" D.int)
-        |> andMap (D.field "failed_drvs" D.int)
+        |> andMap (D.field "completed_success_drvs" D.int)
+        |> andMap (D.field "completed_failure_drvs" D.int)
+        |> andMap (D.field "failed_retry_drvs" D.int)
         |> andMap (D.field "transitive_failure_drvs" D.int)
+        |> andMap (D.field "blocked_drvs" D.int)
+        |> andMap (D.field "interrupted_drvs" D.int)
+        |> andMap (D.succeed 0)
+        -- completedDrvs: computed field for backwards compat
+        |> andMap (D.succeed 0)
+
+
+
+-- failedDrvs: computed field for backwards compat
 
 
 {-| Decode a JobSetDrv from JSON.
@@ -95,6 +108,48 @@ jobSetDrv =
 jobSetDrvList : Decoder (List JobSetDrv)
 jobSetDrvList =
     D.list jobSetDrv
+
+
+{-| Decode a JobDifference from JSON.
+-}
+jobDifference : Decoder Models.Job.JobDifference
+jobDifference =
+    D.string
+        |> D.andThen
+            (\str ->
+                case str of
+                    "New" ->
+                        D.succeed Models.Job.New
+
+                    "Changed" ->
+                        D.succeed Models.Job.Changed
+
+                    "Removed" ->
+                        D.succeed Models.Job.Removed
+
+                    _ ->
+                        D.fail ("Unknown job difference: " ++ str)
+            )
+
+
+{-| Decode a BuildingDrv from JSON.
+-}
+buildingDrv : Decoder Models.Job.BuildingDrv
+buildingDrv =
+    D.succeed Models.Job.BuildingDrv
+        |> andMap (D.field "drv_path" D.string)
+        |> andMap (D.maybe (D.field "name" D.string))
+        |> andMap (D.field "system" D.string)
+        |> andMap (D.field "build_state" buildState)
+        |> andMap (D.field "is_fod" D.bool)
+        |> andMap (D.maybe (D.field "difference" jobDifference))
+
+
+{-| Decode a list of building drvs.
+-}
+buildingDrvList : Decoder (List Models.Job.BuildingDrv)
+buildingDrvList =
+    D.list buildingDrv
 
 
 {-| Decode DrvDetails from JSON.
@@ -214,6 +269,15 @@ interruptionKind =
                     _ ->
                         D.fail ("Unknown interruption kind: " ++ str)
             )
+
+
+{-| Decode active builds response from JSON.
+-}
+activeBuildsResponse : Decoder { jobs : List Models.Job.JobSetDetails, buildingDrvs : List Models.Job.BuildingDrv }
+activeBuildsResponse =
+    D.map2 (\jobs buildingDrvs -> { jobs = jobs, buildingDrvs = buildingDrvs })
+        (D.field "jobs" (D.list jobSetDetails))
+        (D.field "building_drvs" buildingDrvList)
 
 
 

@@ -1,5 +1,7 @@
 module Models.Job exposing
-    ( CommitJob
+    ( BuildingDrv
+    , CommitJob
+    , JobDifference(..)
     , JobSetDetails
     , JobSetDrv
     )
@@ -34,9 +36,14 @@ type alias JobSetDetails =
     , queuedDrvs : Int
     , buildableDrvs : Int
     , buildingDrvs : Int
+    , completedSuccessDrvs : Int
+    , completedFailureDrvs : Int
+    , failedRetryDrvs : Int
+    , transitiveFailureDrvs : Int
+    , blockedDrvs : Int
+    , interruptedDrvs : Int
     , completedDrvs : Int
     , failedDrvs : Int
-    , transitiveFailureDrvs : Int
     }
 
 
@@ -50,3 +57,24 @@ type alias JobSetDrv =
     , isFod : Bool
     , preferLocalBuild : Bool
     }
+
+
+{-| A building derivation (may or may not be associated with a job).
+Used for the active builds page to show ALL building drvs including intermediate dependencies.
+-}
+type alias BuildingDrv =
+    { drvPath : String
+    , name : Maybe String
+    , system : String
+    , buildState : DrvBuildState
+    , isFod : Bool
+    , difference : Maybe JobDifference
+    }
+
+
+{-| Job difference type (whether this job is new, changed, or removed).
+-}
+type JobDifference
+    = New
+    | Changed
+    | Removed

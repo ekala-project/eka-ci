@@ -1,5 +1,7 @@
 module Api.Api exposing
-    ( getCommitJobs
+    ( ActiveBuildsResponse
+    , getActiveBuilds
+    , getCommitJobs
     , getDrvDependencies
     , getDrvDetails
     , getJobSetDetails
@@ -17,9 +19,17 @@ All functions take a message constructor that will be called with the Result.
 import Api.Decoder as Decoder
 import Http
 import Models.Derivation exposing (DrvDependency, DrvDetails)
-import Models.Job exposing (CommitJob, JobSetDetails, JobSetDrv)
+import Models.Job exposing (BuildingDrv, CommitJob, JobSetDetails, JobSetDrv)
 import Models.Repository exposing (Repository)
 import Url.Builder as UB
+
+
+{-| Active builds response containing jobs and their building drvs.
+-}
+type alias ActiveBuildsResponse =
+    { jobs : List JobSetDetails
+    , buildingDrvs : List BuildingDrv
+    }
 
 
 {-| Get all repositories where the app is installed.
@@ -110,4 +120,17 @@ getDrvDependencies apiBaseUrl drvPath toMsg =
     Http.get
         { url = apiBaseUrl ++ "/drvs/" ++ drvPath ++ "/dependencies"
         , expect = Http.expectJson toMsg Decoder.drvDependencyList
+        }
+
+
+{-| Get all active builds (jobs with queued, buildable, or building drvs).
+
+    getActiveBuilds apiBaseUrl GotActiveBuilds
+
+-}
+getActiveBuilds : String -> (Result Http.Error ActiveBuildsResponse -> msg) -> Cmd msg
+getActiveBuilds apiBaseUrl toMsg =
+    Http.get
+        { url = apiBaseUrl ++ "/builds/active"
+        , expect = Http.expectJson toMsg Decoder.activeBuildsResponse
         }

@@ -18,6 +18,7 @@ import Json.Decode as D
 import Json.Encode as E
 import Pages.Admin as Admin
 import Pages.AuthCallback as AuthCallback
+import Pages.Builds as Builds
 import Pages.Commit as Commit
 import Pages.Drv as Drv
 import Pages.Home as Home
@@ -68,6 +69,7 @@ type alias Model =
 -}
 type Page
     = HomePage Home.Model
+    | BuildsPage Builds.Model
     | RepositoryPage Repository.Model
     | CommitPage Commit.Model
     | JobPage Job.Model
@@ -109,6 +111,18 @@ initPage apiBaseUrl url route =
                     Home.init apiBaseUrl
             in
             ( HomePage model, Cmd.map HomeMsg cmd )
+
+        Route.Builds ->
+            let
+                ( model, cmd ) =
+                    Builds.init apiBaseUrl
+            in
+            ( BuildsPage model
+            , Cmd.batch
+                [ Cmd.map BuildsMsg cmd
+                , Ports.websocketOut (Ports.encodeSubscribeMessage "allbuilds" "all")
+                ]
+            )
 
         Route.Repository owner repo ->
             let
@@ -166,6 +180,7 @@ type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url
     | HomeMsg Home.Msg
+    | BuildsMsg Builds.Msg
     | RepositoryMsg Repository.Msg
     | CommitMsg Commit.Msg
     | JobMsg Job.Msg
@@ -224,6 +239,20 @@ update msg model =
                     in
                     ( { model | page = HomePage newModel }
                     , Cmd.map HomeMsg cmd
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        BuildsMsg buildsMsg ->
+            case model.page of
+                BuildsPage buildsModel ->
+                    let
+                        ( newModel, cmd ) =
+                            Builds.update buildsMsg buildsModel
+                    in
+                    ( { model | page = BuildsPage newModel }
+                    , Cmd.map BuildsMsg cmd
                     )
 
                 _ ->
@@ -396,6 +425,21 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
+                Ports.JobStatsUpdate event ->
+                    -- Route to Builds page for job stats updates
+                    case model.page of
+                        BuildsPage buildsModel ->
+                            let
+                                newModel =
+                                    Builds.websocketUpdate event buildsModel
+                            in
+                            ( { model | page = BuildsPage newModel }
+                            , Cmd.none
+                            )
+
+                        _ ->
+                            ( model, Cmd.none )
+
                 Ports.LogLine event ->
                     -- Route to Drv page for log viewer
                     case model.page of
@@ -473,6 +517,10 @@ isBackendRoute url =
 unsubscribeFromPage : Page -> Cmd Msg
 unsubscribeFromPage page =
     case page of
+        BuildsPage model ->
+            -- Unsubscribe from all builds
+            Builds.cleanup model
+
         JobPage (Job.Loaded data) ->
             -- Unsubscribe from job resource
             Ports.websocketOut
@@ -573,6 +621,9 @@ pageTitle route =
         Route.Home ->
             "Repositories - EkaCI"
 
+        Route.Builds ->
+            "Active Builds - EkaCI"
+
         Route.Repository owner repo ->
             owner ++ "/" ++ repo ++ " - EkaCI"
 
@@ -602,6 +653,9 @@ viewPage authState page =
     case page of
         HomePage model ->
             Html.map HomeMsg (Home.view model)
+
+        BuildsPage model ->
+            Html.map BuildsMsg (Builds.view model)
 
         RepositoryPage model ->
             Html.map RepositoryMsg (Repository.view model)

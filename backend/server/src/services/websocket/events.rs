@@ -10,6 +10,7 @@ pub enum ServerEvent {
     BuildStateChange(BuildStateChange),
     JobComplete(JobComplete),
     LogLine(LogLine),
+    JobStatsUpdate(JobStatsUpdate),
 }
 
 /// Build state change event
@@ -34,6 +35,23 @@ pub struct JobComplete {
 pub struct LogLine {
     pub drv_path: String,
     pub line: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Job statistics update event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobStatsUpdate {
+    pub jobset_id: i64,
+    pub total_drvs: i64,
+    pub queued_drvs: i64,
+    pub buildable_drvs: i64,
+    pub building_drvs: i64,
+    pub completed_success_drvs: i64,
+    pub completed_failure_drvs: i64,
+    pub failed_retry_drvs: i64,
+    pub transitive_failure_drvs: i64,
+    pub blocked_drvs: i64,
+    pub interrupted_drvs: i64,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -63,4 +81,5 @@ pub enum ResourceType {
     Commit,
     Job,
     Drv,
+    AllBuilds,
 }

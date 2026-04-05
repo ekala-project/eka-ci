@@ -278,6 +278,14 @@ impl DbService {
         github::count_jobset_drvs(jobset_id, &self.pool).await
     }
 
+    pub async fn get_active_jobs(&self) -> anyhow::Result<Vec<github::JobSetDetails>> {
+        github::get_active_jobs(&self.pool).await
+    }
+
+    pub async fn get_all_building_drvs(&self) -> anyhow::Result<Vec<github::BuildingDrv>> {
+        github::get_all_building_drvs(&self.pool).await
+    }
+
     // Derivation details methods
     pub async fn get_drv_details(&self, drv_id: &DrvId) -> anyhow::Result<Option<drv::DrvDetails>> {
         drv::get_drv_details(drv_id, &self.pool).await
