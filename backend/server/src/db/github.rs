@@ -706,6 +706,74 @@ pub async fn count_jobset_drvs(jobset_id: i64, pool: &Pool<Sqlite>) -> Result<i6
     Ok(count)
 }
 
+/// Get all active jobs (jobs with any queued, buildable, or building drvs)
+pub async fn get_active_jobs(pool: &Pool<Sqlite>) -> Result<Vec<JobSetDetails>> {
+    let jobs = sqlx::query_as(
+        r#"
+        SELECT
+            g.ROWID as jobset_id,
+            g.job as job_name,
+            g.sha,
+            g.owner,
+            g.repo_name,
+            COUNT(d.ROWID) as total_drvs,
+            SUM(CASE WHEN d.build_state = 0 THEN 1 ELSE 0 END) as queued_drvs,
+            SUM(CASE WHEN d.build_state = 1 THEN 1 ELSE 0 END) as buildable_drvs,
+            SUM(CASE WHEN d.build_state = 7 THEN 1 ELSE 0 END) as building_drvs,
+            SUM(CASE WHEN d.build_state = 100 THEN 1 ELSE 0 END) as blocked_drvs,
+            SUM(CASE WHEN d.build_state = 1000 THEN 1 ELSE 0 END) as completed_success_drvs,
+            SUM(CASE WHEN d.build_state = -1 THEN 1 ELSE 0 END) as completed_failure_drvs,
+            SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END) as failed_retry_drvs,
+            SUM(CASE WHEN d.build_state = -2 THEN 1 ELSE 0 END) as transitive_failure_drvs,
+            SUM(CASE WHEN d.build_state < -2 THEN 1 ELSE 0 END) as interrupted_drvs
+        FROM GitHubJobSets g
+        JOIN Job j ON j.jobset = g.ROWID
+        JOIN Drv d ON d.ROWID = j.drv_id
+        GROUP BY g.ROWID
+        HAVING SUM(CASE WHEN d.build_state IN (0, 1, 7) THEN 1 ELSE 0 END) > 0
+        ORDER BY g.ROWID DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(jobs)
+}
+
+/// A building derivation that may or may not be associated with a job
+#[derive(Debug, FromRow, Serialize)]
+pub struct BuildingDrv {
+    pub drv_path: DrvId,
+    pub name: Option<String>, // Name from Job table if associated
+    pub system: String,
+    pub build_state: DrvBuildState,
+    pub is_fod: bool,
+    pub difference: Option<JobDifference>, // Difference from Job table if associated
+}
+
+/// Get all building drvs (including intermediate dependencies not directly in jobs)
+pub async fn get_all_building_drvs(pool: &Pool<Sqlite>) -> Result<Vec<BuildingDrv>> {
+    let drvs = sqlx::query_as(
+        r#"
+        SELECT
+            d.drv_path,
+            j.name,
+            d.system,
+            d.build_state,
+            d.is_fod,
+            j.difference
+        FROM Drv d
+        LEFT JOIN Job j ON d.ROWID = j.drv_id
+        WHERE d.build_state = 7
+        ORDER BY COALESCE(j.name, d.drv_path)
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(drvs)
+}
+
 /// Get all jobs for a commit
 #[derive(Debug, FromRow, Serialize)]
 pub struct CommitJob {

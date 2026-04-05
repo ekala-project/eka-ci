@@ -42,23 +42,39 @@ impl SubscriptionManager {
     pub fn matches(&self, event: &ServerEvent) -> bool {
         match event {
             ServerEvent::BuildStateChange(change) => {
-                // Check if subscribed to this specific drv
+                // Check if subscribed to this specific drv or all builds
                 self.subscriptions.contains(&Subscription::new(
                     ResourceType::Drv,
                     change.drv_path.clone(),
+                )) || self.subscriptions.contains(&Subscription::new(
+                    ResourceType::AllBuilds,
+                    "all".to_string(),
                 ))
             },
             ServerEvent::JobComplete(complete) => {
-                // Check if subscribed to this specific job
+                // Check if subscribed to this specific job or all builds
                 self.subscriptions.contains(&Subscription::new(
                     ResourceType::Job,
                     complete.jobset_id.to_string(),
+                )) || self.subscriptions.contains(&Subscription::new(
+                    ResourceType::AllBuilds,
+                    "all".to_string(),
                 ))
             },
             ServerEvent::LogLine(log) => {
                 // Check if subscribed to this specific drv
                 self.subscriptions
                     .contains(&Subscription::new(ResourceType::Drv, log.drv_path.clone()))
+            },
+            ServerEvent::JobStatsUpdate(update) => {
+                // Check if subscribed to this specific job or all builds
+                self.subscriptions.contains(&Subscription::new(
+                    ResourceType::Job,
+                    update.jobset_id.to_string(),
+                )) || self.subscriptions.contains(&Subscription::new(
+                    ResourceType::AllBuilds,
+                    "all".to_string(),
+                ))
             },
         }
     }

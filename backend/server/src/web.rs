@@ -157,6 +157,7 @@ fn api_routes() -> Router<AppState> {
         .route("/commits/{sha}/jobs", get(get_commit_jobs_handler))
         .route("/jobs/{jobset_id}", get(get_jobset_details_handler))
         .route("/jobs/{jobset_id}/drvs", get(get_jobset_drvs_handler))
+        .route("/builds/active", get(get_active_builds_handler))
         // Derivation details routes
         .route("/drvs/{drv}", get(get_drv_details_handler))
         .route("/drvs/{drv}/dependencies", get(get_drv_dependencies_handler))
@@ -581,6 +582,41 @@ async fn get_jobset_drvs_handler(
             Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to get jobset drvs: {}", e),
+            ))
+        },
+    }
+}
+
+// Active builds handler
+async fn get_active_builds_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    match state.db_service.get_active_jobs().await {
+        Ok(jobs) => {
+            // Also get all building drvs
+            match state.db_service.get_all_building_drvs().await {
+                Ok(building_drvs) => {
+                    // Return jobs and all building drvs
+                    Ok(Json(serde_json::json!({
+                        "jobs": jobs,
+                        "building_drvs": building_drvs,
+                    })))
+                },
+                Err(e) => {
+                    error!("Failed to get building drvs: {}", e);
+                    // Return jobs even if we can't get building drvs
+                    Ok(Json(serde_json::json!({
+                        "jobs": jobs,
+                        "building_drvs": [],
+                    })))
+                },
+            }
+        },
+        Err(e) => {
+            error!("Failed to get active jobs: {}", e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get active jobs: {}", e),
             ))
         },
     }

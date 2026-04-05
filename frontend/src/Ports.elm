@@ -2,6 +2,7 @@ port module Ports exposing
     ( BuildStateChangeEvent
     , IncomingMessage(..)
     , JobCompleteEvent
+    , JobStatsUpdateEvent
     , LogLineEvent
     , WebSocketMessage(..)
     , clearToken
@@ -79,6 +80,7 @@ type IncomingMessage
     | Disconnected
     | BuildStateChange BuildStateChangeEvent
     | JobComplete JobCompleteEvent
+    | JobStatsUpdate JobStatsUpdateEvent
     | LogLine LogLineEvent
     | Error String
 
@@ -98,6 +100,24 @@ type alias BuildStateChangeEvent =
 type alias JobCompleteEvent =
     { jobsetId : Int
     , conclusion : String
+    , timestamp : String
+    }
+
+
+{-| Job statistics update event from the server.
+-}
+type alias JobStatsUpdateEvent =
+    { jobsetId : Int
+    , totalDrvs : Int
+    , queuedDrvs : Int
+    , buildableDrvs : Int
+    , buildingDrvs : Int
+    , completedSuccessDrvs : Int
+    , completedFailureDrvs : Int
+    , failedRetryDrvs : Int
+    , transitiveFailureDrvs : Int
+    , blockedDrvs : Int
+    , interruptedDrvs : Int
     , timestamp : String
     }
 
@@ -136,6 +156,9 @@ incomingMessageDecoder =
                     "job_complete" ->
                         D.map JobComplete jobCompleteDecoder
 
+                    "job_stats_update" ->
+                        D.map JobStatsUpdate jobStatsUpdateDecoder
+
                     "log_line" ->
                         D.map LogLine logLineDecoder
 
@@ -162,6 +185,28 @@ jobCompleteDecoder =
         (D.field "jobset_id" D.int)
         (D.field "conclusion" D.string)
         (D.field "timestamp" D.string)
+
+
+jobStatsUpdateDecoder : D.Decoder JobStatsUpdateEvent
+jobStatsUpdateDecoder =
+    D.succeed JobStatsUpdateEvent
+        |> andMap (D.field "jobset_id" D.int)
+        |> andMap (D.field "total_drvs" D.int)
+        |> andMap (D.field "queued_drvs" D.int)
+        |> andMap (D.field "buildable_drvs" D.int)
+        |> andMap (D.field "building_drvs" D.int)
+        |> andMap (D.field "completed_success_drvs" D.int)
+        |> andMap (D.field "completed_failure_drvs" D.int)
+        |> andMap (D.field "failed_retry_drvs" D.int)
+        |> andMap (D.field "transitive_failure_drvs" D.int)
+        |> andMap (D.field "blocked_drvs" D.int)
+        |> andMap (D.field "interrupted_drvs" D.int)
+        |> andMap (D.field "timestamp" D.string)
+
+
+andMap : D.Decoder a -> D.Decoder (a -> b) -> D.Decoder b
+andMap =
+    D.map2 (|>)
 
 
 logLineDecoder : D.Decoder LogLineEvent

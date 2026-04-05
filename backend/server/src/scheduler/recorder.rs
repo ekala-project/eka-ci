@@ -7,7 +7,7 @@ use crate::db::DbService;
 use crate::db::model::{build, build_event, drv_id};
 use crate::github::GitHubTask;
 use crate::scheduler::ingress::IngressTask;
-use crate::services::websocket::events::{BuildStateChange, ServerEvent};
+use crate::services::websocket::events::{BuildStateChange, JobStatsUpdate, ServerEvent};
 
 #[derive(Debug, Clone)]
 pub struct RecorderTask {
@@ -116,6 +116,32 @@ impl RecorderWorker {
         }
     }
 
+    /// Broadcast job statistics update for a specific job
+    async fn broadcast_job_stats(&self, jobset_id: i64) {
+        if let Some(ref sender) = self.websocket_sender {
+            // Fetch current job stats from database
+            if let Ok(details) = self.db_service.get_jobset_details(jobset_id).await {
+                let event = ServerEvent::JobStatsUpdate(JobStatsUpdate {
+                    jobset_id,
+                    total_drvs: details.total_drvs,
+                    queued_drvs: details.queued_drvs,
+                    buildable_drvs: details.buildable_drvs,
+                    building_drvs: details.building_drvs,
+                    completed_success_drvs: details.completed_success_drvs,
+                    completed_failure_drvs: details.completed_failure_drvs,
+                    failed_retry_drvs: details.failed_retry_drvs,
+                    transitive_failure_drvs: details.transitive_failure_drvs,
+                    blocked_drvs: details.blocked_drvs,
+                    interrupted_drvs: details.interrupted_drvs,
+                    timestamp: Utc::now(),
+                });
+
+                // Broadcast the event (ignore if no receivers)
+                let _ = sender.send(event);
+            }
+        }
+    }
+
     /// Update drv status and broadcast the change
     async fn update_and_broadcast(
         &self,
@@ -138,6 +164,9 @@ impl RecorderWorker {
             // TODO: build_attempt seems like something we should query
             build_attempt: std::num::NonZeroU32::new(1).unwrap(),
         };
+
+        // Get job info to broadcast stats updates later
+        let job_infos = self.db_service.get_job_info_for_drv(&drv).await?;
 
         match &task.result {
             DBS::Completed(DBR::Success) => {
@@ -344,6 +373,11 @@ impl RecorderWorker {
                     }
                 }
             }
+        }
+
+        // Broadcast job stats updates for all affected jobs
+        for job_info in job_infos {
+            self.broadcast_job_stats(job_info.jobset_id).await;
         }
 
         Ok(())
