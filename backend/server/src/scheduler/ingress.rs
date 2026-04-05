@@ -38,7 +38,10 @@ pub enum IngressTask {
 }
 
 impl IngressService {
-    pub fn init(db_service: DbService, graph_handle: GraphServiceHandle) -> (Self, mpsc::Sender<IngressTask>) {
+    pub fn init(
+        db_service: DbService,
+        graph_handle: GraphServiceHandle,
+    ) -> (Self, mpsc::Sender<IngressTask>) {
         let (request_sender, request_receiver) = mpsc::channel(1000);
 
         let res = Self {

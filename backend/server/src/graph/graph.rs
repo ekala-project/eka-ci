@@ -142,11 +142,11 @@ impl BuildGraph {
         match new_state {
             DrvBuildState::Completed(DrvBuildResult::Failure) => {
                 self.failed_drvs.insert(drv_id.clone());
-            }
+            },
             DrvBuildState::Completed(DrvBuildResult::Success) => {
                 self.failed_drvs.remove(drv_id);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -213,10 +213,8 @@ impl BuildGraph {
         for blocked_id in &blocked {
             // Update state to TransitiveFailure
             if let Some(node) = self.nodes.get_mut(blocked_id) {
-                let old_state = std::mem::replace(
-                    &mut node.build_state,
-                    DrvBuildState::TransitiveFailure,
-                );
+                let old_state =
+                    std::mem::replace(&mut node.build_state, DrvBuildState::TransitiveFailure);
 
                 // Update state index
                 if let Some(old_set) = self.by_state.get_mut(&old_state) {
@@ -324,10 +322,9 @@ impl BuildGraph {
         }
 
         // Load all edges
-        let refs: Vec<(String, String)> =
-            sqlx::query_as("SELECT referrer, reference FROM DrvRefs")
-                .fetch_all(pool)
-                .await?;
+        let refs: Vec<(String, String)> = sqlx::query_as("SELECT referrer, reference FROM DrvRefs")
+            .fetch_all(pool)
+            .await?;
 
         for (referrer, reference) in refs {
             let referrer_id = std::str::FromStr::from_str(&referrer)?;

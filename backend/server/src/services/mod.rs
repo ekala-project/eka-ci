@@ -59,7 +59,10 @@ pub async fn start_services(config: Config) -> Result<()> {
         .await
         .context("failed to initialize GraphService")?;
     let graph_handle = graph_service.handle();
-    info!("GraphService initialized with {} drvs", graph_handle.node_count());
+    info!(
+        "GraphService initialized with {} drvs",
+        graph_handle.node_count()
+    );
 
     // Create WebSocket service for real-time updates
     let websocket_service = WebSocketService::new();

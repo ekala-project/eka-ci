@@ -12,6 +12,7 @@ use common::{TestContext, create_simple_drv, insert_test_drv, test_drv, wait_for
 use eka_ci_server::auth::{JwtService, OAuthConfig};
 use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
+use eka_ci_server::graph::{GraphCommand, GraphService};
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
 use eka_ci_server::services::WebSocketService;
 use eka_ci_server::web::WebService;
@@ -23,6 +24,18 @@ use tokio_util::sync::CancellationToken;
 async fn create_test_server(
     ctx: &TestContext,
 ) -> (WebService, SchedulerService, mpsc::Sender<IngressTask>) {
+    // Create GraphService for in-memory build state tracking
+    let (graph_command_sender, graph_command_receiver) = mpsc::channel::<GraphCommand>(1000);
+    let graph_service = GraphService::new(ctx.db_service.clone(), graph_command_receiver)
+        .await
+        .expect("Failed to initialize GraphService");
+    let graph_handle = graph_service.handle();
+
+    // Spawn the graph service
+    tokio::spawn(async move {
+        graph_service.run().await;
+    });
+
     // Create scheduler
     let scheduler = SchedulerService::new(
         ctx.db_service.clone(),
@@ -31,6 +44,8 @@ async fn create_test_server(
         None,   // no GitHub integration
         30,     // 30 second timeout
         None,   // no WebSocket broadcast
+        graph_command_sender.clone(),
+        graph_handle.clone(),
     )
     .await
     .expect("Failed to create scheduler");

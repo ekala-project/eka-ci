@@ -187,7 +187,10 @@ impl RecorderWorker {
     }
 
     /// Send ClearFailure command to graph service
-    async fn clear_graph_failure(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<Vec<drv_id::DrvId>> {
+    async fn clear_graph_failure(
+        &self,
+        drv_id: &drv_id::DrvId,
+    ) -> anyhow::Result<Vec<drv_id::DrvId>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::ClearFailure {
             formerly_failed: drv_id.clone(),
@@ -200,7 +203,10 @@ impl RecorderWorker {
     }
 
     /// Send PropagateFailure command to graph service
-    async fn propagate_graph_failure(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<Vec<drv_id::DrvId>> {
+    async fn propagate_graph_failure(
+        &self,
+        drv_id: &drv_id::DrvId,
+    ) -> anyhow::Result<Vec<drv_id::DrvId>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::PropagateFailure {
             failed_drv: drv_id.clone(),
