@@ -69,6 +69,14 @@ fn print_drv_status(maybe_drv: Option<t::DrvStatusResponse>) {
         Some(drv) => {
             println!("Drv: {:?}", &drv.drv_path);
             println!("Status: {:?}", drv.status);
+
+            // Display failed dependencies if present
+            if let Some(failed_deps) = drv.failed_dependencies {
+                println!("\nFailed dependencies ({}):", failed_deps.len());
+                for dep in failed_deps {
+                    println!("  - {}", dep);
+                }
+            }
         },
     }
 }

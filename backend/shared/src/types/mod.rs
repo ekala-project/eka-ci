@@ -54,6 +54,7 @@ pub struct GitHubPrRequest {
 pub struct DrvStatusResponse {
     pub drv_path: String,
     pub status: String,
+    pub failed_dependencies: Option<Vec<String>>,
     // TODO: link to drv page
 }
 
