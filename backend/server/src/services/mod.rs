@@ -84,6 +84,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         db_service.clone(),
         scheduler_service.ingress_request_sender(),
         maybe_github_sender.clone(),
+        graph_command_sender.clone(),
     );
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());

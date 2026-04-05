@@ -17,6 +17,7 @@ use crate::db::model::drv::Drv;
 use crate::db::model::drv_id::DrvId;
 use crate::db::model::{Reference, Referrer};
 use crate::github::{CICheckInfo, GitHubTask};
+use crate::graph::GraphCommand;
 use crate::scheduler::IngressTask;
 
 pub struct EvalJob {
@@ -38,6 +39,7 @@ pub struct EvalService {
     /// Used to request scheduler to determine if it should build a drv
     scheduler_sender: mpsc::Sender<IngressTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    graph_command_sender: mpsc::Sender<GraphCommand>,
     drv_map: LruCache<DrvId, Drv>,
 }
 
@@ -47,12 +49,14 @@ impl EvalService {
         db_service: DbService,
         scheduler_sender: mpsc::Sender<IngressTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        graph_command_sender: mpsc::Sender<GraphCommand>,
     ) -> EvalService {
         EvalService {
             db_service,
             drv_receiver: rcvr,
             scheduler_sender,
             github_sender,
+            graph_command_sender,
             drv_map: LruCache::new(NonZeroUsize::new(5000).unwrap()),
         }
     }
@@ -240,9 +244,20 @@ impl EvalService {
             drv_refs.extend(successful_refs);
         }
 
+        // Insert into database for persistence
         self.db_service
             .insert_drvs_and_references(&new_drvs, &drv_refs)
             .await?;
+
+        // Insert into graph for fast in-memory access
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = GraphCommand::InsertDrvs {
+            drvs: new_drvs.clone(),
+            refs: drv_refs.clone(),
+            response: tx,
+        };
+        self.graph_command_sender.send(cmd).await?;
+        rx.await??;
 
         for drv in new_drvs {
             let drv_id = drv.drv_path.clone();
