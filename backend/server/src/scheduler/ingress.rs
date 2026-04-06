@@ -33,6 +33,10 @@ pub enum IngressTask {
     /// a dependency was successfully built, and now we should recheck to
     /// to see if the Drv is now buildable
     CheckBuildable(drv_id::DrvId),
+    /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking
+    RebuildFailed(drv_id::DrvId),
+    /// Rebuild all failed drvs in the system
+    RebuildAllFailed,
 }
 
 impl IngressService {
@@ -76,6 +80,8 @@ impl IngressWorker {
         match task {
             EvalRequest(drv) => self.handle_eval_task(drv).await?,
             CheckBuildable(drv) => self.handle_check_buildable_task(drv).await?,
+            RebuildFailed(drv) => self.handle_rebuild_failed_task(drv).await?,
+            RebuildAllFailed => self.handle_rebuild_all_failed_task().await?,
         }
 
         Ok(())
@@ -126,6 +132,82 @@ impl IngressWorker {
         }
 
         self.handle_check_buildable_task(drv_id).await?;
+
+        Ok(())
+    }
+
+    /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking
+    /// This also recursively rebuilds any failed dependencies
+    async fn handle_rebuild_failed_task(&self, drv_id: drv_id::DrvId) -> anyhow::Result<()> {
+        use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
+
+        debug!("Attempting to rebuild failed drv: {:?}", &drv_id);
+
+        // Get the drv to check its current state
+        let drv = self
+            .db_service
+            .get_drv(&drv_id)
+            .await?
+            .context("drv not found")?;
+
+        // Only rebuild if drv is in a failed state
+        match &drv.build_state {
+            DrvBuildState::Completed(DrvBuildResult::Failure)
+            | DrvBuildState::TransitiveFailure
+            | DrvBuildState::FailedRetry => {
+                debug!(
+                    "{:?} is in failed state {:?}, rebuilding",
+                    &drv_id, &drv.build_state
+                );
+
+                // First, recursively rebuild any failed dependencies
+                let failed_deps = self.db_service.get_failed_dependencies(&drv_id).await?;
+                for dep in failed_deps {
+                    debug!(
+                        "{:?} has failed dependency {:?}, rebuilding it first",
+                        &drv_id, &dep
+                    );
+                    Box::pin(self.handle_rebuild_failed_task(dep)).await?;
+                }
+
+                // Reset the drv state to Queued in the database
+                self.db_service
+                    .update_drv_status(&drv_id, &DrvBuildState::Queued)
+                    .await?;
+
+                // Clear transitive failure records in the database
+                // This unblocks all transitively failed dependents
+                self.db_service.clear_transitive_failures(&drv_id).await?;
+
+                // Re-queue the drv to check if it's now buildable
+                self.handle_check_buildable_task(drv_id.clone()).await?;
+
+                debug!("{:?} has been reset and re-queued", &drv_id);
+            },
+            _ => {
+                warn!(
+                    "{:?} is not in a failed state (current state: {:?}), cannot rebuild",
+                    &drv_id, &drv.build_state
+                );
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Rebuild all failed drvs in the system
+    async fn handle_rebuild_all_failed_task(&self) -> anyhow::Result<()> {
+        debug!("Rebuilding all failed drvs");
+
+        // Get all failed drvs from the database
+        let failed_drvs = self.db_service.get_all_failed_drvs().await?;
+
+        debug!("Found {} failed drvs to rebuild", failed_drvs.len());
+
+        // Rebuild each failed drv (this will handle dependencies recursively)
+        for drv_id in failed_drvs {
+            self.handle_rebuild_failed_task(drv_id).await?;
+        }
 
         Ok(())
     }

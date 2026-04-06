@@ -324,6 +324,20 @@ pub async fn get_failed_dependencies(
     Ok(result)
 }
 
+/// Get all derivations that are in a failed state
+/// Returns drvs in Completed(Failure) or TransitiveFailure states
+pub async fn get_all_failed_drvs(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<DrvId>> {
+    let result = sqlx::query_as(
+        "SELECT drv_path FROM Drv WHERE build_state = 'Completed' AND build_result = 'Failure'
+         UNION
+         SELECT drv_path FROM Drv WHERE build_state = 'TransitiveFailure'",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(result)
+}
+
 use serde::Serialize;
 use sqlx::FromRow;
 

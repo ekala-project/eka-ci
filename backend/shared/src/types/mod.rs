@@ -66,6 +66,14 @@ pub struct DrvStatusRequest {
 #[derive(Serialize, Parser, Deserialize, Debug)]
 pub struct BuildRequest {
     pub drv_path: String,
+    /// Force rebuild of failed derivations (resets to Queued state)
+    #[arg(short, long)]
+    #[serde(default)]
+    pub force: bool,
+    /// Rebuild all failed derivations (requires --force)
+    #[arg(short = 'a', long)]
+    #[serde(default)]
+    pub rebuild_all: bool,
 }
 
 #[derive(Serialize, Parser, Deserialize, Debug)]

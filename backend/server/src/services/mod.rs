@@ -130,6 +130,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         repo_sender.clone(),
         db_service.clone(),
         git_service.get_sender(),
+        scheduler_service.ingress_request_sender(),
     )
     .await
     .context("failed to start unix service")?;
