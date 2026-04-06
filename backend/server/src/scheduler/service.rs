@@ -12,6 +12,7 @@ use super::recorder::{RecorderService, RecorderTask};
 use crate::config::RemoteBuilder;
 use crate::db::DbService;
 use crate::github::GitHubTask;
+use crate::graph::{GraphCommand, GraphServiceHandle};
 use crate::metrics::BuildMetrics;
 use crate::services::websocket::events::ServerEvent;
 
@@ -55,6 +56,8 @@ impl SchedulerService {
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         build_no_output_timeout_seconds: u64,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+        graph_command_sender: mpsc::Sender<GraphCommand>,
+        graph_handle: GraphServiceHandle,
     ) -> anyhow::Result<Self> {
         // Create metrics registry and build metrics
         let metrics_registry = Arc::new(Registry::new());
@@ -64,9 +67,14 @@ impl SchedulerService {
         let process_collector = ProcessCollector::for_self();
         metrics_registry.register(Box::new(process_collector))?;
 
-        let (ingress_service, ingress_sender) = IngressService::init(db_service.clone());
-        let (recorder_service, recorder_sender) =
-            RecorderService::init(db_service.clone(), github_sender, websocket_sender);
+        let (ingress_service, ingress_sender) =
+            IngressService::init(db_service.clone(), graph_handle.clone());
+        let (recorder_service, recorder_sender) = RecorderService::init(
+            db_service.clone(),
+            github_sender,
+            websocket_sender,
+            graph_command_sender,
+        );
         let mut builders = Builder::local_from_env(
             logs_dir.clone(),
             recorder_sender.clone(),

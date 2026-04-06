@@ -6,6 +6,7 @@ use tracing::{debug, warn};
 use crate::db::DbService;
 use crate::db::model::{build, build_event, drv_id};
 use crate::github::GitHubTask;
+use crate::graph::GraphCommand;
 use crate::scheduler::ingress::IngressTask;
 use crate::services::websocket::events::{BuildStateChange, JobStatsUpdate, ServerEvent};
 
@@ -22,6 +23,7 @@ pub struct RecorderService {
     recorder_receiver: mpsc::Receiver<RecorderTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+    graph_command_sender: mpsc::Sender<GraphCommand>,
 }
 
 /// Encapsulation of the Recorder thread. May want to gracefully recover from
@@ -33,6 +35,7 @@ struct RecorderWorker {
     db_service: DbService,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+    graph_command_sender: mpsc::Sender<GraphCommand>,
 }
 
 impl RecorderService {
@@ -40,6 +43,7 @@ impl RecorderService {
         db_service: DbService,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+        graph_command_sender: mpsc::Sender<GraphCommand>,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
 
@@ -48,6 +52,7 @@ impl RecorderService {
             recorder_receiver,
             github_sender,
             websocket_sender,
+            graph_command_sender,
         };
 
         (res, recorder_sender)
@@ -60,6 +65,7 @@ impl RecorderService {
             self.recorder_receiver,
             self.github_sender,
             self.websocket_sender,
+            self.graph_command_sender,
         );
 
         tokio::spawn(async move {
@@ -75,6 +81,7 @@ impl RecorderWorker {
         recorder_receiver: mpsc::Receiver<RecorderTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
+        graph_command_sender: mpsc::Sender<GraphCommand>,
     ) -> Self {
         Self {
             db_service,
@@ -82,6 +89,7 @@ impl RecorderWorker {
             recorder_receiver,
             github_sender,
             websocket_sender,
+            graph_command_sender,
         }
     }
 
@@ -142,16 +150,72 @@ impl RecorderWorker {
         }
     }
 
-    /// Update drv status and broadcast the change
+    /// Update drv status in both graph and database, then broadcast the change
     async fn update_and_broadcast(
         &self,
         drv: &drv_id::DrvId,
         old_state: &build_event::DrvBuildState,
         new_state: &build_event::DrvBuildState,
     ) -> anyhow::Result<()> {
+        // Update graph first (fast in-memory operation)
+        self.update_graph_state(drv, new_state.clone()).await?;
+
+        // Then update database (for persistence)
         self.db_service.update_drv_status(drv, new_state).await?;
+
+        // Finally broadcast to websocket clients
         self.broadcast_state_change(drv, old_state, new_state);
         Ok(())
+    }
+
+    /// Send UpdateState command to graph service
+    async fn update_graph_state(
+        &self,
+        drv_id: &drv_id::DrvId,
+        new_state: build_event::DrvBuildState,
+    ) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = GraphCommand::UpdateState {
+            drv_id: drv_id.clone(),
+            new_state,
+            response: tx,
+        };
+
+        self.graph_command_sender.send(cmd).await?;
+        rx.await??;
+        Ok(())
+    }
+
+    /// Send ClearFailure command to graph service
+    async fn clear_graph_failure(
+        &self,
+        drv_id: &drv_id::DrvId,
+    ) -> anyhow::Result<Vec<drv_id::DrvId>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = GraphCommand::ClearFailure {
+            formerly_failed: drv_id.clone(),
+            response: tx,
+        };
+
+        self.graph_command_sender.send(cmd).await?;
+        let unblocked = rx.await??;
+        Ok(unblocked)
+    }
+
+    /// Send PropagateFailure command to graph service
+    async fn propagate_graph_failure(
+        &self,
+        drv_id: &drv_id::DrvId,
+    ) -> anyhow::Result<Vec<drv_id::DrvId>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = GraphCommand::PropagateFailure {
+            failed_drv: drv_id.clone(),
+            response: tx,
+        };
+
+        self.graph_command_sender.send(cmd).await?;
+        let blocked = rx.await??;
+        Ok(blocked)
     }
 
     async fn handle_recorder_request(&self, task: RecorderTask) -> anyhow::Result<()> {
@@ -185,32 +249,16 @@ impl RecorderWorker {
                 self.update_and_broadcast(&drv, &old_state, &task.result)
                     .await?;
 
-                // Clear any transitive failures caused by this drv (if it was previously failed)
-                let unblocked_drvs = self.db_service.clear_transitive_failures(&drv).await?;
+                // Clear any transitive failures in graph (fast in-memory operation)
+                let unblocked_drvs = self.clear_graph_failure(&drv).await?;
 
-                // Re-queue drvs that were blocked by this failure
+                // Also clear in database for persistence
+                self.db_service.clear_transitive_failures(&drv).await?;
+
+                // Re-queue drvs that were unblocked
                 for unblocked_drv in unblocked_drvs {
-                    // Check if there are any other failures blocking this drv
-                    let other_failures = self
-                        .db_service
-                        .get_failed_dependencies(&unblocked_drv)
-                        .await?;
-
-                    if other_failures.is_empty() {
-                        // No other failures blocking, update state to Queued and check buildability
-                        let old_state = self
-                            .db_service
-                            .get_drv(&unblocked_drv)
-                            .await?
-                            .map(|d| d.build_state)
-                            .unwrap_or(DBS::TransitiveFailure);
-
-                        self.update_and_broadcast(&unblocked_drv, &old_state, &DBS::Queued)
-                            .await?;
-
-                        let task = IngressTask::CheckBuildable(unblocked_drv);
-                        self.ingress_sender.send(task).await?;
-                    }
+                    let task = IngressTask::CheckBuildable(unblocked_drv);
+                    self.ingress_sender.send(task).await?;
                 }
 
                 // Check direct referrers for buildability
@@ -258,12 +306,13 @@ impl RecorderWorker {
                         self.update_and_broadcast(&drv, &old_state, &task.result)
                             .await?;
 
-                        // Get all transitive referrers and mark as TransitiveFailure
-                        let transitive_referrers =
-                            self.db_service.get_all_transitive_referrers(&drv).await?;
-                        if !transitive_referrers.is_empty() {
+                        // Propagate failure in graph (fast in-memory BFS traversal)
+                        let blocked_drvs = self.propagate_graph_failure(&drv).await?;
+
+                        // Also propagate in database for persistence
+                        if !blocked_drvs.is_empty() {
                             self.db_service
-                                .insert_transitive_failures(&drv, &transitive_referrers)
+                                .insert_transitive_failures(&drv, &blocked_drvs)
                                 .await?;
                         }
                     },

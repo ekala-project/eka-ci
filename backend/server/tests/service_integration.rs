@@ -10,7 +10,9 @@ use std::time::Duration;
 use common::{TestContext, create_simple_drv, insert_test_drv, test_drv, wait_for_drv_state};
 use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
+use eka_ci_server::graph::{GraphCommand, GraphService};
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
+use tokio::sync::mpsc::channel;
 
 #[tokio::test]
 #[ignore] // Requires Nix to create and build real derivations
@@ -35,6 +37,18 @@ async fn test_build_simple_drv_success() {
         .await
         .expect("Failed to insert drv");
 
+    // Create GraphService for in-memory build state tracking
+    let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
+    let graph_service = GraphService::new(ctx.db_service.clone(), graph_command_receiver)
+        .await
+        .expect("Failed to initialize GraphService");
+    let graph_handle = graph_service.handle();
+
+    // Spawn the graph service
+    tokio::spawn(async move {
+        graph_service.run().await;
+    });
+
     // Start the scheduler service
     let scheduler = SchedulerService::new(
         ctx.db_service.clone(),
@@ -43,6 +57,8 @@ async fn test_build_simple_drv_success() {
         None,   // no GitHub integration
         30,     // 30 second timeout
         None,   // no WebSocket
+        graph_command_sender.clone(),
+        graph_handle.clone(),
     )
     .await
     .expect("Failed to create scheduler");
@@ -104,6 +120,18 @@ async fn test_build_failure_retry_logic() {
         .await
         .expect("Failed to insert drv");
 
+    // Create GraphService for in-memory build state tracking
+    let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
+    let graph_service = GraphService::new(ctx.db_service.clone(), graph_command_receiver)
+        .await
+        .expect("Failed to initialize GraphService");
+    let graph_handle = graph_service.handle();
+
+    // Spawn the graph service
+    tokio::spawn(async move {
+        graph_service.run().await;
+    });
+
     // Start the scheduler service
     let scheduler = SchedulerService::new(
         ctx.db_service.clone(),
@@ -112,6 +140,8 @@ async fn test_build_failure_retry_logic() {
         None,   // no GitHub integration
         30,     // 30 second timeout
         None,   // no WebSocket
+        graph_command_sender.clone(),
+        graph_handle.clone(),
     )
     .await
     .expect("Failed to create scheduler");

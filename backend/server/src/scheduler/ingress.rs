@@ -5,6 +5,7 @@ use tracing::{debug, warn};
 
 use crate::db::DbService;
 use crate::db::model::{drv, drv_id};
+use crate::graph::GraphServiceHandle;
 use crate::scheduler::build::BuildRequest;
 
 /// This acts as the service which filters incoming drv build requests
@@ -12,6 +13,7 @@ use crate::scheduler::build::BuildRequest;
 /// already failed, has a dependency failure, otherwise it will mark it as queued.
 pub struct IngressService {
     db_service: DbService,
+    graph_handle: GraphServiceHandle,
     request_receiver: mpsc::Receiver<IngressTask>,
 }
 
@@ -21,6 +23,7 @@ pub struct IngressWorker {
     /// To send buildable requests to builder service
     buildable_sender: mpsc::Sender<BuildRequest>,
     db_service: DbService,
+    graph_handle: GraphServiceHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -35,11 +38,15 @@ pub enum IngressTask {
 }
 
 impl IngressService {
-    pub fn init(db_service: DbService) -> (Self, mpsc::Sender<IngressTask>) {
+    pub fn init(
+        db_service: DbService,
+        graph_handle: GraphServiceHandle,
+    ) -> (Self, mpsc::Sender<IngressTask>) {
         let (request_sender, request_receiver) = mpsc::channel(1000);
 
         let res = Self {
             db_service,
+            graph_handle,
             request_receiver,
         };
 
@@ -51,6 +58,7 @@ impl IngressService {
             request_receiver: self.request_receiver,
             buildable_sender,
             db_service: self.db_service,
+            graph_handle: self.graph_handle,
         };
         tokio::spawn(async move {
             worker.ingest_requests().await;
@@ -84,7 +92,8 @@ impl IngressWorker {
         use crate::db::model::build_event::DrvBuildState;
         debug!("checking if {:?} is buildable", &drv_id);
 
-        if self.db_service.is_drv_buildable(&drv_id).await? {
+        // Use graph for fast buildability check (no SQL query!)
+        if self.graph_handle.is_buildable(&drv_id) {
             debug!("{:?} is now buildable", &drv_id);
 
             // Get current drv to check its state

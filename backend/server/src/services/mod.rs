@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::db::DbService;
 use crate::git::GitService;
 use crate::github::{self, GitHubService};
+use crate::graph::{GraphCommand, GraphService};
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::web::WebService;
@@ -52,6 +53,17 @@ pub async fn start_services(config: Config) -> Result<()> {
         },
     };
 
+    // Create GraphService for in-memory build state tracking
+    let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
+    let graph_service = GraphService::new(db_service.clone(), graph_command_receiver)
+        .await
+        .context("failed to initialize GraphService")?;
+    let graph_handle = graph_service.handle();
+    info!(
+        "GraphService initialized with {} drvs",
+        graph_handle.node_count()
+    );
+
     // Create WebSocket service for real-time updates
     let websocket_service = WebSocketService::new();
     let websocket_sender = Some(websocket_service.event_sender());
@@ -64,6 +76,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         maybe_github_sender.clone(),
         config.build_no_output_timeout_seconds,
         websocket_sender,
+        graph_command_sender.clone(),
+        graph_handle.clone(),
     )
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
@@ -73,6 +87,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         db_service.clone(),
         scheduler_service.ingress_request_sender(),
         maybe_github_sender.clone(),
+        graph_command_sender.clone(),
     );
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
@@ -137,6 +152,7 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
+    let graph_handle_task = tokio::spawn(graph_service.run());
     let git_handle = tokio::spawn(git_service.run(cancellation_token.clone()));
     let repo_handle = tokio::spawn(repo_service.run(cancellation_token.clone()));
     let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
@@ -169,6 +185,7 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     // Wait for the services to shutdown
     _ = tokio::join!(
+        graph_handle_task,
         eval_handle,
         unix_handle,
         web_handle,
