@@ -75,6 +75,7 @@ impl SchedulerService {
             websocket_sender,
             graph_command_sender,
         );
+
         let mut builders = Builder::local_from_env(
             logs_dir.clone(),
             recorder_sender.clone(),

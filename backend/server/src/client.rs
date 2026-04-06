@@ -15,6 +15,7 @@ use crate::ci::RepoTask;
 use crate::db::DbService;
 use crate::git::{GitTask, GitWorkspace};
 use crate::nix::EvalTask;
+use crate::scheduler::IngressTask;
 
 pub struct UnixService {
     listener: UnixListener,
@@ -28,6 +29,7 @@ struct DispatchChannels {
     eval_sender: Sender<EvalTask>,
     repo_sender: Sender<RepoTask>,
     git_sender: Sender<GitTask>,
+    ingress_sender: Sender<IngressTask>,
     db_service: DbService,
 }
 
@@ -38,6 +40,7 @@ impl UnixService {
         repo_sender: Sender<RepoTask>,
         db_service: DbService,
         git_sender: Sender<GitTask>,
+        ingress_sender: Sender<IngressTask>,
     ) -> Result<Self> {
         prepare_path(socket_path)?;
 
@@ -46,6 +49,7 @@ impl UnixService {
             eval_sender,
             repo_sender,
             git_sender,
+            ingress_sender,
             db_service,
         };
 
@@ -213,12 +217,41 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             resp::Ack(true)
         },
         req::Build(build_info) => {
-            let task = EvalTask::TraverseDrv(build_info.drv_path);
-            dispatch
-                .eval_sender
-                .send(task)
-                .await
-                .expect("Eval service is unhealthy");
+            use std::str::FromStr;
+
+            use crate::db::model::drv_id;
+            use crate::scheduler::IngressTask;
+
+            // Check if this is a rebuild request
+            if build_info.force {
+                if build_info.rebuild_all {
+                    // Rebuild all failed drvs
+                    let task = IngressTask::RebuildAllFailed;
+                    dispatch
+                        .ingress_sender
+                        .send(task)
+                        .await
+                        .expect("Ingress service is unhealthy");
+                } else {
+                    // Rebuild specific drv
+                    if let Ok(drv_id) = drv_id::DrvId::from_str(&build_info.drv_path) {
+                        let task = IngressTask::RebuildFailed(drv_id);
+                        dispatch
+                            .ingress_sender
+                            .send(task)
+                            .await
+                            .expect("Ingress service is unhealthy");
+                    }
+                }
+            } else {
+                // Normal build flow
+                let task = EvalTask::TraverseDrv(build_info.drv_path);
+                dispatch
+                    .eval_sender
+                    .send(task)
+                    .await
+                    .expect("Eval service is unhealthy");
+            }
 
             resp::Ack(true)
         },

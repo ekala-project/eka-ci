@@ -87,6 +87,10 @@ impl DbService {
         drv::get_failed_dependencies(drv, &self.pool).await
     }
 
+    pub async fn get_all_failed_drvs(&self) -> anyhow::Result<Vec<DrvId>> {
+        drv::get_all_failed_drvs(&self.pool).await
+    }
+
     pub async fn insert_drvs_and_references(
         &self,
         drvs: &[Drv],
