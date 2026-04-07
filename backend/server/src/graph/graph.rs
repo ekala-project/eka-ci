@@ -82,7 +82,8 @@ impl BuildGraph {
     }
 
     /// Insert a new node into the graph
-    pub fn insert_node(&mut self, drv: Drv) {
+    /// Returns the evicted node (if any) for metrics tracking
+    pub fn insert_node(&mut self, drv: Drv) -> Option<(DrvId, GraphNode)> {
         let drv_id = drv.drv_path.clone();
         let state = drv.build_state.clone();
 
@@ -106,7 +107,7 @@ impl BuildGraph {
         }
 
         // Insert into LRU cache (push returns the evicted entry if any)
-        self.nodes.push(drv_id, node);
+        self.nodes.push(drv_id, node)
     }
 
     /// Add a dependency edge: referrer depends on reference

@@ -58,9 +58,9 @@ impl SchedulerService {
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         graph_handle: GraphServiceHandle,
+        metrics_registry: Arc<Registry>,
     ) -> anyhow::Result<Self> {
-        // Create metrics registry and build metrics
-        let metrics_registry = Arc::new(Registry::new());
+        // Create build metrics using shared registry
         let build_metrics = BuildMetrics::new(&metrics_registry)?;
 
         // Register process metrics collector

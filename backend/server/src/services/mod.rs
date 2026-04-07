@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
+use prometheus::Registry;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc::{Sender, channel};
 use tokio_util::sync::CancellationToken;
@@ -12,6 +15,7 @@ use crate::db::DbService;
 use crate::git::GitService;
 use crate::github::{self, GitHubService};
 use crate::graph::{GraphCommand, GraphService};
+use crate::metrics::GraphMetrics;
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::web::WebService;
@@ -53,13 +57,20 @@ pub async fn start_services(config: Config) -> Result<()> {
         },
     };
 
+    // Create shared metrics registry for all services
+    let metrics_registry = Arc::new(Registry::new());
+
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
-    // GraphService will get metrics from SchedulerService later, pass None for now
+
+    // Create GraphMetrics and register with shared registry
+    let graph_metrics = GraphMetrics::new(&metrics_registry)
+        .context("failed to create GraphMetrics")?;
+
     let graph_service = GraphService::new(
         db_service.clone(),
         graph_command_receiver,
-        None,
+        Some(graph_metrics),
         config.graph_lru_capacity,
     )
     .await
@@ -84,6 +95,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         websocket_sender,
         graph_command_sender.clone(),
         graph_handle.clone(),
+        metrics_registry.clone(),
     )
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);

@@ -315,10 +315,24 @@ impl GraphService {
     async fn ensure_loaded(&mut self, drv_id: &DrvId) -> anyhow::Result<bool> {
         // Check if node is already in cache (use contains for efficient check)
         if self.graph.nodes.contains(drv_id) {
+            // Cache hit - node is already in memory
+            if let Some(ref metrics) = self.metrics {
+                metrics
+                    .cache_hits_total
+                    .with_label_values(&["ensure_loaded"])
+                    .inc();
+            }
             return Ok(false);
         }
 
+        // Cache miss - node was evicted or never loaded
         debug!("Cache miss: reloading {:?} from database", drv_id);
+        if let Some(ref metrics) = self.metrics {
+            metrics
+                .cache_misses_total
+                .with_label_values(&["ensure_loaded"])
+                .inc();
+        }
 
         // Record cache reload metrics
         let reload_start = Instant::now();
@@ -348,9 +362,23 @@ impl GraphService {
                 .fetch_all(pool)
                 .await?;
 
-        // Insert the node
+        // Insert the node and track potential eviction
         let now = Instant::now();
-        self.graph.insert_node(drv);
+        if let Some((evicted_id, evicted_node)) = self.graph.insert_node(drv) {
+            // Record eviction metric
+            if let Some(ref metrics) = self.metrics {
+                let state_label = format!("{:?}", evicted_node.build_state);
+                metrics
+                    .evictions_total
+                    .with_label_values(&[&state_label])
+                    .inc();
+            }
+
+            // Clean up tracking data for evicted node
+            self.last_accessed.remove(&evicted_id);
+            self.ref_counts.remove(&evicted_id);
+            self.shared_view.remove(&evicted_id);
+        }
         self.last_accessed.insert(drv_id.clone(), now);
 
         // Re-add edges
@@ -425,7 +453,23 @@ impl GraphService {
         // Insert nodes into graph
         for drv in drvs {
             let drv_id = drv.drv_path.clone();
-            self.graph.insert_node(drv);
+
+            // Insert node and track evictions
+            if let Some((evicted_id, evicted_node)) = self.graph.insert_node(drv) {
+                // Record eviction metric
+                if let Some(ref metrics) = self.metrics {
+                    let state_label = format!("{:?}", evicted_node.build_state);
+                    metrics
+                        .evictions_total
+                        .with_label_values(&[&state_label])
+                        .inc();
+                }
+
+                // Clean up tracking data for evicted node
+                self.last_accessed.remove(&evicted_id);
+                self.ref_counts.remove(&evicted_id);
+                self.shared_view.remove(&evicted_id);
+            }
 
             // Initialize last_accessed
             self.last_accessed.insert(drv_id.clone(), now);
