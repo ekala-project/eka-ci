@@ -1,4 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::num::NonZeroUsize;
+
+use lru::LruCache;
 
 use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::drv::Drv;
@@ -42,8 +45,8 @@ impl GraphNode {
 /// In-memory directed acyclic graph (DAG) of derivation dependencies and build states
 #[derive(Debug)]
 pub struct BuildGraph {
-    /// All nodes in the graph, indexed by drv_id
-    pub(crate) nodes: HashMap<DrvId, GraphNode>,
+    /// All nodes in the graph, indexed by drv_id with LRU eviction policy
+    pub(crate) nodes: LruCache<DrvId, GraphNode>,
 
     /// Index of drvs by their build state for fast queries
     by_state: HashMap<DrvBuildState, HashSet<DrvId>>,
@@ -56,10 +59,11 @@ pub struct BuildGraph {
 }
 
 impl BuildGraph {
-    /// Create a new empty build graph
+    /// Create a new empty build graph with LRU cache
+    /// Initial capacity is set to 1,000,000 (effectively unlimited for now)
     pub fn new() -> Self {
         Self {
-            nodes: HashMap::new(),
+            nodes: LruCache::new(NonZeroUsize::new(1_000_000).unwrap()),
             by_state: HashMap::new(),
             failed_drvs: HashSet::new(),
             transitive_failure_map: HashMap::new(),
@@ -85,31 +89,31 @@ impl BuildGraph {
             self.failed_drvs.insert(drv_id.clone());
         }
 
-        // Insert into main map
-        self.nodes.insert(drv_id, node);
+        // Insert into LRU cache (push returns the evicted entry if any)
+        self.nodes.push(drv_id, node);
     }
 
     /// Add a dependency edge: referrer depends on reference
     /// referrer -> reference (referrer needs reference to build)
     pub fn add_edge(&mut self, referrer: DrvId, reference: DrvId) {
-        // Add to referrer's dependencies
-        if let Some(node) = self.nodes.get_mut(&referrer) {
+        // Add to referrer's dependencies (use peek_mut to avoid LRU update)
+        if let Some(node) = self.nodes.peek_mut(&referrer) {
             if !node.dependencies.contains(&reference) {
                 node.dependencies.push(reference.clone());
             }
         }
 
-        // Add to reference's dependents
-        if let Some(node) = self.nodes.get_mut(&reference) {
+        // Add to reference's dependents (use peek_mut to avoid LRU update)
+        if let Some(node) = self.nodes.peek_mut(&reference) {
             if !node.dependents.contains(&referrer) {
                 node.dependents.push(referrer);
             }
         }
     }
 
-    /// Get a node by drv_id
+    /// Get a node by drv_id (doesn't update LRU)
     pub fn get_node(&self, drv_id: &DrvId) -> Option<&GraphNode> {
-        self.nodes.get(drv_id)
+        self.nodes.peek(drv_id)
     }
 
     /// Get all drvs in a particular state
@@ -122,7 +126,7 @@ impl BuildGraph {
 
     /// Update the build state of a drv
     pub fn update_state(&mut self, drv_id: &DrvId, new_state: DrvBuildState) {
-        let Some(node) = self.nodes.get_mut(drv_id) else {
+        let Some(node) = self.nodes.peek_mut(drv_id) else {
             return;
         };
 
@@ -153,7 +157,7 @@ impl BuildGraph {
     /// Get the direct dependencies of a drv
     pub fn get_dependencies(&self, drv_id: &DrvId) -> Vec<DrvId> {
         self.nodes
-            .get(drv_id)
+            .peek(drv_id)
             .map(|node| node.dependencies.clone())
             .unwrap_or_default()
     }
@@ -161,20 +165,20 @@ impl BuildGraph {
     /// Get the direct dependents (referrers) of a drv
     pub fn get_dependents(&self, drv_id: &DrvId) -> Vec<DrvId> {
         self.nodes
-            .get(drv_id)
+            .peek(drv_id)
             .map(|node| node.dependents.clone())
             .unwrap_or_default()
     }
 
     /// Check if a drv is buildable (all dependencies completed successfully)
     pub fn is_buildable(&self, drv_id: &DrvId) -> bool {
-        let Some(node) = self.nodes.get(drv_id) else {
+        let Some(node) = self.nodes.peek(drv_id) else {
             return false;
         };
 
         // Check if all dependencies are successfully completed
         node.dependencies.iter().all(|dep_id| {
-            self.nodes.get(dep_id).map_or(false, |dep| {
+            self.nodes.peek(dep_id).map_or(false, |dep| {
                 dep.build_state == DrvBuildState::Completed(DrvBuildResult::Success)
             })
         })
@@ -189,7 +193,7 @@ impl BuildGraph {
         visited.insert(drv_id.clone());
 
         while let Some(current) = queue.pop_front() {
-            let Some(node) = self.nodes.get(&current) else {
+            let Some(node) = self.nodes.peek(&current) else {
                 continue;
             };
 
@@ -212,7 +216,7 @@ impl BuildGraph {
 
         for blocked_id in &blocked {
             // Update state to TransitiveFailure
-            if let Some(node) = self.nodes.get_mut(blocked_id) {
+            if let Some(node) = self.nodes.peek_mut(blocked_id) {
                 let old_state =
                     std::mem::replace(&mut node.build_state, DrvBuildState::TransitiveFailure);
 
@@ -249,7 +253,7 @@ impl BuildGraph {
         let mut unblocked = Vec::new();
 
         for blocked_id in blocked_set {
-            let Some(node) = self.nodes.get_mut(&blocked_id) else {
+            let Some(node) = self.nodes.peek_mut(&blocked_id) else {
                 continue;
             };
 
@@ -280,7 +284,7 @@ impl BuildGraph {
     /// Get the failed dependencies blocking a drv
     pub fn get_failed_dependencies(&self, drv_id: &DrvId) -> Vec<DrvId> {
         self.nodes
-            .get(drv_id)
+            .peek(drv_id)
             .map(|node| node.blocking_failures.iter().cloned().collect())
             .unwrap_or_default()
     }

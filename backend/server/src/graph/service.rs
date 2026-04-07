@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
+use super::eviction::{EvictionCandidateSelector, EvictionConfig};
 use super::graph::BuildGraph;
 use crate::db::DbService;
 use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
@@ -119,6 +120,10 @@ pub struct GraphService {
     ref_counts: HashMap<DrvId, usize>,
     /// Metrics for observability
     metrics: Option<Arc<GraphMetrics>>,
+    /// Eviction candidate selector
+    eviction_selector: EvictionCandidateSelector,
+    /// Last time we ran dry-run eviction check
+    last_dry_run_check: Instant,
 }
 
 impl GraphService {
@@ -151,6 +156,7 @@ impl GraphService {
             }
         }
 
+        let now = Instant::now();
         let service = Self {
             graph,
             shared_view,
@@ -159,6 +165,8 @@ impl GraphService {
             last_accessed,
             ref_counts,
             metrics,
+            eviction_selector: EvictionCandidateSelector::new(EvictionConfig::default()),
+            last_dry_run_check: now,
         };
 
         // Update initial metrics
@@ -187,6 +195,9 @@ impl GraphService {
             if let Err(e) = self.handle_command(command).await {
                 error!("Error handling graph command: {:?}", e);
             }
+
+            // Periodically check eviction candidates (dry-run mode)
+            self.maybe_dry_run_eviction_check();
         }
 
         info!("GraphService stopped");
@@ -239,22 +250,110 @@ impl GraphService {
             },
 
             GraphCommand::GetDependents { drv_id, response } => {
-                let dependents = self.graph.get_dependents(&drv_id);
-                let _ = response.send(dependents);
+                // Ensure node is loaded (may have been evicted)
+                if let Err(e) = self.ensure_loaded(&drv_id).await {
+                    error!("Failed to ensure loaded for GetDependents: {:?}", e);
+                    let _ = response.send(Vec::new());
+                } else {
+                    let dependents = self.graph.get_dependents(&drv_id);
+                    let _ = response.send(dependents);
+                }
             },
 
             GraphCommand::GetDependencies { drv_id, response } => {
-                let dependencies = self.graph.get_dependencies(&drv_id);
-                let _ = response.send(dependencies);
+                // Ensure node is loaded (may have been evicted)
+                if let Err(e) = self.ensure_loaded(&drv_id).await {
+                    error!("Failed to ensure loaded for GetDependencies: {:?}", e);
+                    let _ = response.send(Vec::new());
+                } else {
+                    let dependencies = self.graph.get_dependencies(&drv_id);
+                    let _ = response.send(dependencies);
+                }
             },
 
             GraphCommand::GetFailedDependencies { drv_id, response } => {
-                let failed_deps = self.graph.get_failed_dependencies(&drv_id);
-                let _ = response.send(failed_deps);
+                // Ensure node is loaded (may have been evicted)
+                if let Err(e) = self.ensure_loaded(&drv_id).await {
+                    error!("Failed to ensure loaded for GetFailedDependencies: {:?}", e);
+                    let _ = response.send(Vec::new());
+                } else {
+                    let failed_deps = self.graph.get_failed_dependencies(&drv_id);
+                    let _ = response.send(failed_deps);
+                }
             },
         }
 
         Ok(())
+    }
+
+    /// Ensure a node is loaded in the cache, reloading from DB if evicted
+    /// Returns true if the node was reloaded, false if it was already in cache
+    async fn ensure_loaded(&mut self, drv_id: &DrvId) -> anyhow::Result<bool> {
+        // Check if node is already in cache (use contains for efficient check)
+        if self.graph.nodes.contains(drv_id) {
+            return Ok(false);
+        }
+
+        debug!("Cache miss: reloading {:?} from database", drv_id);
+
+        // Load the drv from database
+        let Some(drv) = self.db_service.get_drv(drv_id).await? else {
+            anyhow::bail!("Drv not found in database: {:?}", drv_id);
+        };
+
+        // Load all edges where this drv is involved
+        let pool = &self.db_service.pool;
+
+        // Load dependencies (where this drv is the referrer)
+        let deps: Vec<(String,)> = sqlx::query_as(
+            "SELECT reference FROM DrvRefs WHERE referrer = ?",
+        )
+        .bind(drv_id)
+        .fetch_all(pool)
+        .await?;
+
+        // Load dependents (where this drv is the reference)
+        let dependents: Vec<(String,)> = sqlx::query_as(
+            "SELECT referrer FROM DrvRefs WHERE reference = ?",
+        )
+        .bind(drv_id)
+        .fetch_all(pool)
+        .await?;
+
+        // Insert the node
+        let now = Instant::now();
+        self.graph.insert_node(drv);
+        self.last_accessed.insert(drv_id.clone(), now);
+
+        // Re-add edges
+        for (dep_str,) in deps {
+            let dep_id: DrvId = std::str::FromStr::from_str(&dep_str)?;
+            self.graph.add_edge(drv_id.clone(), dep_id.clone());
+
+            // Update ref_count
+            *self.ref_counts.entry(dep_id).or_insert(0) += 1;
+        }
+
+        for (dependent_str,) in dependents {
+            let dependent_id: DrvId = std::str::FromStr::from_str(&dependent_str)?;
+            self.graph.add_edge(dependent_id.clone(), drv_id.clone());
+
+            // Update ref_count
+            *self.ref_counts.entry(drv_id.clone()).or_insert(0) += 1;
+        }
+
+        // Update shared view cache
+        if let Some(node) = self.graph.get_node(drv_id) {
+            let cached_node = CachedNode::from_graph_node(node);
+            self.shared_view.insert(drv_id.clone(), cached_node);
+        }
+
+        // Update metrics if configured
+        if self.metrics.is_some() {
+            self.update_metrics();
+        }
+
+        Ok(true)
     }
 
     /// Update drv state in graph and cache
@@ -411,6 +510,137 @@ impl GraphService {
                 .ref_count_histogram
                 .with_label_values(&[has_dependents])
                 .observe(ref_count as f64);
+        }
+
+        // Update eviction candidate counts by tier
+        let candidate_counts = self.eviction_selector.count_candidates_by_tier(
+            &self.graph,
+            &self.last_accessed,
+            &self.ref_counts,
+        );
+
+        for (tier, count) in candidate_counts {
+            metrics
+                .eviction_candidates_total
+                .with_label_values(&[tier.name()])
+                .set(count as f64);
+        }
+    }
+
+    /// Perform a dry-run eviction check and log what would be evicted
+    /// This runs periodically to validate eviction policy without actually evicting
+    fn maybe_dry_run_eviction_check(&mut self) {
+        let now = Instant::now();
+        let since_last_check = now.duration_since(self.last_dry_run_check);
+
+        // Run check every 5 minutes
+        if since_last_check < std::time::Duration::from_secs(300) {
+            return;
+        }
+
+        self.last_dry_run_check = now;
+
+        // Check what would be evicted if we needed to free up 20% of capacity
+        let current_count = self.graph.node_count();
+        let target_evict = current_count / 5; // 20%
+
+        if target_evict == 0 {
+            return;
+        }
+
+        let candidates = self.eviction_selector.select_candidates(
+            &self.graph,
+            &self.last_accessed,
+            &self.ref_counts,
+            target_evict,
+        );
+
+        if candidates.is_empty() {
+            info!(
+                "Dry-run eviction check: No candidates available despite {} nodes in graph",
+                current_count
+            );
+            return;
+        }
+
+        // Count candidates by tier
+        let mut tier1_count = 0;
+        let mut tier2_count = 0;
+        let mut tier3_count = 0;
+
+        for candidate in &candidates {
+            match candidate.tier {
+                super::eviction::EvictionTier::Tier1 => tier1_count += 1,
+                super::eviction::EvictionTier::Tier2 => tier2_count += 1,
+                super::eviction::EvictionTier::Tier3 => tier3_count += 1,
+            }
+        }
+
+        info!(
+            "Dry-run eviction check: Would evict {} nodes ({}% of total) - \
+             Tier1: {}, Tier2: {}, Tier3: {}",
+            candidates.len(),
+            (candidates.len() * 100) / current_count,
+            tier1_count,
+            tier2_count,
+            tier3_count
+        );
+
+        // Log details of oldest candidate from each tier (for debugging)
+        let tier1_oldest = candidates
+            .iter()
+            .find(|c| c.tier == super::eviction::EvictionTier::Tier1);
+        let tier2_oldest = candidates
+            .iter()
+            .find(|c| c.tier == super::eviction::EvictionTier::Tier2);
+        let tier3_oldest = candidates
+            .iter()
+            .find(|c| c.tier == super::eviction::EvictionTier::Tier3);
+
+        if let Some(candidate) = tier1_oldest {
+            debug!(
+                "  Tier1 (TransitiveFailure) oldest: {:?}, age: {:.1}h, ref_count: {}",
+                candidate.drv_id,
+                candidate.age.as_secs_f64() / 3600.0,
+                candidate.ref_count
+            );
+        }
+
+        if let Some(candidate) = tier2_oldest {
+            debug!(
+                "  Tier2 (Completed(Failure)) oldest: {:?}, age: {:.1}h, ref_count: {}",
+                candidate.drv_id,
+                candidate.age.as_secs_f64() / 3600.0,
+                candidate.ref_count
+            );
+        }
+
+        if let Some(candidate) = tier3_oldest {
+            debug!(
+                "  Tier3 (Completed(Success)) oldest: {:?}, age: {:.1}h, ref_count: {}",
+                candidate.drv_id,
+                candidate.age.as_secs_f64() / 3600.0,
+                candidate.ref_count
+            );
+        }
+
+        // Validate that all candidates have ref_count == 0
+        let invalid_candidates: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.ref_count != 0)
+            .collect();
+
+        if !invalid_candidates.is_empty() {
+            error!(
+                "BUG: Dry-run eviction found {} candidates with ref_count > 0!",
+                invalid_candidates.len()
+            );
+            for candidate in invalid_candidates {
+                error!(
+                    "  Invalid candidate: {:?}, ref_count: {}",
+                    candidate.drv_id, candidate.ref_count
+                );
+            }
         }
     }
 }
