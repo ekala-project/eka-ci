@@ -290,6 +290,39 @@ impl BuildGraph {
         self.nodes.len()
     }
 
+    /// Estimate memory usage of the graph in bytes
+    pub fn estimate_memory_bytes(&self) -> usize {
+        let mut total = 0;
+
+        for (_id, node) in &self.nodes {
+            // Base node size estimate
+            total += 300;
+
+            // DrvId storage in vectors
+            total += node.dependencies.len() * 80;
+            total += node.dependents.len() * 80;
+
+            // Blocking failures HashSet
+            total += node.blocking_failures.len() * 80;
+        }
+
+        // by_state index overhead
+        for (_state, set) in &self.by_state {
+            total += set.len() * 80;
+        }
+
+        // failed_drvs set
+        total += self.failed_drvs.len() * 80;
+
+        // transitive_failure_map
+        for (_drv, blocked_set) in &self.transitive_failure_map {
+            total += 80; // Key
+            total += blocked_set.len() * 80;  // Value set
+        }
+
+        total
+    }
+
     /// Initialize the graph from database on startup
     /// Normalizes transient states to Queued and recomputes transitive failures
     pub async fn from_database(db_service: &crate::db::DbService) -> anyhow::Result<Self> {

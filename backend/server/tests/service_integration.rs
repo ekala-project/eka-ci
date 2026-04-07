@@ -39,7 +39,7 @@ async fn test_build_simple_drv_success() {
 
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
-    let graph_service = GraphService::new(ctx.db_service.clone(), graph_command_receiver)
+    let graph_service = GraphService::new(ctx.db_service.clone(), graph_command_receiver, None)
         .await
         .expect("Failed to initialize GraphService");
     let graph_handle = graph_service.handle(graph_command_sender.clone());
@@ -123,7 +123,7 @@ async fn test_build_failure_retry_logic() {
 
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
-    let graph_service = GraphService::new(ctx.db_service.clone(), graph_command_receiver)
+    let graph_service = GraphService::new(ctx.db_service.clone(), graph_command_receiver, None)
         .await
         .expect("Failed to initialize GraphService");
     let graph_handle = graph_service.handle(graph_command_sender.clone());

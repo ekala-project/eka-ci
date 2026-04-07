@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -10,6 +12,7 @@ use crate::db::DbService;
 use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::drv::Drv;
 use crate::db::model::drv_id::DrvId;
+use crate::metrics::GraphMetrics;
 
 /// Cached read-only node data for lockfree concurrent access
 #[derive(Debug, Clone)]
@@ -110,6 +113,12 @@ pub struct GraphService {
     shared_view: Arc<DashMap<DrvId, CachedNode>>,
     command_receiver: mpsc::Receiver<GraphCommand>,
     db_service: DbService,
+    /// Track last access time for LRU eviction policy
+    last_accessed: HashMap<DrvId, Instant>,
+    /// Reference counts: how many in-cache nodes depend on this node
+    ref_counts: HashMap<DrvId, usize>,
+    /// Metrics for observability
+    metrics: Option<Arc<GraphMetrics>>,
 }
 
 impl GraphService {
@@ -117,6 +126,7 @@ impl GraphService {
     pub async fn new(
         db_service: DbService,
         command_receiver: mpsc::Receiver<GraphCommand>,
+        metrics: Option<Arc<GraphMetrics>>,
     ) -> anyhow::Result<Self> {
         info!("Initializing BuildGraph from database...");
         let graph = BuildGraph::from_database(&db_service).await?;
@@ -124,17 +134,37 @@ impl GraphService {
 
         // Build the shared view cache
         let shared_view = Arc::new(DashMap::new());
+        let now = Instant::now();
+        let mut last_accessed = HashMap::new();
+        let mut ref_counts = HashMap::new();
+
         for (drv_id, node) in graph.nodes.iter() {
             let cached_node = CachedNode::from_graph_node(node);
             shared_view.insert(drv_id.clone(), cached_node);
+
+            // Initialize last_accessed to now for all nodes
+            last_accessed.insert(drv_id.clone(), now);
+
+            // Calculate initial ref_counts
+            for dep_id in &node.dependencies {
+                *ref_counts.entry(dep_id.clone()).or_insert(0) += 1;
+            }
         }
 
-        Ok(Self {
+        let service = Self {
             graph,
             shared_view,
             command_receiver,
             db_service,
-        })
+            last_accessed,
+            ref_counts,
+            metrics,
+        };
+
+        // Update initial metrics
+        service.update_metrics();
+
+        Ok(service)
     }
 
     /// Get a handle to interact with the service
@@ -255,10 +285,15 @@ impl GraphService {
         drvs: Vec<Drv>,
         refs: Vec<(DrvId, DrvId)>,
     ) -> anyhow::Result<()> {
+        let now = Instant::now();
+
         // Insert nodes into graph
         for drv in drvs {
             let drv_id = drv.drv_path.clone();
             self.graph.insert_node(drv);
+
+            // Initialize last_accessed
+            self.last_accessed.insert(drv_id.clone(), now);
 
             // Update shared view cache
             if let Some(node) = self.graph.get_node(&drv_id) {
@@ -271,6 +306,9 @@ impl GraphService {
         for (referrer, reference) in refs {
             self.graph.add_edge(referrer.clone(), reference.clone());
 
+            // Update ref_count: reference now has one more dependent
+            *self.ref_counts.entry(reference.clone()).or_insert(0) += 1;
+
             // Update cached dependencies for referrer
             if let Some(node) = self.graph.get_node(&referrer) {
                 if let Some(mut cached) = self.shared_view.get_mut(&referrer) {
@@ -278,6 +316,9 @@ impl GraphService {
                 }
             }
         }
+
+        // Update metrics after bulk insert
+        self.update_metrics();
 
         Ok(())
     }
@@ -320,6 +361,57 @@ impl GraphService {
             .await?;
 
         Ok(unblocked)
+    }
+
+    /// Update Prometheus metrics based on current graph state
+    fn update_metrics(&self) {
+        let Some(ref metrics) = self.metrics else {
+            return;
+        };
+
+        // Update memory estimate
+        let memory_bytes = self.graph.estimate_memory_bytes();
+        metrics.memory_bytes_estimate.set(memory_bytes as f64);
+
+        // Update node counts by state
+        use DrvBuildState::*;
+        let states = vec![
+            Queued,
+            Buildable,
+            Building,
+            FailedRetry,
+            Blocked,
+            TransitiveFailure,
+            Completed(DrvBuildResult::Success),
+            Completed(DrvBuildResult::Failure),
+        ];
+
+        for state in states {
+            let count = self.graph.get_drvs_by_state(&state).len();
+            let state_label = format!("{:?}", state);
+            metrics
+                .nodes_total
+                .with_label_values(&[&state_label])
+                .set(count as f64);
+        }
+
+        // Update ref_count histogram
+        for (drv_id, &ref_count) in &self.ref_counts {
+            let has_dependents = if let Some(node) = self.graph.get_node(drv_id) {
+                if node.dependents.is_empty() {
+                    "false"
+                } else {
+                    "true"
+                }
+            } else {
+                "unknown"
+            };
+
+            metrics
+                .ref_count_histogram
+                .with_label_values(&[has_dependents])
+                .observe(ref_count as f64);
+        }
     }
 }
 
