@@ -45,8 +45,9 @@ async fn test_build_simple_drv_success() {
     let graph_handle = graph_service.handle();
 
     // Spawn the graph service
+    let cancel_token = tokio_util::sync::CancellationToken::new();
     tokio::spawn(async move {
-        graph_service.run().await;
+        graph_service.run(cancel_token).await;
     });
 
     // Start the scheduler service
@@ -128,8 +129,9 @@ async fn test_build_failure_retry_logic() {
     let graph_handle = graph_service.handle();
 
     // Spawn the graph service
+    let cancel_token = tokio_util::sync::CancellationToken::new();
     tokio::spawn(async move {
-        graph_service.run().await;
+        graph_service.run(cancel_token).await;
     });
 
     // Start the scheduler service

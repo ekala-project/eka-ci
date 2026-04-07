@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use super::graph::BuildGraph;
@@ -118,11 +119,15 @@ impl GraphService {
         }
     }
 
-    /// Run the service, processing commands until the channel closes
-    pub async fn run(mut self) {
+    /// Run the service, processing commands until the channel closes or cancellation
+    pub async fn run(mut self, cancellation_token: CancellationToken) {
         info!("GraphService started");
 
-        while let Some(command) = self.command_receiver.recv().await {
+        while let Some(command) = cancellation_token
+            .run_until_cancelled(self.command_receiver.recv())
+            .await
+            .flatten()
+        {
             if let Err(e) = self.handle_command(command).await {
                 error!("Error handling graph command: {:?}", e);
             }

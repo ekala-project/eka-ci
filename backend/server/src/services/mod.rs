@@ -152,7 +152,7 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
-    let graph_handle_task = tokio::spawn(graph_service.run());
+    let graph_handle_task = tokio::spawn(graph_service.run(cancellation_token.clone()));
     let git_handle = tokio::spawn(git_service.run(cancellation_token.clone()));
     let repo_handle = tokio::spawn(repo_service.run(cancellation_token.clone()));
     let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
