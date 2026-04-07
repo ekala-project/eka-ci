@@ -74,19 +74,28 @@ impl GraphMetrics {
         )?;
 
         let memory_bytes_estimate = prometheus::Gauge::with_opts(
-            Opts::new("graph_memory_bytes_estimate", "Estimated memory usage of the graph")
-                .namespace("eka_ci"),
+            Opts::new(
+                "graph_memory_bytes_estimate",
+                "Estimated memory usage of the graph",
+            )
+            .namespace("eka_ci"),
         )?;
 
         let cache_hits_total = CounterVec::new(
-            Opts::new("graph_cache_hits_total", "Number of successful cache lookups")
-                .namespace("eka_ci"),
+            Opts::new(
+                "graph_cache_hits_total",
+                "Number of successful cache lookups",
+            )
+            .namespace("eka_ci"),
             &["operation"],
         )?;
 
         let cache_misses_total = CounterVec::new(
-            Opts::new("graph_cache_misses_total", "Number of cache misses (should be zero)")
-                .namespace("eka_ci"),
+            Opts::new(
+                "graph_cache_misses_total",
+                "Number of cache misses (should be zero)",
+            )
+            .namespace("eka_ci"),
             &["operation"],
         )?;
 
@@ -100,8 +109,11 @@ impl GraphMetrics {
         )?;
 
         let evictions_total = CounterVec::new(
-            Opts::new("graph_evictions_total", "Number of nodes evicted from graph")
-                .namespace("eka_ci"),
+            Opts::new(
+                "graph_evictions_total",
+                "Number of nodes evicted from graph",
+            )
+            .namespace("eka_ci"),
             &["tier"],
         )?;
 
@@ -129,7 +141,9 @@ impl GraphMetrics {
                 "Time taken to reload a node from database",
             )
             .namespace("eka_ci")
-            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]),
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
         )?;
 
         let pinned_nodes_total = prometheus::Gauge::with_opts(
@@ -141,8 +155,7 @@ impl GraphMetrics {
         )?;
 
         let cache_capacity = prometheus::Gauge::with_opts(
-            Opts::new("graph_cache_capacity", "Current LRU cache capacity")
-                .namespace("eka_ci"),
+            Opts::new("graph_cache_capacity", "Current LRU cache capacity").namespace("eka_ci"),
         )?;
 
         let cache_utilization = prometheus::Gauge::with_opts(
