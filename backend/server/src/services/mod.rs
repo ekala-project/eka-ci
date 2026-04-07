@@ -122,6 +122,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         scheduler_service.metrics_registry(),
         config.require_approval,
         db_service.clone(),
+        graph_handle.clone(),
         jwt_service,
         oauth_config,
         config.logs_dir.clone(),

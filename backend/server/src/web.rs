@@ -29,6 +29,7 @@ struct AppState {
     metrics_registry: Arc<Registry>,
     require_approval: bool,
     db_service: crate::db::DbService,
+    graph_handle: crate::graph::GraphServiceHandle,
     jwt_service: JwtService,
     oauth_config: OAuthConfig,
     logs_dir: PathBuf,
@@ -56,6 +57,7 @@ impl WebService {
         metrics_registry: Arc<Registry>,
         require_approval: bool,
         db_service: crate::db::DbService,
+        graph_handle: crate::graph::GraphServiceHandle,
         jwt_service: JwtService,
         oauth_config: OAuthConfig,
         logs_dir: PathBuf,
@@ -74,6 +76,7 @@ impl WebService {
                 metrics_registry,
                 require_approval,
                 db_service,
+                graph_handle,
                 jwt_service,
                 oauth_config,
                 logs_dir,
@@ -640,35 +643,25 @@ async fn get_drv_details_handler(
         },
     };
 
-    match state.db_service.get_drv_details(&drv_id).await {
-        Ok(Some(details)) => {
-            // Also get dependency count
-            match state.db_service.count_drv_dependencies(&drv_id).await {
-                Ok(dep_count) => Ok(Json(serde_json::json!({
-                    "drv_path": details.drv_path,
-                    "system": details.system,
-                    "build_state": details.build_state,
-                    "is_fod": details.is_fod,
-                    "required_system_features": details.required_system_features,
-                    "dependency_count": dep_count,
-                }))),
-                Err(e) => {
-                    error!("Failed to count dependencies for {}: {}", drv, e);
-                    Ok(Json(serde_json::to_value(details).unwrap()))
-                },
-            }
+    // Use graph_handle for lockfree access to node data
+    match state.graph_handle.get_node(&drv_id) {
+        Some(node) => {
+            // Get dependency count from the node
+            let dep_count = node.dependencies.len() as i64;
+
+            Ok(Json(serde_json::json!({
+                "drv_path": node.drv_id,
+                "system": node.system,
+                "build_state": node.build_state,
+                "is_fod": node.is_fod,
+                "required_system_features": node.required_system_features,
+                "dependency_count": dep_count,
+            })))
         },
-        Ok(None) => Err((
+        None => Err((
             axum::http::StatusCode::NOT_FOUND,
             format!("Derivation not found: {}", drv),
         )),
-        Err(e) => {
-            error!("Failed to get drv details for {}: {}", drv, e);
-            Err((
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get derivation details: {}", e),
-            ))
-        },
     }
 }
 
@@ -689,12 +682,25 @@ async fn get_drv_dependencies_handler(
         },
     };
 
-    match state.db_service.get_drv_dependencies(&drv_id).await {
-        Ok(deps) => {
-            let count = deps.len() as i64;
+    // Use graph_handle to get dependencies
+    match state.graph_handle.get_dependencies(&drv_id).await {
+        Ok(dep_ids) => {
+            // For each dependency, get its details from the graph
+            let mut dependencies = Vec::new();
+            for dep_id in &dep_ids {
+                if let Some(dep_node) = state.graph_handle.get_node(dep_id) {
+                    dependencies.push(serde_json::json!({
+                        "drv_path": dep_node.drv_id,
+                        "system": dep_node.system,
+                        "build_state": dep_node.build_state,
+                    }));
+                }
+            }
+
+            let count = dependencies.len() as i64;
             Ok(Json(serde_json::json!({
                 "drv_path": drv,
-                "dependencies": deps,
+                "dependencies": dependencies,
                 "dependency_count": count,
             })))
         },
