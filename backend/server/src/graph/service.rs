@@ -98,9 +98,7 @@ pub enum GraphCommand {
         response: oneshot::Sender<Vec<DrvId>>,
     },
     /// Touch a node to mark it as recently used (hot path protection)
-    Touch {
-        drv_ids: Vec<DrvId>,
-    },
+    Touch { drv_ids: Vec<DrvId> },
 }
 
 /// Errors that can occur during graph operations
@@ -138,7 +136,10 @@ impl GraphService {
         metrics: Option<Arc<GraphMetrics>>,
         lru_capacity: usize,
     ) -> anyhow::Result<Self> {
-        info!("Initializing BuildGraph from database with LRU capacity: {}", lru_capacity);
+        info!(
+            "Initializing BuildGraph from database with LRU capacity: {}",
+            lru_capacity
+        );
         let graph = BuildGraph::from_database(&db_service, lru_capacity).await?;
         info!("BuildGraph initialized with {} nodes", graph.node_count());
 
@@ -323,20 +324,18 @@ impl GraphService {
         let pool = &self.db_service.pool;
 
         // Load dependencies (where this drv is the referrer)
-        let deps: Vec<(String,)> = sqlx::query_as(
-            "SELECT reference FROM DrvRefs WHERE referrer = ?",
-        )
-        .bind(drv_id)
-        .fetch_all(pool)
-        .await?;
+        let deps: Vec<(String,)> =
+            sqlx::query_as("SELECT reference FROM DrvRefs WHERE referrer = ?")
+                .bind(drv_id)
+                .fetch_all(pool)
+                .await?;
 
         // Load dependents (where this drv is the reference)
-        let dependents: Vec<(String,)> = sqlx::query_as(
-            "SELECT referrer FROM DrvRefs WHERE reference = ?",
-        )
-        .bind(drv_id)
-        .fetch_all(pool)
-        .await?;
+        let dependents: Vec<(String,)> =
+            sqlx::query_as("SELECT referrer FROM DrvRefs WHERE reference = ?")
+                .bind(drv_id)
+                .fetch_all(pool)
+                .await?;
 
         // Insert the node
         let now = Instant::now();
@@ -558,12 +557,8 @@ impl GraphService {
             .set(self.graph.pinned_count() as f64);
 
         // Update capacity and utilization
-        metrics
-            .cache_capacity
-            .set(self.graph.capacity() as f64);
-        metrics
-            .cache_utilization
-            .set(self.graph.utilization());
+        metrics.cache_capacity.set(self.graph.capacity() as f64);
+        metrics.cache_utilization.set(self.graph.utilization());
     }
 
     /// Perform a dry-run eviction check and log what would be evicted
@@ -598,7 +593,8 @@ impl GraphService {
         // Warn if capacity is high
         if utilization > 0.90 {
             tracing::warn!(
-                "Cache utilization HIGH ({:.1}%): Consider increasing EKA_CI_GRAPH_LRU_CAPACITY (current: {})",
+                "Cache utilization HIGH ({:.1}%): Consider increasing EKA_CI_GRAPH_LRU_CAPACITY \
+                 (current: {})",
                 utilization * 100.0,
                 capacity
             );
@@ -645,8 +641,8 @@ impl GraphService {
         }
 
         info!(
-            "Dry-run eviction check: Would evict {} nodes ({}% of total) - \
-             Tier1: {}, Tier2: {}, Tier3: {}",
+            "Dry-run eviction check: Would evict {} nodes ({}% of total) - Tier1: {}, Tier2: {}, \
+             Tier3: {}",
             candidates.len(),
             (candidates.len() * 100) / current_count,
             tier1_count,
@@ -693,10 +689,7 @@ impl GraphService {
         }
 
         // Validate that all candidates have ref_count == 0
-        let invalid_candidates: Vec<_> = candidates
-            .iter()
-            .filter(|c| c.ref_count != 0)
-            .collect();
+        let invalid_candidates: Vec<_> = candidates.iter().filter(|c| c.ref_count != 0).collect();
 
         if !invalid_candidates.is_empty() {
             error!(
@@ -821,7 +814,9 @@ impl GraphServiceHandle {
     /// Fire-and-forget command (no response needed)
     pub fn touch(&self, drv_ids: Vec<DrvId>) {
         // Use try_send for fire-and-forget behavior
-        let _ = self.command_sender.try_send(GraphCommand::Touch { drv_ids });
+        let _ = self
+            .command_sender
+            .try_send(GraphCommand::Touch { drv_ids });
     }
 
     /// Update the build state of a drv

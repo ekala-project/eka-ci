@@ -58,10 +58,10 @@ impl TargetState {
             (TargetState::TransitiveFailure, DrvBuildState::TransitiveFailure) => true,
             (TargetState::CompletedFailure, DrvBuildState::Completed(DrvBuildResult::Failure)) => {
                 true
-            }
+            },
             (TargetState::CompletedSuccess, DrvBuildState::Completed(DrvBuildResult::Success)) => {
                 true
-            }
+            },
             _ => false,
         }
     }
@@ -81,9 +81,9 @@ pub struct EvictionConfig {
 impl Default for EvictionConfig {
     fn default() -> Self {
         Self {
-            tier1_age_secs: 3600,   // 1 hour
-            tier2_age_secs: 21600,  // 6 hours
-            tier3_age_secs: 86400,  // 24 hours
+            tier1_age_secs: 3600,  // 1 hour
+            tier2_age_secs: 21600, // 6 hours
+            tier3_age_secs: 86400, // 24 hours
         }
     }
 }
@@ -148,7 +148,11 @@ impl EvictionCandidateSelector {
         let mut candidates = Vec::new();
 
         // Try each tier in order until we have enough candidates
-        for tier in [EvictionTier::Tier1, EvictionTier::Tier2, EvictionTier::Tier3] {
+        for tier in [
+            EvictionTier::Tier1,
+            EvictionTier::Tier2,
+            EvictionTier::Tier3,
+        ] {
             if candidates.len() >= target_count {
                 break;
             }
@@ -202,13 +206,15 @@ impl EvictionCandidateSelector {
 
         // Get all drvs in the target state
         let state_drvs = match target_state {
-            TargetState::TransitiveFailure => graph.get_drvs_by_state(&DrvBuildState::TransitiveFailure),
+            TargetState::TransitiveFailure => {
+                graph.get_drvs_by_state(&DrvBuildState::TransitiveFailure)
+            },
             TargetState::CompletedFailure => {
                 graph.get_drvs_by_state(&DrvBuildState::Completed(DrvBuildResult::Failure))
-            }
+            },
             TargetState::CompletedSuccess => {
                 graph.get_drvs_by_state(&DrvBuildState::Completed(DrvBuildResult::Success))
-            }
+            },
         };
 
         // Filter and collect candidates
@@ -255,15 +261,13 @@ impl EvictionCandidateSelector {
         let now = Instant::now();
         let mut counts = HashMap::new();
 
-        for tier in [EvictionTier::Tier1, EvictionTier::Tier2, EvictionTier::Tier3] {
-            let candidates = self.select_from_tier(
-                graph,
-                last_accessed,
-                ref_counts,
-                tier,
-                now,
-                usize::MAX,
-            );
+        for tier in [
+            EvictionTier::Tier1,
+            EvictionTier::Tier2,
+            EvictionTier::Tier3,
+        ] {
+            let candidates =
+                self.select_from_tier(graph, last_accessed, ref_counts, tier, now, usize::MAX);
             counts.insert(tier, candidates.len());
         }
 
@@ -273,9 +277,10 @@ impl EvictionCandidateSelector {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
     use crate::db::model::drv::Drv;
-    use std::str::FromStr;
 
     fn make_test_drv(hash: &str, state: DrvBuildState) -> Drv {
         let drv_path = format!("{}-test.drv", hash);
@@ -336,12 +341,20 @@ mod tests {
 
         let selector = EvictionCandidateSelector::with_defaults();
         let candidates = selector.select_candidates(&graph, &last_accessed, &ref_counts, 10);
-        assert_eq!(candidates.len(), 0, "Should not select node with ref_count > 0");
+        assert_eq!(
+            candidates.len(),
+            0,
+            "Should not select node with ref_count > 0"
+        );
 
         // ref_count == 0 should allow selection
         ref_counts.insert(drv_id.clone(), 0);
         let candidates = selector.select_candidates(&graph, &last_accessed, &ref_counts, 10);
-        assert_eq!(candidates.len(), 1, "Should select node with ref_count == 0");
+        assert_eq!(
+            candidates.len(),
+            1,
+            "Should select node with ref_count == 0"
+        );
     }
 
     #[test]
@@ -358,7 +371,11 @@ mod tests {
         let mut last_accessed = HashMap::new();
         last_accessed.insert(drv_id.clone(), Instant::now() - Duration::from_secs(1800));
         let candidates = selector.select_candidates(&graph, &last_accessed, &ref_counts, 10);
-        assert_eq!(candidates.len(), 0, "Should not select node that's too young");
+        assert_eq!(
+            candidates.len(),
+            0,
+            "Should not select node that's too young"
+        );
 
         // Old enough (2 hours)
         last_accessed.insert(drv_id.clone(), Instant::now() - Duration::from_secs(7200));
@@ -373,7 +390,8 @@ mod tests {
         // Add one of each type
         let tf_drv = make_test_drv("tf", DrvBuildState::TransitiveFailure);
         let fail_drv = make_test_drv("fail", DrvBuildState::Completed(DrvBuildResult::Failure));
-        let success_drv = make_test_drv("success", DrvBuildState::Completed(DrvBuildResult::Success));
+        let success_drv =
+            make_test_drv("success", DrvBuildState::Completed(DrvBuildResult::Success));
 
         let tf_id = tf_drv.drv_path.clone();
         let fail_id = fail_drv.drv_path.clone();
@@ -387,7 +405,10 @@ mod tests {
         let mut last_accessed = HashMap::new();
         last_accessed.insert(tf_id.clone(), Instant::now() - Duration::from_secs(7200)); // 2h
         last_accessed.insert(fail_id.clone(), Instant::now() - Duration::from_secs(25200)); // 7h
-        last_accessed.insert(success_id.clone(), Instant::now() - Duration::from_secs(90000)); // 25h
+        last_accessed.insert(
+            success_id.clone(),
+            Instant::now() - Duration::from_secs(90000),
+        ); // 25h
 
         let ref_counts = HashMap::new();
         let selector = EvictionCandidateSelector::with_defaults();
@@ -431,8 +452,8 @@ mod tests {
 
         let mut last_accessed = HashMap::new();
         last_accessed.insert(id1.clone(), Instant::now() - Duration::from_secs(10800)); // 3h (oldest)
-        last_accessed.insert(id2.clone(), Instant::now() - Duration::from_secs(7200));  // 2h (middle)
-        last_accessed.insert(id3.clone(), Instant::now() - Duration::from_secs(3600));  // 1h (newest)
+        last_accessed.insert(id2.clone(), Instant::now() - Duration::from_secs(7200)); // 2h (middle)
+        last_accessed.insert(id3.clone(), Instant::now() - Duration::from_secs(3600)); // 1h (newest)
 
         let ref_counts = HashMap::new();
         let selector = EvictionCandidateSelector::with_defaults();

@@ -371,7 +371,7 @@ impl BuildGraph {
         // transitive_failure_map
         for (_drv, blocked_set) in &self.transitive_failure_map {
             total += 80; // Key
-            total += blocked_set.len() * 80;  // Value set
+            total += blocked_set.len() * 80; // Value set
         }
 
         total
