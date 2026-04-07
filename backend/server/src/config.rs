@@ -55,6 +55,7 @@ struct ConfigFile {
     logs_dir: Option<PathBuf>,
     require_approval: Option<bool>,
     build_no_output_timeout_seconds: Option<u64>,
+    graph_lru_capacity: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -94,6 +95,8 @@ pub struct Config {
     pub remote_builders: Vec<RemoteBuilder>,
     pub require_approval: bool,
     pub build_no_output_timeout_seconds: u64,
+    /// Maximum number of nodes in the LRU cache (default: 100,000)
+    pub graph_lru_capacity: usize,
 }
 
 #[derive(Debug)]
@@ -213,6 +216,7 @@ impl Config {
                 .or(file.require_approval)
                 .unwrap_or(false),
             build_no_output_timeout_seconds: file.build_no_output_timeout_seconds.unwrap_or(1200),
+            graph_lru_capacity: file.graph_lru_capacity.unwrap_or(100_000),
         })
     }
 

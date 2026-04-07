@@ -97,6 +97,10 @@ pub enum GraphCommand {
         drv_id: DrvId,
         response: oneshot::Sender<Vec<DrvId>>,
     },
+    /// Touch a node to mark it as recently used (hot path protection)
+    Touch {
+        drv_ids: Vec<DrvId>,
+    },
 }
 
 /// Errors that can occur during graph operations
@@ -132,9 +136,10 @@ impl GraphService {
         db_service: DbService,
         command_receiver: mpsc::Receiver<GraphCommand>,
         metrics: Option<Arc<GraphMetrics>>,
+        lru_capacity: usize,
     ) -> anyhow::Result<Self> {
-        info!("Initializing BuildGraph from database...");
-        let graph = BuildGraph::from_database(&db_service).await?;
+        info!("Initializing BuildGraph from database with LRU capacity: {}", lru_capacity);
+        let graph = BuildGraph::from_database(&db_service, lru_capacity).await?;
         info!("BuildGraph initialized with {} nodes", graph.node_count());
 
         // Build the shared view cache
@@ -281,6 +286,13 @@ impl GraphService {
                     let _ = response.send(failed_deps);
                 }
             },
+
+            GraphCommand::Touch { drv_ids } => {
+                // Touch nodes to mark them as recently used (hot path protection)
+                for drv_id in drv_ids {
+                    self.graph.touch(&drv_id);
+                }
+            },
         }
 
         Ok(())
@@ -295,6 +307,12 @@ impl GraphService {
         }
 
         debug!("Cache miss: reloading {:?} from database", drv_id);
+
+        // Record cache reload metrics
+        let reload_start = Instant::now();
+        if let Some(ref metrics) = self.metrics {
+            metrics.cache_reloads_total.inc();
+        }
 
         // Load the drv from database
         let Some(drv) = self.db_service.get_drv(drv_id).await? else {
@@ -351,6 +369,14 @@ impl GraphService {
         // Update metrics if configured
         if self.metrics.is_some() {
             self.update_metrics();
+        }
+
+        // Record reload duration
+        if let Some(ref metrics) = self.metrics {
+            let reload_duration = reload_start.elapsed();
+            metrics
+                .cache_reload_duration_seconds
+                .observe(reload_duration.as_secs_f64());
         }
 
         Ok(true)
@@ -525,10 +551,24 @@ impl GraphService {
                 .with_label_values(&[tier.name()])
                 .set(count as f64);
         }
+
+        // Update pinned nodes count
+        metrics
+            .pinned_nodes_total
+            .set(self.graph.pinned_count() as f64);
+
+        // Update capacity and utilization
+        metrics
+            .cache_capacity
+            .set(self.graph.capacity() as f64);
+        metrics
+            .cache_utilization
+            .set(self.graph.utilization());
     }
 
     /// Perform a dry-run eviction check and log what would be evicted
     /// This runs periodically to validate eviction policy without actually evicting
+    /// Also monitors capacity utilization and logs warnings
     fn maybe_dry_run_eviction_check(&mut self) {
         let now = Instant::now();
         let since_last_check = now.duration_since(self.last_dry_run_check);
@@ -540,8 +580,36 @@ impl GraphService {
 
         self.last_dry_run_check = now;
 
-        // Check what would be evicted if we needed to free up 20% of capacity
+        // Check capacity utilization
         let current_count = self.graph.node_count();
+        let capacity = self.graph.capacity();
+        let utilization = self.graph.utilization();
+        let pinned_count = self.graph.pinned_count();
+
+        // Log capacity status
+        info!(
+            "Cache status: {}/{} nodes ({:.1}% utilized), {} pinned",
+            current_count,
+            capacity,
+            utilization * 100.0,
+            pinned_count
+        );
+
+        // Warn if capacity is high
+        if utilization > 0.90 {
+            tracing::warn!(
+                "Cache utilization HIGH ({:.1}%): Consider increasing EKA_CI_GRAPH_LRU_CAPACITY (current: {})",
+                utilization * 100.0,
+                capacity
+            );
+        } else if utilization > 0.80 {
+            tracing::warn!(
+                "Cache utilization elevated ({:.1}%): Monitor for potential capacity issues",
+                utilization * 100.0
+            );
+        }
+
+        // Check what would be evicted if we needed to free up 20% of capacity
         let target_evict = current_count / 5; // 20%
 
         if target_evict == 0 {
@@ -655,6 +723,9 @@ pub struct GraphServiceHandle {
 impl GraphServiceHandle {
     /// Fast lockfree check if a drv is buildable
     /// This is the critical hot path - no message passing, no async
+    ///
+    /// Note: This doesn't update LRU. Call touch_buildable_check() afterward
+    /// to protect hot path nodes from eviction.
     pub fn is_buildable(&self, drv_id: &DrvId) -> bool {
         let Some(node) = self.shared_view.get(drv_id) else {
             return false;
@@ -666,6 +737,17 @@ impl GraphServiceHandle {
                 dep.build_state == DrvBuildState::Completed(DrvBuildResult::Success)
             })
         })
+    }
+
+    /// Touch nodes accessed during buildability check (hot path protection)
+    /// Should be called after is_buildable() to protect accessed nodes from eviction
+    pub fn touch_buildable_check(&self, drv_id: &DrvId) {
+        // Collect the node and all its dependencies
+        if let Some(node) = self.shared_view.get(drv_id) {
+            let mut accessed = vec![drv_id.clone()];
+            accessed.extend(node.dependencies.iter().cloned());
+            self.touch(accessed);
+        }
     }
 
     /// Get the build state of a drv
@@ -733,6 +815,13 @@ impl GraphServiceHandle {
             .send(GraphCommand::GetBuildableDrvs { response: tx })
             .await?;
         Ok(rx.await?)
+    }
+
+    /// Touch nodes to mark them as recently used (hot path protection)
+    /// Fire-and-forget command (no response needed)
+    pub fn touch(&self, drv_ids: Vec<DrvId>) {
+        // Use try_send for fire-and-forget behavior
+        let _ = self.command_sender.try_send(GraphCommand::Touch { drv_ids });
     }
 
     /// Update the build state of a drv

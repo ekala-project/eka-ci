@@ -56,9 +56,14 @@ pub async fn start_services(config: Config) -> Result<()> {
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
     // GraphService will get metrics from SchedulerService later, pass None for now
-    let graph_service = GraphService::new(db_service.clone(), graph_command_receiver, None)
-        .await
-        .context("failed to initialize GraphService")?;
+    let graph_service = GraphService::new(
+        db_service.clone(),
+        graph_command_receiver,
+        None,
+        config.graph_lru_capacity,
+    )
+    .await
+    .context("failed to initialize GraphService")?;
     let graph_handle = graph_service.handle(graph_command_sender.clone());
     info!(
         "GraphService initialized with {} drvs",

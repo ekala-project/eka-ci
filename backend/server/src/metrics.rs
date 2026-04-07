@@ -52,6 +52,16 @@ pub struct GraphMetrics {
     pub evictions_total: CounterVec,
     /// Reference count distribution histogram
     pub ref_count_histogram: prometheus::HistogramVec,
+    /// Number of cache reloads from database
+    pub cache_reloads_total: prometheus::Counter,
+    /// Time taken to reload nodes from database
+    pub cache_reload_duration_seconds: prometheus::Histogram,
+    /// Number of pinned nodes (non-terminal states protected from eviction)
+    pub pinned_nodes_total: prometheus::Gauge,
+    /// Current LRU cache capacity
+    pub cache_capacity: prometheus::Gauge,
+    /// Cache utilization (0.0 - 1.0)
+    pub cache_utilization: prometheus::Gauge,
 }
 
 impl GraphMetrics {
@@ -105,6 +115,44 @@ impl GraphMetrics {
             &["has_dependents"],
         )?;
 
+        let cache_reloads_total = prometheus::Counter::with_opts(
+            Opts::new(
+                "graph_cache_reloads_total",
+                "Number of times nodes were reloaded from database after eviction",
+            )
+            .namespace("eka_ci"),
+        )?;
+
+        let cache_reload_duration_seconds = prometheus::Histogram::with_opts(
+            prometheus::HistogramOpts::new(
+                "graph_cache_reload_duration_seconds",
+                "Time taken to reload a node from database",
+            )
+            .namespace("eka_ci")
+            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]),
+        )?;
+
+        let pinned_nodes_total = prometheus::Gauge::with_opts(
+            Opts::new(
+                "graph_pinned_nodes_total",
+                "Number of pinned nodes (non-terminal states protected from eviction)",
+            )
+            .namespace("eka_ci"),
+        )?;
+
+        let cache_capacity = prometheus::Gauge::with_opts(
+            Opts::new("graph_cache_capacity", "Current LRU cache capacity")
+                .namespace("eka_ci"),
+        )?;
+
+        let cache_utilization = prometheus::Gauge::with_opts(
+            Opts::new(
+                "graph_cache_utilization",
+                "Cache utilization as a ratio (0.0 - 1.0)",
+            )
+            .namespace("eka_ci"),
+        )?;
+
         registry.register(Box::new(nodes_total.clone()))?;
         registry.register(Box::new(memory_bytes_estimate.clone()))?;
         registry.register(Box::new(cache_hits_total.clone()))?;
@@ -112,6 +160,11 @@ impl GraphMetrics {
         registry.register(Box::new(eviction_candidates_total.clone()))?;
         registry.register(Box::new(evictions_total.clone()))?;
         registry.register(Box::new(ref_count_histogram.clone()))?;
+        registry.register(Box::new(cache_reloads_total.clone()))?;
+        registry.register(Box::new(cache_reload_duration_seconds.clone()))?;
+        registry.register(Box::new(pinned_nodes_total.clone()))?;
+        registry.register(Box::new(cache_capacity.clone()))?;
+        registry.register(Box::new(cache_utilization.clone()))?;
 
         Ok(Arc::new(Self {
             nodes_total,
@@ -121,6 +174,11 @@ impl GraphMetrics {
             eviction_candidates_total,
             evictions_total,
             ref_count_histogram,
+            cache_reloads_total,
+            cache_reload_duration_seconds,
+            pinned_nodes_total,
+            cache_capacity,
+            cache_utilization,
         }))
     }
 }
