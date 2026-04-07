@@ -6,7 +6,7 @@ use octocrab::models::{CheckRunId, Installation};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::db::DbService;
 use crate::db::model::DrvId;
@@ -51,6 +51,102 @@ impl GitHubService {
         }
 
         debug!("Installations: {:?}", &installations);
+
+        // Sync installations and repositories to database
+        info!("Syncing {} installations to database", installations.len());
+        for installation in installations.values() {
+            // Persist installation to database
+            if let Err(e) = db_service
+                .upsert_installation(
+                    installation.id.0 as i64,
+                    &installation.account.r#type,
+                    &installation.account.login,
+                )
+                .await
+            {
+                warn!(
+                    "Failed to persist installation {} ({}): {:?}",
+                    installation.id.0, installation.account.login, e
+                );
+                continue;
+            }
+
+            debug!(
+                "Persisted installation {} ({})",
+                installation.id.0, installation.account.login
+            );
+
+            // Fetch and persist repositories for this installation
+            // Use installation-scoped octocrab to access /installation/repositories endpoint
+            let installation_octo = match octoclone.installation(installation.id) {
+                Ok(inst_octo) => inst_octo,
+                Err(e) => {
+                    warn!(
+                        "Failed to create installation client for {} ({}): {:?}",
+                        installation.id.0, installation.account.login, e
+                    );
+                    continue;
+                },
+            };
+
+            // Call GET /installation/repositories
+            let repos_response: Result<octocrab::Page<octocrab::models::Repository>, _> =
+                installation_octo
+                    .get("/installation/repositories", None::<&()>)
+                    .await;
+
+            let repos_page = match repos_response {
+                Ok(page) => page,
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch repositories for installation {} ({}): {:?}",
+                        installation.id.0, installation.account.login, e
+                    );
+                    continue;
+                },
+            };
+
+            let repos_stream = repos_page.into_stream(&installation_octo);
+            pin!(repos_stream);
+            let mut repo_count = 0;
+
+            while let Some(repo_result) = repos_stream.try_next().await.transpose() {
+                match repo_result {
+                    Ok(repo) => {
+                        let repo_owner =
+                            repo.owner.as_ref().map(|o| o.login.as_str()).unwrap_or("");
+
+                        if let Err(e) = db_service
+                            .upsert_installation_repository(
+                                installation.id.0 as i64,
+                                repo.id.0 as i64,
+                                &repo.name,
+                                repo_owner,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "Failed to persist repository {}/{} for installation {}: {:?}",
+                                repo_owner, repo.name, installation.id.0, e
+                            );
+                        } else {
+                            repo_count += 1;
+                        }
+                    },
+                    Err(e) => {
+                        warn!(
+                            "Error fetching repository for installation {} ({}): {:?}",
+                            installation.id.0, installation.account.login, e
+                        );
+                    },
+                }
+            }
+
+            info!(
+                "Synced {} repositories for installation {} ({})",
+                repo_count, installation.id.0, installation.account.login
+            );
+        }
 
         let (github_sender, github_receiver) = mpsc::channel(100);
         Ok(Self {
