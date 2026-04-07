@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 use crate::db::DbService;
 use crate::db::model::{build, build_event, drv_id};
 use crate::github::GitHubTask;
-use crate::graph::{GraphCommand, GraphServiceHandle};
+use crate::graph::GraphCommand;
 use crate::scheduler::ingress::IngressTask;
 use crate::services::websocket::events::{BuildStateChange, JobStatsUpdate, ServerEvent};
 
