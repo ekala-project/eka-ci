@@ -97,6 +97,10 @@ pub enum GraphCommand {
         drv_id: DrvId,
         response: oneshot::Sender<Vec<DrvId>>,
     },
+    /// Get all drvs that are in failed state
+    GetAllFailedDrvs {
+        response: oneshot::Sender<Vec<DrvId>>,
+    },
     /// Touch a node to mark it as recently used (hot path protection)
     Touch { drv_ids: Vec<DrvId> },
 }
@@ -286,6 +290,13 @@ impl GraphService {
                     let failed_deps = self.graph.get_failed_dependencies(&drv_id);
                     let _ = response.send(failed_deps);
                 }
+            },
+
+            GraphCommand::GetAllFailedDrvs { response } => {
+                let failed = self
+                    .graph
+                    .get_drvs_by_state(&DrvBuildState::Completed(DrvBuildResult::Failure));
+                let _ = response.send(failed);
             },
 
             GraphCommand::Touch { drv_ids } => {
@@ -806,6 +817,15 @@ impl GraphServiceHandle {
         let (tx, rx) = oneshot::channel();
         self.command_sender
             .send(GraphCommand::GetBuildableDrvs { response: tx })
+            .await?;
+        Ok(rx.await?)
+    }
+
+    /// Get all failed drvs
+    pub async fn get_all_failed_drvs(&self) -> anyhow::Result<Vec<DrvId>> {
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(GraphCommand::GetAllFailedDrvs { response: tx })
             .await?;
         Ok(rx.await?)
     }
