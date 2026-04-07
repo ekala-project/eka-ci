@@ -32,8 +32,9 @@ async fn create_test_server(
     let graph_handle = graph_service.handle();
 
     // Spawn the graph service
+    let cancel_token = tokio_util::sync::CancellationToken::new();
     tokio::spawn(async move {
-        graph_service.run().await;
+        graph_service.run(cancel_token).await;
     });
 
     // Create scheduler
