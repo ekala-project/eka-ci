@@ -56,18 +56,29 @@ pub struct BuildGraph {
 
     /// Map from failed drv to all drvs transitively blocked by it
     transitive_failure_map: HashMap<DrvId, HashSet<DrvId>>,
+
+    /// Set of pinned nodes that should never be evicted (non-terminal states)
+    pinned: HashSet<DrvId>,
 }
 
 impl BuildGraph {
     /// Create a new empty build graph with LRU cache
-    /// Initial capacity is set to 1,000,000 (effectively unlimited for now)
-    pub fn new() -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
-            nodes: LruCache::new(NonZeroUsize::new(1_000_000).unwrap()),
+            nodes: LruCache::new(NonZeroUsize::new(capacity).unwrap()),
             by_state: HashMap::new(),
             failed_drvs: HashSet::new(),
             transitive_failure_map: HashMap::new(),
+            pinned: HashSet::new(),
         }
+    }
+
+    /// Check if a state is terminal (can be evicted)
+    fn is_terminal_state(state: &DrvBuildState) -> bool {
+        matches!(
+            state,
+            DrvBuildState::Completed(_) | DrvBuildState::TransitiveFailure
+        )
     }
 
     /// Insert a new node into the graph
@@ -87,6 +98,11 @@ impl BuildGraph {
         // Track if failed
         if state == DrvBuildState::Completed(DrvBuildResult::Failure) {
             self.failed_drvs.insert(drv_id.clone());
+        }
+
+        // Pin non-terminal states to prevent eviction
+        if !Self::is_terminal_state(&state) {
+            self.pinned.insert(drv_id.clone());
         }
 
         // Insert into LRU cache (push returns the evicted entry if any)
@@ -114,6 +130,23 @@ impl BuildGraph {
     /// Get a node by drv_id (doesn't update LRU)
     pub fn get_node(&self, drv_id: &DrvId) -> Option<&GraphNode> {
         self.nodes.peek(drv_id)
+    }
+
+    /// Touch a node to mark it as recently used (updates LRU)
+    /// Used for hot path protection to prevent eviction of actively-used nodes
+    pub fn touch(&mut self, drv_id: &DrvId) {
+        // get() updates the LRU position
+        self.nodes.get(drv_id);
+    }
+
+    /// Check if a node is pinned (protected from eviction)
+    pub fn is_pinned(&self, drv_id: &DrvId) -> bool {
+        self.pinned.contains(drv_id)
+    }
+
+    /// Get the count of pinned nodes
+    pub fn pinned_count(&self) -> usize {
+        self.pinned.len()
     }
 
     /// Get all drvs in a particular state
@@ -151,6 +184,13 @@ impl BuildGraph {
                 self.failed_drvs.remove(drv_id);
             },
             _ => {},
+        }
+
+        // Update pinned set: pin non-terminal, unpin terminal
+        if Self::is_terminal_state(&new_state) {
+            self.pinned.remove(drv_id);
+        } else {
+            self.pinned.insert(drv_id.clone());
         }
     }
 
@@ -294,6 +334,16 @@ impl BuildGraph {
         self.nodes.len()
     }
 
+    /// Get the capacity of the LRU cache
+    pub fn capacity(&self) -> usize {
+        self.nodes.cap().get()
+    }
+
+    /// Get capacity utilization as a percentage (0.0 - 1.0)
+    pub fn utilization(&self) -> f64 {
+        self.nodes.len() as f64 / self.nodes.cap().get() as f64
+    }
+
     /// Estimate memory usage of the graph in bytes
     pub fn estimate_memory_bytes(&self) -> usize {
         let mut total = 0;
@@ -329,7 +379,10 @@ impl BuildGraph {
 
     /// Initialize the graph from database on startup
     /// Normalizes transient states to Queued and recomputes transitive failures
-    pub async fn from_database(db_service: &crate::db::DbService) -> anyhow::Result<Self> {
+    pub async fn from_database(
+        db_service: &crate::db::DbService,
+        capacity: usize,
+    ) -> anyhow::Result<Self> {
         let pool = &db_service.pool;
 
         // Load all drvs using query_as to properly deserialize
@@ -339,7 +392,7 @@ impl BuildGraph {
         .fetch_all(pool)
         .await?;
 
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(capacity);
 
         // Insert all nodes, normalizing transient states
         for mut drv in drvs {
@@ -382,7 +435,7 @@ impl BuildGraph {
 
 impl Default for BuildGraph {
     fn default() -> Self {
-        Self::new()
+        Self::new(100_000)
     }
 }
 
@@ -406,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_node() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
         let drv = make_test_drv("abc123", DrvBuildState::Queued);
         let drv_id = drv.drv_path.clone();
 
@@ -418,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_add_edge() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
 
         let drv_a = make_test_drv("aaa", DrvBuildState::Queued);
         let drv_b = make_test_drv("bbb", DrvBuildState::Completed(DrvBuildResult::Success));
@@ -443,7 +496,7 @@ mod tests {
 
     #[test]
     fn test_is_buildable() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
 
         let drv_a = make_test_drv("aaa", DrvBuildState::Queued);
         let drv_b = make_test_drv("bbb", DrvBuildState::Completed(DrvBuildResult::Success));
@@ -473,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_propagate_failure() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
 
         // Create a chain: A -> B -> C (A depends on B, B depends on C)
         let drv_a = make_test_drv("aaa", DrvBuildState::Queued);
@@ -513,7 +566,7 @@ mod tests {
 
     #[test]
     fn test_clear_failure() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
 
         let drv_a = make_test_drv("aaa", DrvBuildState::Queued);
         let drv_b = make_test_drv("bbb", DrvBuildState::Completed(DrvBuildResult::Failure));

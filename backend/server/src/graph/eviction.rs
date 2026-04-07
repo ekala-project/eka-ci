@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn test_select_candidates_empty_graph() {
         let selector = EvictionCandidateSelector::with_defaults();
-        let graph = BuildGraph::new();
+        let graph = BuildGraph::new(1000);
         let last_accessed = HashMap::new();
         let ref_counts = HashMap::new();
 
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_select_candidates_respects_ref_count() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
         let drv = make_test_drv("aaa", DrvBuildState::TransitiveFailure);
         let drv_id = drv.drv_path.clone();
         graph.insert_node(drv);
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_select_candidates_respects_age() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
         let drv = make_test_drv("aaa", DrvBuildState::TransitiveFailure);
         let drv_id = drv.drv_path.clone();
         graph.insert_node(drv);
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_select_candidates_tier_ordering() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
 
         // Add one of each type
         let tf_drv = make_test_drv("tf", DrvBuildState::TransitiveFailure);
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_lru_ordering_within_tier() {
-        let mut graph = BuildGraph::new();
+        let mut graph = BuildGraph::new(1000);
 
         // Add multiple TransitiveFailure nodes with different ages
         let drv1 = make_test_drv("old", DrvBuildState::TransitiveFailure);
