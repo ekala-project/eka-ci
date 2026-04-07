@@ -5,6 +5,7 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{TestContext, create_simple_drv, insert_test_drv, test_drv, wait_for_drv_state};
@@ -12,6 +13,7 @@ use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::graph::{GraphCommand, GraphService};
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
+use prometheus::Registry;
 use tokio::sync::mpsc::channel;
 
 #[tokio::test]
@@ -55,6 +57,9 @@ async fn test_build_simple_drv_success() {
         graph_service.run(cancel_token).await;
     });
 
+    // Create metrics registry for tests
+    let metrics_registry = Arc::new(Registry::new());
+
     // Start the scheduler service
     let scheduler = SchedulerService::new(
         ctx.db_service.clone(),
@@ -65,6 +70,7 @@ async fn test_build_simple_drv_success() {
         None,   // no WebSocket
         graph_command_sender.clone(),
         graph_handle.clone(),
+        metrics_registry.clone(),
     )
     .await
     .expect("Failed to create scheduler");
@@ -144,6 +150,9 @@ async fn test_build_failure_retry_logic() {
         graph_service.run(cancel_token).await;
     });
 
+    // Create metrics registry for tests
+    let metrics_registry = Arc::new(Registry::new());
+
     // Start the scheduler service
     let scheduler = SchedulerService::new(
         ctx.db_service.clone(),
@@ -154,6 +163,7 @@ async fn test_build_failure_retry_logic() {
         None,   // no WebSocket
         graph_command_sender.clone(),
         graph_handle.clone(),
+        metrics_registry.clone(),
     )
     .await
     .expect("Failed to create scheduler");
