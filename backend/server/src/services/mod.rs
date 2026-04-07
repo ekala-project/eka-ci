@@ -64,8 +64,8 @@ pub async fn start_services(config: Config) -> Result<()> {
     let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
 
     // Create GraphMetrics and register with shared registry
-    let graph_metrics = GraphMetrics::new(&metrics_registry)
-        .context("failed to create GraphMetrics")?;
+    let graph_metrics =
+        GraphMetrics::new(&metrics_registry).context("failed to create GraphMetrics")?;
 
     let graph_service = GraphService::new(
         db_service.clone(),
