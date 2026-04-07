@@ -16,6 +16,7 @@ use crate::db::model::drv_id::DrvId;
 pub struct CachedNode {
     pub drv_id: DrvId,
     pub system: String,
+    pub required_system_features: Option<String>,
     pub is_fod: bool,
     pub build_state: DrvBuildState,
     /// Immutable shared reference to dependencies for cheap cloning
@@ -27,9 +28,23 @@ impl CachedNode {
         Self {
             drv_id: node.drv_id.clone(),
             system: node.system.clone(),
+            required_system_features: node.required_system_features.clone(),
             is_fod: node.is_fod,
             build_state: node.build_state.clone(),
             dependencies: node.dependencies.clone().into(),
+        }
+    }
+
+    /// Convert CachedNode to Drv
+    /// Note: prefer_local_build is always false as it's not persisted in DB
+    pub fn to_drv(&self) -> Drv {
+        Drv {
+            drv_path: self.drv_id.clone(),
+            system: self.system.clone(),
+            prefer_local_build: false,
+            required_system_features: self.required_system_features.clone(),
+            is_fod: self.is_fod,
+            build_state: self.build_state.clone(),
         }
     }
 }
@@ -65,6 +80,16 @@ pub enum GraphCommand {
     },
     /// Get direct dependents (referrers) of a drv
     GetDependents {
+        drv_id: DrvId,
+        response: oneshot::Sender<Vec<DrvId>>,
+    },
+    /// Get direct dependencies of a drv
+    GetDependencies {
+        drv_id: DrvId,
+        response: oneshot::Sender<Vec<DrvId>>,
+    },
+    /// Get failed dependencies blocking a drv
+    GetFailedDependencies {
         drv_id: DrvId,
         response: oneshot::Sender<Vec<DrvId>>,
     },
@@ -113,9 +138,10 @@ impl GraphService {
     }
 
     /// Get a handle to interact with the service
-    pub fn handle(&self) -> GraphServiceHandle {
+    pub fn handle(&self, command_sender: mpsc::Sender<GraphCommand>) -> GraphServiceHandle {
         GraphServiceHandle {
             shared_view: Arc::clone(&self.shared_view),
+            command_sender,
         }
     }
 
@@ -186,6 +212,16 @@ impl GraphService {
                 let dependents = self.graph.get_dependents(&drv_id);
                 let _ = response.send(dependents);
             },
+
+            GraphCommand::GetDependencies { drv_id, response } => {
+                let dependencies = self.graph.get_dependencies(&drv_id);
+                let _ = response.send(dependencies);
+            },
+
+            GraphCommand::GetFailedDependencies { drv_id, response } => {
+                let failed_deps = self.graph.get_failed_dependencies(&drv_id);
+                let _ = response.send(failed_deps);
+            },
         }
 
         Ok(())
@@ -205,12 +241,10 @@ impl GraphService {
             cached.build_state = new_state.clone();
         }
 
-        // Persist terminal states to SQLite asynchronously
-        if new_state.is_terminal() {
-            self.db_service
-                .update_drv_status(drv_id, &new_state)
-                .await?;
-        }
+        // Persist all state changes to SQLite
+        self.db_service
+            .update_drv_status(drv_id, &new_state)
+            .await?;
 
         Ok(())
     }
@@ -259,6 +293,13 @@ impl GraphService {
             }
         }
 
+        // Persist transitive failures to database
+        if !blocked.is_empty() {
+            self.db_service
+                .insert_transitive_failures(failed_drv, &blocked)
+                .await?;
+        }
+
         Ok(blocked)
     }
 
@@ -273,6 +314,11 @@ impl GraphService {
             }
         }
 
+        // Persist clearing of transitive failures to database
+        self.db_service
+            .clear_transitive_failures(formerly_failed)
+            .await?;
+
         Ok(unblocked)
     }
 }
@@ -281,6 +327,7 @@ impl GraphService {
 #[derive(Clone)]
 pub struct GraphServiceHandle {
     shared_view: Arc<DashMap<DrvId, CachedNode>>,
+    command_sender: mpsc::Sender<GraphCommand>,
 }
 
 impl GraphServiceHandle {
@@ -320,6 +367,69 @@ impl GraphServiceHandle {
     pub fn node_count(&self) -> usize {
         self.shared_view.len()
     }
+
+    /// Get direct dependents (referrers) of a drv
+    pub async fn get_dependents(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(GraphCommand::GetDependents {
+                drv_id: drv_id.clone(),
+                response: tx,
+            })
+            .await?;
+        Ok(rx.await?)
+    }
+
+    /// Get direct dependencies of a drv
+    pub async fn get_dependencies(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(GraphCommand::GetDependencies {
+                drv_id: drv_id.clone(),
+                response: tx,
+            })
+            .await?;
+        Ok(rx.await?)
+    }
+
+    /// Get failed dependencies blocking a drv
+    pub async fn get_failed_dependencies(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(GraphCommand::GetFailedDependencies {
+                drv_id: drv_id.clone(),
+                response: tx,
+            })
+            .await?;
+        Ok(rx.await?)
+    }
+
+    /// Get all buildable drvs
+    pub async fn get_buildable_drvs(&self) -> anyhow::Result<Vec<DrvId>> {
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(GraphCommand::GetBuildableDrvs { response: tx })
+            .await?;
+        Ok(rx.await?)
+    }
+
+    /// Update the build state of a drv
+    pub async fn update_state(
+        &self,
+        drv_id: &DrvId,
+        new_state: DrvBuildState,
+    ) -> anyhow::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(GraphCommand::UpdateState {
+                drv_id: drv_id.clone(),
+                new_state,
+                response: tx,
+            })
+            .await?;
+        rx.await??;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -333,7 +443,11 @@ mod tests {
         // This would require setting up a test database
         // For now, just test that the handle can be created
         let shared_view = Arc::new(DashMap::new());
-        let handle = GraphServiceHandle { shared_view };
+        let (command_sender, _command_receiver) = mpsc::channel(10);
+        let handle = GraphServiceHandle {
+            shared_view,
+            command_sender,
+        };
 
         assert_eq!(handle.node_count(), 0);
         assert!(!handle.contains(&DrvId::from_str("test-drv.drv").unwrap()));
