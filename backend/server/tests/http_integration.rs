@@ -81,6 +81,7 @@ async fn create_test_server(
         scheduler.metrics_registry(),
         false, // no approval required
         ctx.db_service.clone(),
+        graph_handle.clone(),
         jwt_service,
         oauth_config,
         ctx.logs_dir.clone(),
