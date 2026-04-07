@@ -29,7 +29,7 @@ async fn create_test_server(
     let graph_service = GraphService::new(ctx.db_service.clone(), graph_command_receiver)
         .await
         .expect("Failed to initialize GraphService");
-    let graph_handle = graph_service.handle();
+    let graph_handle = graph_service.handle(graph_command_sender.clone());
 
     // Spawn the graph service
     let cancel_token = tokio_util::sync::CancellationToken::new();

@@ -58,7 +58,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let graph_service = GraphService::new(db_service.clone(), graph_command_receiver)
         .await
         .context("failed to initialize GraphService")?;
-    let graph_handle = graph_service.handle();
+    let graph_handle = graph_service.handle(graph_command_sender.clone());
     info!(
         "GraphService initialized with {} drvs",
         graph_handle.node_count()
