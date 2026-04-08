@@ -447,6 +447,60 @@ impl GitHubService {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 actions::fail_ci_eval_job(&octocrab, ci_check_info, job_name, errors).await?;
             },
+            GitHubTask::CreateCheckRun {
+                owner,
+                repo_name,
+                sha,
+                check_name,
+                checkset_id: _,
+                check_result_id,
+            } => {
+                let octocrab = self.octocrab_for_owner(owner)?;
+                let check_run =
+                    actions::create_check_run(&octocrab, owner, repo_name, sha, check_name).await?;
+
+                // Store the check_run info in the database
+                self.db_service
+                    .insert_check_run_info_for_check(
+                        check_run.id.0 as i64,
+                        *check_result_id,
+                        repo_name,
+                        owner,
+                    )
+                    .await?;
+            },
+            GitHubTask::CheckComplete(result) => {
+                let octocrab = self.octocrab_for_owner(&result.owner)?;
+                actions::update_check_run(
+                    &octocrab,
+                    &result.owner,
+                    &result.repo_name,
+                    result.check_run_id,
+                    &result.check_name,
+                    result.success,
+                    result.exit_code,
+                    &result.stdout,
+                    &result.stderr,
+                    result.duration_ms,
+                )
+                .await?;
+            },
+            GitHubTask::CheckFailed(result) => {
+                let octocrab = self.octocrab_for_owner(&result.owner)?;
+                actions::update_check_run(
+                    &octocrab,
+                    &result.owner,
+                    &result.repo_name,
+                    result.check_run_id,
+                    &result.check_name,
+                    result.success,
+                    result.exit_code,
+                    &result.stdout,
+                    &result.stderr,
+                    result.duration_ms,
+                )
+                .await?;
+            },
         }
         Ok(())
     }
