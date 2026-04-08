@@ -209,3 +209,118 @@ pub async fn fail_ci_eval_job(
 
     Ok(check_run)
 }
+
+/// Create an in-progress check run for a check
+pub async fn create_check_run(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo_name: &str,
+    sha: &str,
+    check_name: &str,
+) -> Result<CheckRun> {
+    use octocrab::params::checks::CheckRunStatus;
+
+    debug!(
+        "Creating check run '{}' for commit {} in {}/{}",
+        check_name, sha, owner, repo_name
+    );
+
+    let title = format!("EkaCI: Check ({})", check_name);
+
+    let check_run = octocrab
+        .checks(owner, repo_name)
+        .create_check_run(&title, sha)
+        .status(CheckRunStatus::InProgress)
+        .send()
+        .await?;
+
+    debug!(
+        "Successfully created check run '{}' with ID {} for commit {}",
+        check_name, check_run.id, sha
+    );
+
+    Ok(check_run)
+}
+
+/// Update a check run with completion status and output
+pub async fn update_check_run(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo_name: &str,
+    check_run_id: i64,
+    check_name: &str,
+    success: bool,
+    exit_code: i32,
+    stdout: &str,
+    stderr: &str,
+    duration_ms: i64,
+) -> Result<()> {
+    use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+    debug!(
+        "Updating check run {} for check '{}' with success={}",
+        check_run_id, check_name, success
+    );
+
+    let conclusion = if success {
+        CheckRunConclusion::Success
+    } else {
+        CheckRunConclusion::Failure
+    };
+
+    // Format the check run output
+    let mut summary = if success {
+        format!(
+            "# Check Passed ✓\n\nThe check `{}` completed successfully.\n\n",
+            check_name
+        )
+    } else {
+        format!(
+            "# Check Failed ✗\n\nThe check `{}` failed with exit code {}.\n\n",
+            check_name, exit_code
+        )
+    };
+
+    summary.push_str(&format!("**Duration:** {}ms\n\n", duration_ms));
+
+    // Include stdout and stderr if present
+    let mut text = String::new();
+    if !stdout.is_empty() {
+        text.push_str("## Standard Output\n\n```\n");
+        text.push_str(stdout);
+        text.push_str("\n```\n\n");
+    }
+    if !stderr.is_empty() {
+        text.push_str("## Standard Error\n\n```\n");
+        text.push_str(stderr);
+        text.push_str("\n```\n\n");
+    }
+
+    let check_run_output = octocrab::params::checks::CheckRunOutput {
+        title: if success {
+            "Check passed".to_string()
+        } else {
+            format!("Check failed (exit code {})", exit_code)
+        },
+        summary,
+        text: if text.is_empty() { None } else { Some(text) },
+        annotations: vec![],
+        images: vec![],
+    };
+
+    octocrab
+        .checks(owner, repo_name)
+        .update_check_run(CheckRunId(check_run_id as u64))
+        .status(CheckRunStatus::Completed)
+        .conclusion(conclusion)
+        .output(check_run_output)
+        .send()
+        .await?;
+
+    debug!(
+        "Successfully updated check run {} for check '{}'",
+        check_run_id, check_name
+    );
+
+    Ok(())
+}

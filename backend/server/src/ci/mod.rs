@@ -7,6 +7,7 @@ use config::CIConfig;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::checks::types::CheckTask;
 use crate::db::DbService;
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::nix::{EvalJob, EvalTask};
@@ -34,6 +35,7 @@ pub struct RepoReader {
     repo_sender: mpsc::Sender<RepoTask>,
     repo_receiver: Option<mpsc::Receiver<RepoTask>>,
     eval_sender: mpsc::Sender<EvalTask>,
+    check_sender: Option<mpsc::Sender<CheckTask>>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     db_service: DbService,
 }
@@ -41,6 +43,7 @@ pub struct RepoReader {
 impl RepoReader {
     pub fn new(
         eval_sender: mpsc::Sender<EvalTask>,
+        check_sender: Option<mpsc::Sender<CheckTask>>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         db_service: DbService,
     ) -> anyhow::Result<Self> {
@@ -50,6 +53,7 @@ impl RepoReader {
             repo_sender,
             repo_receiver: Some(repo_receiver),
             eval_sender,
+            check_sender,
             github_sender,
             db_service,
         })
@@ -63,6 +67,8 @@ impl RepoReader {
         let root = path.clone();
         if let Ok(config) = read_repo_toplevel(&mut path) {
             debug!("Found CI Config: {:?}", &config);
+
+            // Process jobs
             for (job_name, job) in config.jobs {
                 if self
                     .db_service
@@ -88,6 +94,53 @@ impl RepoReader {
                 self.eval_sender
                     .send(EvalTask::GithubJobPR((eval_job, ci_info.clone())))
                     .await?;
+            }
+
+            // Process checks
+            if let Some(check_sender) = &self.check_sender {
+                if let Some(github_sender) = &self.github_sender {
+                    for (check_name, check_config) in config.checks {
+                        debug!("Processing check: {}", check_name);
+
+                        // Create checkset and placeholder result in database
+                        let checkset_id = self
+                            .db_service
+                            .insert_github_checkset(
+                                &ci_info.commit,
+                                &check_name,
+                                &ci_info.owner,
+                                &ci_info.repo_name,
+                            )
+                            .await?;
+
+                        let check_result_id = self
+                            .db_service
+                            .insert_check_result(checkset_id, false, -1, "", "", 0)
+                            .await?;
+
+                        // Send task to GitHub service to create the check run
+                        let create_check_run_task = GitHubTask::CreateCheckRun {
+                            owner: ci_info.owner.clone(),
+                            repo_name: ci_info.repo_name.clone(),
+                            sha: ci_info.commit.clone(),
+                            check_name: check_name.clone(),
+                            checkset_id,
+                            check_result_id,
+                        };
+                        github_sender.send(create_check_run_task).await?;
+
+                        // Send the check task to the checks executor
+                        let check_task = CheckTask {
+                            check_name: check_name.clone(),
+                            owner: ci_info.owner.clone(),
+                            repo_name: ci_info.repo_name.clone(),
+                            sha: ci_info.commit.clone(),
+                            config: check_config,
+                        };
+
+                        check_sender.send(check_task).await?;
+                    }
+                }
             }
         } else {
             debug!("Repo was missing a CI config");

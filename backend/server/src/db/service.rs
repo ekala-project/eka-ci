@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
-use super::{approved_users, github, installations};
+use super::{approved_users, checks, github, installations};
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 #[derive(Clone)]
@@ -295,5 +295,72 @@ impl DbService {
         repo_id: i64,
     ) -> anyhow::Result<()> {
         installations::delete_installation_repository(installation_id, repo_id, &self.pool).await
+    }
+
+    // Check-related methods
+    pub async fn insert_github_checkset(
+        &self,
+        sha: &str,
+        check_name: &str,
+        owner: &str,
+        repo_name: &str,
+    ) -> anyhow::Result<i64> {
+        checks::insert_github_checkset(sha, check_name, owner, repo_name, &self.pool).await
+    }
+
+    pub async fn insert_check_result(
+        &self,
+        checkset_id: i64,
+        success: bool,
+        exit_code: i32,
+        stdout: &str,
+        stderr: &str,
+        duration_ms: i64,
+    ) -> anyhow::Result<i64> {
+        checks::insert_check_result(
+            checkset_id,
+            success,
+            exit_code,
+            stdout,
+            stderr,
+            duration_ms,
+            &self.pool,
+        )
+        .await
+    }
+
+    pub async fn insert_check_run_info_for_check(
+        &self,
+        check_run_id: i64,
+        check_result_id: i64,
+        repo_name: &str,
+        repo_owner: &str,
+    ) -> anyhow::Result<()> {
+        checks::insert_check_run_info(
+            check_run_id,
+            check_result_id,
+            repo_name,
+            repo_owner,
+            &self.pool,
+        )
+        .await
+    }
+
+    pub async fn get_check_run_info_by_checkset(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        checkset_id: i64,
+    ) -> anyhow::Result<Option<checks::CheckRunInfo>> {
+        checks::get_check_run_info_by_checkset(owner, repo_name, checkset_id, &self.pool).await
+    }
+
+    pub async fn get_check_results_for_commit(
+        &self,
+        sha: &str,
+        owner: &str,
+        repo_name: &str,
+    ) -> anyhow::Result<Vec<(String, bool, i32)>> {
+        checks::get_check_results_for_commit(sha, owner, repo_name, &self.pool).await
     }
 }

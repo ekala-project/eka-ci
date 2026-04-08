@@ -7,6 +7,7 @@ use octocrab::models::pulls::PullRequest;
 use octocrab::params::checks::{CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus};
 use serde::Serialize;
 
+use crate::checks::types::CheckResultMessage;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalError};
@@ -216,6 +217,16 @@ pub enum GitHubTask {
         job_name: String,
         errors: Vec<NixEvalError>,
     },
+    CreateCheckRun {
+        owner: String,
+        repo_name: String,
+        sha: String,
+        check_name: String,
+        checkset_id: i64,
+        check_result_id: i64,
+    },
+    CheckComplete(CheckResultMessage),
+    CheckFailed(CheckResultMessage),
 }
 
 pub type Owner = String;

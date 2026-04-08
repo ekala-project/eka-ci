@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::auth::{JwtService, OAuthConfig};
+use crate::checks::types::CheckTask;
 use crate::ci::RepoReader;
 use crate::client::UnixService;
 use crate::config::Config;
@@ -18,10 +19,13 @@ use crate::graph::{GraphCommand, GraphService};
 use crate::metrics::GraphMetrics;
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
+use crate::services::checks::ChecksExecutor;
 use crate::web::WebService;
 
 mod async_service;
 pub use async_service::AsyncService;
+
+mod checks;
 
 pub mod websocket;
 pub use websocket::WebSocketService;
@@ -108,9 +112,18 @@ pub async fn start_services(config: Config) -> Result<()> {
         graph_command_sender.clone(),
     );
 
+    // Create ChecksExecutor service
+    let (check_sender, check_receiver) = channel::<CheckTask>(1000);
+    let checks_service = ChecksExecutor::new(
+        check_receiver,
+        db_service.clone(),
+        maybe_github_sender.clone(),
+    );
+
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
     let repo_service = RepoReader::new(
         eval_sender.clone(),
+        Some(check_sender.clone()),
         maybe_github_sender.clone(),
         db_service.clone(),
     )?;
@@ -176,6 +189,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let git_handle = tokio::spawn(git_service.run(cancellation_token.clone()));
     let repo_handle = tokio::spawn(repo_service.run(cancellation_token.clone()));
     let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
+    let checks_handle = tokio::spawn(checks_service.run(cancellation_token.clone()));
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
     let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
     if let Some(github_service) = maybe_github_service {
@@ -207,6 +221,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     _ = tokio::join!(
         graph_handle_task,
         eval_handle,
+        checks_handle,
         unix_handle,
         web_handle,
         repo_handle,
