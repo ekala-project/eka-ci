@@ -73,6 +73,7 @@ impl SchedulerService {
             github_sender,
             websocket_sender,
             graph_command_sender,
+            None, // TODO: Initialize HookExecutor and pass sender here
         );
 
         let mut builders = Builder::local_from_env(

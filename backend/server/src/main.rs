@@ -7,6 +7,7 @@ mod db;
 mod git;
 mod github;
 mod graph;
+mod hooks;
 mod metrics;
 mod nix;
 mod scheduler;

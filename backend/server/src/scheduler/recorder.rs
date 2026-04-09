@@ -3,10 +3,12 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use crate::ci::config::Job;
 use crate::db::DbService;
 use crate::db::model::{build, build_event, drv_id};
 use crate::github::GitHubTask;
 use crate::graph::GraphCommand;
+use crate::hooks::types::{HookContext, HookTask};
 use crate::scheduler::ingress::IngressTask;
 use crate::services::websocket::events::{BuildStateChange, JobStatsUpdate, ServerEvent};
 
@@ -24,6 +26,7 @@ pub struct RecorderService {
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
+    hook_sender: Option<mpsc::Sender<HookTask>>,
 }
 
 /// Encapsulation of the Recorder thread. May want to gracefully recover from
@@ -36,6 +39,7 @@ struct RecorderWorker {
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
+    hook_sender: Option<mpsc::Sender<HookTask>>,
 }
 
 impl RecorderService {
@@ -44,6 +48,7 @@ impl RecorderService {
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
+        hook_sender: Option<mpsc::Sender<HookTask>>,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
 
@@ -53,6 +58,7 @@ impl RecorderService {
             github_sender,
             websocket_sender,
             graph_command_sender,
+            hook_sender,
         };
 
         (res, recorder_sender)
@@ -66,6 +72,7 @@ impl RecorderService {
             self.github_sender,
             self.websocket_sender,
             self.graph_command_sender,
+            self.hook_sender,
         );
 
         tokio::spawn(async move {
@@ -82,6 +89,7 @@ impl RecorderWorker {
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
+        hook_sender: Option<mpsc::Sender<HookTask>>,
     ) -> Self {
         Self {
             db_service,
@@ -90,6 +98,7 @@ impl RecorderWorker {
             github_sender,
             websocket_sender,
             graph_command_sender,
+            hook_sender,
         }
     }
 
@@ -248,6 +257,12 @@ impl RecorderWorker {
 
                 self.update_and_broadcast(&drv, &old_state, &task.result)
                     .await?;
+
+                // Execute post-build hooks if configured
+                if let Err(e) = self.execute_hooks_for_drv(&drv).await {
+                    warn!("Failed to execute hooks for {}: {}", drv.store_path(), e);
+                    // Don't fail the build if hooks fail - they run asynchronously
+                }
 
                 // Clear any transitive failures in graph (fast in-memory operation)
                 let unblocked_drvs = self.clear_graph_failure(&drv).await?;
@@ -428,6 +443,87 @@ impl RecorderWorker {
         for job_info in job_infos {
             self.broadcast_job_stats(job_info.jobset_id).await;
         }
+
+        Ok(())
+    }
+
+    /// Execute post-build hooks for a successfully built drv
+    async fn execute_hooks_for_drv(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
+        // Return early if no hook sender configured
+        let hook_sender: &mpsc::Sender<HookTask> = match &self.hook_sender {
+            Some(sender) => sender,
+            None => return Ok(()), // No hooks configured
+        };
+
+        // Get the job config from the database
+        let config_json = match self.db_service.get_job_config_for_drv(drv_id).await? {
+            Some(json) => json,
+            None => return Ok(()), // No config stored for this drv
+        };
+
+        // Parse the job config
+        let job: Job = serde_json::from_str(&config_json)?;
+
+        // Get drv info for hook context
+        let drv_info = self
+            .db_service
+            .get_drv(drv_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Drv not found: {}", drv_id.store_path()))?;
+
+        // Collect hooks to execute (regular + FOD-specific if applicable)
+        let mut hooks = job.post_build_hooks.clone();
+        if drv_info.is_fod {
+            hooks.extend(job.fod_post_build_hooks.clone());
+        }
+
+        // If no hooks to execute, return early
+        if hooks.is_empty() {
+            return Ok(());
+        }
+
+        // Get job info for context (job name, commit sha, etc.)
+        let job_infos = self.db_service.get_job_info_for_drv(drv_id).await?;
+        let job_info = job_infos
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No job info found for drv"))?;
+
+        // Get jobset info to extract commit SHA and repo details
+        let jobset_info = self
+            .db_service
+            .get_jobset_by_id(job_info.jobset_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Jobset not found"))?;
+
+        // Build hook context
+        let context = HookContext {
+            job_name: job_info.name.clone(),
+            is_fod: drv_info.is_fod,
+            system: drv_info.system.clone(),
+            pname: None, // TODO: Query pname from DrvInfo if needed
+            build_log_path: format!("logs/{}/build.log", drv_id.store_path()), // TODO: Use actual log path
+            commit_sha: jobset_info.sha.clone(),
+        };
+
+        // For now, we'll assume the drv has one output path (the drv path itself)
+        // In a full implementation, we'd query the actual output paths from nix
+        let out_paths = vec![drv_id.store_path().to_string()];
+
+        // Create and send the hook task
+        let hook_task = HookTask {
+            drv_path: drv_id.store_path().to_string(),
+            out_paths,
+            hooks,
+            context,
+        };
+
+        hook_sender.send(hook_task).await?;
+
+        debug!(
+            "Sent hook task for drv {} (job: {})",
+            drv_id.store_path(),
+            job_info.name
+        );
 
         Ok(())
     }

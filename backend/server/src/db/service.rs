@@ -95,10 +95,26 @@ impl DbService {
         owner: &str,
         repo_name: &str,
         jobs: &[NixEvalDrv],
+        config_json: Option<&str>,
     ) -> anyhow::Result<i64> {
-        let jobset_id = github::create_jobset(sha, name, owner, repo_name, &self.pool).await?;
+        let jobset_id =
+            github::create_jobset(sha, name, owner, repo_name, config_json, &self.pool).await?;
         github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await?;
         Ok(jobset_id)
+    }
+
+    pub async fn get_job_config_for_drv(
+        &self,
+        drv_id: &DrvId,
+    ) -> anyhow::Result<Option<String>> {
+        github::get_job_config_for_drv(drv_id, &self.pool).await
+    }
+
+    pub async fn get_jobset_by_id(
+        &self,
+        jobset_id: i64,
+    ) -> anyhow::Result<Option<github::JobSetInfo>> {
+        github::get_jobset_by_id(jobset_id, &self.pool).await
     }
 
     // Given a head and base sha, determine what has changed

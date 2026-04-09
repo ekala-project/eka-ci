@@ -64,17 +64,22 @@ pub async fn create_jobset(
     name: &str,
     owner: &str,
     repo_name: &str,
+    config_json: Option<&str>,
     pool: &Pool<Sqlite>,
 ) -> Result<i64> {
     // Since the insert statement could be repetitive, we must separate inseration and rowid
     // selection
-    sqlx::query("INSERT INTO GitHubJobSets (sha, job, owner, repo_name) VALUES (?, ?, ?, ?)")
-        .bind(sha)
-        .bind(name)
-        .bind(owner)
-        .bind(repo_name)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO GitHubJobSets (sha, job, owner, repo_name, config_json) VALUES (?, ?, ?, ?, \
+         ?)",
+    )
+    .bind(sha)
+    .bind(name)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(config_json)
+    .execute(pool)
+    .await?;
 
     let result = sqlx::query_scalar(
         "SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ? AND owner = ? AND repo_name = ?",
@@ -413,6 +418,29 @@ pub async fn get_job_info_for_drv(
     Ok(jobs)
 }
 
+/// Get job configuration for a specific drv
+/// Returns the config_json from the first jobset that contains this drv
+pub async fn get_job_config_for_drv(
+    drv_id: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Option<String>> {
+    let config_json: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT g.config_json
+        FROM Job j
+        INNER JOIN GitHubJobSets g ON j.jobset = g.ROWID
+        WHERE j.drv_id = (SELECT ROWID FROM Drv WHERE drv_path = ?)
+        LIMIT 1
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+
+    Ok(config_json)
+}
+
 /// Check if all jobs in a jobset have reached a terminal state
 /// Terminal states are: Completed (success or failure), TransitiveFailure, and Interrupted states
 pub async fn all_jobs_concluded(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<bool> {
@@ -468,6 +496,24 @@ pub struct JobSetInfo {
     pub job: String,
     pub owner: String,
     pub repo_name: String,
+}
+
+pub async fn get_jobset_by_id(
+    jobset_id: i64,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Option<JobSetInfo>> {
+    let jobset = sqlx::query_as(
+        r#"
+        SELECT sha, job, owner, repo_name
+        FROM GitHubJobSets
+        WHERE ROWID = ?
+        "#,
+    )
+    .bind(jobset_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(jobset)
 }
 
 pub async fn get_jobset_info(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<JobSetInfo> {
@@ -842,7 +888,7 @@ mod tests {
 
         println!("creating jobset");
         let jobset_id =
-            create_jobset("abcdef", "fake-name", "test-owner", "test-repo", &pool).await?;
+            create_jobset("abcdef", "fake-name", "test-owner", "test-repo", None, &pool).await?;
         create_jobs_for_jobset(jobset_id, &jobs[..], &pool).await?;
 
         // These two queries should return the same result if there's no jobset associated with the
@@ -864,7 +910,7 @@ mod tests {
         let jobs = [eval_drv2];
 
         let second_jobset_id =
-            create_jobset("g1cdef", "fake-name", "test-owner", "test-repo", &pool).await?;
+            create_jobset("g1cdef", "fake-name", "test-owner", "test-repo", None, &pool).await?;
         create_jobs_for_jobset(second_jobset_id, &jobs[..], &pool).await?;
         let (_, changed_jobs, _) = job_difference("abcdef", "g1cdef", "fake-name", &pool).await?;
         assert_eq!(changed_jobs.len(), 1);
@@ -877,7 +923,7 @@ mod tests {
     async fn test_create_jobs_for_jobset_empty(pool: SqlitePool) -> anyhow::Result<()> {
         // Create a jobset
         let jobset_id =
-            create_jobset("test-sha", "test-job", "test-owner", "test-repo", &pool).await?;
+            create_jobset("test-sha", "test-job", "test-owner", "test-repo", None, &pool).await?;
 
         // Call with empty jobs list - should not error
         let empty_jobs: Vec<NixEvalDrv> = vec![];
@@ -936,7 +982,7 @@ mod tests {
 
         // Create a jobset and insert all jobs in one batch
         let jobset_id =
-            create_jobset("batch-sha", "batch-job", "test-owner", "test-repo", &pool).await?;
+            create_jobset("batch-sha", "batch-job", "test-owner", "test-repo", None, &pool).await?;
         create_jobs_for_jobset(jobset_id, &eval_drvs, &pool).await?;
 
         // Verify all jobs were created
@@ -985,7 +1031,7 @@ mod tests {
         };
 
         // Create a jobset and insert the job
-        let jobset_id = create_jobset("rel-sha", "rel-job", "rel-owner", "rel-repo", &pool).await?;
+        let jobset_id = create_jobset("rel-sha", "rel-job", "rel-owner", "rel-repo", None, &pool).await?;
         create_jobs_for_jobset(jobset_id, &[eval_drv], &pool).await?;
 
         // Query the Job table directly to verify relationships
@@ -1085,7 +1131,7 @@ mod tests {
 
         // Create a jobset and insert all jobs in one large batch
         let jobset_id =
-            create_jobset("large-sha", "large-job", "test-owner", "test-repo", &pool).await?;
+            create_jobset("large-sha", "large-job", "test-owner", "test-repo", None, &pool).await?;
         create_jobs_for_jobset(jobset_id, &eval_drvs, &pool).await?;
 
         // Verify all jobs were created
