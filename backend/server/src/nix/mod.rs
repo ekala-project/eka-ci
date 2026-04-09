@@ -24,6 +24,7 @@ pub struct EvalJob {
     pub file_path: String,
     pub name: String,
     pub allow_failures: bool,
+    pub config_json: Option<String>, // Serialized job config for hooks
     // TODO: support arguments
 }
 
@@ -129,6 +130,7 @@ impl EvalService {
                         ci_check_info: ci_info.clone(),
                         name: eval_job.name.to_string(),
                         jobs,
+                        config_json: eval_job.config_json.clone(),
                     };
                     gh_sender.send(gh_task).await?;
 

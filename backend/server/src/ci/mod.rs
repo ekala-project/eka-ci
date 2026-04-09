@@ -84,11 +84,16 @@ impl RepoReader {
                     // For base commits, it's common that they could get processed multiple times
                     continue;
                 }
-                let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
+                let file_path = resolve_file_path(root.clone(), path.clone(), job.file.clone())?;
+
+                // Serialize job config for storage in database (for hook execution)
+                let config_json = serde_json::to_string(&job).ok();
+
                 let eval_job = EvalJob {
                     file_path: file_path.to_string_lossy().into(),
                     name: job_name,
                     allow_failures: job.allow_eval_failures,
+                    config_json,
                 };
                 // TODO: Add jobset to db
                 self.eval_sender
@@ -165,11 +170,13 @@ impl AsyncService<RepoTask> for RepoReader {
                 let root = path.clone();
                 let config = read_repo_toplevel(&mut path)?;
                 for (_job_name, job) in config.jobs {
-                    let file_path = resolve_file_path(root.clone(), path.clone(), job.file)?;
+                    let file_path = resolve_file_path(root.clone(), path.clone(), job.file.clone())?;
+                    let config_json = serde_json::to_string(&job).ok();
                     let eval_job = EvalJob {
                         file_path: file_path.to_string_lossy().into(),
                         name: "local".to_string(),
                         allow_failures: job.allow_eval_failures,
+                        config_json,
                     };
                     self.eval_sender.send(EvalTask::Job(eval_job)).await?;
                 }

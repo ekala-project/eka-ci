@@ -183,6 +183,7 @@ pub enum GitHubTask {
         ci_check_info: CICheckInfo,
         name: String,
         jobs: Vec<NixEvalDrv>,
+        config_json: Option<String>, // Serialized job config for hooks
     },
     CreateCIConfigureGate {
         ci_check_info: CICheckInfo,

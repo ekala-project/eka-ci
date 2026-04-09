@@ -13,6 +13,7 @@ use crate::config::RemoteBuilder;
 use crate::db::DbService;
 use crate::github::GitHubTask;
 use crate::graph::{GraphCommand, GraphServiceHandle};
+use crate::hooks::HookExecutor;
 use crate::metrics::BuildMetrics;
 use crate::services::websocket::events::ServerEvent;
 
@@ -46,6 +47,7 @@ pub struct SchedulerService {
     ingress_thread: JoinHandle<()>,
     builder_thread: JoinHandle<()>,
     recorder_thread: JoinHandle<()>,
+    hook_thread: Option<JoinHandle<()>>,
 }
 
 impl SchedulerService {
@@ -67,13 +69,17 @@ impl SchedulerService {
         let process_collector = ProcessCollector::for_self();
         metrics_registry.register(Box::new(process_collector))?;
 
+        // Initialize HookExecutor service
+        let (hook_sender, hook_receiver) = mpsc::channel(1000);
+        let hook_executor = HookExecutor::new(hook_receiver, logs_dir.clone());
+
         let (ingress_service, ingress_sender) = IngressService::init(graph_handle.clone());
         let (recorder_service, recorder_sender) = RecorderService::init(
             db_service.clone(),
             github_sender,
             websocket_sender,
             graph_command_sender,
-            None, // TODO: Initialize HookExecutor and pass sender here
+            Some(hook_sender),
         );
 
         let mut builders = Builder::local_from_env(
@@ -110,6 +116,13 @@ impl SchedulerService {
         let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run();
 
+        // Spawn HookExecutor thread with a new cancellation token
+        // Note: This will be cancelled when the parent process terminates
+        let hook_cancellation = tokio_util::sync::CancellationToken::new();
+        let hook_thread = Some(tokio::spawn(async move {
+            hook_executor.run(hook_cancellation).await;
+        }));
+
         Ok(Self {
             db_service,
             metrics_registry,
@@ -119,6 +132,7 @@ impl SchedulerService {
             ingress_thread,
             builder_thread,
             recorder_thread,
+            hook_thread,
         })
     }
 

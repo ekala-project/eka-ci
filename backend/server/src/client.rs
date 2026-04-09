@@ -206,6 +206,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 file_path: job_info.file_path,
                 name: "client".to_string(),
                 allow_failures: true,
+                config_json: None, // No config for client-initiated jobs
             };
             let task = EvalTask::Job(job);
             dispatch
