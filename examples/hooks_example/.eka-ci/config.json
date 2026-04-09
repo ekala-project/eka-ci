@@ -1,0 +1,44 @@
+{
+  "jobs": {
+    "my-package": {
+      "file": "../default.nix",
+      "post_build_hooks": [
+        {
+          "name": "push-to-cache",
+          "command": ["nix", "copy", "--to", "s3://my-binary-cache"],
+          "env": {
+            "AWS_PROFILE": "ci",
+            "AWS_REGION": "us-west-2"
+          }
+        },
+        {
+          "name": "notify-success",
+          "command": ["echo", "Build succeeded:", "$OUT_PATHS"]
+        }
+      ],
+      "fod_post_build_hooks": [
+        {
+          "name": "push-fods-public",
+          "command": ["cachix", "push", "public-cache", "$OUT_PATHS"],
+          "env": {
+            "CACHIX_AUTH_TOKEN": "your-token-here"
+          }
+        }
+      ]
+    },
+    "another-package": {
+      "file": "../another.nix",
+      "post_build_hooks": [
+        {
+          "name": "attic-push",
+          "command": ["attic", "push", "my-cache", "$OUT_PATHS"]
+        }
+      ]
+    }
+  },
+  "checks": {
+    "format": {
+      "command": "nixfmt --check *.nix"
+    }
+  }
+}

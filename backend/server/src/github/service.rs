@@ -210,6 +210,7 @@ impl GitHubService {
                 &ci_check_info.owner,
                 &ci_check_info.repo_name,
                 jobs,
+                None, // TODO: Pass job config for hooks
             )
             .await?;
 
