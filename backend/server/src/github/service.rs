@@ -201,6 +201,7 @@ impl GitHubService {
         ci_check_info: &CICheckInfo,
         name: &str,
         jobs: &[NixEvalDrv],
+        config_json: Option<&str>,
     ) -> Result<()> {
         let jobset_id = self
             .db_service
@@ -210,7 +211,7 @@ impl GitHubService {
                 &ci_check_info.owner,
                 &ci_check_info.repo_name,
                 jobs,
-                None, // TODO: Pass job config for hooks
+                config_json,
             )
             .await?;
 
@@ -258,8 +259,10 @@ impl GitHubService {
                 ci_check_info,
                 name,
                 jobs,
+                config_json,
             } => {
-                self.create_job_set(ci_check_info, name, jobs).await?;
+                self.create_job_set(ci_check_info, name, jobs, config_json.as_deref())
+                    .await?;
             },
             GitHubTask::CreateCIConfigureGate { ci_check_info } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
