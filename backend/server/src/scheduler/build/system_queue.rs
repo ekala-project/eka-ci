@@ -92,7 +92,73 @@ impl PlatformQueue {
         tx
     }
 
+    /// Check if any builder in this platform queue can handle the given drv
+    fn can_any_builder_handle(&self, drv: &crate::db::model::Drv) -> bool {
+        // Check FOD builder
+        if let Some(ref fod_builder) = self.fod_builder {
+            if builder_can_handle(fod_builder, drv) {
+                return true;
+            }
+        }
+
+        // Check local builder
+        if let Some(ref local_builder) = self.local_builder {
+            if builder_can_handle(local_builder, drv) {
+                return true;
+            }
+        }
+
+        // Check remote builders
+        for builder in self.builders.values() {
+            if builder_can_handle(builder, drv) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub async fn loop_all_builds(mut self, mut receiver: mpsc::Receiver<BuildRequest>) {
+        // Collect builder feature info before taking them for orphan detection
+        // We need this to clone the data before moving the builders
+        struct BuilderFeatures {
+            supported_features: Vec<String>,
+            mandatory_features: Vec<String>,
+        }
+
+        let mut all_builder_features: Vec<BuilderFeatures> = Vec::new();
+        if let Some(ref fod) = self.fod_builder {
+            all_builder_features.push(BuilderFeatures {
+                supported_features: fod.supported_features.clone(),
+                mandatory_features: fod.mandatory_features.clone(),
+            });
+        }
+        if let Some(ref local) = self.local_builder {
+            all_builder_features.push(BuilderFeatures {
+                supported_features: local.supported_features.clone(),
+                mandatory_features: local.mandatory_features.clone(),
+            });
+        }
+        for builder in self.builders.values() {
+            all_builder_features.push(BuilderFeatures {
+                supported_features: builder.supported_features.clone(),
+                mandatory_features: builder.mandatory_features.clone(),
+            });
+        }
+
+        // Get a recorder_sender from any builder (they all share the same one)
+        // We need this for orphan detection
+        let recorder_sender = if let Some(ref fod) = self.fod_builder {
+            Some(fod.recorder_sender().clone())
+        } else if let Some(ref local) = self.local_builder {
+            Some(local.recorder_sender().clone())
+        } else {
+            self.builders
+                .values()
+                .next()
+                .map(|b| b.recorder_sender().clone())
+        };
+
         let has_fod = self.fod_builder.is_some();
         let has_local = self.local_builder.is_some();
         let has_remote = !self.builders.is_empty();
@@ -112,12 +178,68 @@ impl PlatformQueue {
             loop_builds(builders, remote_rx, platform_clone, metrics_clone).await;
         });
 
+        // Helper to check for orphaned jobs and fail them immediately
+        let check_orphan = |work: &BuildRequest| -> bool {
+            // Parse required features from the job
+            let required_features: Vec<String> = work
+                .0
+                .required_system_features
+                .as_ref()
+                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+                .unwrap_or_default();
+
+            // Check if any builder can handle this job
+            let can_build = all_builder_features.iter().any(|bf| {
+                // Check mandatory features
+                if !bf.mandatory_features.is_empty() {
+                    let has_mandatory = required_features
+                        .iter()
+                        .any(|req| bf.mandatory_features.contains(req));
+                    if !has_mandatory {
+                        return false;
+                    }
+                }
+                // Check if builder has all required features
+                required_features
+                    .iter()
+                    .all(|req| bf.supported_features.contains(req))
+            });
+
+            if !can_build {
+                if let Some(ref sender) = recorder_sender {
+                    let required_features_str =
+                        work.0.required_system_features.clone().unwrap_or_default();
+                    warn!(
+                        "Job {:?} requires features [{}] that no builder provides. Marking as \
+                         UnsatisfiableRequirements.",
+                        work.0.drv_path, required_features_str
+                    );
+                    let task = crate::scheduler::recorder::RecorderTask {
+                        derivation: work.0.drv_path.clone(),
+                        result:
+                            crate::db::model::build_event::DrvBuildState::UnsatisfiableRequirements,
+                    };
+                    // We can't await in a closure, so we spawn a task
+                    let sender_clone = sender.clone();
+                    tokio::spawn(async move {
+                        let _ = sender_clone.send(task).await;
+                    });
+                }
+                return true; // Is orphan
+            }
+            false // Not orphan
+        };
+
         // Case 1: FOD + local + remote (3-way routing)
         if has_fod && has_local && has_remote {
             let fod_tx = maybe_fod_tx.unwrap();
             let local_tx = maybe_local_tx.unwrap();
 
             while let Some(work) = receiver.recv().await {
+                if check_orphan(&work) {
+                    continue;
+                }
+
                 if work.0.is_fod {
                     fod_tx
                         .send(work)
@@ -142,6 +264,10 @@ impl PlatformQueue {
             let local_tx = maybe_local_tx.unwrap();
 
             while let Some(work) = receiver.recv().await {
+                if check_orphan(&work) {
+                    continue;
+                }
+
                 if work.0.is_fod {
                     fod_tx
                         .send(work)
@@ -160,6 +286,10 @@ impl PlatformQueue {
             let fod_tx = maybe_fod_tx.unwrap();
 
             while let Some(work) = receiver.recv().await {
+                if check_orphan(&work) {
+                    continue;
+                }
+
                 if work.0.is_fod {
                     fod_tx
                         .send(work)
@@ -178,6 +308,10 @@ impl PlatformQueue {
             let local_tx = maybe_local_tx.unwrap();
 
             while let Some(work) = receiver.recv().await {
+                if check_orphan(&work) {
+                    continue;
+                }
+
                 if work.0.prefer_local_build {
                     local_tx
                         .send(work)
@@ -194,6 +328,10 @@ impl PlatformQueue {
         // Case 5: Remote only
         else if has_remote {
             while let Some(work) = receiver.recv().await {
+                if check_orphan(&work) {
+                    continue;
+                }
+
                 remote_tx
                     .send(work)
                     .await
@@ -204,6 +342,10 @@ impl PlatformQueue {
         else {
             let local_tx = maybe_local_tx.expect("Failed to setup local builder");
             while let Some(work) = receiver.recv().await {
+                if check_orphan(&work) {
+                    continue;
+                }
+
                 local_tx
                     .send(work)
                     .await
@@ -224,8 +366,28 @@ async fn loop_builds(
     use tokio::sync::mpsc::error::TryRecvError;
 
     let mut build_buffer: VecDeque<BuildRequest> = VecDeque::new();
-    let build_channels: Vec<mpsc::Sender<BuildRequest>> =
-        builders.into_values().map(|x| x.run()).collect();
+
+    // Keep both the builder info and channels for feature filtering
+    struct BuilderChannel {
+        supported_features: Vec<String>,
+        mandatory_features: Vec<String>,
+        channel: mpsc::Sender<BuildRequest>,
+    }
+
+    let build_channels: Vec<BuilderChannel> = builders
+        .into_values()
+        .map(|builder| {
+            let supported_features = builder.supported_features.clone();
+            let mandatory_features = builder.mandatory_features.clone();
+            let channel = builder.run();
+            BuilderChannel {
+                supported_features,
+                mandatory_features,
+                channel,
+            }
+        })
+        .collect();
+
     let mut permit_timer = tokio::time::interval(std::time::Duration::from_millis(10));
     let mut build_timer = tokio::time::interval(std::time::Duration::from_millis(100));
 
@@ -251,11 +413,40 @@ async fn loop_builds(
         }
 
         if !build_buffer.is_empty() {
-            // Do a scan of the builder to see if they have capacity. Otherwise wait
-            // TODO: think of way to poll many builders for availability without doing scan
+            let current_job = build_buffer.front().unwrap();
+
+            // Parse required features for current job
+            let required_features: Vec<String> = current_job
+                .0
+                .required_system_features
+                .as_ref()
+                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+                .unwrap_or_default();
+
+            // Filter builders that can handle this job
+            let compatible_builders: Vec<&BuilderChannel> = build_channels
+                .iter()
+                .filter(|bc| {
+                    // Check mandatory features
+                    if !bc.mandatory_features.is_empty() {
+                        let has_mandatory = required_features
+                            .iter()
+                            .any(|req| bc.mandatory_features.contains(req));
+                        if !has_mandatory {
+                            return false;
+                        }
+                    }
+                    // Check if builder has all required features
+                    required_features
+                        .iter()
+                        .all(|req| bc.supported_features.contains(req))
+                })
+                .collect();
+
+            // Do a scan of compatible builders to see if they have capacity
             let permit = 'outer: loop {
-                for channel in &build_channels {
-                    if let Ok(permit) = channel.try_reserve() {
+                for bc in &compatible_builders {
+                    if let Ok(permit) = bc.channel.try_reserve() {
                         break 'outer permit;
                     }
                 }
@@ -272,4 +463,37 @@ async fn loop_builds(
             build_timer.tick().await;
         }
     }
+}
+
+/// Check if a builder can handle a specific derivation based on system features.
+///
+/// Returns true if:
+/// 1. The derivation has no required features, OR
+/// 2. The builder has all required features
+///
+/// If the builder has mandatory features, this also checks that the derivation
+/// requires at least one of them.
+fn builder_can_handle(builder: &Builder, drv: &crate::db::model::Drv) -> bool {
+    // Parse required features from the derivation
+    let required_features: Vec<String> = drv
+        .required_system_features
+        .as_ref()
+        .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    // If builder has mandatory features, job must require at least one of them
+    if !builder.mandatory_features.is_empty() {
+        let has_mandatory = required_features
+            .iter()
+            .any(|req| builder.mandatory_features.contains(req));
+
+        if !has_mandatory {
+            return false;
+        }
+    }
+
+    // Check if builder supports all required features
+    required_features
+        .iter()
+        .all(|req| builder.supported_features.contains(req))
 }
