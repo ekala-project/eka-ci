@@ -94,6 +94,12 @@ pub enum DrvBuildState {
     /// previous build attempt has been interrupted, and if so, unblocks all transitive dependants
     /// again. Once a derivation build is unblocked, it will be queued again.
     Blocked,
+    /// This build requires system features that no available builder provides.
+    ///
+    /// This is a terminal state. The derivation cannot be built until a builder with the
+    /// required features is added to the system. All transitive dependants will be marked
+    /// as having transitive failure.
+    UnsatisfiableRequirements,
 }
 
 /// The result of building a derivation.
@@ -170,6 +176,7 @@ mod state {
         InterruptedProcessDeath = -66,
         InterruptedSchedulerDeath = -13,
         Blocked = 100,
+        UnsatisfiableRequirements = -3,
     }
 
     impl From<&DrvBuildState> for DrvBuildStateRepr {
@@ -198,6 +205,7 @@ mod state {
                     Self::InterruptedSchedulerDeath
                 },
                 DrvBuildState::Blocked => Self::Blocked,
+                DrvBuildState::UnsatisfiableRequirements => Self::UnsatisfiableRequirements,
             }
         }
     }
@@ -210,6 +218,7 @@ mod state {
                 DrvBuildState::Completed(DrvBuildResult::Failure)
                     | DrvBuildState::TransitiveFailure
                     | DrvBuildState::Interrupted(_)
+                    | DrvBuildState::UnsatisfiableRequirements
             )
         }
 
@@ -220,6 +229,7 @@ mod state {
                 DrvBuildState::Completed(_)
                     | DrvBuildState::TransitiveFailure
                     | DrvBuildState::Interrupted(_)
+                    | DrvBuildState::UnsatisfiableRequirements
             )
         }
 
@@ -255,6 +265,9 @@ mod state {
                 },
                 // I'm not actually sure what this would be
                 DrvBuildState::Blocked => (GHStatus::Completed, Some(GHConclusion::ActionRequired)),
+                DrvBuildState::UnsatisfiableRequirements => {
+                    (GHStatus::Completed, Some(GHConclusion::Failure))
+                },
             }
         }
     }
@@ -284,6 +297,7 @@ mod state {
                     Self::Interrupted(DrvBuildInterruptionKind::SchedulerDeath)
                 },
                 DrvBuildStateRepr::Blocked => Self::Blocked,
+                DrvBuildStateRepr::UnsatisfiableRequirements => Self::UnsatisfiableRequirements,
             }
         }
     }

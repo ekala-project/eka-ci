@@ -22,6 +22,8 @@ pub struct Builder {
     pub remote_uri: Option<String>,
     pub builder_name: String,
     pub platform: Platform,
+    pub supported_features: Vec<String>,
+    pub mandatory_features: Vec<String>,
     logs_dir: PathBuf,
     recorder_sender: mpsc::Sender<RecorderTask>,
     metrics: Arc<BuildMetrics>,
@@ -35,6 +37,8 @@ impl Builder {
         remote_uri: Option<String>,
         builder_name: String,
         platform: Platform,
+        supported_features: Vec<String>,
+        mandatory_features: Vec<String>,
         logs_dir: PathBuf,
         recorder_sender: Sender<RecorderTask>,
         metrics: Arc<BuildMetrics>,
@@ -46,6 +50,8 @@ impl Builder {
             remote_uri,
             builder_name,
             platform,
+            supported_features,
+            mandatory_features,
             logs_dir,
             recorder_sender,
             metrics,
@@ -55,6 +61,10 @@ impl Builder {
 
     pub fn is_local(&self) -> bool {
         self.is_local
+    }
+
+    pub fn recorder_sender(&self) -> &mpsc::Sender<RecorderTask> {
+        &self.recorder_sender
     }
 
     /// Check to see if remote builder/store is even available
@@ -99,11 +109,13 @@ impl Builder {
         no_output_timeout_seconds: u64,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
+        let local_features = local_system_features().await?;
 
         info!(
             "Creating a local builder for these systems: {:?}",
             &local_platforms
         );
+        info!("Local system features: {:?}", &local_features);
 
         let builders = local_platforms
             .iter()
@@ -114,6 +126,8 @@ impl Builder {
                     None,
                     "localhost".to_string(),
                     platform.to_string(),
+                    local_features.clone(),
+                    Vec::new(), // No mandatory features for local builders
                     logs_dir.clone(),
                     recorder_sender.clone(),
                     metrics.clone(),
@@ -132,6 +146,7 @@ impl Builder {
         no_output_timeout_seconds: u64,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
+        let local_features = local_system_features().await?;
 
         info!(
             "Creating FOD builders for these systems: {:?}",
@@ -147,6 +162,8 @@ impl Builder {
                     None,
                     "localhost-fod".to_string(),
                     platform.to_string(),
+                    local_features.clone(),
+                    Vec::new(), // No mandatory features for local builders
                     logs_dir.clone(),
                     recorder_sender.clone(),
                     metrics.clone(),
@@ -176,6 +193,8 @@ impl Builder {
                 remote_builder.platforms.join(",")
             ),
             platform,
+            remote_builder.supported_features.clone(),
+            remote_builder.mandatory_features.clone(),
             logs_dir,
             recorder_sender,
             metrics,
@@ -216,4 +235,30 @@ async fn local_platforms() -> Result<Vec<String>> {
         .collect();
 
     Ok(systems)
+}
+
+/// Query the local system features from nix config
+/// These are features like kvm, nixos-test, big-parallel, benchmark that
+/// the local system supports
+async fn local_system_features() -> Result<Vec<String>> {
+    let config_output = Command::new("nix")
+        .args(["config", "show"])
+        .output()
+        .await?;
+
+    let config_str = String::from_utf8(config_output.stdout)?;
+
+    let features_line: String = config_str
+        .lines()
+        .filter(|x| x.starts_with("system-features ="))
+        .collect();
+
+    let features_str = features_line.split(" = ").nth(1);
+
+    let features = features_str
+        .iter()
+        .flat_map(|str| str.split_whitespace().map(|x| x.to_string()))
+        .collect();
+
+    Ok(features)
 }
