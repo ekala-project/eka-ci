@@ -112,20 +112,145 @@ env = { vars = ["ATTIC_TOKEN"] }
 
 ## Credential Sources
 
+EKA-CI supports multiple credential sources, including secure secret management systems to avoid storing plain-text credentials.
+
+### HashiCorp Vault (Recommended for Production)
+
+Retrieve credentials from HashiCorp Vault:
+
+```toml
+[[caches]]
+id = "s3-cache"
+cache_type = "nix-copy"
+destination = "s3://my-bucket/nix-cache?region=us-east-1"
+
+[caches.credentials]
+vault = {
+    address = "https://vault.example.com:8200",
+    secret_path = "secret/data/eka-ci/s3-cache",
+    token_env = "VAULT_TOKEN",  # Optional, defaults to VAULT_TOKEN
+    namespace = "prod"          # Optional, for Vault Enterprise
+}
+```
+
+**Vault secret format** (KV v2):
+```json
+{
+  "data": {
+    "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  }
+}
+```
+
+**Benefits:**
+- Secrets never stored on disk in plain text
+- Automatic secret rotation support
+- Audit logging of secret access
+- Fine-grained access control
+
+### AWS Secrets Manager
+
+Retrieve credentials from AWS Secrets Manager:
+
+```toml
+[[caches]]
+id = "s3-cache"
+cache_type = "nix-copy"
+destination = "s3://my-bucket/nix-cache?region=us-east-1"
+
+[caches.credentials]
+aws-secrets-manager = {
+    secret_name = "eka-ci/s3-cache-credentials",
+    region = "us-east-1"  # Optional, defaults to AWS_REGION env var
+}
+```
+
+**Secret format** (JSON):
+```json
+{
+  "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+  "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+}
+```
+
+**Benefits:**
+- Native AWS integration
+- Automatic encryption at rest
+- IAM-based access control
+- Secret rotation with Lambda
+
+### systemd Credentials (Linux Systems)
+
+Use systemd's encrypted credentials feature:
+
+```toml
+[[caches]]
+id = "s3-cache"
+cache_type = "nix-copy"
+destination = "s3://my-bucket/nix-cache?region=us-east-1"
+
+[caches.credentials]
+systemd-credential = { name = "s3-cache-creds" }
+```
+
+**Setup:**
+```bash
+# Encrypt credential
+echo -n "AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=wJal..." | \
+  systemd-creds encrypt --name=s3-cache-creds - \
+  /etc/credstore.encrypted/s3-cache-creds
+
+# Service loads it automatically
+systemctl restart eka-ci.service
+```
+
+**Benefits:**
+- Encrypted at rest with TPM2 or system key
+- Integrated with systemd services
+- No external dependencies
+- OS-level security
+
+### Instance Metadata Service (Cloud VMs)
+
+Use IAM roles/service accounts without explicit credentials:
+
+```toml
+[[caches]]
+id = "s3-cache"
+cache_type = "nix-copy"
+destination = "s3://my-bucket/nix-cache?region=us-east-1"
+
+[caches.credentials]
+instance-metadata = {}
+```
+
+**Supported platforms:**
+- AWS EC2 with IAM roles
+- Google Cloud with service accounts
+- Azure VMs with managed identities
+
+**Benefits:**
+- No credentials to manage
+- Automatic credential rotation
+- Follows cloud best practices
+- Reduced attack surface
+
 ### Environment Variables
 
-Read credentials from environment variables:
+Read credentials from environment variables (simple but less secure):
 
 ```toml
 [caches.credentials]
-env = { vars = ["VAR_NAME_1", "VAR_NAME_2"] }
+env = { vars = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] }
 ```
 
-The specified variables must be set when starting the EKA-CI server.
+**Note:** Environment variables are visible in `/proc/<pid>/environ` and process listings.
 
 ### File-based Credentials
 
-Read credentials from a file:
+Read credentials from a file (ensure proper file permissions):
 
 ```toml
 [caches.credentials]
@@ -136,6 +261,12 @@ file = { path = "/etc/eka-ci/cache-credentials" }
 ```
 AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
 AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+**Security:** Set file permissions to `600` (readable only by EKA-CI user):
+```bash
+chmod 600 /etc/eka-ci/cache-credentials
+chown ekaci:ekaci /etc/eka-ci/cache-credentials
 ```
 
 ### AWS Profile
@@ -172,6 +303,18 @@ For public caches that don't require authentication:
 [caches.credentials]
 none = {}
 ```
+
+## Credential Source Comparison
+
+| Method | Security | Complexity | Rotation | Audit | Best For |
+|--------|----------|------------|----------|-------|----------|
+| HashiCorp Vault | ⭐⭐⭐⭐⭐ | Medium | Automatic | Yes | Enterprise production |
+| AWS Secrets Manager | ⭐⭐⭐⭐⭐ | Low | Automatic | Yes | AWS environments |
+| systemd Credentials | ⭐⭐⭐⭐ | Medium | Manual | Limited | Linux systemd systems |
+| Instance Metadata | ⭐⭐⭐⭐⭐ | Low | Automatic | Yes | Cloud VMs |
+| AWS Profile | ⭐⭐⭐ | Low | Manual | No | Development |
+| Environment Variables | ⭐⭐ | Low | Manual | No | Development/testing |
+| File-based | ⭐⭐ | Low | Manual | No | Simple deployments |
 
 ## Cache Permissions
 
@@ -323,7 +466,86 @@ allowed_branches = ["main", "release/*"]
 }
 ```
 
-### Example 3: Multi-Cache Strategy
+### Example 3: Production with HashiCorp Vault
+
+Secure production setup using Vault for secret management:
+
+```toml
+# Server config: /etc/eka-ci/ekaci.toml
+
+[security]
+max_hook_timeout_seconds = 600
+audit_hooks = true
+
+[[caches]]
+id = "prod-s3"
+cache_type = "nix-copy"
+destination = "s3://company-prod-cache/nix?region=us-east-1"
+
+[caches.credentials]
+vault = {
+    address = "https://vault.company.internal:8200",
+    secret_path = "secret/data/eka-ci/prod-s3",
+    namespace = "production"
+}
+
+[caches.permissions]
+allow_all = false
+allowed_repos = ["company/backend", "company/frontend"]
+allowed_branches = ["main", "release/*"]
+
+[[caches]]
+id = "staging-s3"
+cache_type = "nix-copy"
+destination = "s3://company-staging-cache/nix?region=us-east-1"
+
+[caches.credentials]
+vault = {
+    address = "https://vault.company.internal:8200",
+    secret_path = "secret/data/eka-ci/staging-s3",
+    namespace = "production"
+}
+
+[caches.permissions]
+allow_all = false
+allowed_repos = ["company/*"]
+allowed_branches = ["develop", "feature/*", "main"]
+```
+
+**Vault setup:**
+```bash
+# Store S3 credentials in Vault
+vault kv put secret/eka-ci/prod-s3 \
+  AWS_ACCESS_KEY_ID="AKIA..." \
+  AWS_SECRET_ACCESS_KEY="wJal..."
+
+vault kv put secret/eka-ci/staging-s3 \
+  AWS_ACCESS_KEY_ID="AKIA..." \
+  AWS_SECRET_ACCESS_KEY="wJal..."
+
+# Grant EKA-CI service access
+vault policy write eka-ci-policy - <<EOF
+path "secret/data/eka-ci/*" {
+  capabilities = ["read"]
+}
+EOF
+
+vault token create -policy=eka-ci-policy
+```
+
+**Repository config:**
+```json
+{
+  "jobs": {
+    "backend": {
+      "file": "backend.nix",
+      "caches": ["staging-s3", "prod-s3"]
+    }
+  }
+}
+```
+
+### Example 4: Multi-Cache Strategy
 
 Push to both a fast internal cache and a public Cachix:
 
@@ -354,6 +576,44 @@ permissions = { allow_all = false, allowed_repos = ["myorg/*"] }
 }
 ```
 
+### Example 5: Cloud VM with IAM Roles
+
+AWS EC2 instance using IAM role (no credentials needed):
+
+```toml
+# Server config on EC2 instance
+
+[security]
+max_hook_timeout_seconds = 300
+audit_hooks = true
+
+[[caches]]
+id = "s3-cache"
+cache_type = "nix-copy"
+destination = "s3://my-cache/nix?region=us-east-1"
+credentials = { instance-metadata = {} }  # Uses EC2 IAM role
+permissions = { allow_all = true }
+```
+
+**Required IAM role policy:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:ListBucket"
+    ],
+    "Resource": [
+      "arn:aws:s3:::my-cache/*",
+      "arn:aws:s3:::my-cache"
+    ]
+  }]
+}
+```
+
 ## Operational Considerations
 
 ### Setting Environment Variables
@@ -371,7 +631,17 @@ EnvironmentFile=/etc/eka-ci/secrets.env
 
 ### Secrets Management
 
-**Option 1: Environment file**
+**Recommended: Use secure credential sources** (see [Credential Sources](#credential-sources) section)
+
+Production deployments should use one of:
+- **HashiCorp Vault** - Enterprise secret management with rotation and audit
+- **AWS Secrets Manager** - Native AWS secret storage
+- **systemd Credentials** - Encrypted credentials with TPM2 support
+- **Instance Metadata** - Cloud IAM roles (no credentials to manage)
+
+**For development/testing only:**
+
+Environment file:
 ```bash
 # /etc/eka-ci/secrets.env
 AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
@@ -379,23 +649,7 @@ AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 CACHIX_AUTH_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-**Option 2: File-based credentials**
-```toml
-[[caches]]
-id = "s3"
-cache_type = "nix-copy"
-destination = "s3://bucket/path"
-credentials = { file = { path = "/run/secrets/aws-creds" } }
-```
-
-**Option 3: Cloud provider metadata** (for EC2/GCP/Azure)
-```toml
-[[caches]]
-id = "s3"
-cache_type = "nix-copy"
-destination = "s3://bucket/path"
-credentials = { none = {} }  # Uses instance metadata service
-```
+**Warning:** Plain-text environment files and environment variables should only be used for development. Production systems should use Vault, AWS Secrets Manager, systemd credentials, or instance metadata.
 
 ### Monitoring and Auditing
 

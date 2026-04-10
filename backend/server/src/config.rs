@@ -134,8 +134,41 @@ pub enum CredentialSource {
         /// Environment variable containing token
         env_var: String,
     },
+    /// Retrieve from HashiCorp Vault
+    Vault {
+        /// Vault address (e.g., https://vault.example.com:8200)
+        address: String,
+        /// Secret path (e.g., secret/data/eka-ci/s3-cache)
+        secret_path: String,
+        /// Optional: Vault token from environment variable (default: VAULT_TOKEN)
+        #[serde(default = "default_vault_token_var")]
+        token_env: String,
+        /// Optional: Vault namespace
+        #[serde(default)]
+        namespace: Option<String>,
+    },
+    /// Retrieve from AWS Secrets Manager
+    AwsSecretsManager {
+        /// Secret name or ARN
+        secret_name: String,
+        /// Optional: AWS region (defaults to AWS_REGION env var)
+        #[serde(default)]
+        region: Option<String>,
+    },
+    /// Retrieve from systemd credentials (systemd-creds)
+    SystemdCredential {
+        /// Credential name
+        name: String,
+    },
+    /// Use instance metadata service (EC2/GCP/Azure IMDS)
+    /// Works without explicit credentials for cloud VMs with IAM roles
+    InstanceMetadata,
     /// No authentication required
     None,
+}
+
+fn default_vault_token_var() -> String {
+    "VAULT_TOKEN".to_string()
 }
 
 /// Controls which repos/branches can use a cache

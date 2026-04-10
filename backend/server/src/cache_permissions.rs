@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 
-use crate::config::{CacheConfig, CachePermissions};
+use crate::config::CacheConfig;
 
 /// Context for permission checking
 pub struct PermissionContext {
