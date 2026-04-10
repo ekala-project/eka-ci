@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 
@@ -56,6 +57,9 @@ struct ConfigFile {
     require_approval: Option<bool>,
     build_no_output_timeout_seconds: Option<u64>,
     graph_lru_capacity: Option<usize>,
+    #[serde(default)]
+    caches: Vec<CacheConfig>,
+    security: Option<SecurityConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -78,6 +82,95 @@ struct ConfigFileOAuth {
     pub jwt_secret: Option<String>,
 }
 
+/// Cache registry configuration - defines available caches server-side
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CacheConfig {
+    /// Cache ID (referenced from repository .eka-ci/config.json)
+    pub id: String,
+    /// Type of cache (nix-copy, cachix, attic)
+    pub cache_type: CacheType,
+    /// Destination URL or identifier (e.g., s3://bucket/path, cachix-cache-name)
+    pub destination: String,
+    /// Credential source for authentication
+    pub credentials: CredentialSource,
+    /// Permissions controlling which repos/branches can use this cache
+    #[serde(default)]
+    pub permissions: CachePermissions,
+}
+
+/// Types of caches supported by the system
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CacheType {
+    /// Uses `nix copy` to push to S3 or HTTP caches
+    NixCopy,
+    /// Uses Cachix for pushing
+    Cachix,
+    /// Uses Attic for pushing
+    Attic,
+}
+
+/// Where to retrieve credentials from
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CredentialSource {
+    /// Read from environment variable (e.g., AWS_ACCESS_KEY_ID)
+    Env {
+        /// Environment variable names to read
+        vars: Vec<String>,
+    },
+    /// Read from a file path
+    File {
+        /// Path to credential file
+        path: PathBuf,
+    },
+    /// Use AWS profile from ~/.aws/credentials
+    AwsProfile {
+        /// Profile name
+        profile: String,
+    },
+    /// Use Cachix auth token from environment or config
+    CachixToken {
+        /// Environment variable containing token
+        env_var: String,
+    },
+    /// No authentication required
+    None,
+}
+
+/// Controls which repos/branches can use a cache
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct CachePermissions {
+    /// Allow all repositories (default: true)
+    #[serde(default = "default_true")]
+    pub allow_all: bool,
+    /// Specific repositories allowed (owner/repo format)
+    #[serde(default)]
+    pub allowed_repos: Vec<String>,
+    /// Branch patterns allowed (glob patterns)
+    #[serde(default)]
+    pub allowed_branches: Vec<String>,
+}
+
+/// Security configuration for hook execution
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SecurityConfig {
+    /// Maximum hook execution time in seconds (default: 300)
+    #[serde(default = "default_hook_timeout")]
+    pub max_hook_timeout_seconds: u64,
+    /// Enable audit logging of hook executions (default: true)
+    #[serde(default = "default_true")]
+    pub audit_hooks: bool,
+}
+
+fn default_hook_timeout() -> u64 {
+    300
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Deserialize, Debug)]
 struct ConfigEnv {
     #[serde(rename = "eka_ci_config_file")]
@@ -97,6 +190,10 @@ pub struct Config {
     pub build_no_output_timeout_seconds: u64,
     /// Maximum number of nodes in the LRU cache (default: 100,000)
     pub graph_lru_capacity: usize,
+    /// Cache registry - maps cache IDs to configurations
+    pub caches: HashMap<String, CacheConfig>,
+    /// Security settings for hook execution
+    pub security: SecurityConfig,
 }
 
 #[derive(Debug)]
@@ -186,6 +283,19 @@ impl Config {
                 format!("insecure-secret-{}", now)
             });
 
+        // Build cache registry as a HashMap
+        let caches = file
+            .caches
+            .into_iter()
+            .map(|cache| (cache.id.clone(), cache))
+            .collect::<HashMap<String, CacheConfig>>();
+
+        // Get security config or use defaults
+        let security = file.security.unwrap_or_else(|| SecurityConfig {
+            max_hook_timeout_seconds: default_hook_timeout(),
+            audit_hooks: true,
+        });
+
         Ok(Config {
             web: ConfigWeb {
                 address: SocketAddrV4::new(bind_addr, bind_port),
@@ -217,6 +327,8 @@ impl Config {
                 .unwrap_or(false),
             build_no_output_timeout_seconds: file.build_no_output_timeout_seconds.unwrap_or(1200),
             graph_lru_capacity: file.graph_lru_capacity.unwrap_or(100_000),
+            caches,
+            security,
         })
     }
 

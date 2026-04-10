@@ -1,4 +1,5 @@
 mod auth;
+mod cache_permissions;
 mod checks;
 mod ci;
 mod client;

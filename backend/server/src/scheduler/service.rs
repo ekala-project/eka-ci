@@ -61,6 +61,7 @@ impl SchedulerService {
         graph_command_sender: mpsc::Sender<GraphCommand>,
         graph_handle: GraphServiceHandle,
         metrics_registry: Arc<Registry>,
+        cache_configs: Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
     ) -> anyhow::Result<Self> {
         // Create build metrics using shared registry
         let build_metrics = BuildMetrics::new(&metrics_registry)?;
@@ -80,6 +81,7 @@ impl SchedulerService {
             websocket_sender,
             graph_command_sender,
             Some(hook_sender),
+            cache_configs,
         );
 
         let mut builders = Builder::local_from_env(
