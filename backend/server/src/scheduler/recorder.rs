@@ -27,6 +27,7 @@ pub struct RecorderService {
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
     hook_sender: Option<mpsc::Sender<HookTask>>,
+    cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
 }
 
 /// Encapsulation of the Recorder thread. May want to gracefully recover from
@@ -40,6 +41,7 @@ struct RecorderWorker {
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
     hook_sender: Option<mpsc::Sender<HookTask>>,
+    cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
 }
 
 impl RecorderService {
@@ -49,6 +51,7 @@ impl RecorderService {
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         hook_sender: Option<mpsc::Sender<HookTask>>,
+        cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
 
@@ -59,6 +62,7 @@ impl RecorderService {
             websocket_sender,
             graph_command_sender,
             hook_sender,
+            cache_configs,
         };
 
         (res, recorder_sender)
@@ -73,6 +77,7 @@ impl RecorderService {
             self.websocket_sender,
             self.graph_command_sender,
             self.hook_sender,
+            self.cache_configs,
         );
 
         tokio::spawn(async move {
@@ -90,6 +95,7 @@ impl RecorderWorker {
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         hook_sender: Option<mpsc::Sender<HookTask>>,
+        cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
     ) -> Self {
         Self {
             db_service,
@@ -99,6 +105,7 @@ impl RecorderWorker {
             websocket_sender,
             graph_command_sender,
             hook_sender,
+            cache_configs,
         }
     }
 
@@ -448,7 +455,11 @@ impl RecorderWorker {
     }
 
     /// Execute post-build hooks for a successfully built drv
+    /// This resolves cache references from job config and checks permissions
     async fn execute_hooks_for_drv(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
+        use crate::cache_permissions::{PermissionContext, check_cache_permission};
+        use crate::hooks::types::PostBuildHook;
+
         // Return early if no hook sender configured
         let hook_sender: &mpsc::Sender<HookTask> = match &self.hook_sender {
             Some(sender) => sender,
@@ -464,23 +475,17 @@ impl RecorderWorker {
         // Parse the job config
         let job: Job = serde_json::from_str(&config_json)?;
 
+        // If no caches configured, return early
+        if job.caches.is_empty() {
+            return Ok(());
+        }
+
         // Get drv info for hook context
         let drv_info = self
             .db_service
             .get_drv(drv_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Drv not found: {}", drv_id.store_path()))?;
-
-        // Collect hooks to execute (regular + FOD-specific if applicable)
-        let mut hooks = job.post_build_hooks.clone();
-        if drv_info.is_fod {
-            hooks.extend(job.fod_post_build_hooks.clone());
-        }
-
-        // If no hooks to execute, return early
-        if hooks.is_empty() {
-            return Ok(());
-        }
 
         // Get job info for context (job name, commit sha, etc.)
         let job_infos = self.db_service.get_job_info_for_drv(drv_id).await?;
@@ -494,6 +499,55 @@ impl RecorderWorker {
             .get_jobset_by_id(job_info.jobset_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Jobset not found"))?;
+
+        // Build permission context from jobset info
+        let permission_context = PermissionContext {
+            repo_owner: jobset_info.owner.clone(),
+            repo_name: jobset_info.repo_name.clone(),
+            branch: None, // TODO: Extract branch info from jobset if available
+        };
+
+        // Resolve cache IDs to cache configs and check permissions
+        let mut hooks = Vec::new();
+        for cache_id in &job.caches {
+            // Look up cache config from server registry
+            let cache_config = match self.cache_configs.get(cache_id) {
+                Some(config) => config,
+                None => {
+                    warn!("Cache ID '{}' not found in server registry, skipping", cache_id);
+                    continue;
+                }
+            };
+
+            // Check if this repo/branch is allowed to use this cache
+            if let Err(e) = check_cache_permission(cache_config, &permission_context) {
+                warn!(
+                    "Permission denied for cache '{}' in {}/{}: {}",
+                    cache_id,
+                    permission_context.repo_owner,
+                    permission_context.repo_name,
+                    e
+                );
+                continue;
+            }
+
+            // TODO: Build actual hook command from cache config
+            // For now, create a placeholder hook
+            let hook = PostBuildHook {
+                name: format!("push-{}", cache_id),
+                command: vec![
+                    "echo".to_string(),
+                    format!("Would push to cache: {}", cache_id),
+                ],
+                env: std::collections::HashMap::new(),
+            };
+            hooks.push(hook);
+        }
+
+        // If no hooks to execute after filtering, return early
+        if hooks.is_empty() {
+            return Ok(());
+        }
 
         // Build hook context
         let context = HookContext {

@@ -3,8 +3,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::hooks::types::PostBuildHook;
-
 fn default_true() -> bool {
     true
 }
@@ -18,13 +16,10 @@ pub struct Job {
     pub file: PathBuf,
     #[serde(default = "default_true")]
     pub allow_eval_failures: bool,
-    /// Post-build hooks to run after successful builds
+    /// Cache IDs to push build outputs to (references server-configured caches)
+    /// These are resolved server-side for security - no arbitrary commands allowed
     #[serde(default)]
-    pub post_build_hooks: Vec<PostBuildHook>,
-    /// Additional post-build hooks to run for FODs (fixed-output derivations)
-    /// These run in addition to regular post_build_hooks
-    #[serde(default)]
-    pub fod_post_build_hooks: Vec<PostBuildHook>,
+    pub caches: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -121,41 +116,22 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialization_with_hooks() {
+    fn test_deserialization_with_caches() {
         let example_config = r#"{
   "jobs": {
     "my-package": {
       "file": "default.nix",
-      "post_build_hooks": [
-        {
-          "name": "push-to-cache",
-          "command": ["nix", "copy", "--to", "s3://my-cache"]
-        }
-      ],
-      "fod_post_build_hooks": [
-        {
-          "name": "push-fods",
-          "command": ["cachix", "push", "public"],
-          "env": {
-            "CACHIX_AUTH_TOKEN": "secret"
-          }
-        }
-      ]
+      "caches": ["production-s3", "public-cachix"]
     }
   }
 }"#;
         let config = serde_json::from_str::<CIConfig>(example_config)
-            .expect("Failed to deserialize config with hooks");
+            .expect("Failed to deserialize config with caches");
 
         assert_eq!(config.jobs.len(), 1);
         let job = config.jobs.get("my-package").unwrap();
-        assert_eq!(job.post_build_hooks.len(), 1);
-        assert_eq!(job.fod_post_build_hooks.len(), 1);
-        assert_eq!(job.post_build_hooks[0].name, "push-to-cache");
-        assert_eq!(job.fod_post_build_hooks[0].name, "push-fods");
-        assert_eq!(
-            job.fod_post_build_hooks[0].env.get("CACHIX_AUTH_TOKEN"),
-            Some(&"secret".to_string())
-        );
+        assert_eq!(job.caches.len(), 2);
+        assert_eq!(job.caches[0], "production-s3");
+        assert_eq!(job.caches[1], "public-cachix");
     }
 }

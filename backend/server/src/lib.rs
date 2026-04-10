@@ -3,6 +3,7 @@
 //! This library crate exposes the server modules for testing.
 
 pub mod auth;
+pub mod cache_permissions;
 pub mod checks;
 pub mod ci;
 pub mod client;

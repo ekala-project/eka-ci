@@ -90,6 +90,10 @@ pub async fn start_services(config: Config) -> Result<()> {
     let websocket_sender = Some(websocket_service.event_sender());
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
+
+    // Wrap cache configs in Arc for sharing across services
+    let cache_configs = Arc::new(config.caches.clone());
+
     let scheduler_service = SchedulerService::new(
         db_service.clone(),
         config.logs_dir.clone(),
@@ -100,6 +104,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         graph_command_sender.clone(),
         graph_handle.clone(),
         metrics_registry.clone(),
+        cache_configs,
     )
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
