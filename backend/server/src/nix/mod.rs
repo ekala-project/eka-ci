@@ -24,8 +24,8 @@ pub struct EvalJob {
     pub file_path: String,
     pub name: String,
     pub allow_failures: bool,
-    pub config_json: Option<String>, // Serialized job config for hooks
-    // TODO: support arguments
+    pub config_json: Option<String>, /* Serialized job config for hooks
+                                      * TODO: support arguments */
 }
 
 pub enum EvalTask {

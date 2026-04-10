@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::config::CacheConfig;
 
@@ -16,10 +16,7 @@ impl PermissionContext {
 }
 
 /// Check if a repository/branch is allowed to use a specific cache
-pub fn check_cache_permission(
-    cache: &CacheConfig,
-    context: &PermissionContext,
-) -> Result<()> {
+pub fn check_cache_permission(cache: &CacheConfig, context: &PermissionContext) -> Result<()> {
     let permissions = &cache.permissions;
 
     // If allow_all is true, grant access
@@ -48,11 +45,7 @@ pub fn check_cache_permission(
                 .any(|pattern| matches_glob_pattern(branch, pattern));
 
             if !branch_allowed {
-                bail!(
-                    "Branch {} is not allowed to use cache {}",
-                    branch,
-                    cache.id
-                );
+                bail!("Branch {} is not allowed to use cache {}", branch, cache.id);
             }
         } else {
             // No branch context provided but branch restrictions exist

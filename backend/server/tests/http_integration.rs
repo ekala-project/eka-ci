@@ -47,6 +47,9 @@ async fn create_test_server(
     // Create metrics registry for tests
     let metrics_registry = Arc::new(Registry::new());
 
+    // Empty cache configs for tests
+    let cache_configs = Arc::new(std::collections::HashMap::new());
+
     // Create scheduler
     let scheduler = SchedulerService::new(
         ctx.db_service.clone(),
@@ -58,6 +61,7 @@ async fn create_test_server(
         graph_command_sender.clone(),
         graph_handle.clone(),
         metrics_registry.clone(),
+        cache_configs,
     )
     .await
     .expect("Failed to create scheduler");

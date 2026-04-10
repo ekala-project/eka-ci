@@ -170,7 +170,8 @@ impl AsyncService<RepoTask> for RepoReader {
                 let root = path.clone();
                 let config = read_repo_toplevel(&mut path)?;
                 for (_job_name, job) in config.jobs {
-                    let file_path = resolve_file_path(root.clone(), path.clone(), job.file.clone())?;
+                    let file_path =
+                        resolve_file_path(root.clone(), path.clone(), job.file.clone())?;
                     let config_json = serde_json::to_string(&job).ok();
                     let eval_job = EvalJob {
                         file_path: file_path.to_string_lossy().into(),
