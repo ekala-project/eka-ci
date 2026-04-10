@@ -51,7 +51,9 @@ impl RecorderService {
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         hook_sender: Option<mpsc::Sender<HookTask>>,
-        cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
+        cache_configs: std::sync::Arc<
+            std::collections::HashMap<String, crate::config::CacheConfig>,
+        >,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
 
@@ -95,7 +97,9 @@ impl RecorderWorker {
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         hook_sender: Option<mpsc::Sender<HookTask>>,
-        cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
+        cache_configs: std::sync::Arc<
+            std::collections::HashMap<String, crate::config::CacheConfig>,
+        >,
     ) -> Self {
         Self {
             db_service,
@@ -514,19 +518,19 @@ impl RecorderWorker {
             let cache_config = match self.cache_configs.get(cache_id) {
                 Some(config) => config,
                 None => {
-                    warn!("Cache ID '{}' not found in server registry, skipping", cache_id);
+                    warn!(
+                        "Cache ID '{}' not found in server registry, skipping",
+                        cache_id
+                    );
                     continue;
-                }
+                },
             };
 
             // Check if this repo/branch is allowed to use this cache
             if let Err(e) = check_cache_permission(cache_config, &permission_context) {
                 warn!(
                     "Permission denied for cache '{}' in {}/{}: {}",
-                    cache_id,
-                    permission_context.repo_owner,
-                    permission_context.repo_name,
-                    e
+                    cache_id, permission_context.repo_owner, permission_context.repo_name, e
                 );
                 continue;
             }
@@ -555,7 +559,7 @@ impl RecorderWorker {
             is_fod: drv_info.is_fod,
             system: drv_info.system.clone(),
             pname: None, // TODO: Query pname from DrvInfo if needed
-            build_log_path: format!("logs/{}/build.log", drv_id.store_path()), // TODO: Use actual log path
+            build_log_path: format!("logs/{}/build.log", drv_id.store_path()), /* TODO: Use actual log path */
             commit_sha: jobset_info.sha.clone(),
         };
 

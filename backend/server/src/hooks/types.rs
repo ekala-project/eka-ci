@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
 
 /// Configuration for a post-build hook
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

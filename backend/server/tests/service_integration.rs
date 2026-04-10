@@ -60,6 +60,9 @@ async fn test_build_simple_drv_success() {
     // Create metrics registry for tests
     let metrics_registry = Arc::new(Registry::new());
 
+    // Empty cache configs for tests
+    let cache_configs = Arc::new(std::collections::HashMap::new());
+
     // Start the scheduler service
     let scheduler = SchedulerService::new(
         ctx.db_service.clone(),
@@ -71,6 +74,7 @@ async fn test_build_simple_drv_success() {
         graph_command_sender.clone(),
         graph_handle.clone(),
         metrics_registry.clone(),
+        cache_configs,
     )
     .await
     .expect("Failed to create scheduler");
@@ -153,6 +157,9 @@ async fn test_build_failure_retry_logic() {
     // Create metrics registry for tests
     let metrics_registry = Arc::new(Registry::new());
 
+    // Empty cache configs for tests
+    let cache_configs = Arc::new(std::collections::HashMap::new());
+
     // Start the scheduler service
     let scheduler = SchedulerService::new(
         ctx.db_service.clone(),
@@ -164,6 +171,7 @@ async fn test_build_failure_retry_logic() {
         graph_command_sender.clone(),
         graph_handle.clone(),
         metrics_registry.clone(),
+        cache_configs,
     )
     .await
     .expect("Failed to create scheduler");

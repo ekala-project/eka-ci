@@ -38,7 +38,7 @@ impl HookExecutor {
                 None => {
                     warn!("Hook receiver channel closed, shutting down");
                     break;
-                }
+                },
             };
 
             if let Err(e) = self.handle_hook_task(task).await {
@@ -75,13 +75,13 @@ impl HookExecutor {
                             result.exit_code.unwrap_or(-1)
                         );
                     }
-                }
+                },
                 Err(e) => {
                     error!(
                         "Failed to execute hook '{}' for drv {}: {}",
                         hook.name, task.drv_path, e
                     );
-                }
+                },
             }
         }
 
@@ -182,10 +182,7 @@ impl HookExecutor {
             .write_all(&output.stderr)
             .await
             .context("failed to write stderr to log file")?;
-        log_file
-            .flush()
-            .await
-            .context("failed to flush log file")?;
+        log_file.flush().await.context("failed to flush log file")?;
 
         let exit_code = output.status.code();
         let success = output.status.success();
@@ -270,10 +267,7 @@ mod tests {
 
     #[test]
     fn test_extract_drv_hash() {
-        assert_eq!(
-            extract_drv_hash("/nix/store/abc123-foo.drv"),
-            "abc123-foo"
-        );
+        assert_eq!(extract_drv_hash("/nix/store/abc123-foo.drv"), "abc123-foo");
         assert_eq!(
             extract_drv_hash("/nix/store/xyz789-bar-1.0.drv"),
             "xyz789-bar-1.0"
@@ -318,7 +312,10 @@ mod tests {
         assert_eq!(env.get("EKA_IS_FOD").unwrap(), "true");
         assert_eq!(env.get("EKA_SYSTEM").unwrap(), "x86_64-linux");
         assert_eq!(env.get("EKA_PNAME").unwrap(), "my-package");
-        assert_eq!(env.get("EKA_BUILD_LOG_PATH").unwrap(), "/logs/abc/build.log");
+        assert_eq!(
+            env.get("EKA_BUILD_LOG_PATH").unwrap(),
+            "/logs/abc/build.log"
+        );
         assert_eq!(env.get("EKA_COMMIT_SHA").unwrap(), "abc123def456");
         assert_eq!(env.get("CUSTOM_VAR").unwrap(), "custom_value");
     }
@@ -334,7 +331,12 @@ mod tests {
             "echo 'hello world'"
         );
         assert_eq!(
-            shell_escape_command(&["nix".to_string(), "copy".to_string(), "--to".to_string(), "s3://cache".to_string()]),
+            shell_escape_command(&[
+                "nix".to_string(),
+                "copy".to_string(),
+                "--to".to_string(),
+                "s3://cache".to_string()
+            ]),
             "nix copy --to s3://cache"
         );
         assert_eq!(

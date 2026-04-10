@@ -887,8 +887,15 @@ mod tests {
         let jobs = [eval_drv];
 
         println!("creating jobset");
-        let jobset_id =
-            create_jobset("abcdef", "fake-name", "test-owner", "test-repo", None, &pool).await?;
+        let jobset_id = create_jobset(
+            "abcdef",
+            "fake-name",
+            "test-owner",
+            "test-repo",
+            None,
+            &pool,
+        )
+        .await?;
         create_jobs_for_jobset(jobset_id, &jobs[..], &pool).await?;
 
         // These two queries should return the same result if there's no jobset associated with the
@@ -909,8 +916,15 @@ mod tests {
         insert_drv(&pool, &drv2).await?;
         let jobs = [eval_drv2];
 
-        let second_jobset_id =
-            create_jobset("g1cdef", "fake-name", "test-owner", "test-repo", None, &pool).await?;
+        let second_jobset_id = create_jobset(
+            "g1cdef",
+            "fake-name",
+            "test-owner",
+            "test-repo",
+            None,
+            &pool,
+        )
+        .await?;
         create_jobs_for_jobset(second_jobset_id, &jobs[..], &pool).await?;
         let (_, changed_jobs, _) = job_difference("abcdef", "g1cdef", "fake-name", &pool).await?;
         assert_eq!(changed_jobs.len(), 1);
@@ -922,8 +936,15 @@ mod tests {
     #[sqlx::test(migrations = "./sql/migrations")]
     async fn test_create_jobs_for_jobset_empty(pool: SqlitePool) -> anyhow::Result<()> {
         // Create a jobset
-        let jobset_id =
-            create_jobset("test-sha", "test-job", "test-owner", "test-repo", None, &pool).await?;
+        let jobset_id = create_jobset(
+            "test-sha",
+            "test-job",
+            "test-owner",
+            "test-repo",
+            None,
+            &pool,
+        )
+        .await?;
 
         // Call with empty jobs list - should not error
         let empty_jobs: Vec<NixEvalDrv> = vec![];
@@ -981,8 +1002,15 @@ mod tests {
             .collect();
 
         // Create a jobset and insert all jobs in one batch
-        let jobset_id =
-            create_jobset("batch-sha", "batch-job", "test-owner", "test-repo", None, &pool).await?;
+        let jobset_id = create_jobset(
+            "batch-sha",
+            "batch-job",
+            "test-owner",
+            "test-repo",
+            None,
+            &pool,
+        )
+        .await?;
         create_jobs_for_jobset(jobset_id, &eval_drvs, &pool).await?;
 
         // Verify all jobs were created
@@ -1031,7 +1059,8 @@ mod tests {
         };
 
         // Create a jobset and insert the job
-        let jobset_id = create_jobset("rel-sha", "rel-job", "rel-owner", "rel-repo", None, &pool).await?;
+        let jobset_id =
+            create_jobset("rel-sha", "rel-job", "rel-owner", "rel-repo", None, &pool).await?;
         create_jobs_for_jobset(jobset_id, &[eval_drv], &pool).await?;
 
         // Query the Job table directly to verify relationships
@@ -1130,8 +1159,15 @@ mod tests {
             .collect();
 
         // Create a jobset and insert all jobs in one large batch
-        let jobset_id =
-            create_jobset("large-sha", "large-job", "test-owner", "test-repo", None, &pool).await?;
+        let jobset_id = create_jobset(
+            "large-sha",
+            "large-job",
+            "test-owner",
+            "test-repo",
+            None,
+            &pool,
+        )
+        .await?;
         create_jobs_for_jobset(jobset_id, &eval_drvs, &pool).await?;
 
         // Verify all jobs were created

@@ -103,10 +103,7 @@ impl DbService {
         Ok(jobset_id)
     }
 
-    pub async fn get_job_config_for_drv(
-        &self,
-        drv_id: &DrvId,
-    ) -> anyhow::Result<Option<String>> {
+    pub async fn get_job_config_for_drv(&self, drv_id: &DrvId) -> anyhow::Result<Option<String>> {
         github::get_job_config_for_drv(drv_id, &self.pool).await
     }
 
