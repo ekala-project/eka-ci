@@ -179,6 +179,14 @@ pub enum GitHubTask {
         drv_id: DrvId,
         status: DrvBuildState,
     },
+    UpdateBuildStatusWithSizeWarning {
+        drv_id: DrvId,
+        status: DrvBuildState,
+        baseline_size: u64,
+        current_size: u64,
+        increase_percent: f64,
+        threshold_percent: f64,
+    },
     CreateJobSet {
         ci_check_info: CICheckInfo,
         name: String,

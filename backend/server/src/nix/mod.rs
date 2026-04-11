@@ -1,6 +1,7 @@
 pub mod derivation_show;
 pub mod jobs;
 pub mod nix_eval_jobs;
+pub mod size;
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;

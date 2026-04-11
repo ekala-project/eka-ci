@@ -29,6 +29,10 @@ pub struct Drv {
     /// This is None when queried from Nix
     /// Otherwise, it is the latest build status
     pub build_state: DrvBuildState,
+
+    /// Output size in bytes (NAR size of all outputs)
+    /// None if not yet calculated or build hasn't completed
+    pub output_size: Option<i64>,
 }
 
 impl Drv {
@@ -53,6 +57,7 @@ impl Drv {
             required_system_features: drv_output.required_system_features_str,
             is_fod,
             build_state: DrvBuildState::Queued,
+            output_size: None, // Will be calculated after successful build
         })
     }
 }

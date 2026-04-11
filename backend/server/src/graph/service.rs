@@ -49,6 +49,7 @@ impl CachedNode {
             required_system_features: self.required_system_features.clone(),
             is_fod: self.is_fod,
             build_state: self.build_state.clone(),
+            output_size: None,
         }
     }
 }
