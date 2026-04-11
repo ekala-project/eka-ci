@@ -37,29 +37,44 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let db_pool = db_service.pool.clone();
 
-    let (maybe_github_service, maybe_octocrab) = match github::register_app().await {
-        Ok(octocrab) => {
-            let github_service = GitHubService::new(db_service.clone(), octocrab.clone()).await?;
-            (Some(github_service), Some(octocrab))
-        },
-        Err(e) => {
-            // In dev environments, there usually is no authentication, but the server should still
-            // be runnable. If someone however tried to configure authentication, make
-            // sure to tell them load and clear if there was a problem.
-            if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
-                warn!(
-                    "Skipping GitHub app registration: {}",
-                    anyhow::Chain::new(&e)
-                        .map(|e| e.to_string())
-                        .collect::<Vec<_>>()
-                        .join(": ")
-                );
-            } else {
-                Err(e).context("failed to register GitHub app")?;
-            }
-            (None, None)
-        },
+    // Wrap GitHub App configs in Arc for sharing across services
+    let _github_app_configs = Arc::new(config.github_apps.clone());
+
+    // Try to register GitHub App from configuration first, then fall back to env vars
+    let github_app_config = if !config.github_apps.is_empty() {
+        // Use the first configured GitHub App
+        // TODO: Support multiple GitHub Apps and selection based on repository
+        config.github_apps.values().next()
+    } else {
+        None
     };
+
+    let (maybe_github_service, maybe_octocrab) =
+        match github::register_app_from_config(github_app_config).await {
+            Ok(octocrab) => {
+                let github_service =
+                    GitHubService::new(db_service.clone(), octocrab.clone()).await?;
+                (Some(github_service), Some(octocrab))
+            },
+            Err(e) => {
+                // In dev environments, there usually is no authentication, but the server should
+                // still be runnable. If someone however tried to configure
+                // authentication, make sure to tell them load and clear if there
+                // was a problem.
+                if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
+                    warn!(
+                        "Skipping GitHub app registration: {}",
+                        anyhow::Chain::new(&e)
+                            .map(|e| e.to_string())
+                            .collect::<Vec<_>>()
+                            .join(": ")
+                    );
+                } else {
+                    Err(e).context("failed to register GitHub app")?;
+                }
+                (None, None)
+            },
+        };
 
     // Create shared metrics registry for all services
     let metrics_registry = Arc::new(Registry::new());

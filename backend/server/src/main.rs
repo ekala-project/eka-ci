@@ -7,6 +7,7 @@ mod config;
 mod db;
 mod git;
 mod github;
+mod github_permissions;
 mod graph;
 mod hooks;
 mod metrics;
