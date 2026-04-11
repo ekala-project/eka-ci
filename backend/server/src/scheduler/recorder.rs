@@ -1,4 +1,6 @@
+use anyhow::Context as _;
 use chrono::Utc;
+use tokio::process::Command;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -458,11 +460,94 @@ impl RecorderWorker {
         Ok(())
     }
 
+    /// Build a post-build hook command for pushing to a cache
+    async fn build_cache_push_hook(
+        cache_config: &crate::config::CacheConfig,
+    ) -> anyhow::Result<crate::hooks::types::PostBuildHook> {
+        use crate::config::CacheType;
+        use crate::hooks::types::PostBuildHook;
+
+        // Load credentials from configured source
+        let credentials = cache_config.credentials.load().await.with_context(|| {
+            format!("Failed to load credentials for cache '{}'", cache_config.id)
+        })?;
+
+        debug!(
+            "Loaded credentials for cache '{}' from {:?}",
+            cache_config.id, cache_config.credentials
+        );
+
+        // Build command based on cache type
+        let command = match cache_config.cache_type {
+            CacheType::NixCopy => {
+                vec![
+                    "nix".to_string(),
+                    "copy".to_string(),
+                    "--to".to_string(),
+                    cache_config.destination.clone(),
+                    "$OUT_PATHS".to_string(), // Will be expanded by HookExecutor
+                ]
+            },
+            CacheType::Cachix => {
+                vec![
+                    "cachix".to_string(),
+                    "push".to_string(),
+                    cache_config.destination.clone(),
+                    "$OUT_PATHS".to_string(),
+                ]
+            },
+            CacheType::Attic => {
+                vec![
+                    "attic".to_string(),
+                    "push".to_string(),
+                    cache_config.destination.clone(),
+                    "$OUT_PATHS".to_string(),
+                ]
+            },
+        };
+
+        Ok(PostBuildHook {
+            name: format!("push-{}", cache_config.id),
+            command,
+            env: credentials,
+        })
+    }
+
+    /// Query the output paths of a derivation using nix-store
+    async fn get_drv_output_paths(drv_path: &str) -> anyhow::Result<Vec<String>> {
+        debug!("Querying output paths for drv: {}", drv_path);
+
+        let output = Command::new("nix-store")
+            .args(["--query", "--outputs", drv_path])
+            .output()
+            .await
+            .with_context(|| format!("Failed to execute nix-store for drv: {}", drv_path))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("nix-store query failed for {}: {}", drv_path, stderr);
+        }
+
+        let paths: Vec<String> = String::from_utf8(output.stdout)
+            .context("Invalid UTF-8 in nix-store output")?
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if paths.is_empty() {
+            warn!("No output paths found for drv: {}", drv_path);
+        } else {
+            debug!("Found {} output path(s) for drv: {}", paths.len(), drv_path);
+        }
+
+        Ok(paths)
+    }
+
     /// Execute post-build hooks for a successfully built drv
     /// This resolves cache references from job config and checks permissions
     async fn execute_hooks_for_drv(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
         use crate::cache_permissions::{PermissionContext, check_cache_permission};
-        use crate::hooks::types::PostBuildHook;
 
         // Return early if no hook sender configured
         let hook_sender: &mpsc::Sender<HookTask> = match &self.hook_sender {
@@ -535,17 +620,21 @@ impl RecorderWorker {
                 continue;
             }
 
-            // TODO: Build actual hook command from cache config
-            // For now, create a placeholder hook
-            let hook = PostBuildHook {
-                name: format!("push-{}", cache_id),
-                command: vec![
-                    "echo".to_string(),
-                    format!("Would push to cache: {}", cache_id),
-                ],
-                env: std::collections::HashMap::new(),
-            };
-            hooks.push(hook);
+            // Build actual hook command from cache config
+            match Self::build_cache_push_hook(cache_config).await {
+                Ok(hook) => {
+                    debug!("Created cache push hook for cache '{}'", cache_id);
+                    hooks.push(hook);
+                },
+                Err(e) => {
+                    warn!(
+                        "Failed to build cache push hook for '{}': {}. Skipping this cache.",
+                        cache_id, e
+                    );
+                    // Continue to next cache instead of failing the entire hook execution
+                    continue;
+                },
+            }
         }
 
         // If no hooks to execute after filtering, return early
@@ -563,9 +652,25 @@ impl RecorderWorker {
             commit_sha: jobset_info.sha.clone(),
         };
 
-        // For now, we'll assume the drv has one output path (the drv path itself)
-        // In a full implementation, we'd query the actual output paths from nix
-        let out_paths = vec![drv_id.store_path().to_string()];
+        // Query the actual output paths from nix-store
+        let out_paths = match Self::get_drv_output_paths(&drv_id.store_path()).await {
+            Ok(paths) if !paths.is_empty() => paths,
+            Ok(_) => {
+                warn!(
+                    "No output paths found for drv {}, using drv path as fallback",
+                    drv_id.store_path()
+                );
+                vec![drv_id.store_path().to_string()]
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to query output paths for drv {}: {}. Using drv path as fallback.",
+                    drv_id.store_path(),
+                    e
+                );
+                vec![drv_id.store_path().to_string()]
+            },
+        };
 
         // Create and send the hook task
         let hook_task = HookTask {
