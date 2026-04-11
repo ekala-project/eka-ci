@@ -164,6 +164,10 @@ fn api_routes() -> Router<AppState> {
         // Derivation details routes
         .route("/drvs/{drv}", get(get_drv_details_handler))
         .route("/drvs/{drv}/dependencies", get(get_drv_dependencies_handler))
+        // User profile routes (authenticated)
+        .route("/users/me/profile", get(user_profile_handler))
+        .route("/users/me/profile", axum::routing::patch(update_user_profile_handler))
+        .route("/users/me/maintained-paths", get(user_maintained_paths_handler))
         // Admin routes (protected)
         .route("/admin/approved-users", get(list_approved_users_handler))
         .route("/admin/approved-users", post(add_approved_user_handler))
@@ -171,6 +175,16 @@ fn api_routes() -> Router<AppState> {
             "/admin/approved-users/{username}",
             axum::routing::delete(remove_approved_user_handler),
         )
+        // Admin user management routes
+        .route("/admin/users", get(admin_list_users_handler))
+        .route("/admin/users/{github_id}/promote", post(admin_promote_user_handler))
+        .route("/admin/users/{github_id}/demote", post(admin_demote_user_handler))
+        .route("/admin/users/{github_id}", axum::routing::delete(admin_delete_user_handler))
+        .route("/admin/users/{github_id}/maintained-paths", get(admin_user_maintained_paths_handler))
+        // Admin attr path maintainer routes
+        .route("/admin/attr-paths/{attr_path}/maintainers", post(admin_add_maintainer_handler))
+        .route("/admin/attr-paths/{attr_path}/maintainers/{github_id}", axum::routing::delete(admin_remove_maintainer_handler))
+        .route("/admin/attr-paths/{attr_path}/maintainers", get(admin_list_maintainers_handler))
 }
 
 async fn handle_github_webhook(State(state): State<AppState>, body: axum::body::Bytes) {
@@ -722,4 +736,128 @@ async fn websocket_handler(
     ws.on_upgrade(
         move |socket| async move { state.websocket_service.handle_connection(socket).await },
     )
+}
+
+// ========== User Profile Handlers ==========
+
+/// Get current user's profile
+async fn user_profile_handler(auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+    crate::auth::profile::get_profile(auth, State(state.db_service.pool.clone())).await
+}
+
+/// Update current user's profile
+async fn update_user_profile_handler(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    body: Json<crate::auth::UpdateProfileRequest>,
+) -> impl IntoResponse {
+    crate::auth::profile::update_profile(auth, State(state.db_service.pool.clone()), body).await
+}
+
+/// Get attr paths maintained by current user
+async fn user_maintained_paths_handler(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::profile::get_maintained_paths(auth, State(state.db_service.pool.clone())).await
+}
+
+// ========== Admin User Management Handlers ==========
+
+/// List all users (admin only)
+async fn admin_list_users_handler(
+    admin: AdminUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::admin::list_users(admin, State(state.db_service.pool.clone())).await
+}
+
+/// Promote a user to admin
+async fn admin_promote_user_handler(
+    admin: AdminUser,
+    Path(github_id): Path<i64>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::admin::promote_user(admin, Path(github_id), State(state.db_service.pool.clone()))
+        .await
+}
+
+/// Demote a user from admin
+async fn admin_demote_user_handler(
+    admin: AdminUser,
+    Path(github_id): Path<i64>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::admin::demote_user(admin, Path(github_id), State(state.db_service.pool.clone()))
+        .await
+}
+
+/// Delete a user
+async fn admin_delete_user_handler(
+    admin: AdminUser,
+    Path(github_id): Path<i64>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::admin::delete_user(admin, Path(github_id), State(state.db_service.pool.clone()))
+        .await
+}
+
+/// Get attr paths maintained by a specific user (admin only)
+async fn admin_user_maintained_paths_handler(
+    admin: AdminUser,
+    Path(github_id): Path<i64>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::admin::get_user_maintained_paths(
+        admin,
+        Path(github_id),
+        State(state.db_service.pool.clone()),
+    )
+    .await
+}
+
+// ========== Admin Attr Path Maintainer Handlers ==========
+
+/// Add a maintainer to an attr path
+async fn admin_add_maintainer_handler(
+    admin: AdminUser,
+    Path(attr_path): Path<String>,
+    State(state): State<AppState>,
+    body: Json<crate::auth::AddMaintainerRequest>,
+) -> impl IntoResponse {
+    crate::auth::admin::add_maintainer(
+        admin,
+        Path(attr_path),
+        State(state.db_service.pool.clone()),
+        body,
+    )
+    .await
+}
+
+/// Remove a maintainer from an attr path
+async fn admin_remove_maintainer_handler(
+    admin: AdminUser,
+    Path((attr_path, github_id)): Path<(String, i64)>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::admin::remove_maintainer(
+        admin,
+        Path((attr_path, github_id)),
+        State(state.db_service.pool.clone()),
+    )
+    .await
+}
+
+/// List maintainers for an attr path
+async fn admin_list_maintainers_handler(
+    admin: AdminUser,
+    Path(attr_path): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::admin::list_maintainers(
+        admin,
+        Path(attr_path),
+        State(state.db_service.pool.clone()),
+    )
+    .await
 }

@@ -81,6 +81,13 @@ viewAuthSection authState onLogout =
                   else
                     text ""
 
+                -- Profile link
+                , a
+                    [ href (Route.toHref Route.Profile)
+                    , class "mr3 link white hover-white-80 f6"
+                    ]
+                    [ text "Profile" ]
+
                 -- User avatar
                 , img
                     [ src user.avatarUrl

@@ -23,6 +23,7 @@ import Pages.Commit as Commit
 import Pages.Drv as Drv
 import Pages.Home as Home
 import Pages.Job as Job
+import Pages.Profile as Profile
 import Pages.Repository as Repository
 import Ports
 import Route exposing (Route)
@@ -75,6 +76,7 @@ type Page
     | JobPage Job.Model
     | DrvPage Drv.Model
     | AdminPage Admin.Model
+    | ProfilePage Profile.Model
     | AuthCallbackPage AuthCallback.Model
     | NotFoundPage
 
@@ -87,13 +89,16 @@ init flags url navKey =
         route =
             Route.fromUrl url
 
+        initialAuthState =
+            Auth.init
+
         ( page, cmd ) =
-            initPage flags.apiBaseUrl url route
+            initPage flags.apiBaseUrl url route initialAuthState
     in
     ( { navKey = navKey
       , route = route
       , page = page
-      , authState = Auth.init
+      , authState = initialAuthState
       , apiBaseUrl = flags.apiBaseUrl
       }
     , cmd
@@ -102,8 +107,8 @@ init flags url navKey =
 
 {-| Initialize a page based on the current route.
 -}
-initPage : String -> Url -> Route -> ( Page, Cmd Msg )
-initPage apiBaseUrl url route =
+initPage : String -> Url -> Route -> Auth.AuthState -> ( Page, Cmd Msg )
+initPage apiBaseUrl url route authState =
     case route of
         Route.Home ->
             let
@@ -153,11 +158,30 @@ initPage apiBaseUrl url route =
             ( DrvPage model, Cmd.map DrvMsg cmd )
 
         Route.Admin ->
-            let
-                ( model, cmd ) =
-                    Admin.init apiBaseUrl
-            in
-            ( AdminPage model, Cmd.map AdminMsg cmd )
+            case Auth.getToken authState of
+                Just token ->
+                    let
+                        ( model, cmd ) =
+                            Admin.init apiBaseUrl token
+                    in
+                    ( AdminPage model, Cmd.map AdminMsg cmd )
+
+                Nothing ->
+                    -- Redirect to home if not authenticated
+                    ( NotFoundPage, Cmd.none )
+
+        Route.Profile ->
+            case Auth.getToken authState of
+                Just token ->
+                    let
+                        ( model, cmd ) =
+                            Profile.init apiBaseUrl token
+                    in
+                    ( ProfilePage model, Cmd.map ProfileMsg cmd )
+
+                Nothing ->
+                    -- Redirect to home if not authenticated
+                    ( NotFoundPage, Cmd.none )
 
         Route.AuthCallback ->
             let
@@ -186,6 +210,7 @@ type Msg
     | JobMsg Job.Msg
     | DrvMsg Drv.Msg
     | AdminMsg Admin.Msg
+    | ProfileMsg Profile.Msg
     | AuthCallbackMsg AuthCallback.Msg
     | WebSocketMessage Ports.IncomingMessage
     | TokenReceived (Maybe String)
@@ -221,7 +246,7 @@ update msg model =
                     unsubscribeFromPage model.page
 
                 ( newPage, cmd ) =
-                    initPage model.apiBaseUrl url newRoute
+                    initPage model.apiBaseUrl url newRoute model.authState
             in
             ( { model
                 | route = newRoute
@@ -281,6 +306,20 @@ update msg model =
                     in
                     ( { model | page = AdminPage newModel }
                     , Cmd.map AdminMsg cmd
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        ProfileMsg profileMsg ->
+            case model.page of
+                ProfilePage profileModel ->
+                    let
+                        ( newModel, cmd ) =
+                            Profile.update profileMsg profileModel
+                    in
+                    ( { model | page = ProfilePage newModel }
+                    , Cmd.map ProfileMsg cmd
                     )
 
                 _ ->
@@ -639,6 +678,9 @@ pageTitle route =
         Route.Admin ->
             "Admin - EkaCI"
 
+        Route.Profile ->
+            "My Profile - EkaCI"
+
         Route.AuthCallback ->
             "Authenticating - EkaCI"
 
@@ -676,6 +718,14 @@ viewPage authState page =
 
             else if Auth.isAuthenticated authState then
                 viewUnauthorized
+
+            else
+                viewNotAuthenticated
+
+        ProfilePage model ->
+            -- Protect Profile page: only show to authenticated users
+            if Auth.isAuthenticated authState then
+                Html.map ProfileMsg (Profile.view model)
 
             else
                 viewNotAuthenticated

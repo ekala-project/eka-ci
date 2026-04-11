@@ -1,8 +1,10 @@
 module Auth exposing
     ( AuthState
+    , AuthToken
     , User
     , decodeLoginResponse
     , decodeUser
+    , getToken
     , getUserInfo
     , init
     , isAdmin
@@ -30,6 +32,12 @@ type alias AuthState =
     , user : Maybe User
     , loading : Bool
     }
+
+
+{-| Authentication token (JWT).
+-}
+type alias AuthToken =
+    String
 
 
 {-| User information.
@@ -83,6 +91,13 @@ isAdmin state =
 
         Nothing ->
             False
+
+
+{-| Get the authentication token if present.
+-}
+getToken : AuthState -> Maybe AuthToken
+getToken state =
+    state.token
 
 
 {-| Start login process.

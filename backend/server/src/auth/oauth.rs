@@ -157,7 +157,7 @@ pub async fn handle_me(
     let db_user = sqlx::query_as::<_, AuthenticatedUser>(
         "SELECT ROWID, * FROM AuthenticatedUsers WHERE github_id = ?",
     )
-    .bind(user.github_id())
+    .bind(user.github_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| {
