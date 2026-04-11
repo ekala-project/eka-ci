@@ -40,3 +40,46 @@ pub struct GitHubUserInfo {
     pub login: String,
     pub avatar_url: Option<String>,
 }
+
+/// Detailed user information for admin panel
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct UserDetail {
+    pub github_id: i64,
+    pub github_username: String,
+    pub github_avatar_url: Option<String>,
+    pub is_admin: bool,
+    pub created_at: chrono::NaiveDateTime,
+    pub last_login: chrono::NaiveDateTime,
+}
+
+/// Attribute path maintainer information
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AttrPathMaintainer {
+    #[sqlx(rename = "ROWID")]
+    pub id: i64,
+    pub attr_path: String,
+    pub github_user_id: i64,
+    pub added_at: chrono::NaiveDateTime,
+    pub added_by_user_id: Option<i64>,
+}
+
+/// Request to add a maintainer to an attr path
+#[derive(Debug, Deserialize)]
+pub struct AddMaintainerRequest {
+    pub github_user_id: i64,
+}
+
+/// Request to update user profile
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileRequest {
+    // Future: Add user preferences, notification settings, etc.
+}
+
+/// User profile with maintained attr paths
+#[derive(Debug, Serialize)]
+pub struct UserProfile {
+    pub user: UserInfo,
+    pub maintained_paths: Vec<String>,
+    pub created_at: chrono::NaiveDateTime,
+    pub last_login: chrono::NaiveDateTime,
+}

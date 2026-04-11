@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use sqlx::SqlitePool;
 
 use super::jwt::{Claims, JwtService};
 
@@ -13,15 +14,45 @@ use super::jwt::{Claims, JwtService};
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub claims: Claims,
+    pub github_id: i64,
 }
 
 impl AuthUser {
-    pub fn github_id(&self) -> i64 {
-        self.claims.github_id
-    }
-
     pub fn is_admin(&self) -> bool {
         self.claims.is_admin
+    }
+
+    /// Check if user is a maintainer of a specific attr path
+    pub async fn is_maintainer_of(
+        &self,
+        pool: &SqlitePool,
+        attr_path: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT COUNT(*) > 0
+            FROM AttrPathMaintainers
+            WHERE attr_path = ? AND github_user_id = ?
+            "#,
+        )
+        .bind(attr_path)
+        .bind(self.github_id)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(result)
+    }
+
+    /// Check if user can modify a build (admin or maintainer)
+    pub async fn can_modify_build(
+        &self,
+        pool: &SqlitePool,
+        attr_path: &str,
+    ) -> Result<bool, sqlx::Error> {
+        if self.is_admin() {
+            return Ok(true);
+        }
+        self.is_maintainer_of(pool, attr_path).await
     }
 }
 
@@ -30,6 +61,7 @@ impl AuthUser {
 pub struct AdminUser {
     #[allow(dead_code)]
     pub user: AuthUser,
+    pub github_id: i64,
 }
 
 /// Extract AuthUser from request (validates JWT)
@@ -66,7 +98,9 @@ where
                 .validate_token(token)
                 .map_err(|_| AuthError::InvalidToken)?;
 
-            Ok(AuthUser { claims })
+            let github_id = claims.github_id;
+
+            Ok(AuthUser { claims, github_id })
         }
     }
 }
@@ -92,7 +126,9 @@ where
                 return Err(AuthError::Forbidden);
             }
 
-            Ok(AdminUser { user })
+            let github_id = user.github_id;
+
+            Ok(AdminUser { user, github_id })
         }
     }
 }

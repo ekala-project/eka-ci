@@ -27,6 +27,7 @@ type Route
     | Job Int -- jobset_id
     | Drv String -- drv_path
     | Admin
+    | Profile -- User profile
     | AuthCallback -- GitHub OAuth callback
     | NotFound
 
@@ -51,6 +52,7 @@ routeParser =
         , P.map Job (P.s "jobs" </> P.int)
         , P.map Drv (P.s "drvs" </> P.string)
         , P.map Admin (P.s "admin")
+        , P.map Profile (P.s "profile")
         , P.map AuthCallback (P.s "github" </> P.s "auth" </> P.s "callback")
         ]
 
@@ -80,6 +82,9 @@ toHref route =
 
         Admin ->
             "/admin"
+
+        Profile ->
+            "/profile"
 
         AuthCallback ->
             "/github/auth/callback"
