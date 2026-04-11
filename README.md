@@ -391,9 +391,9 @@ journalctl -u eka-ci -f
 ### Beta (🚧 In Progress)
 
 **Backend:**
-- [ ] GitHub OAuth user registration
-- [ ] Push successful builds to cache (framework ready)
-- [ ] Calculate metrics: closure size, dependencies
+- [x] GitHub OAuth user registration
+- [x] Push successful builds to cache (framework ready)
+- [x] Calculate metrics: closure size, dependencies
 - [x] Dedicated FOD build queue
 - [x] Multi-source credential support
 - [x] Cache permission system
@@ -411,7 +411,7 @@ journalctl -u eka-ci -f
 - [ ] Flake checks evaluation mode
 - [ ] Flake develop actions (impure commands)
 - [ ] Auto-scaling remote builders
-- [ ] Multi-GitHub App support with automatic selection
+- [x] Multi-GitHub App support with automatic selection
 - [ ] GCP Secret Manager and Azure Key Vault integration
 - [ ] Automatic credential rotation
 

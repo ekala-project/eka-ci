@@ -5,6 +5,7 @@ use octocrab::models::checks::CheckRun;
 use octocrab::params::checks::CheckRunConclusion;
 use tracing::debug;
 
+use crate::db::model::build_event::DrvBuildState;
 use crate::github::CICheckInfo;
 use crate::nix::nix_eval_jobs::NixEvalError;
 
@@ -320,6 +321,79 @@ pub async fn update_check_run(
     debug!(
         "Successfully updated check run {} for check '{}'",
         check_run_id, check_name
+    );
+
+    Ok(())
+}
+
+/// Update a check run with size warning (neutral conclusion, warning message)
+///
+/// This is called when a build succeeds but exceeds the configured size threshold.
+/// Sets the check to "neutral" (non-blocking) with a detailed warning message.
+pub async fn update_check_run_with_size_warning(
+    octocrab: &Octocrab,
+    check_run: &crate::db::github::CheckRun,
+    _status: &DrvBuildState,
+    baseline_size: u64,
+    current_size: u64,
+    increase_percent: f64,
+    threshold_percent: f64,
+) -> Result<()> {
+    use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+    debug!(
+        "Updating check run {} with size warning: {}% increase (threshold: {}%)",
+        check_run.check_run_id, increase_percent, threshold_percent
+    );
+
+    // Format sizes for display
+    let baseline_formatted = crate::nix::size::format_size(baseline_size);
+    let current_formatted = crate::nix::size::format_size(current_size);
+    let diff_bytes = current_size as i64 - baseline_size as i64;
+    let diff_formatted = if diff_bytes >= 0 {
+        format!("+{}", crate::nix::size::format_size(diff_bytes as u64))
+    } else {
+        format!("-{}", crate::nix::size::format_size((-diff_bytes) as u64))
+    };
+
+    // Create detailed output
+    let title = format!(
+        "⚠️ Output size increased by {:.1}% (threshold: {:.1}%)",
+        increase_percent, threshold_percent
+    );
+
+    let summary = format!(
+        "The build output size has increased beyond the configured threshold.\n\n**Size \
+         Comparison:**\n- **Baseline (main):** {}\n- **Current build:** {}\n- **Difference:** {} \
+         ({:+.1}%)\n- **Threshold:** {:.1}%\n\nThis check is set to **neutral** (non-blocking) \
+         but indicates potential installation bloat. Consider reviewing the changes to reduce \
+         output size.",
+        baseline_formatted, current_formatted, diff_formatted, increase_percent, threshold_percent
+    );
+
+    let check_run_output = octocrab::params::checks::CheckRunOutput {
+        title,
+        summary,
+        text: None,
+        annotations: vec![],
+        images: vec![],
+    };
+
+    // Set status to Neutral (warning, non-blocking)
+    let conclusion = CheckRunConclusion::Neutral;
+
+    octocrab
+        .checks(&check_run.repo_owner, &check_run.repo_name)
+        .update_check_run(octocrab::models::CheckRunId(check_run.check_run_id as u64))
+        .status(CheckRunStatus::Completed)
+        .conclusion(conclusion)
+        .output(check_run_output)
+        .send()
+        .await?;
+
+    debug!(
+        "Successfully updated check run {} with size warning",
+        check_run.check_run_id
     );
 
     Ok(())

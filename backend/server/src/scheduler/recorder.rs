@@ -3,11 +3,12 @@ use chrono::Utc;
 use tokio::process::Command;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::ci::config::Job;
 use crate::db::DbService;
-use crate::db::model::{build, build_event, drv_id};
+use crate::db::github::JobInfo;
+use crate::db::model::{DrvId, build, build_event, drv_id};
 use crate::github::GitHubTask;
 use crate::graph::GraphCommand;
 use crate::hooks::types::{HookContext, HookTask};
@@ -275,6 +276,16 @@ impl RecorderWorker {
                 if let Err(e) = self.execute_hooks_for_drv(&drv).await {
                     warn!("Failed to execute hooks for {}: {}", drv.store_path(), e);
                     // Don't fail the build if hooks fail - they run asynchronously
+                }
+
+                // Calculate and check output size if configured
+                if let Err(e) = self.check_output_size(&drv, &job_infos).await {
+                    warn!(
+                        "Failed to check output size for {}: {}",
+                        drv.store_path(),
+                        e
+                    );
+                    // Don't fail the build if size check fails
                 }
 
                 // Clear any transitive failures in graph (fast in-memory operation)
@@ -687,6 +698,226 @@ impl RecorderWorker {
             drv_id.store_path(),
             job_info.name
         );
+
+        Ok(())
+    }
+
+    /// Check output size and send warning if threshold exceeded
+    ///
+    /// This calculates the output size for a successful build, stores it in the database,
+    /// and compares it against the baseline (base branch) if size checks are configured.
+    /// If the size increase exceeds the threshold, sends a neutral GitHub check with warning.
+    async fn check_output_size(&self, drv_id: &DrvId, job_infos: &[JobInfo]) -> anyhow::Result<()> {
+        use crate::ci::config::CIConfig;
+        use crate::db::size::{
+            get_baseline_output_size, store_output_size, update_drv_output_size,
+        };
+        use crate::github::GitHubTask;
+        use crate::nix::size::get_output_size;
+
+        // Get output paths for this derivation
+        let output_paths = match Self::get_drv_output_paths(&drv_id.store_path()).await {
+            Ok(paths) if !paths.is_empty() => paths,
+            Ok(_) => {
+                debug!(
+                    "No output paths found for size check: {}",
+                    drv_id.store_path()
+                );
+                return Ok(()); // Skip size check if no outputs
+            },
+            Err(e) => {
+                debug!("Failed to query output paths for size check: {}", e);
+                return Ok(()); // Skip size check on error
+            },
+        };
+
+        // Calculate output size using nix path-info
+        let output_size = match get_output_size(&output_paths) {
+            Ok(size) => size,
+            Err(e) => {
+                warn!(
+                    "Failed to calculate output size for {}: {}",
+                    drv_id.store_path(),
+                    e
+                );
+                return Ok(()); // Skip size check if calculation fails
+            },
+        };
+
+        debug!(
+            "Calculated output size for {}: {} bytes ({})",
+            drv_id.store_path(),
+            output_size,
+            crate::nix::size::format_size(output_size)
+        );
+
+        // Store size in database for historical tracking
+        let pool = &self.db_service.pool;
+
+        // Update the Drv table
+        if let Err(e) = update_drv_output_size(pool, &drv_id.store_path(), output_size).await {
+            warn!("Failed to update drv output size: {}", e);
+        }
+
+        // For each job this drv belongs to, check if we have metadata to store historical size
+        for job_info in job_infos {
+            // Get git metadata for this build from the jobset
+            let jobset_info =
+                match crate::db::github::get_jobset_info(job_info.jobset_id, pool).await {
+                    Ok(info) => info,
+                    Err(e) => {
+                        debug!(
+                            "No jobset info found for jobset {}, skipping: {}",
+                            job_info.jobset_id, e
+                        );
+                        continue;
+                    },
+                };
+
+            // Construct git_repo URL
+            let git_repo = format!(
+                "https://github.com/{}/{}",
+                jobset_info.owner, jobset_info.repo_name
+            );
+
+            // Store in historical table
+            if let Err(e) = store_output_size(
+                pool,
+                &drv_id.store_path(),
+                output_size,
+                &jobset_info.sha,
+                &git_repo,
+            )
+            .await
+            {
+                warn!("Failed to store output size history: {}", e);
+            }
+
+            // Get job config from jobset
+            let job_config: Option<String> =
+                sqlx::query_scalar("SELECT config_json FROM GitHubJobSets WHERE ROWID = ?")
+                    .bind(job_info.jobset_id)
+                    .fetch_optional(pool)
+                    .await?
+                    .flatten();
+
+            let job_config = match job_config {
+                Some(config_json) => config_json,
+                None => {
+                    debug!(
+                        "No job config found for jobset {}, skipping size check",
+                        job_info.jobset_id
+                    );
+                    continue;
+                },
+            };
+
+            let ci_config: CIConfig = match serde_json::from_str(&job_config) {
+                Ok(config) => config,
+                Err(e) => {
+                    warn!("Failed to parse job config for size check: {}", e);
+                    continue;
+                },
+            };
+
+            // Find the job configuration
+            let job = match ci_config.jobs.get(&job_info.name) {
+                Some(job) => job,
+                None => {
+                    debug!("Job {} not found in config", job_info.name);
+                    continue;
+                },
+            };
+
+            // Check if size check is configured
+            let size_check = match &job.size_check {
+                Some(sc) => sc,
+                None => {
+                    debug!("No size check configured for job {}", job_info.name);
+                    continue;
+                },
+            };
+
+            debug!(
+                "Size check configured for job {}: max_increase={}%, base_branch={}",
+                job_info.name, size_check.max_increase_percent, size_check.base_branch
+            );
+
+            // Get baseline size from base branch
+            let baseline_size = match get_baseline_output_size(
+                pool,
+                &drv_id.store_path(),
+                &git_repo,
+                &size_check.base_branch,
+            )
+            .await?
+            {
+                Some(size) => size,
+                None => {
+                    debug!(
+                        "No baseline size found for {} on branch {}, skipping size check",
+                        drv_id.store_path(),
+                        size_check.base_branch
+                    );
+                    continue;
+                },
+            };
+
+            // Calculate percentage increase
+            let increase_percent = if baseline_size > 0 {
+                ((output_size as f64 - baseline_size as f64) / baseline_size as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            debug!(
+                "Size comparison for {}: baseline={} current={} increase={:.1}%",
+                drv_id.store_path(),
+                crate::nix::size::format_size(baseline_size),
+                crate::nix::size::format_size(output_size),
+                increase_percent
+            );
+
+            // Check if threshold exceeded
+            if increase_percent > size_check.max_increase_percent {
+                info!(
+                    "Size threshold exceeded for {}: {:.1}% > {:.1}% (baseline={}, current={})",
+                    drv_id.store_path(),
+                    increase_percent,
+                    size_check.max_increase_percent,
+                    crate::nix::size::format_size(baseline_size),
+                    crate::nix::size::format_size(output_size)
+                );
+
+                // Send GitHub task with size warning
+                if let Some(github_sender) = &self.github_sender {
+                    use crate::db::model::build_event::DrvBuildState;
+
+                    let task = GitHubTask::UpdateBuildStatusWithSizeWarning {
+                        drv_id: drv_id.clone(),
+                        status: DrvBuildState::Completed(
+                            crate::db::model::build_event::DrvBuildResult::Success,
+                        ),
+                        baseline_size,
+                        current_size: output_size,
+                        increase_percent,
+                        threshold_percent: size_check.max_increase_percent,
+                    };
+
+                    github_sender.send(task).await?;
+                    debug!("Sent size warning GitHub task for {}", drv_id.store_path());
+                } else {
+                    debug!("No GitHub sender available for size warning");
+                }
+            } else {
+                debug!(
+                    "Size check passed for {}: {:.1}% <= {:.1}%",
+                    drv_id.store_path(),
+                    increase_percent,
+                    size_check.max_increase_percent
+                );
+            }
+        }
 
         Ok(())
     }

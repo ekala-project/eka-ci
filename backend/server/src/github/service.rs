@@ -255,6 +255,36 @@ impl GitHubService {
                     check_run.send_gh_update(&octocrab, status).await?;
                 }
             },
+            GitHubTask::UpdateBuildStatusWithSizeWarning {
+                drv_id,
+                status,
+                baseline_size,
+                current_size,
+                increase_percent,
+                threshold_percent,
+            } => {
+                let check_runs = self.db_service.check_runs_for_drv_path(drv_id).await?;
+
+                for check_run in check_runs {
+                    debug!(
+                        "Updating checkrun with size warning for {}",
+                        &check_run.check_run_id
+                    );
+                    let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
+
+                    // Update status with size warning details
+                    actions::update_check_run_with_size_warning(
+                        &octocrab,
+                        &check_run,
+                        status,
+                        *baseline_size,
+                        *current_size,
+                        *increase_percent,
+                        *threshold_percent,
+                    )
+                    .await?;
+                }
+            },
             GitHubTask::CreateJobSet {
                 ci_check_info,
                 name,
