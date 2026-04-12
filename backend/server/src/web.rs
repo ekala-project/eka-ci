@@ -20,6 +20,7 @@ use crate::auth::{AdminUser, AuthUser, JwtService, OAuthConfig};
 use crate::db::github::CheckRun;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
+use crate::webhook_security::{check_webhook_secret_configured, verify_webhook_signature};
 
 #[derive(Clone)]
 struct AppState {
@@ -35,6 +36,7 @@ struct AppState {
     logs_dir: PathBuf,
     websocket_service: crate::services::WebSocketService,
     github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
+    webhook_secret: Option<String>,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState
@@ -64,10 +66,14 @@ impl WebService {
         logs_dir: PathBuf,
         websocket_service: crate::services::WebSocketService,
         github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
+        webhook_secret: Option<String>,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
             .context(format!("failed to bind to tcp socket at {socket}"))?;
+
+        // Check and warn if webhook secret is not configured
+        check_webhook_secret_configured(&webhook_secret);
 
         Ok(Self {
             listener,
@@ -84,6 +90,7 @@ impl WebService {
                 logs_dir,
                 websocket_service,
                 github_app_configs,
+                webhook_secret,
             },
         })
     }
@@ -194,12 +201,56 @@ fn api_routes() -> Router<AppState> {
         .route("/admin/attr-paths/{attr_path}/maintainers", get(admin_list_maintainers_handler))
 }
 
-async fn handle_github_webhook(State(state): State<AppState>, body: axum::body::Bytes) {
+async fn handle_github_webhook(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) {
     use octocrab::models::webhook_events::EventInstallation;
     use serde_json::Value;
     use tracing::warn;
 
     use crate::github::handle_webhook_payload;
+
+    // Verify webhook signature if secret is configured
+    if let Some(ref secret) = state.webhook_secret {
+        // Extract signature header
+        let signature = match headers.get("x-hub-signature-256") {
+            Some(sig) => match sig.to_str() {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        event = "webhook_signature_invalid_header",
+                        error = %e,
+                        "Failed to parse X-Hub-Signature-256 header"
+                    );
+                    return;
+                },
+            },
+            None => {
+                warn!(
+                    event = "webhook_signature_missing",
+                    "Missing X-Hub-Signature-256 header on webhook request"
+                );
+                return;
+            },
+        };
+
+        // Verify the signature
+        if let Err(e) = verify_webhook_signature(secret, signature, &body) {
+            warn!(
+                event = "webhook_signature_verification_failed",
+                error = %e,
+                "Webhook signature verification failed - rejecting webhook"
+            );
+            return;
+        }
+
+        info!(
+            event = "webhook_signature_verified",
+            "Webhook signature verified successfully"
+        );
+    }
 
     // First deserialize as generic JSON to extract top-level fields
     let webhook_json: Value = match serde_json::from_slice(&body) {

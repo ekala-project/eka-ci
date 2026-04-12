@@ -15,6 +15,7 @@ mod nix;
 mod scheduler;
 mod services;
 mod web;
+mod webhook_security;
 
 #[cfg(test)]
 mod tests;

@@ -521,6 +521,10 @@ pub struct SecurityConfig {
     /// Enable audit logging of hook executions (default: true)
     #[serde(default = "default_true")]
     pub audit_hooks: bool,
+    /// GitHub webhook secret for signature verification (optional)
+    /// If not set, webhooks will be accepted without signature validation
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
 }
 
 fn default_hook_timeout() -> u64 {
@@ -660,10 +664,16 @@ impl Config {
             .collect::<HashMap<String, GitHubAppConfig>>();
 
         // Get security config or use defaults
-        let security = file.security.unwrap_or_else(|| SecurityConfig {
+        let mut security = file.security.unwrap_or_else(|| SecurityConfig {
             max_hook_timeout_seconds: default_hook_timeout(),
             audit_hooks: true,
+            webhook_secret: None,
         });
+
+        // Allow webhook_secret to be overridden by environment variable
+        if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
+            security.webhook_secret = Some(secret);
+        }
 
         Ok(Config {
             web: ConfigWeb {
