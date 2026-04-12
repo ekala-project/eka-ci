@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -16,13 +16,22 @@ use super::types::{HookContext, HookResult, HookTask, PostBuildHook};
 pub struct HookExecutor {
     hook_receiver: mpsc::Receiver<HookTask>,
     logs_dir: PathBuf,
+    max_hook_timeout: Duration,
+    audit_enabled: bool,
 }
 
 impl HookExecutor {
-    pub fn new(hook_receiver: mpsc::Receiver<HookTask>, logs_dir: PathBuf) -> Self {
+    pub fn new(
+        hook_receiver: mpsc::Receiver<HookTask>,
+        logs_dir: PathBuf,
+        max_hook_timeout_seconds: u64,
+        audit_enabled: bool,
+    ) -> Self {
         Self {
             hook_receiver,
             logs_dir,
+            max_hook_timeout: Duration::from_secs(max_hook_timeout_seconds),
+            audit_enabled,
         }
     }
 
@@ -91,6 +100,18 @@ impl HookExecutor {
     async fn execute_hook(&self, hook: &PostBuildHook, task: &HookTask) -> Result<HookResult> {
         debug!("Executing hook '{}': {:?}", hook.name, hook.command);
 
+        // Audit log: Hook execution start
+        if self.audit_enabled {
+            info!(
+                event = "hook_execution_start",
+                hook_name = %hook.name,
+                drv_path = %task.drv_path,
+                job_name = %task.context.job_name,
+                commit_sha = %task.context.commit_sha,
+                "Starting hook execution"
+            );
+        }
+
         // Create log directory for this drv if it doesn't exist
         let drv_hash = extract_drv_hash(&task.drv_path);
         let log_dir = self.logs_dir.join(&drv_hash);
@@ -103,17 +124,67 @@ impl HookExecutor {
         // Build environment variables
         let env_vars = build_hook_env(&task.context, &task.drv_path, &task.out_paths, hook);
 
-        // Execute the hook command
+        // Execute the hook command with timeout
         let start = Instant::now();
-        let (exit_code, success) = self
+        let result = self
             .run_hook_command(&hook.command, &env_vars, &log_path)
-            .await?;
+            .await;
         let duration = start.elapsed();
+
+        let (exit_code, success) = match result {
+            Ok(result) => result,
+            Err(e) => {
+                // Check if this was a timeout error
+                let is_timeout = e.to_string().contains("timeout");
+
+                // Audit log: Hook execution failed/timeout
+                if self.audit_enabled {
+                    if is_timeout {
+                        warn!(
+                            event = "hook_execution_timeout",
+                            hook_name = %hook.name,
+                            drv_path = %task.drv_path,
+                            job_name = %task.context.job_name,
+                            timeout_seconds = self.max_hook_timeout.as_secs(),
+                            duration_seconds = duration.as_secs(),
+                            "Hook execution timed out"
+                        );
+                    } else {
+                        error!(
+                            event = "hook_execution_error",
+                            hook_name = %hook.name,
+                            drv_path = %task.drv_path,
+                            job_name = %task.context.job_name,
+                            error = %e,
+                            duration_seconds = duration.as_secs(),
+                            "Hook execution failed with error"
+                        );
+                    }
+                }
+                return Err(e);
+            },
+        };
 
         debug!(
             "Hook '{}' completed in {:?} with exit code {:?}",
             hook.name, duration, exit_code
         );
+
+        // Audit log: Hook execution completion
+        if self.audit_enabled {
+            info!(
+                event = "hook_execution_complete",
+                hook_name = %hook.name,
+                drv_path = %task.drv_path,
+                job_name = %task.context.job_name,
+                commit_sha = %task.context.commit_sha,
+                exit_code = ?exit_code,
+                success = success,
+                duration_seconds = duration.as_secs(),
+                duration_ms = duration.as_millis(),
+                "Hook execution completed"
+            );
+        }
 
         Ok(HookResult {
             hook_name: hook.name.clone(),
@@ -156,10 +227,17 @@ impl HookExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let output = cmd
-            .output()
-            .await
-            .context("failed to execute hook command")?;
+        // Execute command with timeout
+        let output = match tokio::time::timeout(self.max_hook_timeout, cmd.output()).await {
+            Ok(result) => result.context("failed to execute hook command")?,
+            Err(_) => {
+                // Timeout occurred
+                return Err(anyhow!(
+                    "Hook execution timed out after {} seconds",
+                    self.max_hook_timeout.as_secs()
+                ));
+            },
+        };
 
         // Write output to log file
         let mut log_file = fs::File::create(log_path)

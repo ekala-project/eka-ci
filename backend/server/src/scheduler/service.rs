@@ -62,6 +62,8 @@ impl SchedulerService {
         graph_handle: GraphServiceHandle,
         metrics_registry: Arc<Registry>,
         cache_configs: Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
+        max_hook_timeout_seconds: u64,
+        audit_hooks: bool,
     ) -> anyhow::Result<Self> {
         // Create build metrics using shared registry
         let build_metrics = BuildMetrics::new(&metrics_registry)?;
@@ -72,7 +74,12 @@ impl SchedulerService {
 
         // Initialize HookExecutor service
         let (hook_sender, hook_receiver) = mpsc::channel(1000);
-        let hook_executor = HookExecutor::new(hook_receiver, logs_dir.clone());
+        let hook_executor = HookExecutor::new(
+            hook_receiver,
+            logs_dir.clone(),
+            max_hook_timeout_seconds,
+            audit_hooks,
+        );
 
         let (ingress_service, ingress_sender) = IngressService::init(graph_handle.clone());
         let (recorder_service, recorder_sender) = RecorderService::init(

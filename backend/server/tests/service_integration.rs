@@ -75,6 +75,8 @@ async fn test_build_simple_drv_success() {
         graph_handle.clone(),
         metrics_registry.clone(),
         cache_configs,
+        300,  // 5 minute hook timeout
+        true, // audit hooks enabled
     )
     .await
     .expect("Failed to create scheduler");
@@ -172,6 +174,8 @@ async fn test_build_failure_retry_logic() {
         graph_handle.clone(),
         metrics_registry.clone(),
         cache_configs,
+        300,  // 5 minute hook timeout
+        true, // audit hooks enabled
     )
     .await
     .expect("Failed to create scheduler");
