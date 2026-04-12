@@ -71,10 +71,3 @@ pub async fn register_app_from_config(
 
     Ok(octocrab)
 }
-
-/// Legacy function for backward compatibility
-/// Prefer using register_app_from_config() instead
-#[deprecated(note = "Use register_app_from_config() instead")]
-pub async fn register_app() -> Result<Octocrab, AppRegistrationError> {
-    register_app_from_config(None).await
-}

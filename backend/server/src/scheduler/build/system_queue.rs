@@ -92,35 +92,9 @@ impl PlatformQueue {
         tx
     }
 
-    /// Check if any builder in this platform queue can handle the given drv
-    fn can_any_builder_handle(&self, drv: &crate::db::model::Drv) -> bool {
-        // Check FOD builder
-        if let Some(ref fod_builder) = self.fod_builder {
-            if builder_can_handle(fod_builder, drv) {
-                return true;
-            }
-        }
-
-        // Check local builder
-        if let Some(ref local_builder) = self.local_builder {
-            if builder_can_handle(local_builder, drv) {
-                return true;
-            }
-        }
-
-        // Check remote builders
-        for builder in self.builders.values() {
-            if builder_can_handle(builder, drv) {
-                return true;
-            }
-        }
-
-        false
-    }
-
     pub async fn loop_all_builds(mut self, mut receiver: mpsc::Receiver<BuildRequest>) {
-        // Collect builder feature info before taking them for orphan detection
-        // We need this to clone the data before moving the builders
+        // Extract builder features for orphan detection before moving self
+        // We only need the feature sets, not the full builders
         struct BuilderFeatures {
             supported_features: Vec<String>,
             mandatory_features: Vec<String>,
@@ -145,6 +119,32 @@ impl PlatformQueue {
                 mandatory_features: builder.mandatory_features.clone(),
             });
         }
+
+        // Helper function to check if any builder can handle a drv
+        // Uses the extracted feature sets
+        let can_handle_drv = move |drv: &crate::db::model::Drv| -> bool {
+            let required_features: Vec<String> = drv
+                .required_system_features
+                .as_ref()
+                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+                .unwrap_or_default();
+
+            all_builder_features.iter().any(|bf| {
+                // Check mandatory features
+                if !bf.mandatory_features.is_empty() {
+                    let has_mandatory = required_features
+                        .iter()
+                        .any(|req| bf.mandatory_features.contains(req));
+                    if !has_mandatory {
+                        return false;
+                    }
+                }
+                // Check if builder has all required features
+                required_features
+                    .iter()
+                    .all(|req| bf.supported_features.contains(req))
+            })
+        };
 
         // Get a recorder_sender from any builder (they all share the same one)
         // We need this for orphan detection
@@ -180,30 +180,7 @@ impl PlatformQueue {
 
         // Helper to check for orphaned jobs and fail them immediately
         let check_orphan = |work: &BuildRequest| -> bool {
-            // Parse required features from the job
-            let required_features: Vec<String> = work
-                .0
-                .required_system_features
-                .as_ref()
-                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
-                .unwrap_or_default();
-
-            // Check if any builder can handle this job
-            let can_build = all_builder_features.iter().any(|bf| {
-                // Check mandatory features
-                if !bf.mandatory_features.is_empty() {
-                    let has_mandatory = required_features
-                        .iter()
-                        .any(|req| bf.mandatory_features.contains(req));
-                    if !has_mandatory {
-                        return false;
-                    }
-                }
-                // Check if builder has all required features
-                required_features
-                    .iter()
-                    .all(|req| bf.supported_features.contains(req))
-            });
+            let can_build = can_handle_drv(&work.0);
 
             if !can_build {
                 if let Some(ref sender) = recorder_sender {
@@ -465,35 +442,3 @@ async fn loop_builds(
     }
 }
 
-/// Check if a builder can handle a specific derivation based on system features.
-///
-/// Returns true if:
-/// 1. The derivation has no required features, OR
-/// 2. The builder has all required features
-///
-/// If the builder has mandatory features, this also checks that the derivation
-/// requires at least one of them.
-fn builder_can_handle(builder: &Builder, drv: &crate::db::model::Drv) -> bool {
-    // Parse required features from the derivation
-    let required_features: Vec<String> = drv
-        .required_system_features
-        .as_ref()
-        .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
-        .unwrap_or_default();
-
-    // If builder has mandatory features, job must require at least one of them
-    if !builder.mandatory_features.is_empty() {
-        let has_mandatory = required_features
-            .iter()
-            .any(|req| builder.mandatory_features.contains(req));
-
-        if !has_mandatory {
-            return false;
-        }
-    }
-
-    // Check if builder supports all required features
-    required_features
-        .iter()
-        .all(|req| builder.supported_features.contains(req))
-}
