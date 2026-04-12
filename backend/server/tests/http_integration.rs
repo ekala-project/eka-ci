@@ -62,6 +62,8 @@ async fn create_test_server(
         graph_handle.clone(),
         metrics_registry.clone(),
         cache_configs,
+        300,  // 5 minute hook timeout
+        true, // audit hooks enabled
     )
     .await
     .expect("Failed to create scheduler");

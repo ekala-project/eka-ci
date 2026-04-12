@@ -120,6 +120,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         graph_handle.clone(),
         metrics_registry.clone(),
         cache_configs,
+        config.security.max_hook_timeout_seconds,
+        config.security.audit_hooks,
     )
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
