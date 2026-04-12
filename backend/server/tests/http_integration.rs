@@ -106,6 +106,7 @@ async fn create_test_server(
         ctx.logs_dir.clone(),
         websocket_service,
         github_app_configs,
+        None, // no webhook secret for tests
     )
     .await
     .expect("Failed to create web service");

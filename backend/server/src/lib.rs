@@ -19,3 +19,4 @@ pub mod nix;
 pub mod scheduler;
 pub mod services;
 pub mod web;
+pub mod webhook_security;
