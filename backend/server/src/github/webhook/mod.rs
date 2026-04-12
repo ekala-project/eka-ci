@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use anyhow::{Context, bail};
 use octocrab::Octocrab;
 use octocrab::models::pulls::PullRequest;
@@ -6,9 +9,11 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::config::GitHubAppConfig;
 use crate::db::DbService;
 use crate::git::GitTask;
 use crate::github::{CICheckInfo, GitHubTask};
+use crate::github_permissions::{PermissionContext, check_github_app_permission};
 
 pub async fn handle_webhook_payload(
     webhook_payload: WEP,
@@ -19,10 +24,19 @@ pub async fn handle_webhook_payload(
     octocrab: Option<Octocrab>,
     require_approval: bool,
     db_service: DbService,
+    github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
 ) {
     match webhook_payload {
         WEP::PullRequest(pr) => {
-            handle_github_pr(*pr, git_sender, github_sender, require_approval, db_service).await
+            handle_github_pr(
+                *pr,
+                git_sender,
+                github_sender,
+                require_approval,
+                db_service,
+                github_app_configs,
+            )
+            .await
         },
         WEP::WorkflowRun(workflow_run) => {
             handle_github_workflow_run(*workflow_run, git_sender, octocrab).await
@@ -35,6 +49,7 @@ pub async fn handle_webhook_payload(
                 github_sender,
                 require_approval,
                 db_service.clone(),
+                github_app_configs,
             )
             .await
         },
@@ -183,6 +198,7 @@ async fn handle_github_pr(
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     require_approval: bool,
     db_service: DbService,
+    github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
 ) {
     use payload::PullRequestWebhookEventAction as PRWEA;
 
@@ -199,6 +215,37 @@ async fn handle_github_pr(
     match pr.action {
         PRWEA::Opened | PRWEA::Synchronize | PRWEA::Reopened => {
             debug!("Received event for PR #{}", &pr.pull_request.number);
+
+            // Check GitHub App permissions before processing
+            if let Some(base_repo) = &pr.pull_request.base.repo {
+                let owner = &base_repo
+                    .owner
+                    .as_ref()
+                    .map(|o| o.login.clone())
+                    .unwrap_or_default();
+                let repo_name = &base_repo.name;
+                let branch = &pr.pull_request.base.ref_field;
+
+                let permission_context = PermissionContext {
+                    repo_owner: owner.clone(),
+                    repo_name: repo_name.clone(),
+                    branch: Some(branch.clone()),
+                };
+
+                // Check if any configured GitHub App has permission for this repo/branch
+                let has_permission = github_app_configs
+                    .values()
+                    .any(|config| check_github_app_permission(config, &permission_context).is_ok());
+
+                if !has_permission {
+                    warn!(
+                        "No GitHub App has permission for repository {}/{} branch {}. Skipping PR \
+                         #{}",
+                        owner, repo_name, branch, pr.pull_request.number
+                    );
+                    return;
+                }
+            }
 
             // Store PR metadata in database
             store_pr_metadata(&pr.pull_request, "open", &db_service).await;
@@ -377,6 +424,7 @@ async fn handle_github_merge_group(
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     _require_approval: bool,
     _db_service: DbService,
+    github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
 ) {
     use payload::MergeGroupWebhookEventAction as MGWEA;
 
@@ -423,6 +471,27 @@ async fn handle_github_merge_group(
         "Processing merge queue commit {} for ref {} in {}/{}",
         merge_group.head_sha, merge_group.head_ref, owner, repo_name
     );
+
+    // Check GitHub App permissions before processing merge group
+    let permission_context = PermissionContext {
+        repo_owner: owner.clone(),
+        repo_name: repo_name.clone(),
+        branch: Some(merge_group.base_ref.clone()),
+    };
+
+    // Check if any configured GitHub App has permission for this repo/branch
+    let has_permission = github_app_configs
+        .values()
+        .any(|config| check_github_app_permission(config, &permission_context).is_ok());
+
+    if !has_permission {
+        warn!(
+            "No GitHub App has permission for repository {}/{} branch {}. Skipping merge group \
+             for commit {}",
+            owner, repo_name, merge_group.base_ref, merge_group.head_sha
+        );
+        return;
+    }
 
     // Merge queue commits are already merge commits created by GitHub,
     // so we don't need approval checking - they've already passed PR checks.

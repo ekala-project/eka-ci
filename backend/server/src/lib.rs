@@ -11,6 +11,7 @@ pub mod config;
 pub mod db;
 pub mod git;
 pub mod github;
+pub mod github_permissions;
 pub mod graph;
 pub mod hooks;
 pub mod metrics;

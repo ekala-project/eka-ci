@@ -87,6 +87,9 @@ async fn create_test_server(
     // Bind to random port
     let socket = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0);
 
+    // Empty GitHub App configs for test
+    let github_app_configs = Arc::new(std::collections::HashMap::new());
+
     let web_service = WebService::bind_to_address(
         &socket,
         git_sender,
@@ -100,6 +103,7 @@ async fn create_test_server(
         oauth_config,
         ctx.logs_dir.clone(),
         websocket_service,
+        github_app_configs,
     )
     .await
     .expect("Failed to create web service");

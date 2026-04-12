@@ -34,6 +34,7 @@ struct AppState {
     oauth_config: OAuthConfig,
     logs_dir: PathBuf,
     websocket_service: crate::services::WebSocketService,
+    github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState
@@ -62,6 +63,7 @@ impl WebService {
         oauth_config: OAuthConfig,
         logs_dir: PathBuf,
         websocket_service: crate::services::WebSocketService,
+        github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -81,6 +83,7 @@ impl WebService {
                 oauth_config,
                 logs_dir,
                 websocket_service,
+                github_app_configs,
             },
         })
     }
@@ -237,6 +240,7 @@ async fn handle_github_webhook(State(state): State<AppState>, body: axum::body::
         state.octocrab,
         state.require_approval,
         state.db_service,
+        state.github_app_configs,
     )
     .await;
 }
