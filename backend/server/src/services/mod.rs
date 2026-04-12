@@ -38,12 +38,12 @@ pub async fn start_services(config: Config) -> Result<()> {
     let db_pool = db_service.pool.clone();
 
     // Wrap GitHub App configs in Arc for sharing across services
-    let _github_app_configs = Arc::new(config.github_apps.clone());
+    let github_app_configs = Arc::new(config.github_apps.clone());
 
     // Try to register GitHub App from configuration first, then fall back to env vars
     let github_app_config = if !config.github_apps.is_empty() {
-        // Use the first configured GitHub App
-        // TODO: Support multiple GitHub Apps and selection based on repository
+        // Use the first configured GitHub App for backward compatibility
+        // Permission checks will be enforced in webhook handlers
         config.github_apps.values().next()
     } else {
         None
@@ -172,6 +172,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         oauth_config,
         config.logs_dir.clone(),
         websocket_service.clone(),
+        github_app_configs.clone(),
     )
     .await
     .context("failed to start web service")?;
