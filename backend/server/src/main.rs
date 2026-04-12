@@ -20,12 +20,17 @@ mod web;
 mod tests;
 
 use config::Config;
+use rustls::crypto::{CryptoProvider, ring};
 use tracing::debug;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize Rustls crypto provider (required for reqwest/octocrab TLS)
+    // This must be done before any HTTP clients are created
+    let _ = CryptoProvider::install_default(ring::default_provider());
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()

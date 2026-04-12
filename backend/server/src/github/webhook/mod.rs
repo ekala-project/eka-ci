@@ -108,6 +108,75 @@ async fn is_valid_user(pr: &PullRequest, db_service: &DbService) -> anyhow::Resu
     Ok(())
 }
 
+/// Store PR metadata in the database
+async fn store_pr_metadata(pr: &PullRequest, state: &str, db_service: &DbService) {
+    let pr_author = match &pr.user {
+        Some(user) => &user.login,
+        None => {
+            warn!(
+                "PR #{} has no user information, skipping metadata storage",
+                pr.number
+            );
+            return;
+        },
+    };
+
+    let pr_number = pr.number as i64;
+
+    let owner = match &pr.base.repo {
+        Some(repo) => match &repo.owner {
+            Some(owner) => &owner.login,
+            None => {
+                warn!("PR base repo has no owner");
+                return;
+            },
+        },
+        None => {
+            warn!("PR base has no repo");
+            return;
+        },
+    };
+
+    let repo_name = match &pr.base.repo {
+        Some(repo) => &repo.name,
+        None => {
+            warn!("PR base has no repo");
+            return;
+        },
+    };
+
+    let head_sha = &pr.head.sha;
+    let base_sha = &pr.base.sha;
+
+    let title = match &pr.title {
+        Some(t) => t.as_str(),
+        None => "",
+    };
+
+    let created_at = pr.created_at.map(|dt| dt.to_rfc3339()).unwrap_or_default();
+    let updated_at = pr.updated_at.map(|dt| dt.to_rfc3339()).unwrap_or_default();
+
+    if let Err(e) = db_service
+        .upsert_pull_request(
+            pr_number,
+            owner,
+            repo_name,
+            head_sha,
+            base_sha,
+            title,
+            pr_author,
+            state,
+            &created_at,
+            &updated_at,
+        )
+        .await
+    {
+        warn!("Failed to store PR metadata for PR #{}: {:?}", pr_number, e);
+    } else {
+        debug!("Stored metadata for PR #{}", pr_number);
+    }
+}
+
 async fn handle_github_pr(
     pr: payload::PullRequestWebhookEventPayload,
     git_sender: mpsc::Sender<GitTask>,
@@ -130,6 +199,9 @@ async fn handle_github_pr(
     match pr.action {
         PRWEA::Opened | PRWEA::Synchronize | PRWEA::Reopened => {
             debug!("Received event for PR #{}", &pr.pull_request.number);
+
+            // Store PR metadata in database
+            store_pr_metadata(&pr.pull_request, "open", &db_service).await;
 
             if require_approval && is_valid_user(&pr.pull_request, &db_service).await.is_err() {
                 if let Err(e) = github_sender
@@ -163,6 +235,19 @@ async fn handle_github_pr(
                 pr.pull_request.number
             );
 
+            // Update PR state in database
+            let state = if matches!(pr.action, PRWEA::Closed) {
+                // Determine if merged or just closed
+                if pr.pull_request.merged_at.is_some() {
+                    "merged"
+                } else {
+                    "closed"
+                }
+            } else {
+                "open" // ConvertedToDraft keeps it open
+            };
+            store_pr_metadata(&pr.pull_request, state, &db_service).await;
+
             let ci_check_info = CICheckInfo::from_gh_pr_head(&pr.pull_request);
 
             if let Err(e) = github_sender
@@ -185,6 +270,9 @@ async fn handle_github_pr(
                 "Received enqueued event for PR #{}",
                 &pr.pull_request.number
             );
+
+            // Store PR metadata in database
+            store_pr_metadata(&pr.pull_request, "open", &db_service).await;
 
             if require_approval && is_valid_user(&pr.pull_request, &db_service).await.is_err() {
                 if let Err(e) = github_sender

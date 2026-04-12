@@ -25,6 +25,7 @@ import Pages.Home as Home
 import Pages.Job as Job
 import Pages.Profile as Profile
 import Pages.Repository as Repository
+import Pages.Reviews as Reviews
 import Ports
 import Route exposing (Route)
 import Url exposing (Url)
@@ -71,6 +72,7 @@ type alias Model =
 type Page
     = HomePage Home.Model
     | BuildsPage Builds.Model
+    | ReviewsPage Reviews.Model
     | RepositoryPage Repository.Model
     | CommitPage Commit.Model
     | JobPage Job.Model
@@ -128,6 +130,17 @@ initPage apiBaseUrl url route authState =
                 , Ports.websocketOut (Ports.encodeSubscribeMessage "allbuilds" "all")
                 ]
             )
+
+        Route.Reviews ->
+            let
+                ( model, cmd ) =
+                    Reviews.init apiBaseUrl
+            in
+            ( ReviewsPage model, Cmd.map ReviewsMsg cmd )
+
+        Route.PullRequest _ _ _ ->
+            -- PR detail page not implemented yet
+            ( NotFoundPage, Cmd.none )
 
         Route.Repository owner repo ->
             let
@@ -205,6 +218,7 @@ type Msg
     | UrlChanged Url
     | HomeMsg Home.Msg
     | BuildsMsg Builds.Msg
+    | ReviewsMsg Reviews.Msg
     | RepositoryMsg Repository.Msg
     | CommitMsg Commit.Msg
     | JobMsg Job.Msg
@@ -278,6 +292,20 @@ update msg model =
                     in
                     ( { model | page = BuildsPage newModel }
                     , Cmd.map BuildsMsg cmd
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        ReviewsMsg reviewsMsg ->
+            case model.page of
+                ReviewsPage reviewsModel ->
+                    let
+                        ( newModel, cmd ) =
+                            Reviews.update reviewsMsg reviewsModel
+                    in
+                    ( { model | page = ReviewsPage newModel }
+                    , Cmd.map ReviewsMsg cmd
                     )
 
                 _ ->
@@ -663,6 +691,12 @@ pageTitle route =
         Route.Builds ->
             "Active Builds - EkaCI"
 
+        Route.Reviews ->
+            "Pull Request Reviews - EkaCI"
+
+        Route.PullRequest owner repo prNumber ->
+            "PR #" ++ String.fromInt prNumber ++ " - " ++ owner ++ "/" ++ repo ++ " - EkaCI"
+
         Route.Repository owner repo ->
             owner ++ "/" ++ repo ++ " - EkaCI"
 
@@ -698,6 +732,9 @@ viewPage authState page =
 
         BuildsPage model ->
             Html.map BuildsMsg (Builds.view model)
+
+        ReviewsPage model ->
+            Html.map ReviewsMsg (Reviews.view model)
 
         RepositoryPage model ->
             Html.map RepositoryMsg (Repository.view model)

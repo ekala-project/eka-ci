@@ -419,7 +419,7 @@ journalctl -u eka-ci -f
 
 We welcome contributions! Areas that need help:
 
-1. **Web UI Development** - React/TypeScript frontend for PR review portal
+1. **Web UI Development** - Elm frontend for PR review portal
 2. **Post-Build Hooks** - Complete integration with main service
 3. **Webhook Signature Verification** - Implement HMAC verification
 4. **Metrics Calculation** - Closure size and dependency analysis

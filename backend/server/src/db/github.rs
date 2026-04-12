@@ -2,7 +2,7 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun as GHCheckRun;
 use serde::Serialize;
-use sqlx::{FromRow, Pool, Sqlite};
+use sqlx::{FromRow, Pool, Row, Sqlite};
 
 use super::model::build_event::DrvBuildState;
 use super::model::{Drv, DrvId};
@@ -214,7 +214,7 @@ pub async fn check_runs_for_commit(
 pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
     let drvs = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size
         FROM Drv d
         INNER JOIN Job j ON d.ROWID = j.drv_id
         WHERE j.jobset = ?
@@ -236,7 +236,7 @@ pub async fn new_jobs(
     // Query for drvs only present in the head jobset
     let new_drvs: Vec<Drv> = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size
         FROM Drv d
         INNER JOIN
         (SELECT drv_id
@@ -323,7 +323,7 @@ pub async fn job_difference(
     // Query for drvs which differ in drv_id but share the same job name
     let changed_drvs = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size
         FROM Drv d
         INNER JOIN
         (
@@ -853,6 +853,209 @@ pub async fn get_commit_jobs(sha: &str, pool: &Pool<Sqlite>) -> Result<Vec<Commi
     Ok(jobs)
 }
 
+// ============================================================================
+// Pull Request Management
+// ============================================================================
+
+/// Information about a pull request
+#[derive(Clone, Debug, PartialEq, Eq, FromRow, Serialize)]
+pub struct PullRequestInfo {
+    pub pr_number: i64,
+    pub owner: String,
+    pub repo_name: String,
+    pub head_sha: String,
+    pub base_sha: String,
+    pub title: String,
+    pub author: String,
+    pub state: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Pull request with associated job statistics
+#[derive(Clone, Debug, Serialize)]
+pub struct PullRequestWithStats {
+    #[serde(flatten)]
+    pub pr_info: PullRequestInfo,
+    pub jobset_id: Option<i64>,
+    pub total_drvs: i64,
+    pub completed_success_drvs: i64,
+    pub completed_failure_drvs: i64,
+    pub failed_retry_drvs: i64,
+    pub changed_drvs: i64,
+    pub new_drvs: i64,
+}
+
+/// Upsert a pull request record (insert or update if exists)
+pub async fn upsert_pull_request(
+    pr_number: i64,
+    owner: &str,
+    repo_name: &str,
+    head_sha: &str,
+    base_sha: &str,
+    title: &str,
+    author: &str,
+    state: &str,
+    created_at: &str,
+    updated_at: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO PullRequests
+            (pr_number, owner, repo_name, head_sha, base_sha, title, author, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner, repo_name, pr_number) DO UPDATE SET
+            head_sha = excluded.head_sha,
+            base_sha = excluded.base_sha,
+            title = excluded.title,
+            state = excluded.state,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(pr_number)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(head_sha)
+    .bind(base_sha)
+    .bind(title)
+    .bind(author)
+    .bind(state)
+    .bind(created_at)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Get all open pull requests with their build statistics
+pub async fn list_open_pull_requests(pool: &Pool<Sqlite>) -> Result<Vec<PullRequestWithStats>> {
+    // Query for PRs and their basic info
+    let pr_rows = sqlx::query(
+        r#"
+        SELECT
+            pr.pr_number,
+            pr.owner,
+            pr.repo_name,
+            pr.head_sha,
+            pr.base_sha,
+            pr.title,
+            pr.author,
+            pr.state,
+            pr.created_at,
+            pr.updated_at,
+            g.ROWID as jobset_id,
+            COALESCE(COUNT(d.ROWID), 0) as total_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state >= 6 AND d.build_state < 11 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state >= 11 AND d.build_state < 16 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
+            COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
+            COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
+        FROM PullRequests pr
+        LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
+        LEFT JOIN Job j ON g.ROWID = j.jobset
+        LEFT JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE pr.state = 'open'
+        GROUP BY pr.pr_number, pr.owner, pr.repo_name
+        ORDER BY pr.updated_at DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let prs = pr_rows
+        .into_iter()
+        .map(|row| PullRequestWithStats {
+            pr_info: PullRequestInfo {
+                pr_number: row.get("pr_number"),
+                owner: row.get("owner"),
+                repo_name: row.get("repo_name"),
+                head_sha: row.get("head_sha"),
+                base_sha: row.get("base_sha"),
+                title: row.get("title"),
+                author: row.get("author"),
+                state: row.get("state"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            },
+            jobset_id: row.get("jobset_id"),
+            total_drvs: row.get("total_drvs"),
+            completed_success_drvs: row.get("completed_success_drvs"),
+            completed_failure_drvs: row.get("completed_failure_drvs"),
+            failed_retry_drvs: row.get("failed_retry_drvs"),
+            changed_drvs: row.get("changed_drvs"),
+            new_drvs: row.get("new_drvs"),
+        })
+        .collect();
+
+    Ok(prs)
+}
+
+/// Get a specific pull request with build statistics
+pub async fn get_pull_request(
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<PullRequestWithStats>> {
+    let pr_row = sqlx::query(
+        r#"
+        SELECT
+            pr.pr_number,
+            pr.owner,
+            pr.repo_name,
+            pr.head_sha,
+            pr.base_sha,
+            pr.title,
+            pr.author,
+            pr.state,
+            pr.created_at,
+            pr.updated_at,
+            g.ROWID as jobset_id,
+            COALESCE(COUNT(d.ROWID), 0) as total_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state >= 6 AND d.build_state < 11 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state >= 11 AND d.build_state < 16 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
+            COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
+            COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
+        FROM PullRequests pr
+        LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
+        LEFT JOIN Job j ON g.ROWID = j.jobset
+        LEFT JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE pr.owner = ? AND pr.repo_name = ? AND pr.pr_number = ?
+        GROUP BY pr.pr_number, pr.owner, pr.repo_name
+        "#,
+    )
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(pr_row.map(|row| PullRequestWithStats {
+        pr_info: PullRequestInfo {
+            pr_number: row.get("pr_number"),
+            owner: row.get("owner"),
+            repo_name: row.get("repo_name"),
+            head_sha: row.get("head_sha"),
+            base_sha: row.get("base_sha"),
+            title: row.get("title"),
+            author: row.get("author"),
+            state: row.get("state"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        },
+        jobset_id: row.get("jobset_id"),
+        total_drvs: row.get("total_drvs"),
+        completed_success_drvs: row.get("completed_success_drvs"),
+        completed_failure_drvs: row.get("completed_failure_drvs"),
+        failed_retry_drvs: row.get("failed_retry_drvs"),
+        changed_drvs: row.get("changed_drvs"),
+        new_drvs: row.get("new_drvs"),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::SqlitePool;
@@ -882,6 +1085,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: DrvBuildState::Queued,
+            output_size: None,
         };
         insert_drv(&pool, &drv).await?;
         let jobs = [eval_drv];
@@ -912,6 +1116,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: DrvBuildState::Queued,
+            output_size: None,
         };
         insert_drv(&pool, &drv2).await?;
         let jobs = [eval_drv2];
@@ -982,6 +1187,7 @@ mod tests {
                 required_system_features: None,
                 is_fod: false,
                 build_state: DrvBuildState::Queued,
+                output_size: None,
             };
             insert_drv(&pool, &drv).await?;
         }
@@ -1044,6 +1250,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: DrvBuildState::Queued,
+            output_size: None,
         };
         insert_drv(&pool, &drv).await?;
 
@@ -1139,6 +1346,7 @@ mod tests {
                 required_system_features: None,
                 is_fod: false,
                 build_state: DrvBuildState::Queued,
+                output_size: None,
             };
             insert_drv(&pool, &drv).await?;
         }

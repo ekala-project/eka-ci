@@ -156,6 +156,10 @@ fn api_routes() -> Router<AppState> {
         .route("/repositories", get(list_repositories_handler))
         .route("/repositories/{owner}/{repo}", get(get_repository_handler))
         .route("/repositories/{owner}/{repo}/commits", get(list_repository_commits_handler))
+        // Pull Request routes
+        .route("/prs", get(list_pull_requests_handler))
+        .route("/prs/{owner}/{repo}/{pr_number}", get(get_pull_request_handler))
+        .route("/prs/{owner}/{repo}/{pr_number}/github-metadata", get(get_pr_github_metadata_handler))
         // Job and build status routes
         .route("/commits/{sha}/jobs", get(get_commit_jobs_handler))
         .route("/jobs/{jobset_id}", get(get_jobset_details_handler))
@@ -860,4 +864,96 @@ async fn admin_list_maintainers_handler(
         State(state.db_service.pool.clone()),
     )
     .await
+}
+
+// ============================================================================
+// Pull Request Handlers
+// ============================================================================
+
+/// List all open pull requests
+async fn list_pull_requests_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db_service.list_open_pull_requests().await {
+        Ok(prs) => Json(prs).into_response(),
+        Err(e) => {
+            error!("Failed to list pull requests: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to list pull requests: {}", e),
+            )
+                .into_response()
+        },
+    }
+}
+
+/// Get a specific pull request with build statistics
+async fn get_pull_request_handler(
+    State(state): State<AppState>,
+    Path((owner, repo, pr_number)): Path<(String, String, i64)>,
+) -> impl IntoResponse {
+    match state
+        .db_service
+        .get_pull_request(&owner, &repo, pr_number)
+        .await
+    {
+        Ok(Some(pr)) => Json(pr).into_response(),
+        Ok(None) => (
+            axum::http::StatusCode::NOT_FOUND,
+            format!(
+                "Pull request #{} not found in {}/{}",
+                pr_number, owner, repo
+            ),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to get pull request: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get pull request: {}", e),
+            )
+                .into_response()
+        },
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct GitHubPRMetadata {
+    additions: i64,
+    deletions: i64,
+    changed_files: i64,
+}
+
+/// Get GitHub API metadata for a pull request (lines changed, etc.)
+async fn get_pr_github_metadata_handler(
+    State(state): State<AppState>,
+    Path((owner, repo, pr_number)): Path<(String, String, i64)>,
+) -> impl IntoResponse {
+    let octocrab = match &state.octocrab {
+        Some(o) => o,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "GitHub API not available",
+            )
+                .into_response();
+        },
+    };
+
+    match octocrab.pulls(&owner, &repo).get(pr_number as u64).await {
+        Ok(pr) => {
+            let metadata = GitHubPRMetadata {
+                additions: pr.additions.unwrap_or(0) as i64,
+                deletions: pr.deletions.unwrap_or(0) as i64,
+                changed_files: pr.changed_files.unwrap_or(0) as i64,
+            };
+            Json(metadata).into_response()
+        },
+        Err(e) => {
+            error!("Failed to fetch PR metadata from GitHub: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to fetch PR metadata: {}", e),
+            )
+                .into_response()
+        },
+    }
 }

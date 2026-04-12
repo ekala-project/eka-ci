@@ -1139,6 +1139,7 @@ dependencies = [
  "openssl",
  "prometheus",
  "reqwest 0.12.24",
+ "rustls 0.23.34",
  "serde",
  "serde_json",
  "shared",

@@ -388,7 +388,8 @@ impl BuildGraph {
 
         // Load all drvs using query_as to properly deserialize
         let drvs: Vec<Drv> = sqlx::query_as(
-            "SELECT drv_path, system, required_system_features, is_fod, build_state FROM Drv",
+            "SELECT drv_path, system, required_system_features, is_fod, build_state, output_size \
+             FROM Drv",
         )
         .fetch_all(pool)
         .await?;
@@ -455,6 +456,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: state,
+            output_size: None,
         }
     }
 

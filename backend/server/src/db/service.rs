@@ -376,4 +376,40 @@ impl DbService {
     ) -> anyhow::Result<Vec<(String, bool, i32)>> {
         checks::get_check_results_for_commit(sha, owner, repo_name, &self.pool).await
     }
+
+    // Pull Request methods
+    pub async fn upsert_pull_request(
+        &self,
+        pr_number: i64,
+        owner: &str,
+        repo_name: &str,
+        head_sha: &str,
+        base_sha: &str,
+        title: &str,
+        author: &str,
+        state: &str,
+        created_at: &str,
+        updated_at: &str,
+    ) -> anyhow::Result<()> {
+        github::upsert_pull_request(
+            pr_number, owner, repo_name, head_sha, base_sha, title, author, state, created_at,
+            updated_at, &self.pool,
+        )
+        .await
+    }
+
+    pub async fn list_open_pull_requests(
+        &self,
+    ) -> anyhow::Result<Vec<github::PullRequestWithStats>> {
+        github::list_open_pull_requests(&self.pool).await
+    }
+
+    pub async fn get_pull_request(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+    ) -> anyhow::Result<Option<github::PullRequestWithStats>> {
+        github::get_pull_request(owner, repo_name, pr_number, &self.pool).await
+    }
 }
