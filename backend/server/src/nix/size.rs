@@ -26,9 +26,12 @@ struct PathInfo {
 ///
 /// # Example
 /// ```no_run
+/// use eka_ci_server::nix::size::get_output_size;
+///
 /// let paths = vec!["/nix/store/abc-python".to_string()];
 /// let size = get_output_size(&paths)?;
 /// println!("Total output size: {} MB", size / 1024 / 1024);
+/// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn get_output_size(output_paths: &[String]) -> Result<u64> {
     if output_paths.is_empty() {

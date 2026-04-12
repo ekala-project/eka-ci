@@ -8,7 +8,7 @@ use crate::db::model::{DrvId, Reference, Referrer, drv_id};
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
         r#"
-SELECT drv_path, system, required_system_features, is_fod, build_state
+SELECT drv_path, system, required_system_features, is_fod, build_state, output_size
 FROM Drv
 WHERE drv_path = ?
         "#,
@@ -42,12 +42,12 @@ pub async fn insert_drvs_and_references(
 
     if !drvs.is_empty() {
         // Ensure we do not exceed SQLite's 32k limit for query variables
-        // 32766 / 5 ~= 6550
-        for drvs_chunk in drvs.chunks(6550) {
+        // 32766 / 6 ~= 5460
+        for drvs_chunk in drvs.chunks(5460) {
             let mut tx = pool.begin().await?;
             let mut query_builder = QueryBuilder::new(
                 "INSERT INTO Drv (drv_path, system, required_system_features, is_fod, \
-                 build_state) ",
+                 build_state, output_size) ",
             );
 
             query_builder.push_values(drvs_chunk, |mut row, drv| {
@@ -55,7 +55,8 @@ pub async fn insert_drvs_and_references(
                     .push_bind(&drv.system)
                     .push_bind(&drv.required_system_features)
                     .push_bind(drv.is_fod)
-                    .push_bind(&drv.build_state);
+                    .push_bind(&drv.build_state)
+                    .push_bind(drv.output_size);
             });
 
             query_builder
@@ -433,6 +434,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: DrvBuildState::Queued,
+            output_size: None,
         };
         insert_drv(&pool, &drv).await?;
         update_drv_status(&pool, &drv_id, &DrvBuildState::Buildable).await?;
@@ -456,6 +458,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: DrvBuildState::Queued,
+            output_size: None,
         };
         let drv2 = Drv {
             drv_path: DrvId::from_str(
@@ -466,6 +469,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: DrvBuildState::Queued,
+            output_size: None,
         };
         let drv3 = Drv {
             drv_path: DrvId::from_str(
@@ -476,6 +480,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: DrvBuildState::Buildable,
+            output_size: None,
         };
 
         let drvs = vec![drv1, drv2, drv3];

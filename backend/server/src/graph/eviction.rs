@@ -291,6 +291,7 @@ mod tests {
             required_system_features: None,
             is_fod: false,
             build_state: state,
+            output_size: None,
         }
     }
 

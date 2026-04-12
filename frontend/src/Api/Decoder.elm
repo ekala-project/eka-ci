@@ -8,9 +8,12 @@ module Api.Decoder exposing
     , drvDependency
     , drvDependencyList
     , drvDetails
+    , gitHubMetadata
     , jobSetDetails
     , jobSetDrv
     , jobSetDrvList
+    , pullRequest
+    , pullRequestList
     , repository
     , repositoryList
     )
@@ -22,6 +25,7 @@ import Json.Decode as D exposing (Decoder)
 import Models.BuildState as BS
 import Models.Derivation exposing (DrvDependency, DrvDetails)
 import Models.Job exposing (CommitJob, JobSetDetails, JobSetDrv)
+import Models.PullRequest exposing (GitHubMetadata, PullRequest)
 import Models.Repository exposing (Repository)
 
 
@@ -278,6 +282,47 @@ activeBuildsResponse =
     D.map2 (\jobs buildingDrvs -> { jobs = jobs, buildingDrvs = buildingDrvs })
         (D.field "jobs" (D.list jobSetDetails))
         (D.field "building_drvs" buildingDrvList)
+
+
+{-| Decode a PullRequest from JSON.
+-}
+pullRequest : Decoder PullRequest
+pullRequest =
+    D.succeed PullRequest
+        |> andMap (D.field "pr_number" D.int)
+        |> andMap (D.field "owner" D.string)
+        |> andMap (D.field "repo_name" D.string)
+        |> andMap (D.field "head_sha" D.string)
+        |> andMap (D.field "base_sha" D.string)
+        |> andMap (D.field "title" D.string)
+        |> andMap (D.field "author" D.string)
+        |> andMap (D.field "state" D.string)
+        |> andMap (D.field "created_at" D.string)
+        |> andMap (D.field "updated_at" D.string)
+        |> andMap (D.maybe (D.field "jobset_id" D.int))
+        |> andMap (D.field "total_drvs" D.int)
+        |> andMap (D.field "completed_success_drvs" D.int)
+        |> andMap (D.field "completed_failure_drvs" D.int)
+        |> andMap (D.field "failed_retry_drvs" D.int)
+        |> andMap (D.field "changed_drvs" D.int)
+        |> andMap (D.field "new_drvs" D.int)
+
+
+{-| Decode a list of pull requests.
+-}
+pullRequestList : Decoder (List PullRequest)
+pullRequestList =
+    D.list pullRequest
+
+
+{-| Decode GitHub metadata for a pull request.
+-}
+gitHubMetadata : Decoder GitHubMetadata
+gitHubMetadata =
+    D.map3 GitHubMetadata
+        (D.field "additions" D.int)
+        (D.field "deletions" D.int)
+        (D.field "changed_files" D.int)
 
 
 
