@@ -1,9 +1,11 @@
 module Api.Api exposing
     ( ActiveBuildsResponse
     , getActiveBuilds
+    , getAttrPathMaintainers
     , getCommitJobs
     , getDrvDependencies
     , getDrvDetails
+    , getJobMaintainers
     , getJobSetDetails
     , getJobSetDrvs
     , getPRGitHubMetadata
@@ -23,6 +25,7 @@ import Api.Decoder as Decoder
 import Http
 import Models.Derivation exposing (DrvDependency, DrvDetails)
 import Models.Job exposing (BuildingDrv, CommitJob, JobSetDetails, JobSetDrv)
+import Models.Maintainer exposing (MaintainerDetail)
 import Models.PullRequest exposing (GitHubMetadata, PullRequest)
 import Models.Repository exposing (Repository)
 import Url.Builder as UB
@@ -176,4 +179,30 @@ getPRGitHubMetadata apiBaseUrl owner repo prNumber toMsg =
     Http.get
         { url = apiBaseUrl ++ "/prs/" ++ owner ++ "/" ++ repo ++ "/" ++ String.fromInt prNumber ++ "/github-metadata"
         , expect = Http.expectJson toMsg Decoder.gitHubMetadata
+        }
+
+
+{-| Get all maintainers for a job.
+
+    getJobMaintainers apiBaseUrl 123 GotJobMaintainers
+
+-}
+getJobMaintainers : String -> Int -> (Result Http.Error (List MaintainerDetail) -> msg) -> Cmd msg
+getJobMaintainers apiBaseUrl jobId toMsg =
+    Http.get
+        { url = apiBaseUrl ++ "/jobs/" ++ String.fromInt jobId ++ "/maintainers"
+        , expect = Http.expectJson toMsg Decoder.maintainerDetailList
+        }
+
+
+{-| Get all maintainers for an attr path.
+
+    getAttrPathMaintainers apiBaseUrl "nixpkgs.python3" GotAttrPathMaintainers
+
+-}
+getAttrPathMaintainers : String -> String -> (Result Http.Error (List MaintainerDetail) -> msg) -> Cmd msg
+getAttrPathMaintainers apiBaseUrl attrPath toMsg =
+    Http.get
+        { url = apiBaseUrl ++ "/attr-paths/" ++ attrPath ++ "/maintainers"
+        , expect = Http.expectJson toMsg Decoder.maintainerDetailList
         }
