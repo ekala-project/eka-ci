@@ -1,6 +1,7 @@
 mod approved_users;
 mod checks;
 pub mod github;
+pub mod hooks;
 pub mod installations;
 #[allow(dead_code, reason = "Only model definition for now, remove once used.")]
 pub mod model;

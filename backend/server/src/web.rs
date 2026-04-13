@@ -29,6 +29,7 @@ struct AppState {
     octocrab: Option<octocrab::Octocrab>,
     metrics_registry: Arc<Registry>,
     require_approval: bool,
+    merge_queue_require_approval: bool,
     db_service: crate::db::DbService,
     graph_handle: crate::graph::GraphServiceHandle,
     jwt_service: JwtService,
@@ -59,6 +60,7 @@ impl WebService {
         octocrab: Option<octocrab::Octocrab>,
         metrics_registry: Arc<Registry>,
         require_approval: bool,
+        merge_queue_require_approval: bool,
         db_service: crate::db::DbService,
         graph_handle: crate::graph::GraphServiceHandle,
         jwt_service: JwtService,
@@ -83,6 +85,7 @@ impl WebService {
                 octocrab,
                 metrics_registry,
                 require_approval,
+                merge_queue_require_approval,
                 db_service,
                 graph_handle,
                 jwt_service,
@@ -170,6 +173,9 @@ fn api_routes() -> Router<AppState> {
         .route("/prs", get(list_pull_requests_handler))
         .route("/prs/{owner}/{repo}/{pr_number}", get(get_pull_request_handler))
         .route("/prs/{owner}/{repo}/{pr_number}/github-metadata", get(get_pr_github_metadata_handler))
+        // Merge Queue routes
+        .route("/merge-queue/{owner}/{repo}", get(list_merge_queue_builds_handler))
+        .route("/merge-queue/{owner}/{repo}/{sha}", get(get_merge_queue_build_handler))
         // Job and build status routes
         .route("/commits/{sha}/jobs", get(get_commit_jobs_handler))
         .route("/jobs/{jobset_id}", get(get_jobset_details_handler))
@@ -178,6 +184,8 @@ fn api_routes() -> Router<AppState> {
         // Derivation details routes
         .route("/drvs/{drv}", get(get_drv_details_handler))
         .route("/drvs/{drv}/dependencies", get(get_drv_dependencies_handler))
+        .route("/drvs/{drv}/hooks", get(get_drv_hooks_handler))
+        .route("/logs/{drv}/hooks/{hook_name}", get(get_hook_log))
         // User profile routes (authenticated)
         .route("/users/me/profile", get(user_profile_handler))
         .route("/users/me/profile", axum::routing::patch(update_user_profile_handler))
@@ -290,6 +298,7 @@ async fn handle_github_webhook(
         state.github_sender,
         state.octocrab,
         state.require_approval,
+        state.merge_queue_require_approval,
         state.db_service,
         state.github_app_configs,
     )
@@ -356,6 +365,167 @@ async fn get_derivation_log(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(axum::http::header::CONTENT_TYPE, "text/plain")],
                 format!("Failed to read build log: {}", e),
+            )
+                .into_response()
+        },
+    }
+}
+
+async fn get_hook_log(
+    State(state): State<AppState>,
+    axum::extract::Path((drv, hook_name)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    use tracing::warn;
+
+    use crate::db::model::drv_id::DrvId;
+
+    // Parse the drv parameter into a DrvId
+    let drv_id = match DrvId::try_from(drv.as_str()) {
+        Ok(id) => id,
+        Err(e) => {
+            warn!("Invalid drv format: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                format!("Invalid derivation format: {}", e),
+            )
+                .into_response();
+        },
+    };
+
+    // Construct the log file path: {logs_dir}/{drv_hash}/hook-{hook_name}.log
+    let drv_hash = drv_id.drv_hash();
+    let log_path = state
+        .logs_dir
+        .join(drv_hash)
+        .join(format!("hook-{}.log", hook_name));
+
+    // Read the log file
+    match tokio::fs::read_to_string(&log_path).await {
+        Ok(contents) => (
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            contents,
+        )
+            .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            warn!(
+                "Hook log file not found for {} hook '{}': {}",
+                drv_id.store_path(),
+                hook_name,
+                log_path.display()
+            );
+            (
+                StatusCode::NOT_FOUND,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                format!(
+                    "Hook log not found for derivation: {} hook: {}",
+                    drv_id.store_path(),
+                    hook_name
+                ),
+            )
+                .into_response()
+        },
+        Err(e) => {
+            error!(
+                "Failed to read hook log file for {} hook '{}': {}",
+                drv_id.store_path(),
+                hook_name,
+                e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                format!("Failed to read hook log: {}", e),
+            )
+                .into_response()
+        },
+    }
+}
+
+async fn get_drv_hooks_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(drv): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    use serde::Serialize;
+    use tracing::warn;
+
+    use crate::db::model::drv_id::DrvId;
+
+    #[derive(Serialize)]
+    struct HookExecutionResponse {
+        id: i64,
+        hook_name: String,
+        started_at: String,
+        completed_at: Option<String>,
+        exit_code: Option<i32>,
+        success: bool,
+        log_path: String,
+    }
+
+    #[derive(Serialize)]
+    struct HooksListResponse {
+        drv_path: String,
+        executions: Vec<HookExecutionResponse>,
+        count: usize,
+    }
+
+    // Parse the drv parameter into a DrvId
+    let drv_id = match DrvId::try_from(drv.as_str()) {
+        Ok(id) => id,
+        Err(e) => {
+            warn!("Invalid drv format: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Invalid derivation format: {}", e)
+                })),
+            )
+                .into_response();
+        },
+    };
+
+    // Get hook executions from database
+    match state
+        .db_service
+        .get_hook_executions_for_drv(&drv_id.store_path())
+        .await
+    {
+        Ok(executions) => {
+            let response = HooksListResponse {
+                drv_path: drv_id.store_path().to_string(),
+                count: executions.len(),
+                executions: executions
+                    .into_iter()
+                    .map(|e| HookExecutionResponse {
+                        id: e.id,
+                        hook_name: e.hook_name,
+                        started_at: e.started_at.to_rfc3339(),
+                        completed_at: e.completed_at.map(|t| t.to_rfc3339()),
+                        exit_code: e.exit_code,
+                        success: e.success,
+                        log_path: e.log_path,
+                    })
+                    .collect(),
+            };
+            (StatusCode::OK, Json(response)).into_response()
+        },
+        Err(e) => {
+            error!(
+                "Failed to get hook executions for {}: {}",
+                drv_id.store_path(),
+                e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Failed to retrieve hook executions"
+                })),
             )
                 .into_response()
         },
@@ -1007,6 +1177,62 @@ async fn get_pr_github_metadata_handler(
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch PR metadata: {}", e),
+            )
+                .into_response()
+        },
+    }
+}
+
+// ============================================================================
+// Merge Queue Handlers
+// ============================================================================
+
+/// List all merge queue builds for a repository
+async fn list_merge_queue_builds_handler(
+    State(state): State<AppState>,
+    Path((owner, repo)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match state
+        .db_service
+        .list_merge_queue_builds(&owner, &repo)
+        .await
+    {
+        Ok(builds) => Json(builds).into_response(),
+        Err(e) => {
+            error!("Failed to list merge queue builds: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to list merge queue builds: {}", e),
+            )
+                .into_response()
+        },
+    }
+}
+
+/// Get a specific merge queue build by commit SHA
+async fn get_merge_queue_build_handler(
+    State(state): State<AppState>,
+    Path((owner, repo, sha)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    match state
+        .db_service
+        .get_merge_queue_build_by_sha(&owner, &repo, &sha)
+        .await
+    {
+        Ok(Some(build)) => Json(build).into_response(),
+        Ok(None) => (
+            axum::http::StatusCode::NOT_FOUND,
+            format!(
+                "Merge queue build not found for commit {} in {}/{}",
+                sha, owner, repo
+            ),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to get merge queue build: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get merge queue build: {}", e),
             )
                 .into_response()
         },

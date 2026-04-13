@@ -99,6 +99,7 @@ async fn create_test_server(
         None, // no octocrab
         scheduler.metrics_registry(),
         false, // no approval required
+        false, // no merge queue approval required
         ctx.db_service.clone(),
         graph_handle.clone(),
         jwt_service,

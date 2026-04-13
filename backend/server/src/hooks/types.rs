@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 /// Configuration for a post-build hook
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -18,7 +19,7 @@ pub struct PostBuildHook {
 }
 
 /// Task sent to the HookExecutor service
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HookTask {
     /// Path to the derivation that was built
     pub drv_path: String,
@@ -31,6 +32,9 @@ pub struct HookTask {
 
     /// Additional context about the build
     pub context: HookContext,
+
+    /// Optional channel to send hook results back
+    pub result_sender: Option<mpsc::Sender<HookResult>>,
 }
 
 /// Context information provided to hooks
@@ -69,4 +73,13 @@ pub struct HookResult {
 
     /// Path to the hook's log file
     pub log_path: String,
+
+    /// Path to the derivation
+    pub drv_path: String,
+
+    /// When the hook started executing
+    pub started_at: chrono::DateTime<chrono::Utc>,
+
+    /// When the hook completed
+    pub completed_at: chrono::DateTime<chrono::Utc>,
 }

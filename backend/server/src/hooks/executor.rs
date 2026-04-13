@@ -84,6 +84,13 @@ impl HookExecutor {
                             result.exit_code.unwrap_or(-1)
                         );
                     }
+
+                    // Send result back through channel if provided
+                    if let Some(ref sender) = task.result_sender {
+                        if let Err(e) = sender.send(result).await {
+                            error!("Failed to send hook result back through channel: {}", e);
+                        }
+                    }
                 },
                 Err(e) => {
                     error!(
@@ -125,11 +132,13 @@ impl HookExecutor {
         let env_vars = build_hook_env(&task.context, &task.drv_path, &task.out_paths, hook);
 
         // Execute the hook command with timeout
+        let started_at = chrono::Utc::now();
         let start = Instant::now();
         let result = self
             .run_hook_command(&hook.command, &env_vars, &log_path)
             .await;
         let duration = start.elapsed();
+        let completed_at = chrono::Utc::now();
 
         let (exit_code, success) = match result {
             Ok(result) => result,
@@ -191,6 +200,9 @@ impl HookExecutor {
             exit_code,
             success,
             log_path: log_path.to_string_lossy().to_string(),
+            drv_path: task.drv_path.clone(),
+            started_at,
+            completed_at,
         })
     }
 
