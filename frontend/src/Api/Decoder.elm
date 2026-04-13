@@ -12,6 +12,10 @@ module Api.Decoder exposing
     , jobSetDetails
     , jobSetDrv
     , jobSetDrvList
+    , maintainerDetail
+    , maintainerDetailList
+    , maintainerRequest
+    , maintainerRequestList
     , pullRequest
     , pullRequestList
     , repository
@@ -25,6 +29,7 @@ import Json.Decode as D exposing (Decoder)
 import Models.BuildState as BS
 import Models.Derivation exposing (DrvDependency, DrvDetails)
 import Models.Job exposing (CommitJob, JobSetDetails, JobSetDrv)
+import Models.Maintainer exposing (MaintainerDetail, MaintainerRequest, RequestStatus(..))
 import Models.PullRequest exposing (GitHubMetadata, PullRequest)
 import Models.Repository exposing (Repository)
 
@@ -323,6 +328,73 @@ gitHubMetadata =
         (D.field "additions" D.int)
         (D.field "deletions" D.int)
         (D.field "changed_files" D.int)
+
+
+{-| Decode a MaintainerDetail from JSON.
+-}
+maintainerDetail : Decoder MaintainerDetail
+maintainerDetail =
+    D.succeed MaintainerDetail
+        |> andMap (D.field "attr_path" D.string)
+        |> andMap (D.field "github_user_id" D.int)
+        |> andMap (D.field "github_username" D.string)
+        |> andMap (D.maybe (D.field "github_avatar_url" D.string))
+        |> andMap (D.field "added_at" D.string)
+        |> andMap (D.maybe (D.field "added_by_user_id" D.int))
+        |> andMap (D.maybe (D.field "added_by_username" D.string))
+
+
+{-| Decode a list of maintainer details.
+-}
+maintainerDetailList : Decoder (List MaintainerDetail)
+maintainerDetailList =
+    D.list maintainerDetail
+
+
+{-| Decode a RequestStatus from JSON.
+-}
+requestStatus : Decoder RequestStatus
+requestStatus =
+    D.string
+        |> D.andThen
+            (\str ->
+                case str of
+                    "approved" ->
+                        D.succeed Approved
+
+                    "rejected" ->
+                        D.succeed Rejected
+
+                    "pending" ->
+                        D.succeed Pending
+
+                    _ ->
+                        D.succeed Pending
+            )
+
+
+{-| Decode a MaintainerRequest from JSON.
+-}
+maintainerRequest : Decoder MaintainerRequest
+maintainerRequest =
+    D.succeed MaintainerRequest
+        |> andMap (D.field "id" D.int)
+        |> andMap (D.field "attr_path" D.string)
+        |> andMap (D.field "github_user_id" D.int)
+        |> andMap (D.field "github_username" D.string)
+        |> andMap (D.maybe (D.field "github_avatar_url" D.string))
+        |> andMap (D.field "requested_at" D.string)
+        |> andMap (D.field "status" requestStatus)
+        |> andMap (D.maybe (D.field "reviewed_by_user_id" D.int))
+        |> andMap (D.maybe (D.field "reviewed_by_username" D.string))
+        |> andMap (D.maybe (D.field "reviewed_at" D.string))
+
+
+{-| Decode a list of maintainer requests.
+-}
+maintainerRequestList : Decoder (List MaintainerRequest)
+maintainerRequestList =
+    D.list maintainerRequest
 
 
 
