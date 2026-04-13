@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::db::DbService;
 use crate::git::GitService;
 use crate::github::{self, GitHubService};
-use crate::graph::{GraphCommand, GraphService};
+use crate::graph::{GraphCommand, GraphService, GraphServiceHandle};
 use crate::metrics::GraphMetrics;
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
@@ -225,7 +225,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
 
     enqueue_buildable_builds(
-        db_service.clone(),
+        graph_handle.clone(),
         scheduler_service.ingress_request_sender(),
     )
     .await?;
@@ -262,10 +262,10 @@ pub async fn start_services(config: Config) -> Result<()> {
 }
 
 async fn enqueue_buildable_builds(
-    db_service: DbService,
+    graph_handle: GraphServiceHandle,
     ingress_sender: Sender<IngressTask>,
 ) -> Result<()> {
-    let queued_drvs = db_service.get_buildable_drvs().await?;
+    let queued_drvs = graph_handle.get_buildable_drvs().await?;
 
     info!("Checking {} drvs for build candidates", queued_drvs.len());
     for drv_id in queued_drvs {
