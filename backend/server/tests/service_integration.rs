@@ -277,15 +277,35 @@ async fn test_drv_dependencies() {
         .await
         .expect("Failed to insert drvs and refs");
 
-    // Verify drv_a has drv_b as a dependency
-    let referrers = ctx
-        .db_service
-        .drv_referrers(&drv_b.drv_path)
-        .await
-        .expect("Failed to get referrers");
+    // Create GraphService for in-memory dependency tracking
+    let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
+    let graph_service = GraphService::new(
+        ctx.db_service.clone(),
+        graph_command_receiver,
+        None,
+        1_000_000,
+    )
+    .await
+    .expect("Failed to initialize GraphService");
+    let graph_handle = graph_service.handle(graph_command_sender.clone());
 
-    assert_eq!(referrers.len(), 1);
-    assert_eq!(referrers[0], drv_a.drv_path);
+    // Spawn the graph service
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    tokio::spawn(async move {
+        graph_service.run(cancel_token).await;
+    });
+
+    // Give the graph service time to load from database
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify drv_a has drv_b as a dependency using the graph service
+    let dependents = graph_handle
+        .get_dependents(&drv_b.drv_path)
+        .await
+        .expect("Failed to get dependents");
+
+    assert_eq!(dependents.len(), 1);
+    assert_eq!(dependents[0], drv_a.drv_path);
 
     println!("✓ Drv dependency graph stored correctly");
 }

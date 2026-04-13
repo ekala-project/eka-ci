@@ -178,22 +178,6 @@ WHERE referrer = ?1
     Ok(result)
 }
 
-/// "Downstream" drvs, consumers.
-pub async fn drv_referrers(pool: &Pool<Sqlite>, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
-    let result = sqlx::query_as(
-        r#"
-SELECT referrer
-FROM DrvRefs
-WHERE reference = ?1
-"#,
-    )
-    .bind(drv)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(result)
-}
-
 pub async fn get_derivations_in_state(
     state: DrvBuildState,
     pool: &SqlitePool,
