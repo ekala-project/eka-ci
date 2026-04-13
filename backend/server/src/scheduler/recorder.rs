@@ -10,7 +10,7 @@ use crate::db::DbService;
 use crate::db::github::JobInfo;
 use crate::db::model::{DrvId, build, build_event, drv_id};
 use crate::github::GitHubTask;
-use crate::graph::GraphCommand;
+use crate::graph::{GraphCommand, GraphServiceHandle};
 use crate::hooks::types::{HookContext, HookTask};
 use crate::scheduler::ingress::IngressTask;
 use crate::services::websocket::events::{BuildStateChange, JobStatsUpdate, ServerEvent};
@@ -29,6 +29,7 @@ pub struct RecorderService {
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
+    graph_handle: GraphServiceHandle,
     hook_sender: Option<mpsc::Sender<HookTask>>,
     cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
 }
@@ -43,6 +44,7 @@ struct RecorderWorker {
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     websocket_sender: Option<broadcast::Sender<ServerEvent>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
+    graph_handle: GraphServiceHandle,
     hook_sender: Option<mpsc::Sender<HookTask>>,
     cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
 }
@@ -53,6 +55,7 @@ impl RecorderService {
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
+        graph_handle: GraphServiceHandle,
         hook_sender: Option<mpsc::Sender<HookTask>>,
         cache_configs: std::sync::Arc<
             std::collections::HashMap<String, crate::config::CacheConfig>,
@@ -66,6 +69,7 @@ impl RecorderService {
             github_sender,
             websocket_sender,
             graph_command_sender,
+            graph_handle,
             hook_sender,
             cache_configs,
         };
@@ -81,6 +85,7 @@ impl RecorderService {
             self.github_sender,
             self.websocket_sender,
             self.graph_command_sender,
+            self.graph_handle,
             self.hook_sender,
             self.cache_configs,
         );
@@ -99,6 +104,7 @@ impl RecorderWorker {
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
+        graph_handle: GraphServiceHandle,
         hook_sender: Option<mpsc::Sender<HookTask>>,
         cache_configs: std::sync::Arc<
             std::collections::HashMap<String, crate::config::CacheConfig>,
@@ -111,6 +117,7 @@ impl RecorderWorker {
             github_sender,
             websocket_sender,
             graph_command_sender,
+            graph_handle,
             hook_sender,
             cache_configs,
         }
@@ -301,7 +308,7 @@ impl RecorderWorker {
                 }
 
                 // Check direct referrers for buildability
-                let referrers = self.db_service.drv_referrers(&drv).await?;
+                let referrers = self.graph_handle.get_dependents(&drv).await?;
                 for referrer in referrers {
                     let task = IngressTask::CheckBuildable(referrer);
                     self.ingress_sender.send(task).await?;

@@ -87,6 +87,7 @@ impl SchedulerService {
             github_sender,
             websocket_sender,
             graph_command_sender,
+            graph_handle.clone(),
             Some(hook_sender),
             cache_configs,
         );

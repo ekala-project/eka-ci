@@ -102,8 +102,6 @@ pub enum GraphCommand {
     GetAllFailedDrvs {
         response: oneshot::Sender<Vec<DrvId>>,
     },
-    /// Touch a node to mark it as recently used (hot path protection)
-    Touch { drv_ids: Vec<DrvId> },
 }
 
 /// Errors that can occur during graph operations
@@ -298,13 +296,6 @@ impl GraphService {
                     .graph
                     .get_drvs_by_state(&DrvBuildState::Completed(DrvBuildResult::Failure));
                 let _ = response.send(failed);
-            },
-
-            GraphCommand::Touch { drv_ids } => {
-                // Touch nodes to mark them as recently used (hot path protection)
-                for drv_id in drv_ids {
-                    self.graph.touch(&drv_id);
-                }
             },
         }
 
@@ -788,17 +779,6 @@ impl GraphServiceHandle {
         })
     }
 
-    /// Touch nodes accessed during buildability check (hot path protection)
-    /// Should be called after is_buildable() to protect accessed nodes from eviction
-    pub fn touch_buildable_check(&self, drv_id: &DrvId) {
-        // Collect the node and all its dependencies
-        if let Some(node) = self.shared_view.get(drv_id) {
-            let mut accessed = vec![drv_id.clone()];
-            accessed.extend(node.dependencies.iter().cloned());
-            self.touch(accessed);
-        }
-    }
-
     /// Get the build state of a drv
     pub fn get_build_state(&self, drv_id: &DrvId) -> Option<DrvBuildState> {
         self.shared_view
@@ -873,15 +853,6 @@ impl GraphServiceHandle {
             .send(GraphCommand::GetAllFailedDrvs { response: tx })
             .await?;
         Ok(rx.await?)
-    }
-
-    /// Touch nodes to mark them as recently used (hot path protection)
-    /// Fire-and-forget command (no response needed)
-    pub fn touch(&self, drv_ids: Vec<DrvId>) {
-        // Use try_send for fire-and-forget behavior
-        let _ = self
-            .command_sender
-            .try_send(GraphCommand::Touch { drv_ids });
     }
 
     /// Update the build state of a drv
