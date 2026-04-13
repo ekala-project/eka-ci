@@ -23,6 +23,7 @@ pub async fn handle_webhook_payload(
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     octocrab: Option<Octocrab>,
     require_approval: bool,
+    merge_queue_require_approval: bool,
     db_service: DbService,
     github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
 ) {
@@ -47,7 +48,7 @@ pub async fn handle_webhook_payload(
                 repository_info,
                 git_sender,
                 github_sender,
-                require_approval,
+                merge_queue_require_approval,
                 db_service.clone(),
                 github_app_configs,
             )
@@ -422,8 +423,8 @@ async fn handle_github_merge_group(
     repository_info: Option<(String, String)>,
     git_sender: mpsc::Sender<GitTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
-    _require_approval: bool,
-    _db_service: DbService,
+    merge_queue_require_approval: bool,
+    db_service: DbService,
     github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
 ) {
     use payload::MergeGroupWebhookEventAction as MGWEA;
@@ -493,8 +494,55 @@ async fn handle_github_merge_group(
         return;
     }
 
-    // Merge queue commits are already merge commits created by GitHub,
-    // so we don't need approval checking - they've already passed PR checks.
+    // Check if approval is required for merge queue builds
+    if merge_queue_require_approval {
+        let author = &merge_group.head_commit.author.name;
+
+        // Check if the author is approved
+        // Note: Merge groups don't provide user_id, so we use 0 as a sentinel
+        // The approval check will only check by username in this case
+        match db_service.is_user_approved(author, 0).await {
+            Ok(true) => {
+                debug!("Merge queue build approved for user: {}", author);
+            },
+            Ok(false) => {
+                warn!(
+                    "Merge queue build requires approval. User {} is not approved for {}/{}",
+                    author, owner, repo_name
+                );
+                return;
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to check approval status for user {}: {:?}",
+                    author, e
+                );
+                return;
+            },
+        }
+    }
+
+    // Store merge queue build in database
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = db_service
+        .upsert_merge_queue_build(
+            &owner,
+            &repo_name,
+            &merge_group.head_sha,
+            &merge_group.base_sha,
+            &merge_group.base_ref,
+            &merge_group.head_sha, // merge_group_head_sha is same as head_sha
+            &now,
+            &now,
+        )
+        .await
+    {
+        warn!(
+            "Failed to store merge queue build for commit {}: {:?}",
+            merge_group.head_sha, e
+        );
+        // Continue processing even if DB storage fails
+    }
 
     // Create a synthetic PullRequest to reuse the existing GitTask::GitHubCheckout flow
     // This allows us to leverage all the existing git checkout and CI evaluation logic

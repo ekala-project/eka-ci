@@ -3,7 +3,7 @@ use chrono::Utc;
 use tokio::process::Command;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::ci::config::Job;
 use crate::db::DbService;
@@ -683,15 +683,50 @@ impl RecorderWorker {
             },
         };
 
+        // Create channel for receiving hook results
+        let (result_sender, mut result_receiver) = mpsc::channel(hooks.len());
+
         // Create and send the hook task
         let hook_task = HookTask {
             drv_path: drv_id.store_path().to_string(),
             out_paths,
-            hooks,
+            hooks: hooks.clone(),
             context,
+            result_sender: Some(result_sender),
         };
 
         hook_sender.send(hook_task).await?;
+
+        // Spawn task to receive and store hook results
+        let db_service = self.db_service.clone();
+        let drv_path_for_task = drv_id.store_path().to_string();
+        tokio::spawn(async move {
+            while let Some(result) = result_receiver.recv().await {
+                debug!(
+                    "Received hook result for '{}' on drv {}",
+                    result.hook_name, drv_path_for_task
+                );
+
+                // Store hook execution in database
+                if let Err(e) = db_service
+                    .insert_hook_execution(
+                        &result.drv_path,
+                        &result.hook_name,
+                        result.started_at,
+                        result.completed_at,
+                        result.exit_code,
+                        result.success,
+                        &result.log_path,
+                    )
+                    .await
+                {
+                    error!(
+                        "Failed to store hook execution for '{}' on drv {}: {}",
+                        result.hook_name, drv_path_for_task, e
+                    );
+                }
+            }
+        });
 
         debug!(
             "Sent hook task for drv {} (job: {})",

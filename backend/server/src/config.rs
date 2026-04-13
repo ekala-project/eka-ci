@@ -46,6 +46,11 @@ struct ConfigCli {
     /// When enabled, only GitHub users in the ApprovedUsers table can trigger builds.
     #[arg(long)]
     pub require_approval: Option<bool>,
+
+    /// Require approval before allowing jobset creation for merge queue builds. Defaults to false.
+    /// When enabled, only GitHub users in the ApprovedUsers table can trigger merge queue builds.
+    #[arg(long)]
+    pub merge_queue_require_approval: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -56,6 +61,7 @@ struct ConfigFile {
     db_path: Option<PathBuf>,
     logs_dir: Option<PathBuf>,
     require_approval: Option<bool>,
+    merge_queue_require_approval: Option<bool>,
     build_no_output_timeout_seconds: Option<u64>,
     graph_lru_capacity: Option<usize>,
     #[serde(default)]
@@ -551,6 +557,7 @@ pub struct Config {
     #[allow(dead_code)]
     pub remote_builders: Vec<RemoteBuilder>,
     pub require_approval: bool,
+    pub merge_queue_require_approval: bool,
     pub build_no_output_timeout_seconds: u64,
     /// Maximum number of nodes in the LRU cache (default: 100,000)
     pub graph_lru_capacity: usize,
@@ -703,6 +710,10 @@ impl Config {
             require_approval: args
                 .require_approval
                 .or(file.require_approval)
+                .unwrap_or(false),
+            merge_queue_require_approval: args
+                .merge_queue_require_approval
+                .or(file.merge_queue_require_approval)
                 .unwrap_or(false),
             build_no_output_timeout_seconds: file.build_no_output_timeout_seconds.unwrap_or(1200),
             graph_lru_capacity: file.graph_lru_capacity.unwrap_or(100_000),

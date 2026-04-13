@@ -168,6 +168,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         maybe_octocrab,
         scheduler_service.metrics_registry(),
         config.require_approval,
+        config.merge_queue_require_approval,
         db_service.clone(),
         graph_handle.clone(),
         jwt_service,

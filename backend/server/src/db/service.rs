@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
-use super::{approved_users, checks, github, installations};
+use super::{approved_users, checks, github, hooks, installations};
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 #[derive(Clone)]
@@ -411,5 +411,87 @@ impl DbService {
         pr_number: i64,
     ) -> anyhow::Result<Option<github::PullRequestWithStats>> {
         github::get_pull_request(owner, repo_name, pr_number, &self.pool).await
+    }
+
+    // Merge Queue methods
+    pub async fn upsert_merge_queue_build(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        head_sha: &str,
+        base_sha: &str,
+        base_ref: &str,
+        merge_group_head_sha: &str,
+        created_at: &str,
+        updated_at: &str,
+    ) -> anyhow::Result<()> {
+        github::upsert_merge_queue_build(
+            owner,
+            repo_name,
+            head_sha,
+            base_sha,
+            base_ref,
+            merge_group_head_sha,
+            created_at,
+            updated_at,
+            &self.pool,
+        )
+        .await
+    }
+
+    pub async fn list_merge_queue_builds(
+        &self,
+        owner: &str,
+        repo_name: &str,
+    ) -> anyhow::Result<Vec<github::PullRequestWithStats>> {
+        github::list_merge_queue_builds(owner, repo_name, &self.pool).await
+    }
+
+    pub async fn get_merge_queue_build_by_sha(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        sha: &str,
+    ) -> anyhow::Result<Option<github::PullRequestWithStats>> {
+        github::get_merge_queue_build_by_sha(owner, repo_name, sha, &self.pool).await
+    }
+
+    // Hook execution methods
+    pub async fn insert_hook_execution(
+        &self,
+        drv_path: &str,
+        hook_name: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        completed_at: chrono::DateTime<chrono::Utc>,
+        exit_code: Option<i32>,
+        success: bool,
+        log_path: &str,
+    ) -> anyhow::Result<i64> {
+        hooks::insert_hook_execution(
+            &self.pool,
+            drv_path,
+            hook_name,
+            started_at,
+            completed_at,
+            exit_code,
+            success,
+            log_path,
+        )
+        .await
+    }
+
+    pub async fn get_hook_executions_for_drv(
+        &self,
+        drv_path: &str,
+    ) -> anyhow::Result<Vec<hooks::HookExecution>> {
+        hooks::get_hook_executions_for_drv(&self.pool, drv_path).await
+    }
+
+    pub async fn get_hook_execution(
+        &self,
+        drv_path: &str,
+        hook_name: &str,
+    ) -> anyhow::Result<Option<hooks::HookExecution>> {
+        hooks::get_hook_execution(&self.pool, drv_path, hook_name).await
     }
 }
