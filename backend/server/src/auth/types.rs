@@ -83,3 +83,107 @@ pub struct UserProfile {
     pub created_at: chrono::NaiveDateTime,
     pub last_login: chrono::NaiveDateTime,
 }
+
+/// Attr path maintainer request stored in the database
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AttrPathMaintainerRequest {
+    #[sqlx(rename = "ROWID")]
+    pub id: i64,
+    pub attr_path: String,
+    pub github_user_id: i64,
+    pub requested_at: chrono::NaiveDateTime,
+    pub status: String, // pending, approved, rejected
+    pub reviewed_by_user_id: Option<i64>,
+    pub reviewed_at: Option<chrono::NaiveDateTime>,
+}
+
+/// Request status enum
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl RequestStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RequestStatus::Pending => "pending",
+            RequestStatus::Approved => "approved",
+            RequestStatus::Rejected => "rejected",
+        }
+    }
+}
+
+/// Request to become a maintainer (used in POST request body if needed)
+#[derive(Debug, Deserialize)]
+pub struct RequestMaintainerRequest {
+    // Empty for now - attr_path comes from URL, user from auth
+}
+
+/// Response for maintainer request with additional user info
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct MaintainerRequestDetail {
+    pub id: i64,
+    pub attr_path: String,
+    pub github_user_id: i64,
+    pub github_username: String,
+    pub github_avatar_url: Option<String>,
+    pub requested_at: chrono::NaiveDateTime,
+    pub status: String,
+    pub reviewed_by_user_id: Option<i64>,
+    pub reviewed_by_username: Option<String>,
+    pub reviewed_at: Option<chrono::NaiveDateTime>,
+}
+
+/// Maintainer info with user details
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct MaintainerDetail {
+    pub attr_path: String,
+    pub github_user_id: i64,
+    pub github_username: String,
+    pub github_avatar_url: Option<String>,
+    pub added_at: chrono::NaiveDateTime,
+    pub added_by_user_id: Option<i64>,
+    pub added_by_username: Option<String>,
+}
+
+/// GitHub repository permission level
+#[derive(Debug, Clone, PartialEq)]
+pub enum GitHubPermission {
+    None,
+    Read,
+    Triage,
+    Write,
+    Maintain,
+    Admin,
+}
+
+impl GitHubPermission {
+    /// Check if this permission level is triage or higher
+    pub fn is_triage_or_higher(&self) -> bool {
+        matches!(
+            self,
+            GitHubPermission::Triage
+                | GitHubPermission::Write
+                | GitHubPermission::Maintain
+                | GitHubPermission::Admin
+        )
+    }
+}
+
+/// Response from GitHub API for repository permissions
+#[derive(Debug, Deserialize)]
+pub struct GitHubRepoPermissionResponse {
+    pub permissions: GitHubPermissions,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitHubPermissions {
+    pub admin: bool,
+    pub maintain: Option<bool>,
+    pub push: bool,
+    pub triage: Option<bool>,
+    pub pull: bool,
+}

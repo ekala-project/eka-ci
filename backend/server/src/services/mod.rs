@@ -161,6 +161,9 @@ pub async fn start_services(config: Config) -> Result<()> {
         redirect_url: config.oauth.redirect_url.clone(),
     };
 
+    // Initialize GitHub API client for permission checking
+    let github_client = Arc::new(crate::auth::GitHubApiClient::new());
+
     let web_service = WebService::bind_to_address(
         &config.web.address,
         git_service.get_sender(),
@@ -177,6 +180,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         websocket_service.clone(),
         github_app_configs.clone(),
         config.security.webhook_secret.clone(),
+        github_client,
     )
     .await
     .context("failed to start web service")?;

@@ -38,6 +38,7 @@ struct AppState {
     websocket_service: crate::services::WebSocketService,
     github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
     webhook_secret: Option<String>,
+    github_client: Arc<crate::auth::GitHubApiClient>,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState
@@ -69,6 +70,7 @@ impl WebService {
         websocket_service: crate::services::WebSocketService,
         github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
         webhook_secret: Option<String>,
+        github_client: Arc<crate::auth::GitHubApiClient>,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -94,6 +96,7 @@ impl WebService {
                 websocket_service,
                 github_app_configs,
                 webhook_secret,
+                github_client,
             },
         })
     }
@@ -207,6 +210,16 @@ fn api_routes() -> Router<AppState> {
         .route("/admin/attr-paths/{attr_path}/maintainers", post(admin_add_maintainer_handler))
         .route("/admin/attr-paths/{attr_path}/maintainers/{github_id}", axum::routing::delete(admin_remove_maintainer_handler))
         .route("/admin/attr-paths/{attr_path}/maintainers", get(admin_list_maintainers_handler))
+        // Admin maintainer request routes
+        .route("/admin/maintainer-requests", get(admin_list_pending_requests_handler))
+        .route("/admin/maintainer-requests/{request_id}/approve", post(admin_approve_request_handler))
+        .route("/admin/maintainer-requests/{request_id}/reject", post(admin_reject_request_handler))
+        // Public maintainer routes (no auth required)
+        .route("/attr-paths/{attr_path}/maintainers", get(get_attr_path_maintainers_handler))
+        .route("/jobs/{job_id}/maintainers", get(get_job_maintainers_handler))
+        // Authenticated maintainer request routes
+        .route("/attr-paths/{attr_path}/request-maintainer", post(request_maintainer_handler))
+        .route("/users/me/maintainer-requests", get(get_my_requests_handler))
 }
 
 async fn handle_github_webhook(
@@ -1237,4 +1250,87 @@ async fn get_merge_queue_build_handler(
                 .into_response()
         },
     }
+}
+
+// ============================================================================
+// Maintainer Request Handlers
+// ============================================================================
+
+/// Get all maintainers for an attr path (public endpoint)
+async fn get_attr_path_maintainers_handler(
+    Path(attr_path): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::requests::get_attr_path_maintainers(
+        Path(attr_path),
+        State(state.db_service.pool.clone()),
+    )
+    .await
+}
+
+/// Get all maintainers for a job (public endpoint)
+async fn get_job_maintainers_handler(
+    Path(job_id): Path<i64>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::requests::get_job_maintainers(Path(job_id), State(state.db_service.pool.clone()))
+        .await
+}
+
+/// Request to become a maintainer (authenticated endpoint)
+async fn request_maintainer_handler(
+    user: AuthUser,
+    Path(attr_path): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let request_state = crate::auth::RequestHandlerState {
+        pool: state.db_service.pool.clone(),
+        github_client: state.github_client.clone(),
+    };
+
+    crate::auth::requests::request_maintainer(user, Path(attr_path), State(request_state)).await
+}
+
+/// Get current user's maintainer requests (authenticated endpoint)
+async fn get_my_requests_handler(
+    user: AuthUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::requests::get_my_requests(user, State(state.db_service.pool.clone())).await
+}
+
+/// List all pending maintainer requests (admin only)
+async fn admin_list_pending_requests_handler(
+    admin: AdminUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::requests::list_pending_requests(admin, State(state.db_service.pool.clone())).await
+}
+
+/// Approve a maintainer request (admin only)
+async fn admin_approve_request_handler(
+    admin: AdminUser,
+    Path(request_id): Path<i64>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::requests::approve_request(
+        admin,
+        Path(request_id),
+        State(state.db_service.pool.clone()),
+    )
+    .await
+}
+
+/// Reject a maintainer request (admin only)
+async fn admin_reject_request_handler(
+    admin: AdminUser,
+    Path(request_id): Path<i64>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::requests::reject_request(
+        admin,
+        Path(request_id),
+        State(state.db_service.pool.clone()),
+    )
+    .await
 }
