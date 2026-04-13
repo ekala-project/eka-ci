@@ -48,10 +48,6 @@ impl DbService {
         drv::get_drv(drv_path, &self.pool).await
     }
 
-    pub async fn drv_referrers(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>> {
-        drv::drv_referrers(&self.pool, drv).await
-    }
-
     pub async fn insert_transitive_failures(
         &self,
         failed_drv: &DrvId,
@@ -82,10 +78,6 @@ impl DbService {
         state: &build_event::DrvBuildState,
     ) -> anyhow::Result<()> {
         drv::update_drv_status(&self.pool, drv_id, state).await
-    }
-
-    pub async fn get_buildable_drvs(&self) -> anyhow::Result<Vec<DrvId>> {
-        drv::get_buildable_and_retry_drvs(&self.pool).await
     }
 
     pub async fn create_github_jobset_with_jobs(
@@ -368,15 +360,6 @@ impl DbService {
         checks::get_check_run_info_by_checkset(owner, repo_name, checkset_id, &self.pool).await
     }
 
-    pub async fn get_check_results_for_commit(
-        &self,
-        sha: &str,
-        owner: &str,
-        repo_name: &str,
-    ) -> anyhow::Result<Vec<(String, bool, i32)>> {
-        checks::get_check_results_for_commit(sha, owner, repo_name, &self.pool).await
-    }
-
     // Pull Request methods
     pub async fn upsert_pull_request(
         &self,
@@ -485,13 +468,5 @@ impl DbService {
         drv_path: &str,
     ) -> anyhow::Result<Vec<hooks::HookExecution>> {
         hooks::get_hook_executions_for_drv(&self.pool, drv_path).await
-    }
-
-    pub async fn get_hook_execution(
-        &self,
-        drv_path: &str,
-        hook_name: &str,
-    ) -> anyhow::Result<Option<hooks::HookExecution>> {
-        hooks::get_hook_execution(&self.pool, drv_path, hook_name).await
     }
 }

@@ -66,29 +66,6 @@ pub async fn get_hook_executions_for_drv(
     Ok(executions)
 }
 
-/// Get a specific hook execution by drv and hook name (most recent)
-pub async fn get_hook_execution(
-    pool: &SqlitePool,
-    drv_path: &str,
-    hook_name: &str,
-) -> anyhow::Result<Option<HookExecution>> {
-    let execution = sqlx::query_as::<_, HookExecution>(
-        r#"
-        SELECT id, drv_path, hook_name, started_at, completed_at, exit_code, success, log_path
-        FROM HookExecution
-        WHERE drv_path = ? AND hook_name = ?
-        ORDER BY started_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(drv_path)
-    .bind(hook_name)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(execution)
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -144,18 +121,6 @@ mod tests {
         .unwrap();
 
         assert!(id > 0);
-
-        // Retrieve hook execution
-        let execution = get_hook_execution(&pool, drv_path, hook_name)
-            .await
-            .unwrap()
-            .expect("Hook execution should exist");
-
-        assert_eq!(execution.drv_path, drv_path);
-        assert_eq!(execution.hook_name, hook_name);
-        assert_eq!(execution.exit_code, Some(0));
-        assert!(execution.success);
-        assert_eq!(execution.log_path, log_path);
     }
 
     #[tokio::test]
@@ -198,16 +163,5 @@ mod tests {
         assert_eq!(executions.len(), 2);
         assert_eq!(executions[0].hook_name, "hook2"); // Most recent first
         assert_eq!(executions[1].hook_name, "hook1");
-    }
-
-    #[tokio::test]
-    async fn test_get_nonexistent_hook_execution() {
-        let pool = setup_test_db().await;
-
-        let execution = get_hook_execution(&pool, "/nix/store/nonexistent.drv", "hook1")
-            .await
-            .unwrap();
-
-        assert!(execution.is_none());
     }
 }

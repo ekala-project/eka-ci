@@ -115,28 +115,3 @@ pub async fn get_check_run_info_by_checkset(
 
     Ok(result)
 }
-
-/// Get all check results for a specific commit SHA
-pub async fn get_check_results_for_commit(
-    sha: &str,
-    owner: &str,
-    repo_name: &str,
-    pool: &Pool<Sqlite>,
-) -> Result<Vec<(String, bool, i32)>> {
-    let results = sqlx::query_as::<_, (String, bool, i32)>(
-        r#"
-        SELECT gcs.check_name, cr.success, cr.exit_code
-        FROM GitHubCheckSets gcs
-        INNER JOIN CheckResult cr ON cr.checkset = gcs.ROWID
-        WHERE gcs.sha = ? AND gcs.owner = ? AND gcs.repo_name = ?
-        ORDER BY cr.executed_at DESC
-        "#,
-    )
-    .bind(sha)
-    .bind(owner)
-    .bind(repo_name)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(results)
-}
