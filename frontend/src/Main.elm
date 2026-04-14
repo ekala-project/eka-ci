@@ -159,7 +159,7 @@ initPage apiBaseUrl url route authState =
         Route.Job jobsetId ->
             let
                 ( model, cmd ) =
-                    Job.init apiBaseUrl jobsetId
+                    Job.init apiBaseUrl jobsetId authState
             in
             ( JobPage model, Cmd.map JobMsg cmd )
 
