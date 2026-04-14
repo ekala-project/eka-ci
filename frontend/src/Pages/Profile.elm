@@ -9,12 +9,14 @@ module Pages.Profile exposing
 {-| User profile page.
 -}
 
+import Api.Decoder as Decoder
 import Auth exposing (AuthToken)
 import Html exposing (Html, a, button, div, h1, h2, h3, img, li, p, span, text, ul)
 import Html.Attributes exposing (class, href, src)
 import Html.Events exposing (onClick)
 import Http
 import Json.Decode as D
+import Models.Maintainer exposing (MaintainerRequest, RequestStatus(..))
 
 
 {-| Page model.
@@ -23,7 +25,9 @@ type alias Model =
     { apiBaseUrl : String
     , authToken : AuthToken
     , profile : Maybe UserProfile
+    , requests : List MaintainerRequest
     , loading : Bool
+    , loadingRequests : Bool
     , error : Maybe String
     }
 
@@ -53,6 +57,7 @@ type alias UserInfo =
 type Msg
     = LoadProfile
     | ProfileLoaded (Result Http.Error UserProfile)
+    | RequestsLoaded (Result Http.Error (List MaintainerRequest))
 
 
 {-| Initialize the page.
@@ -62,10 +67,15 @@ init apiBaseUrl authToken =
     ( { apiBaseUrl = apiBaseUrl
       , authToken = authToken
       , profile = Nothing
+      , requests = []
       , loading = True
+      , loadingRequests = True
       , error = Nothing
       }
-    , loadProfile apiBaseUrl authToken
+    , Cmd.batch
+        [ loadProfile apiBaseUrl authToken
+        , loadRequests apiBaseUrl authToken
+        ]
     )
 
 
@@ -89,6 +99,19 @@ update msg model =
                 | loading = False
                 , error = Just (httpErrorToString err)
               }
+            , Cmd.none
+            )
+
+        RequestsLoaded (Ok requests) ->
+            ( { model
+                | requests = requests
+                , loadingRequests = False
+              }
+            , Cmd.none
+            )
+
+        RequestsLoaded (Err _) ->
+            ( { model | loadingRequests = False }
             , Cmd.none
             )
 
@@ -120,7 +143,7 @@ view model =
                 Nothing ->
                     case model.profile of
                         Just profile ->
-                            viewProfile profile
+                            viewProfile model profile
 
                         Nothing ->
                             div [ class "card pa4 tc gray" ]
@@ -128,8 +151,8 @@ view model =
         ]
 
 
-viewProfile : UserProfile -> Html Msg
-viewProfile profile =
+viewProfile : Model -> UserProfile -> Html Msg
+viewProfile model profile =
     div []
         [ div [ class "card pa4 mb4" ]
             [ div [ class "flex items-center gap3" ]
@@ -174,7 +197,7 @@ viewProfile profile =
                 , span [] [ text (formatDate profile.lastLogin) ]
                 ]
             ]
-        , div [ class "card pa4" ]
+        , div [ class "card pa4 mb4" ]
             [ h3 [ class "f4 fw6 mb3" ] [ text "Maintained Attribute Paths" ]
             , if List.isEmpty profile.maintainedPaths then
                 p [ class "gray" ] [ text "You are not maintaining any attribute paths yet." ]
@@ -183,6 +206,18 @@ viewProfile profile =
                 ul [ class "list pl0" ]
                     (List.map viewMaintainedPath profile.maintainedPaths)
             ]
+        , div [ class "card pa4" ]
+            [ h3 [ class "f4 fw6 mb3" ] [ text "Maintainer Requests" ]
+            , if model.loadingRequests then
+                p [ class "gray" ] [ text "Loading requests..." ]
+
+              else if List.isEmpty model.requests then
+                p [ class "gray" ] [ text "No maintainer requests." ]
+
+              else
+                div []
+                    (List.map viewRequest model.requests)
+            ]
         ]
 
 
@@ -190,6 +225,43 @@ viewMaintainedPath : String -> Html Msg
 viewMaintainedPath path =
     li [ class "bb b--light-gray pv2" ]
         [ span [ class "code f6" ] [ text path ] ]
+
+
+viewRequest : MaintainerRequest -> Html Msg
+viewRequest request =
+    let
+        ( statusClass, statusText ) =
+            case request.status of
+                Pending ->
+                    ( "bg-washed-yellow", "Pending" )
+
+                Approved ->
+                    ( "bg-washed-green", "Approved" )
+
+                Rejected ->
+                    ( "bg-washed-red", "Rejected" )
+    in
+    div [ class ("pa3 mb2 br2 " ++ statusClass) ]
+        [ div [ class "flex justify-between items-start" ]
+            [ div []
+                [ div [ class "f5 fw6 mb1 code" ] [ text request.attrPath ]
+                , div [ class "f6 gray" ]
+                    [ text ("Requested: " ++ formatDate request.requestedAt) ]
+                , case ( request.status, request.reviewedByUsername, request.reviewedAt ) of
+                    ( Approved, Just reviewer, Just reviewedAt ) ->
+                        div [ class "f6 dark-green mt1" ]
+                            [ text ("Approved by " ++ reviewer ++ " on " ++ formatDate reviewedAt) ]
+
+                    ( Rejected, Just reviewer, Just reviewedAt ) ->
+                        div [ class "f6 dark-red mt1" ]
+                            [ text ("Rejected by " ++ reviewer ++ " on " ++ formatDate reviewedAt) ]
+
+                    _ ->
+                        text ""
+                ]
+            , span [ class "badge" ] [ text statusText ]
+            ]
+        ]
 
 
 
@@ -204,6 +276,19 @@ loadProfile apiBaseUrl authToken =
         , url = apiBaseUrl ++ "/v1/users/me/profile"
         , body = Http.emptyBody
         , expect = Http.expectJson ProfileLoaded profileDecoder
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+loadRequests : String -> AuthToken -> Cmd Msg
+loadRequests apiBaseUrl authToken =
+    Http.request
+        { method = "GET"
+        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
+        , url = apiBaseUrl ++ "/v1/users/me/maintainer-requests"
+        , body = Http.emptyBody
+        , expect = Http.expectJson RequestsLoaded Decoder.maintainerRequestList
         , timeout = Nothing
         , tracker = Nothing
         }

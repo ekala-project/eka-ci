@@ -87,7 +87,6 @@ pub struct UserProfile {
 /// Attr path maintainer request stored in the database
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AttrPathMaintainerRequest {
-    #[sqlx(rename = "ROWID")]
     pub id: i64,
     pub attr_path: String,
     pub github_user_id: i64,

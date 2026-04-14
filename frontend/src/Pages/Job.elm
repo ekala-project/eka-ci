@@ -435,7 +435,6 @@ viewDrvRow drv =
         ]
 
 
-
 {-| View success/error messages.
 -}
 viewMessages : JobData -> Html Msg

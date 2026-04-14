@@ -17,6 +17,7 @@ import Http
 import Json.Decode as D
 import Json.Encode as E
 import Pages.Admin as Admin
+import Pages.AttrPathSearch as AttrPathSearch
 import Pages.AuthCallback as AuthCallback
 import Pages.Builds as Builds
 import Pages.Commit as Commit
@@ -79,6 +80,7 @@ type Page
     | DrvPage Drv.Model
     | AdminPage Admin.Model
     | ProfilePage Profile.Model
+    | AttrPathSearchPage AttrPathSearch.Model
     | AuthCallbackPage AuthCallback.Model
     | NotFoundPage
 
@@ -196,6 +198,13 @@ initPage apiBaseUrl url route authState =
                     -- Redirect to home if not authenticated
                     ( NotFoundPage, Cmd.none )
 
+        Route.AttrPathSearch ->
+            let
+                ( model, cmd ) =
+                    AttrPathSearch.init apiBaseUrl authState
+            in
+            ( AttrPathSearchPage model, Cmd.map AttrPathSearchMsg cmd )
+
         Route.AuthCallback ->
             let
                 ( model, cmd ) =
@@ -225,6 +234,7 @@ type Msg
     | DrvMsg Drv.Msg
     | AdminMsg Admin.Msg
     | ProfileMsg Profile.Msg
+    | AttrPathSearchMsg AttrPathSearch.Msg
     | AuthCallbackMsg AuthCallback.Msg
     | WebSocketMessage Ports.IncomingMessage
     | TokenReceived (Maybe String)
@@ -348,6 +358,20 @@ update msg model =
                     in
                     ( { model | page = ProfilePage newModel }
                     , Cmd.map ProfileMsg cmd
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        AttrPathSearchMsg attrPathSearchMsg ->
+            case model.page of
+                AttrPathSearchPage attrPathSearchModel ->
+                    let
+                        ( newModel, cmd ) =
+                            AttrPathSearch.update attrPathSearchMsg attrPathSearchModel
+                    in
+                    ( { model | page = AttrPathSearchPage newModel }
+                    , Cmd.map AttrPathSearchMsg cmd
                     )
 
                 _ ->
@@ -715,6 +739,9 @@ pageTitle route =
         Route.Profile ->
             "My Profile - EkaCI"
 
+        Route.AttrPathSearch ->
+            "Attr Path Search - EkaCI"
+
         Route.AuthCallback ->
             "Authenticating - EkaCI"
 
@@ -766,6 +793,9 @@ viewPage authState page =
 
             else
                 viewNotAuthenticated
+
+        AttrPathSearchPage model ->
+            Html.map AttrPathSearchMsg (AttrPathSearch.view model)
 
         AuthCallbackPage model ->
             Html.map AuthCallbackMsg (AuthCallback.view model)

@@ -51,6 +51,11 @@ view authState onLogout =
                     , class "mh3 f6 fw5 link white hover-white-80"
                     ]
                     [ text "Reviews" ]
+                , a
+                    [ href (Route.toHref Route.AttrPathSearch)
+                    , class "mh3 f6 fw5 link white hover-white-80"
+                    ]
+                    [ text "Attr Paths" ]
 
                 -- Auth section
                 , viewAuthSection authState onLogout

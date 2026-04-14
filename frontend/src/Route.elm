@@ -30,6 +30,7 @@ type Route
     | Drv String -- drv_path
     | Admin
     | Profile -- User profile
+    | AttrPathSearch -- Attr path search page
     | AuthCallback -- GitHub OAuth callback
     | NotFound
 
@@ -57,6 +58,7 @@ routeParser =
         , P.map Drv (P.s "drvs" </> P.string)
         , P.map Admin (P.s "admin")
         , P.map Profile (P.s "profile")
+        , P.map AttrPathSearch (P.s "attr-paths")
         , P.map AuthCallback (P.s "github" </> P.s "auth" </> P.s "callback")
         ]
 
@@ -95,6 +97,9 @@ toHref route =
 
         Profile ->
             "/profile"
+
+        AttrPathSearch ->
+            "/attr-paths"
 
         AuthCallback ->
             "/github/auth/callback"
