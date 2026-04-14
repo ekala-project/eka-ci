@@ -10,8 +10,8 @@ CREATE TABLE IF NOT EXISTS AttrPathMaintainerRequests (
     status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')) DEFAULT 'pending',
     reviewed_by_user_id INTEGER,
     reviewed_at TIMESTAMP,
-    FOREIGN KEY (github_user_id) REFERENCES AuthenticatedUsers(github_user_id) ON DELETE CASCADE,
-    FOREIGN KEY (reviewed_by_user_id) REFERENCES AuthenticatedUsers(github_user_id) ON DELETE SET NULL,
+    FOREIGN KEY (github_user_id) REFERENCES AuthenticatedUsers(github_id) ON DELETE CASCADE,
+    FOREIGN KEY (reviewed_by_user_id) REFERENCES AuthenticatedUsers(github_id) ON DELETE SET NULL,
     UNIQUE(attr_path, github_user_id)
 );
 

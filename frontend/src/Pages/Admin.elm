@@ -9,6 +9,7 @@ module Pages.Admin exposing
 {-| Admin page with user and maintainer management.
 -}
 
+import Api.Decoder as Decoder
 import Auth exposing (AuthToken)
 import Html exposing (Html, button, div, h1, h2, h3, input, li, p, span, table, tbody, td, text, th, thead, tr, ul)
 import Html.Attributes exposing (class, disabled, placeholder, type_, value)
@@ -16,6 +17,7 @@ import Html.Events exposing (onClick, onInput)
 import Http
 import Json.Decode as D
 import Json.Encode as E
+import Models.Maintainer exposing (MaintainerRequest, RequestStatus(..))
 
 
 {-| Page model.
@@ -26,8 +28,10 @@ type alias Model =
     , users : List User
     , selectedUser : Maybe User
     , maintainers : List Maintainer
+    , requests : List MaintainerRequest
     , loadingUsers : Bool
     , loadingMaintainers : Bool
+    , loadingRequests : Bool
     , error : Maybe String
     , successMessage : Maybe String
     , newMaintainerPath : String
@@ -76,6 +80,11 @@ type Msg
     | AddMaintainer
     | RemoveMaintainer String Int
     | MaintainerActionCompleted (Result Http.Error ())
+    | LoadPendingRequests
+    | RequestsLoaded (Result Http.Error (List MaintainerRequest))
+    | ApproveRequest Int
+    | RejectRequest Int
+    | RequestActionCompleted (Result Http.Error ())
     | DismissMessage
 
 
@@ -88,15 +97,20 @@ init apiBaseUrl authToken =
       , users = []
       , selectedUser = Nothing
       , maintainers = []
+      , requests = []
       , loadingUsers = True
       , loadingMaintainers = False
+      , loadingRequests = True
       , error = Nothing
       , successMessage = Nothing
       , newMaintainerPath = ""
       , newMaintainerUserId = ""
       , selectedAttrPath = Nothing
       }
-    , loadUsers apiBaseUrl authToken
+    , Cmd.batch
+        [ loadUsers apiBaseUrl authToken
+        , loadPendingRequests apiBaseUrl authToken
+        ]
     )
 
 
@@ -226,6 +240,47 @@ update msg model =
             , Cmd.none
             )
 
+        LoadPendingRequests ->
+            ( { model | loadingRequests = True, error = Nothing }
+            , loadPendingRequests model.apiBaseUrl model.authToken
+            )
+
+        RequestsLoaded (Ok requests) ->
+            ( { model
+                | requests = requests
+                , loadingRequests = False
+              }
+            , Cmd.none
+            )
+
+        RequestsLoaded (Err err) ->
+            ( { model
+                | loadingRequests = False
+                , error = Just (httpErrorToString err)
+              }
+            , Cmd.none
+            )
+
+        ApproveRequest requestId ->
+            ( { model | error = Nothing }
+            , approveRequest model.apiBaseUrl model.authToken requestId
+            )
+
+        RejectRequest requestId ->
+            ( { model | error = Nothing }
+            , rejectRequest model.apiBaseUrl model.authToken requestId
+            )
+
+        RequestActionCompleted (Ok ()) ->
+            ( { model | successMessage = Just "Request processed successfully" }
+            , loadPendingRequests model.apiBaseUrl model.authToken
+            )
+
+        RequestActionCompleted (Err err) ->
+            ( { model | error = Just (httpErrorToString err) }
+            , Cmd.none
+            )
+
         DismissMessage ->
             ( { model | error = Nothing, successMessage = Nothing }
             , Cmd.none
@@ -240,6 +295,7 @@ view model =
         [ h1 [ class "f2 fw6 mb4" ]
             [ text "Admin Panel" ]
         , viewMessages model
+        , viewPendingRequestsSection model
         , div [ class "flex gap3" ]
             [ div [ class "w-60" ]
                 [ viewUsersSection model ]
@@ -282,6 +338,73 @@ viewMessages model =
 
             Nothing ->
                 text ""
+        ]
+
+
+viewPendingRequestsSection : Model -> Html Msg
+viewPendingRequestsSection model =
+    div [ class "card pa4 mb4" ]
+        [ div [ class "flex justify-between items-center mb3" ]
+            [ h2 [ class "f3 fw6" ] [ text "Pending Maintainer Requests" ]
+            , button
+                [ onClick LoadPendingRequests
+                , class "btn-secondary"
+                , disabled model.loadingRequests
+                ]
+                [ text
+                    (if model.loadingRequests then
+                        "Loading..."
+
+                     else
+                        "Refresh"
+                    )
+                ]
+            ]
+        , if model.loadingRequests then
+            p [ class "gray" ] [ text "Loading requests..." ]
+
+          else if List.isEmpty (List.filter (\r -> r.status == Pending) model.requests) then
+            p [ class "gray" ] [ text "No pending requests" ]
+
+          else
+            div []
+                (List.filterMap
+                    (\r ->
+                        if r.status == Pending then
+                            Just (viewPendingRequest r)
+
+                        else
+                            Nothing
+                    )
+                    model.requests
+                )
+        ]
+
+
+viewPendingRequest : MaintainerRequest -> Html Msg
+viewPendingRequest request =
+    div [ class "pa3 mb3 br2 bg-washed-yellow ba b--gold" ]
+        [ div [ class "flex justify-between items-start" ]
+            [ div [ class "flex-auto" ]
+                [ div [ class "f5 fw6 mb1 code" ] [ text request.attrPath ]
+                , div [ class "f6 mb1" ]
+                    [ text ("Requested by: " ++ request.githubUsername) ]
+                , div [ class "f6 gray" ]
+                    [ text ("Requested: " ++ formatDate request.requestedAt) ]
+                ]
+            , div [ class "flex gap2" ]
+                [ button
+                    [ onClick (ApproveRequest request.id)
+                    , class "btn-sm btn-success"
+                    ]
+                    [ text "Approve" ]
+                , button
+                    [ onClick (RejectRequest request.id)
+                    , class "btn-sm btn-danger"
+                    ]
+                    [ text "Reject" ]
+                ]
+            ]
         ]
 
 
@@ -573,6 +696,45 @@ removeMaintainer apiBaseUrl authToken attrPath githubUserId =
         }
 
 
+loadPendingRequests : String -> AuthToken -> Cmd Msg
+loadPendingRequests apiBaseUrl authToken =
+    Http.request
+        { method = "GET"
+        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
+        , url = apiBaseUrl ++ "/v1/admin/maintainer-requests"
+        , body = Http.emptyBody
+        , expect = Http.expectJson RequestsLoaded Decoder.maintainerRequestList
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+approveRequest : String -> AuthToken -> Int -> Cmd Msg
+approveRequest apiBaseUrl authToken requestId =
+    Http.request
+        { method = "POST"
+        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
+        , url = apiBaseUrl ++ "/v1/admin/maintainer-requests/" ++ String.fromInt requestId ++ "/approve"
+        , body = Http.emptyBody
+        , expect = Http.expectWhatever RequestActionCompleted
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+rejectRequest : String -> AuthToken -> Int -> Cmd Msg
+rejectRequest apiBaseUrl authToken requestId =
+    Http.request
+        { method = "POST"
+        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
+        , url = apiBaseUrl ++ "/v1/admin/maintainer-requests/" ++ String.fromInt requestId ++ "/reject"
+        , body = Http.emptyBody
+        , expect = Http.expectWhatever RequestActionCompleted
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
 
 -- DECODERS
 
@@ -619,3 +781,10 @@ httpErrorToString error =
 
         Http.BadBody body ->
             "Invalid response: " ++ body
+
+
+formatDate : String -> String
+formatDate dateStr =
+    -- For now, just return the date string as-is
+    -- In a real app, you'd parse and format this nicely
+    dateStr

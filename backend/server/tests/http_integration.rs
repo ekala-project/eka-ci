@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{TestContext, create_simple_drv, insert_test_drv, test_drv, wait_for_drv_state};
-use eka_ci_server::auth::{JwtService, OAuthConfig};
+use eka_ci_server::auth::{GitHubApiClient, JwtService, OAuthConfig};
 use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::graph::{GraphCommand, GraphService};
@@ -92,6 +92,9 @@ async fn create_test_server(
     // Empty GitHub App configs for test
     let github_app_configs = Arc::new(std::collections::HashMap::new());
 
+    // Create GitHub API client for tests
+    let github_client = Arc::new(GitHubApiClient::new());
+
     let web_service = WebService::bind_to_address(
         &socket,
         git_sender,
@@ -108,6 +111,7 @@ async fn create_test_server(
         websocket_service,
         github_app_configs,
         None, // no webhook secret for tests
+        github_client,
     )
     .await
     .expect("Failed to create web service");

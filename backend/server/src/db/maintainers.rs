@@ -39,10 +39,10 @@ pub async fn get_maintainer_request(
 ) -> Result<Option<AttrPathMaintainerRequest>> {
     let request = sqlx::query_as(
         r#"
-        SELECT ROWID as id, attr_path, github_user_id, requested_at, status,
+        SELECT id, attr_path, github_user_id, requested_at, status,
                reviewed_by_user_id, reviewed_at
         FROM AttrPathMaintainerRequests
-        WHERE ROWID = ?
+        WHERE id = ?
         "#,
     )
     .bind(request_id)
@@ -57,7 +57,7 @@ pub async fn list_pending_requests(pool: &Pool<Sqlite>) -> Result<Vec<Maintainer
     let requests = sqlx::query_as(
         r#"
         SELECT
-            r.ROWID as id,
+            r.id,
             r.attr_path,
             r.github_user_id,
             u.github_username,
@@ -88,7 +88,7 @@ pub async fn list_user_requests(
     let requests = sqlx::query_as(
         r#"
         SELECT
-            r.ROWID as id,
+            r.id,
             r.attr_path,
             r.github_user_id,
             u.github_username,
@@ -164,7 +164,7 @@ pub async fn approve_request(
 
     // Get the request details
     let request: Option<(String, i64)> = sqlx::query_as(
-        "SELECT attr_path, github_user_id FROM AttrPathMaintainerRequests WHERE ROWID = ?",
+        "SELECT attr_path, github_user_id FROM AttrPathMaintainerRequests WHERE id = ?",
     )
     .bind(request_id)
     .fetch_optional(&mut *tx)
@@ -178,7 +178,7 @@ pub async fn approve_request(
         r#"
         UPDATE AttrPathMaintainerRequests
         SET status = 'approved', reviewed_by_user_id = ?, reviewed_at = CURRENT_TIMESTAMP
-        WHERE ROWID = ?
+        WHERE id = ?
         "#,
     )
     .bind(reviewed_by_user_id)
@@ -214,7 +214,7 @@ pub async fn reject_request(
         r#"
         UPDATE AttrPathMaintainerRequests
         SET status = 'rejected', reviewed_by_user_id = ?, reviewed_at = CURRENT_TIMESTAMP
-        WHERE ROWID = ?
+        WHERE id = ?
         "#,
     )
     .bind(reviewed_by_user_id)
