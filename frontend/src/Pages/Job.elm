@@ -13,20 +13,25 @@ Displays comprehensive information about a specific job including:
   - Job metadata (SHA, name, repository)
   - Overall progress
   - List of all derivations with their states
+  - Maintainers of the attr path
   - Real-time updates via WebSocket
 
 -}
 
 import Api.Api as Api
+import Auth exposing (AuthState)
 import Components.ErrorView as ErrorView
 import Components.Loader as Loader
 import Components.ProgressBar as ProgressBar
 import Components.StatusBadge as StatusBadge
-import Html exposing (Html, a, code, div, h1, h2, p, span, table, tbody, td, text, th, thead, tr)
-import Html.Attributes exposing (class, href)
+import Html exposing (Html, a, button, code, div, h1, h2, img, p, span, table, tbody, td, text, th, thead, tr)
+import Html.Attributes exposing (class, disabled, href, src, title)
+import Html.Events exposing (onClick)
 import Http
+import Json.Encode as E
 import Models.BuildState as BS
 import Models.Job exposing (JobSetDetails, JobSetDrv)
+import Models.Maintainer exposing (MaintainerDetail)
 import Ports
 import Route
 
@@ -34,7 +39,7 @@ import Route
 {-| Page model.
 -}
 type Model
-    = Loading String Int
+    = Loading String Int AuthState
     | Loaded JobData
     | Failed Http.Error
 
@@ -45,7 +50,13 @@ type alias JobData =
     { jobsetId : Int
     , details : JobSetDetails
     , drvs : List JobSetDrv
+    , maintainers : List MaintainerDetail
+    , loadingMaintainers : Bool
+    , requestingAccess : Bool
+    , successMessage : Maybe String
+    , errorMessage : Maybe String
     , apiBaseUrl : String
+    , authState : AuthState
     }
 
 
@@ -54,18 +65,23 @@ type alias JobData =
 type Msg
     = GotJobSetDetails (Result Http.Error JobSetDetails)
     | GotJobSetDrvs (Result Http.Error (List JobSetDrv))
+    | GotMaintainers (Result Http.Error (List MaintainerDetail))
+    | RequestMaintainerAccess
+    | MaintainerRequestCompleted (Result Http.Error ())
+    | DismissMessage
     | BuildStateChanged Ports.BuildStateChangeEvent
     | JobCompleted Ports.JobCompleteEvent
 
 
 {-| Initialize the page with a jobset ID.
 -}
-init : String -> Int -> ( Model, Cmd Msg )
-init apiBaseUrl jobsetId =
-    ( Loading apiBaseUrl jobsetId
+init : String -> Int -> AuthState -> ( Model, Cmd Msg )
+init apiBaseUrl jobsetId authState =
+    ( Loading apiBaseUrl jobsetId authState
     , Cmd.batch
         [ Api.getJobSetDetails apiBaseUrl jobsetId GotJobSetDetails
         , Api.getJobSetDrvs apiBaseUrl jobsetId GotJobSetDrvs
+        , Api.getJobMaintainers apiBaseUrl jobsetId GotMaintainers
         , Ports.websocketOut (Ports.encodeSubscribeMessage "job" (String.fromInt jobsetId))
         ]
     )
@@ -80,13 +96,19 @@ update msg model =
             case result of
                 Ok details ->
                     case model of
-                        Loading apiBaseUrl jobsetId ->
+                        Loading apiBaseUrl jobsetId authState ->
                             -- Wait for drvs to load too
                             ( Loaded
                                 { jobsetId = jobsetId
                                 , details = details
                                 , drvs = []
+                                , maintainers = []
+                                , loadingMaintainers = True
+                                , requestingAccess = False
+                                , successMessage = Nothing
+                                , errorMessage = Nothing
                                 , apiBaseUrl = apiBaseUrl
+                                , authState = authState
                                 }
                             , Cmd.none
                             )
@@ -111,7 +133,7 @@ update msg model =
                             , Cmd.none
                             )
 
-                        Loading _ _ ->
+                        Loading _ _ _ ->
                             -- Details haven't loaded yet, create partial state
                             ( model, Cmd.none )
 
@@ -120,6 +142,80 @@ update msg model =
 
                 Err error ->
                     ( Failed error, Cmd.none )
+
+        GotMaintainers result ->
+            case model of
+                Loaded data ->
+                    case result of
+                        Ok maintainers ->
+                            ( Loaded
+                                { data
+                                    | maintainers = maintainers
+                                    , loadingMaintainers = False
+                                }
+                            , Cmd.none
+                            )
+
+                        Err _ ->
+                            ( Loaded { data | loadingMaintainers = False }
+                            , Cmd.none
+                            )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        RequestMaintainerAccess ->
+            case model of
+                Loaded data ->
+                    case Auth.getToken data.authState of
+                        Just token ->
+                            ( Loaded { data | requestingAccess = True, errorMessage = Nothing }
+                            , requestMaintainerAccess data.apiBaseUrl token data.details.jobName
+                            )
+
+                        Nothing ->
+                            ( Loaded { data | errorMessage = Just "You must be logged in to request maintainer access" }
+                            , Cmd.none
+                            )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        MaintainerRequestCompleted result ->
+            case model of
+                Loaded data ->
+                    case result of
+                        Ok _ ->
+                            ( Loaded
+                                { data
+                                    | requestingAccess = False
+                                    , successMessage = Just "Maintainer access requested successfully!"
+                                    , errorMessage = Nothing
+                                }
+                            , Api.getJobMaintainers data.apiBaseUrl data.jobsetId GotMaintainers
+                            )
+
+                        Err error ->
+                            ( Loaded
+                                { data
+                                    | requestingAccess = False
+                                    , errorMessage = Just (httpErrorToString error)
+                                }
+                            , Cmd.none
+                            )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        DismissMessage ->
+            case model of
+                Loaded data ->
+                    ( Loaded { data | successMessage = Nothing, errorMessage = Nothing }
+                    , Cmd.none
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
 
         BuildStateChanged event ->
             case model of
@@ -164,7 +260,7 @@ update msg model =
 view : Model -> Html Msg
 view model =
     case model of
-        Loading _ jobsetId ->
+        Loading _ jobsetId _ ->
             div [ class "pa4" ]
                 [ h1 [ class "f2 fw6 mb4" ]
                     [ text ("Job #" ++ String.fromInt jobsetId) ]
@@ -190,8 +286,15 @@ viewJobDetails data =
         [ -- Header
           viewJobHeader data.details
 
+        -- Messages
+        , viewMessages data
+
         -- Progress
         , viewProgress data.details
+
+        -- Maintainers section
+        , div [ class "mt4" ]
+            [ viewMaintainersSection data ]
 
         -- Derivations table
         , div [ class "mt4" ]
@@ -333,6 +436,137 @@ viewDrvRow drv =
 
 
 
+{-| View success/error messages.
+-}
+viewMessages : JobData -> Html Msg
+viewMessages data =
+    div []
+        [ case data.errorMessage of
+            Just err ->
+                div [ class "card pa3 mb3 bg-light-red" ]
+                    [ div [ class "flex justify-between items-center" ]
+                        [ span [ class "dark-red" ] [ text err ]
+                        , button
+                            [ onClick DismissMessage
+                            , class "bn bg-transparent pointer dark-red f4"
+                            ]
+                            [ text "×" ]
+                        ]
+                    ]
+
+            Nothing ->
+                text ""
+        , case data.successMessage of
+            Just msg ->
+                div [ class "card pa3 mb3 bg-light-green" ]
+                    [ div [ class "flex justify-between items-center" ]
+                        [ span [ class "dark-green" ] [ text msg ]
+                        , button
+                            [ onClick DismissMessage
+                            , class "bn bg-transparent pointer dark-green f4"
+                            ]
+                            [ text "×" ]
+                        ]
+                    ]
+
+            Nothing ->
+                text ""
+        ]
+
+
+{-| View maintainers section with list and request button.
+-}
+viewMaintainersSection : JobData -> Html Msg
+viewMaintainersSection data =
+    div [ class "card pa3" ]
+        [ div [ class "flex justify-between items-center mb3" ]
+            [ h2 [ class "f5 fw6 ma0" ]
+                [ text "Maintainers" ]
+            , viewRequestButton data
+            ]
+        , if data.loadingMaintainers then
+            div [ class "tc pa3 gray" ]
+                [ text "Loading maintainers..." ]
+
+          else if List.isEmpty data.maintainers then
+            div [ class "tc pa3 gray" ]
+                [ text "No maintainers yet. Be the first to request access!" ]
+
+          else
+            div [ class "flex gap2 flex-wrap" ]
+                (List.map viewMaintainer data.maintainers)
+        ]
+
+
+{-| View a single maintainer badge.
+-}
+viewMaintainer : MaintainerDetail -> Html Msg
+viewMaintainer maintainer =
+    div
+        [ class "flex items-center gap2 pa2 br2 bg-light-gray"
+        , title ("Added " ++ maintainer.addedAt)
+        ]
+        [ case maintainer.githubAvatarUrl of
+            Just avatarUrl ->
+                img
+                    [ src avatarUrl
+                    , class "w2 h2 br-100"
+                    ]
+                    []
+
+            Nothing ->
+                div [ class "w2 h2 br-100 bg-gray" ] []
+        , span [ class "f6" ] [ text maintainer.githubUsername ]
+        ]
+
+
+{-| View request maintainer button with different states.
+-}
+viewRequestButton : JobData -> Html Msg
+viewRequestButton data =
+    let
+        isAuthenticated =
+            Auth.isAuthenticated data.authState
+
+        currentUserId =
+            data.authState.user
+                |> Maybe.map .githubId
+
+        isAlreadyMaintainer =
+            currentUserId
+                |> Maybe.map (\userId -> List.any (\m -> m.githubUserId == userId) data.maintainers)
+                |> Maybe.withDefault False
+    in
+    if not isAuthenticated then
+        a
+            [ href (Route.toHref Route.AuthCallback)
+            , class "btn-secondary btn-sm"
+            ]
+            [ text "Log in to request access" ]
+
+    else if isAlreadyMaintainer then
+        button
+            [ class "btn-secondary btn-sm"
+            , disabled True
+            ]
+            [ text "You are a maintainer" ]
+
+    else if data.requestingAccess then
+        button
+            [ class "btn-primary btn-sm"
+            , disabled True
+            ]
+            [ text "Requesting..." ]
+
+    else
+        button
+            [ onClick RequestMaintainerAccess
+            , class "btn-primary btn-sm"
+            ]
+            [ text "Request Maintainer Access" ]
+
+
+
 {- HELPER FUNCTIONS FOR REAL-TIME UPDATES -}
 
 
@@ -419,3 +653,49 @@ countDrvState drv counts =
 
         BS.Blocked ->
             counts
+
+
+{-| Request maintainer access for an attr path (authenticated API call).
+-}
+requestMaintainerAccess : String -> String -> String -> Cmd Msg
+requestMaintainerAccess apiBaseUrl authToken attrPath =
+    Http.request
+        { method = "POST"
+        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
+        , url = apiBaseUrl ++ "/attr-paths/" ++ attrPath ++ "/request-maintainer"
+        , body = Http.emptyBody
+        , expect = Http.expectWhatever MaintainerRequestCompleted
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+{-| Convert HTTP error to user-friendly string.
+-}
+httpErrorToString : Http.Error -> String
+httpErrorToString error =
+    case error of
+        Http.BadUrl _ ->
+            "Invalid URL"
+
+        Http.Timeout ->
+            "Request timed out"
+
+        Http.NetworkError ->
+            "Network error"
+
+        Http.BadStatus code ->
+            if code == 401 then
+                "Not authenticated"
+
+            else if code == 403 then
+                "Not authorized"
+
+            else if code == 409 then
+                "You already have a pending request or are already a maintainer"
+
+            else
+                "Server error: " ++ String.fromInt code
+
+        Http.BadBody message ->
+            "Invalid response: " ++ message
