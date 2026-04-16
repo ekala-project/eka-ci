@@ -120,6 +120,7 @@ pub fn test_drv(name: &str, system: &str) -> Drv {
         is_fod: false,
         build_state: DrvBuildState::Queued,
         output_size: None,
+        closure_size: None,
     }
 }
 

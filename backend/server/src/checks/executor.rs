@@ -30,13 +30,20 @@ pub async fn execute_check(
     // Copy repository to temp directory
     copy_repository(repo_path, checkout_path).await?;
 
-    // Step 2: Get nix shell environment
-    debug!(
-        "Fetching nix shell environment (shell: {:?}, shell_nix: {})",
-        check.shell, check.shell_nix
-    );
-    let env_vars =
-        get_nix_shell_env(check.shell.as_deref(), check.shell_nix, checkout_path).await?;
+    // Step 2: Get nix shell environment (if needed)
+    // For commands like "nix build", we don't need a shell environment
+    let needs_shell = !check.command.starts_with("nix build ");
+
+    let env_vars = if needs_shell {
+        debug!(
+            "Fetching nix shell environment (shell: {:?}, shell_nix: {})",
+            check.shell, check.shell_nix
+        );
+        get_nix_shell_env(check.shell.as_deref(), check.shell_nix, checkout_path).await?
+    } else {
+        debug!("Skipping shell environment for nix build command");
+        std::collections::HashMap::new()
+    };
 
     // Step 3 & 4: Execute in sandbox
     let start = Instant::now();

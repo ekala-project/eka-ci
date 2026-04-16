@@ -33,6 +33,10 @@ pub struct Drv {
     /// Output size in bytes (NAR size of all outputs)
     /// None if not yet calculated or build hasn't completed
     pub output_size: Option<i64>,
+
+    /// Closure size in bytes (size of output + all runtime dependencies)
+    /// None if not yet calculated or build hasn't completed
+    pub closure_size: Option<i64>,
 }
 
 impl Drv {
@@ -57,7 +61,8 @@ impl Drv {
             required_system_features: drv_output.required_system_features_str,
             is_fod,
             build_state: DrvBuildState::Queued,
-            output_size: None, // Will be calculated after successful build
+            output_size: None,  // Will be calculated after successful build
+            closure_size: None, // Will be calculated after successful build
         })
     }
 }

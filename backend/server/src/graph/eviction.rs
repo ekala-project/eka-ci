@@ -292,6 +292,7 @@ mod tests {
             is_fod: false,
             build_state: state,
             output_size: None,
+            closure_size: None,
         }
     }
 

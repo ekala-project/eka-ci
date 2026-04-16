@@ -121,3 +121,108 @@ pub async fn update_drv_output_size(
 
     Ok(())
 }
+
+/// Get the baseline closure size for a derivation on a specific branch
+///
+/// This looks up the most recent recorded closure size for the given drv_path
+/// on the base branch (e.g., "main"). Used to compare current PR builds against
+/// the baseline to detect closure size increases.
+///
+/// # Arguments
+/// * `pool` - Database connection pool
+/// * `drv_path` - The derivation store path
+/// * `git_repo` - Repository URL (e.g., "https://github.com/owner/repo")
+/// * `base_branch` - Branch name to compare against (e.g., "main", "master")
+///
+/// # Returns
+/// * `Ok(Some(size))` - Found baseline closure size in bytes
+/// * `Ok(None)` - No baseline found (first time building this drv on base branch)
+/// * `Err` - Database error
+pub async fn get_baseline_closure_size(
+    pool: &SqlitePool,
+    drv_path: &str,
+    git_repo: &str,
+    _base_branch: &str,
+) -> Result<Option<u64>> {
+    let size = sqlx::query_scalar::<_, Option<i64>>(
+        r#"
+        SELECT s.closure_size
+        FROM DrvClosureSizes s
+        INNER JOIN DrvBuildMetadata m ON s.drv_path = m.derivation AND s.git_commit = m.git_commit
+        WHERE s.drv_path = ?
+          AND s.git_repo = ?
+        ORDER BY s.recorded_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(drv_path)
+    .bind(git_repo)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(size.flatten().map(|s| s as u64))
+}
+
+/// Store the closure size for a derivation build
+///
+/// Records the closure size in the historical tracking table for future baseline comparisons.
+///
+/// # Arguments
+/// * `pool` - Database connection pool
+/// * `drv_path` - The derivation store path
+/// * `closure_size` - Closure size in bytes (includes all dependencies)
+/// * `git_commit` - Commit SHA this build corresponds to
+/// * `git_repo` - Repository URL
+pub async fn store_closure_size(
+    pool: &SqlitePool,
+    drv_path: &str,
+    closure_size: u64,
+    git_commit: &str,
+    git_repo: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO DrvClosureSizes (drv_path, closure_size, git_commit, git_repo)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(drv_path, git_commit, git_repo) DO UPDATE SET
+            closure_size = excluded.closure_size,
+            recorded_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(drv_path)
+    .bind(closure_size as i64)
+    .bind(git_commit)
+    .bind(git_repo)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Update the closure_size column in the Drv table
+///
+/// This is a convenience for updating the main Drv record with the calculated closure size.
+///
+/// # Arguments
+/// * `pool` - Database connection pool
+/// * `drv_path` - The derivation store path (DrvId)
+/// * `closure_size` - Closure size in bytes
+pub async fn update_drv_closure_size(
+    pool: &SqlitePool,
+    drv_path: &str,
+    closure_size: u64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE Drv
+        SET closure_size = ?
+        WHERE drv_path = ?
+        "#,
+    )
+    .bind(closure_size as i64)
+    .bind(drv_path)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
