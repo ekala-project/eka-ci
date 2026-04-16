@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 use crate::config::GitHubAppConfig;
 
-mod service;
+pub mod service;
 mod webhook;
 
 pub use service::{CICheckInfo, GitHubService, GitHubTask, JobDifference};

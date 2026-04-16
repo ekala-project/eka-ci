@@ -475,6 +475,41 @@ impl RecorderWorker {
                                 job_info.jobset_id, e
                             );
                         }
+
+                        // Check if this is a PR that should be auto-merged
+                        if !has_failures {
+                            // Try to find a PR for this commit
+                            if let Ok(Some(pr)) = crate::db::github::get_pr_by_head_sha(
+                                &jobset_info.sha,
+                                &jobset_info.owner,
+                                &jobset_info.repo_name,
+                                &self.db_service.pool,
+                            )
+                            .await
+                            {
+                                // Check if auto-merge is enabled for this PR
+                                if pr.auto_merge_enabled && pr.state == "open" {
+                                    debug!(
+                                        "PR #{} has auto-merge enabled, checking eligibility",
+                                        pr.pr_number
+                                    );
+
+                                    let auto_merge_task = GitHubTask::CheckAutoMerge {
+                                        owner: jobset_info.owner.clone(),
+                                        repo_name: jobset_info.repo_name.clone(),
+                                        pr_number: pr.pr_number,
+                                        head_sha: pr.head_sha.clone(),
+                                    };
+
+                                    if let Err(e) = github_sender.send(auto_merge_task).await {
+                                        warn!(
+                                            "Failed to send CheckAutoMerge for PR #{}: {:?}",
+                                            pr.pr_number, e
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

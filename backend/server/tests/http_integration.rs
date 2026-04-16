@@ -112,6 +112,7 @@ async fn create_test_server(
         github_app_configs,
         None, // no webhook secret for tests
         github_client,
+        "squash".to_string(), // default merge method for tests
     )
     .await
     .expect("Failed to create web service");

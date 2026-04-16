@@ -64,6 +64,7 @@ struct ConfigFile {
     merge_queue_require_approval: Option<bool>,
     build_no_output_timeout_seconds: Option<u64>,
     graph_lru_capacity: Option<usize>,
+    default_merge_method: Option<String>,
     #[serde(default)]
     caches: Vec<CacheConfig>,
     #[serde(default)]
@@ -561,6 +562,8 @@ pub struct Config {
     pub build_no_output_timeout_seconds: u64,
     /// Maximum number of nodes in the LRU cache (default: 100,000)
     pub graph_lru_capacity: usize,
+    /// Default merge method for auto-merge (merge, squash, rebase)
+    pub default_merge_method: String,
     /// Cache registry - maps cache IDs to configurations
     pub caches: HashMap<String, CacheConfig>,
     /// GitHub App registry - maps app IDs to configurations
@@ -717,6 +720,9 @@ impl Config {
                 .unwrap_or(false),
             build_no_output_timeout_seconds: file.build_no_output_timeout_seconds.unwrap_or(1200),
             graph_lru_capacity: file.graph_lru_capacity.unwrap_or(100_000),
+            default_merge_method: file
+                .default_merge_method
+                .unwrap_or_else(|| "squash".to_string()),
             caches,
             github_apps,
             security,

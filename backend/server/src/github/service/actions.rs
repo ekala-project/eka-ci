@@ -398,3 +398,207 @@ pub async fn update_check_run_with_size_warning(
 
     Ok(())
 }
+
+// ========================================
+// Pull Request Merge Functions
+// ========================================
+
+/// Get PR reviews from GitHub
+pub async fn get_pr_reviews(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+) -> Result<Vec<serde_json::Value>> {
+    debug!(
+        "Fetching reviews for PR #{} in {}/{}",
+        pr_number, owner, repo
+    );
+
+    let reviews = octocrab
+        .pulls(owner, repo)
+        .list_reviews(pr_number)
+        .send()
+        .await?;
+
+    // Convert to JSON values
+    let json_reviews: Vec<serde_json::Value> = reviews
+        .items
+        .into_iter()
+        .filter_map(|r| serde_json::to_value(r).ok())
+        .collect();
+
+    Ok(json_reviews)
+}
+
+/// Get allowed merge methods for a repository from GitHub settings
+pub async fn get_repository_merge_settings(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+) -> Result<Vec<String>> {
+    debug!("Fetching repository merge settings for {}/{}", owner, repo);
+
+    let repo_info = octocrab.repos(owner, repo).get().await?;
+
+    let mut allowed_methods = Vec::new();
+
+    // Check which merge methods are allowed
+    if repo_info.allow_merge_commit.unwrap_or(true) {
+        allowed_methods.push("merge".to_string());
+    }
+    if repo_info.allow_squash_merge.unwrap_or(true) {
+        allowed_methods.push("squash".to_string());
+    }
+    if repo_info.allow_rebase_merge.unwrap_or(true) {
+        allowed_methods.push("rebase".to_string());
+    }
+
+    debug!(
+        "Repository {}/{} allows merge methods: {:?}",
+        owner, repo, allowed_methods
+    );
+
+    Ok(allowed_methods)
+}
+
+/// Merge a pull request using the specified merge method
+pub async fn merge_pull_request(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    merge_method: &str,
+    commit_title: Option<String>,
+    commit_message: Option<String>,
+) -> Result<()> {
+    use octocrab::params::pulls::MergeMethod;
+
+    debug!(
+        "Merging PR #{} in {}/{} with method '{}'",
+        pr_number, owner, repo, merge_method
+    );
+
+    let method = match merge_method {
+        "merge" => MergeMethod::Merge,
+        "squash" => MergeMethod::Squash,
+        "rebase" => MergeMethod::Rebase,
+        _ => {
+            debug!(
+                "Invalid merge method '{}', defaulting to squash",
+                merge_method
+            );
+            MergeMethod::Squash
+        },
+    };
+
+    let pulls = octocrab.pulls(owner, repo);
+    let mut merge_builder = pulls.merge(pr_number).method(method);
+
+    if let Some(ref title) = commit_title {
+        merge_builder = merge_builder.title(title);
+    }
+
+    if let Some(ref message) = commit_message {
+        merge_builder = merge_builder.message(message);
+    }
+
+    merge_builder.send().await?;
+
+    debug!(
+        "Successfully merged PR #{} in {}/{}",
+        pr_number, owner, repo
+    );
+
+    Ok(())
+}
+
+/// Check if a PR has maintainer approvals for all changed packages
+/// Returns (eligible, missing_approvals) where:
+/// - eligible: true if all packages have at least one maintainer approval
+/// - missing_approvals: Map of package -> list of maintainer usernames (for debugging)
+pub async fn check_pr_maintainer_approvals(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    changed_packages: &[String],
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+) -> Result<(bool, std::collections::HashMap<String, Vec<String>>)> {
+    use std::collections::{HashMap, HashSet};
+
+    if changed_packages.is_empty() {
+        return Ok((false, HashMap::new()));
+    }
+
+    // Get PR reviews from GitHub
+    let reviews = get_pr_reviews(octocrab, owner, repo, pr_number).await?;
+
+    // Filter to only approved reviews
+    let approved_reviews: Vec<_> = reviews
+        .iter()
+        .filter(|r| {
+            r.get("state")
+                .and_then(|s| s.as_str())
+                .map(|s| s == "APPROVED")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if approved_reviews.is_empty() {
+        // No approvals at all
+        debug!("PR #{} has no approved reviews", pr_number);
+        let mut missing = HashMap::new();
+        for package in changed_packages {
+            missing.insert(package.clone(), vec![]);
+        }
+        return Ok((false, missing));
+    }
+
+    // Get list of approving users
+    let approving_usernames: HashSet<_> = approved_reviews
+        .iter()
+        .filter_map(|r| {
+            r.get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|l| l.as_str())
+        })
+        .collect();
+
+    debug!(
+        "PR #{} has approvals from: {:?}",
+        pr_number, approving_usernames
+    );
+
+    // For each package, check if at least one approver is a maintainer
+    let mut all_packages_approved = true;
+    let mut missing_approvals: HashMap<String, Vec<String>> = HashMap::new();
+
+    for package in changed_packages {
+        // Get maintainers for this package
+        let maintainers =
+            crate::db::maintainers::get_maintainers_for_attr_path(package, pool).await?;
+
+        let maintainer_usernames: Vec<String> = maintainers
+            .iter()
+            .map(|m| m.github_username.clone())
+            .collect();
+
+        // Check if any approver is a maintainer
+        let has_maintainer_approval = maintainer_usernames
+            .iter()
+            .any(|m| approving_usernames.contains(m.as_str()));
+
+        if !has_maintainer_approval {
+            all_packages_approved = false;
+            missing_approvals.insert(package.clone(), maintainer_usernames);
+        }
+    }
+
+    debug!(
+        "PR #{} eligibility: {} (missing approvals: {:?})",
+        pr_number, all_packages_approved, missing_approvals
+    );
+
+    Ok((all_packages_approved, missing_approvals))
+}
