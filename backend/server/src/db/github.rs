@@ -214,7 +214,7 @@ pub async fn check_runs_for_commit(
 pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
     let drvs = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size
         FROM Drv d
         INNER JOIN Job j ON d.ROWID = j.drv_id
         WHERE j.jobset = ?
@@ -236,7 +236,7 @@ pub async fn new_jobs(
     // Query for drvs only present in the head jobset
     let new_drvs: Vec<Drv> = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size
         FROM Drv d
         INNER JOIN
         (SELECT drv_id
@@ -323,7 +323,7 @@ pub async fn job_difference(
     // Query for drvs which differ in drv_id but share the same job name
     let changed_drvs = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size
         FROM Drv d
         INNER JOIN
         (
@@ -1260,6 +1260,7 @@ mod tests {
             is_fod: false,
             build_state: DrvBuildState::Queued,
             output_size: None,
+            closure_size: None,
         };
         insert_drv(&pool, &drv).await?;
         let jobs = [eval_drv];
@@ -1291,6 +1292,7 @@ mod tests {
             is_fod: false,
             build_state: DrvBuildState::Queued,
             output_size: None,
+            closure_size: None,
         };
         insert_drv(&pool, &drv2).await?;
         let jobs = [eval_drv2];
@@ -1362,6 +1364,7 @@ mod tests {
                 is_fod: false,
                 build_state: DrvBuildState::Queued,
                 output_size: None,
+                closure_size: None,
             };
             insert_drv(&pool, &drv).await?;
         }
@@ -1425,6 +1428,7 @@ mod tests {
             is_fod: false,
             build_state: DrvBuildState::Queued,
             output_size: None,
+            closure_size: None,
         };
         insert_drv(&pool, &drv).await?;
 
@@ -1521,6 +1525,7 @@ mod tests {
                 is_fod: false,
                 build_state: DrvBuildState::Queued,
                 output_size: None,
+                closure_size: None,
             };
             insert_drv(&pool, &drv).await?;
         }

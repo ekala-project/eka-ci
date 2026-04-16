@@ -1,4 +1,5 @@
 pub mod config;
+pub mod flake;
 
 use std::path::PathBuf;
 
@@ -144,6 +145,139 @@ impl RepoReader {
                         };
 
                         check_sender.send(check_task).await?;
+                    }
+                }
+            }
+
+            // Process flake checks and packages
+            if let Some(flake_config) = config.flake {
+                if let Some(check_sender) = &self.check_sender {
+                    if let Some(github_sender) = &self.github_sender {
+                        // Process flake checks if enabled
+                        if flake_config.checks.enable {
+                            debug!("Enumerating flake checks");
+                            match flake::enumerate_flake_checks(&root) {
+                                Ok(outputs) => {
+                                    for output in outputs {
+                                        let check_name = output.check_name();
+                                        debug!("Processing flake check: {}", check_name);
+
+                                        // Create checkset and placeholder result in database
+                                        let checkset_id = self
+                                            .db_service
+                                            .insert_github_checkset(
+                                                &ci_info.commit,
+                                                &check_name,
+                                                &ci_info.owner,
+                                                &ci_info.repo_name,
+                                            )
+                                            .await?;
+
+                                        let check_result_id = self
+                                            .db_service
+                                            .insert_check_result(checkset_id, false, -1, "", "", 0)
+                                            .await?;
+
+                                        // Send task to GitHub service to create the check run
+                                        let create_check_run_task = GitHubTask::CreateCheckRun {
+                                            owner: ci_info.owner.clone(),
+                                            repo_name: ci_info.repo_name.clone(),
+                                            sha: ci_info.commit.clone(),
+                                            check_name: check_name.clone(),
+                                            checkset_id,
+                                            check_result_id,
+                                        };
+                                        github_sender.send(create_check_run_task).await?;
+
+                                        // Create a Check config for the flake check
+                                        let check_config = config::Check {
+                                            shell: None,
+                                            shell_nix: false,
+                                            command: output.build_command(),
+                                            allow_network: true, /* Flake builds need network for
+                                                                  * fetching */
+                                        };
+
+                                        // Send the check task to the checks executor
+                                        let check_task = CheckTask {
+                                            check_name: check_name.clone(),
+                                            owner: ci_info.owner.clone(),
+                                            repo_name: ci_info.repo_name.clone(),
+                                            sha: ci_info.commit.clone(),
+                                            config: check_config,
+                                        };
+
+                                        check_sender.send(check_task).await?;
+                                    }
+                                },
+                                Err(e) => {
+                                    warn!("Failed to enumerate flake checks: {}", e);
+                                },
+                            }
+                        }
+
+                        // Process flake packages if enabled
+                        if flake_config.packages.enable {
+                            debug!("Enumerating flake packages");
+                            match flake::enumerate_flake_packages(&root) {
+                                Ok(outputs) => {
+                                    for output in outputs {
+                                        let check_name = output.check_name();
+                                        debug!("Processing flake package: {}", check_name);
+
+                                        // Create checkset and placeholder result in database
+                                        let checkset_id = self
+                                            .db_service
+                                            .insert_github_checkset(
+                                                &ci_info.commit,
+                                                &check_name,
+                                                &ci_info.owner,
+                                                &ci_info.repo_name,
+                                            )
+                                            .await?;
+
+                                        let check_result_id = self
+                                            .db_service
+                                            .insert_check_result(checkset_id, false, -1, "", "", 0)
+                                            .await?;
+
+                                        // Send task to GitHub service to create the check run
+                                        let create_check_run_task = GitHubTask::CreateCheckRun {
+                                            owner: ci_info.owner.clone(),
+                                            repo_name: ci_info.repo_name.clone(),
+                                            sha: ci_info.commit.clone(),
+                                            check_name: check_name.clone(),
+                                            checkset_id,
+                                            check_result_id,
+                                        };
+                                        github_sender.send(create_check_run_task).await?;
+
+                                        // Create a Check config for the flake package
+                                        let check_config = config::Check {
+                                            shell: None,
+                                            shell_nix: false,
+                                            command: output.build_command(),
+                                            allow_network: true, /* Flake builds need network for
+                                                                  * fetching */
+                                        };
+
+                                        // Send the check task to the checks executor
+                                        let check_task = CheckTask {
+                                            check_name: check_name.clone(),
+                                            owner: ci_info.owner.clone(),
+                                            repo_name: ci_info.repo_name.clone(),
+                                            sha: ci_info.commit.clone(),
+                                            config: check_config,
+                                        };
+
+                                        check_sender.send(check_task).await?;
+                                    }
+                                },
+                                Err(e) => {
+                                    warn!("Failed to enumerate flake packages: {}", e);
+                                },
+                            }
+                        }
                     }
                 }
             }

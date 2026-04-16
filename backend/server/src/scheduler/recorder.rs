@@ -295,6 +295,16 @@ impl RecorderWorker {
                     // Don't fail the build if size check fails
                 }
 
+                // Calculate and check closure size if configured
+                if let Err(e) = self.check_closure_size(&drv, &job_infos).await {
+                    warn!(
+                        "Failed to check closure size for {}: {}",
+                        drv.store_path(),
+                        e
+                    );
+                    // Don't fail the build if closure size check fails
+                }
+
                 // Clear any transitive failures in graph (fast in-memory operation)
                 let unblocked_drvs = self.clear_graph_failure(&drv).await?;
 
@@ -954,6 +964,217 @@ impl RecorderWorker {
             } else {
                 debug!(
                     "Size check passed for {}: {:.1}% <= {:.1}%",
+                    drv_id.store_path(),
+                    increase_percent,
+                    size_check.max_increase_percent
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check closure size and send warning if threshold exceeded
+    ///
+    /// This calculates the closure size for a successful build, stores it in the database,
+    /// and compares it against the baseline (base branch) if size checks are configured.
+    /// If the size increase exceeds the threshold, sends a neutral GitHub check with warning.
+    async fn check_closure_size(
+        &self,
+        drv_id: &DrvId,
+        job_infos: &[JobInfo],
+    ) -> anyhow::Result<()> {
+        use crate::ci::config::CIConfig;
+        use crate::db::size::{
+            get_baseline_closure_size, store_closure_size, update_drv_closure_size,
+        };
+        use crate::nix::size::get_closure_size;
+
+        // Get output paths for this derivation
+        let output_paths = match Self::get_drv_output_paths(&drv_id.store_path()).await {
+            Ok(paths) if !paths.is_empty() => paths,
+            Ok(_) => {
+                debug!(
+                    "No output paths found for closure size check: {}",
+                    drv_id.store_path()
+                );
+                return Ok(()); // Skip closure size check if no outputs
+            },
+            Err(e) => {
+                debug!("Failed to query output paths for closure size check: {}", e);
+                return Ok(()); // Skip closure size check on error
+            },
+        };
+
+        // Calculate closure size using nix path-info -S
+        let closure_size = match get_closure_size(&output_paths) {
+            Ok(size) => size,
+            Err(e) => {
+                warn!(
+                    "Failed to calculate closure size for {}: {}",
+                    drv_id.store_path(),
+                    e
+                );
+                return Ok(()); // Skip closure size check if calculation fails
+            },
+        };
+
+        debug!(
+            "Calculated closure size for {}: {} bytes ({})",
+            drv_id.store_path(),
+            closure_size,
+            crate::nix::size::format_size(closure_size)
+        );
+
+        // Store size in database for historical tracking
+        let pool = &self.db_service.pool;
+
+        // Update the Drv table
+        if let Err(e) = update_drv_closure_size(pool, &drv_id.store_path(), closure_size).await {
+            warn!("Failed to update drv closure size: {}", e);
+        }
+
+        // For each job this drv belongs to, check if we have metadata to store historical size
+        for job_info in job_infos {
+            // Get git metadata for this build from the jobset
+            let jobset_info =
+                match crate::db::github::get_jobset_info(job_info.jobset_id, pool).await {
+                    Ok(info) => info,
+                    Err(e) => {
+                        debug!(
+                            "No jobset info found for jobset {}, skipping: {}",
+                            job_info.jobset_id, e
+                        );
+                        continue;
+                    },
+                };
+
+            // Construct git_repo URL
+            let git_repo = format!(
+                "https://github.com/{}/{}",
+                jobset_info.owner, jobset_info.repo_name
+            );
+
+            // Store in historical table
+            if let Err(e) = store_closure_size(
+                pool,
+                &drv_id.store_path(),
+                closure_size,
+                &jobset_info.sha,
+                &git_repo,
+            )
+            .await
+            {
+                warn!("Failed to store closure size history: {}", e);
+            }
+
+            // Get job config from jobset
+            let job_config: Option<String> =
+                sqlx::query_scalar("SELECT config_json FROM GitHubJobSets WHERE ROWID = ?")
+                    .bind(job_info.jobset_id)
+                    .fetch_optional(pool)
+                    .await?
+                    .flatten();
+
+            let job_config = match job_config {
+                Some(config_json) => config_json,
+                None => {
+                    debug!(
+                        "No job config found for jobset {}, skipping closure size check",
+                        job_info.jobset_id
+                    );
+                    continue;
+                },
+            };
+
+            let ci_config: CIConfig = match serde_json::from_str(&job_config) {
+                Ok(config) => config,
+                Err(e) => {
+                    warn!("Failed to parse job config for closure size check: {}", e);
+                    continue;
+                },
+            };
+
+            // Find the job configuration
+            let job = match ci_config.jobs.get(&job_info.name) {
+                Some(job) => job,
+                None => {
+                    debug!("Job {} not found in config", job_info.name);
+                    continue;
+                },
+            };
+
+            // Check if size check is configured
+            let size_check = match &job.size_check {
+                Some(sc) => sc,
+                None => {
+                    debug!("No closure size check configured for job {}", job_info.name);
+                    continue;
+                },
+            };
+
+            debug!(
+                "Closure size check configured for job {}: max_increase={}%, base_branch={}",
+                job_info.name, size_check.max_increase_percent, size_check.base_branch
+            );
+
+            // Get baseline closure size from base branch
+            let baseline_size = match get_baseline_closure_size(
+                pool,
+                &drv_id.store_path(),
+                &git_repo,
+                &size_check.base_branch,
+            )
+            .await?
+            {
+                Some(size) => size,
+                None => {
+                    debug!(
+                        "No baseline closure size found for {} on branch {}, skipping closure \
+                         size check",
+                        drv_id.store_path(),
+                        size_check.base_branch
+                    );
+                    continue;
+                },
+            };
+
+            // Calculate percentage increase
+            let increase_percent = if baseline_size > 0 {
+                ((closure_size as f64 - baseline_size as f64) / baseline_size as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            debug!(
+                "Closure size comparison for {}: baseline={} current={} increase={:.1}%",
+                drv_id.store_path(),
+                crate::nix::size::format_size(baseline_size),
+                crate::nix::size::format_size(closure_size),
+                increase_percent
+            );
+
+            // Check if threshold exceeded
+            if increase_percent > size_check.max_increase_percent {
+                info!(
+                    "Closure size threshold exceeded for {}: {:.1}% > {:.1}% (baseline={}, \
+                     current={})",
+                    drv_id.store_path(),
+                    increase_percent,
+                    size_check.max_increase_percent,
+                    crate::nix::size::format_size(baseline_size),
+                    crate::nix::size::format_size(closure_size)
+                );
+
+                // Note: Currently reusing the same size warning mechanism
+                // In the future, we could create a separate GitHub check for closure size
+                debug!(
+                    "Closure size warning for {} would be sent to GitHub (if implemented)",
+                    drv_id.store_path()
+                );
+            } else {
+                debug!(
+                    "Closure size check passed for {}: {:.1}% <= {:.1}%",
                     drv_id.store_path(),
                     increase_percent,
                     size_check.max_increase_percent

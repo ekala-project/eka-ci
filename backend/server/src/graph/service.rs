@@ -50,6 +50,7 @@ impl CachedNode {
             is_fod: self.is_fod,
             build_state: self.build_state.clone(),
             output_size: None,
+            closure_size: None,
         }
     }
 }

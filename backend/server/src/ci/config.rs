@@ -61,12 +61,41 @@ pub struct Check {
     pub allow_network: bool,
 }
 
+/// Configuration for flake checks integration
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct FlakeChecksConfig {
+    /// Enable automatic CI gates for all flake checks
+    #[serde(default = "default_false")]
+    pub enable: bool,
+}
+
+/// Configuration for flake packages integration
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct FlakePackagesConfig {
+    /// Enable automatic CI gates for all flake packages
+    #[serde(default = "default_false")]
+    pub enable: bool,
+}
+
+/// Configuration for flake-based CI integration
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct FlakeConfig {
+    /// Configuration for flake checks
+    #[serde(default)]
+    pub checks: FlakeChecksConfig,
+    /// Configuration for flake packages
+    #[serde(default)]
+    pub packages: FlakePackagesConfig,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CIConfig {
     #[serde(default)]
     pub jobs: HashMap<String, Job>,
     #[serde(default)]
     pub checks: HashMap<String, Check>,
+    #[serde(default)]
+    pub flake: Option<FlakeConfig>,
 }
 
 impl CIConfig {
@@ -184,5 +213,46 @@ mod tests {
         // Verify size check is optional
         let job2 = config.jobs.get("no-size-check").unwrap();
         assert!(job2.size_check.is_none());
+    }
+
+    #[test]
+    fn test_deserialization_with_flake() {
+        let example_config = r#"{
+  "jobs": {
+    "my-package": {
+      "file": "default.nix"
+    }
+  },
+  "flake": {
+    "checks": {
+      "enable": true
+    },
+    "packages": {
+      "enable": true
+    }
+  }
+}"#;
+        let config = serde_json::from_str::<CIConfig>(example_config)
+            .expect("Failed to deserialize config with flake");
+
+        assert!(config.flake.is_some());
+        let flake = config.flake.as_ref().unwrap();
+        assert_eq!(flake.checks.enable, true);
+        assert_eq!(flake.packages.enable, true);
+    }
+
+    #[test]
+    fn test_deserialization_without_flake() {
+        let example_config = r#"{
+  "jobs": {
+    "my-package": {
+      "file": "default.nix"
+    }
+  }
+}"#;
+        let config = serde_json::from_str::<CIConfig>(example_config)
+            .expect("Failed to deserialize config without flake");
+
+        assert!(config.flake.is_none());
     }
 }
