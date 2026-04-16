@@ -13,7 +13,7 @@ use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
-mod actions;
+pub mod actions;
 mod types;
 
 pub use types::{CICheckInfo, Commit, GitHubTask, JobDifference, Owner};
@@ -534,6 +534,120 @@ impl GitHubService {
                     result.duration_ms,
                 )
                 .await?;
+            },
+            GitHubTask::CheckAutoMerge {
+                owner,
+                repo_name,
+                pr_number,
+                head_sha,
+            } => {
+                let octocrab = self.octocrab_for_owner(&owner)?;
+
+                info!(
+                    "Checking auto-merge eligibility for PR #{} in {}/{}",
+                    pr_number, owner, repo_name
+                );
+
+                // Get changed packages for this PR
+                let changed_packages = crate::db::github::get_pr_changed_packages(
+                    *pr_number,
+                    &owner,
+                    &repo_name,
+                    &self.db_service.pool,
+                )
+                .await?;
+
+                if changed_packages.is_empty() {
+                    info!(
+                        "PR #{} has no changed packages, skipping auto-merge",
+                        pr_number
+                    );
+                    return Ok(());
+                }
+
+                // Check if all packages have maintainer approvals
+                let (eligible, missing_approvals) = actions::check_pr_maintainer_approvals(
+                    &octocrab,
+                    &owner,
+                    &repo_name,
+                    *pr_number as u64,
+                    &changed_packages,
+                    &self.db_service.pool,
+                )
+                .await?;
+
+                if !eligible {
+                    info!(
+                        "PR #{} is not eligible for auto-merge. Missing approvals for packages: \
+                         {:?}",
+                        pr_number, missing_approvals
+                    );
+                    return Ok(());
+                }
+
+                // Get PR to determine merge method
+                let pr = crate::db::github::get_pr_by_head_sha(
+                    &head_sha,
+                    &owner,
+                    &repo_name,
+                    &self.db_service.pool,
+                )
+                .await?;
+
+                let Some(pr) = pr else {
+                    warn!("PR not found for head_sha {}", head_sha);
+                    return Ok(());
+                };
+
+                // Determine merge method
+                let merge_method = pr.merge_method.as_deref().unwrap_or("squash");
+
+                info!(
+                    "Auto-merging PR #{} in {}/{} using method '{}'",
+                    pr_number, owner, repo_name, merge_method
+                );
+
+                // Attempt to merge the PR
+                match actions::merge_pull_request(
+                    &octocrab,
+                    &owner,
+                    &repo_name,
+                    *pr_number as u64,
+                    merge_method,
+                    None, // Let GitHub use the PR title
+                    None, // Let GitHub use the PR description
+                )
+                .await
+                {
+                    Ok(_) => {
+                        info!(
+                            "Successfully auto-merged PR #{} in {}/{}",
+                            pr_number, owner, repo_name
+                        );
+
+                        // Mark PR as merged in database
+                        if let Err(e) = crate::db::github::mark_pr_merged(
+                            &owner,
+                            &repo_name,
+                            *pr_number,
+                            None, // System merge, no user ID
+                            &self.db_service.pool,
+                        )
+                        .await
+                        {
+                            warn!(
+                                "Failed to mark PR #{} as merged in database: {:?}",
+                                pr_number, e
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        warn!(
+                            "Failed to auto-merge PR #{} in {}/{}: {:?}",
+                            pr_number, owner, repo_name, e
+                        );
+                    },
+                }
             },
         }
         Ok(())

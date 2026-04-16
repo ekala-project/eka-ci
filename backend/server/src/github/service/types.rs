@@ -236,6 +236,12 @@ pub enum GitHubTask {
     },
     CheckComplete(CheckResultMessage),
     CheckFailed(CheckResultMessage),
+    CheckAutoMerge {
+        owner: String,
+        repo_name: String,
+        pr_number: i64,
+        head_sha: String,
+    },
 }
 
 pub type Owner = String;

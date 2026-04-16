@@ -371,3 +371,38 @@ mod tests {
         Ok(())
     }
 }
+
+/// Check if a GitHub user is a maintainer for ALL specified attr_paths
+pub async fn is_maintainer_of_all_packages(
+    github_user_id: i64,
+    attr_paths: &[String],
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
+    if attr_paths.is_empty() {
+        return Ok(false);
+    }
+
+    // For each attr_path, check if the user is a maintainer
+    for attr_path in attr_paths {
+        let is_maint = is_maintainer(attr_path, github_user_id, pool).await?;
+        if !is_maint {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+/// Get GitHub user ID by GitHub username
+pub async fn get_github_user_id_by_username(
+    github_username: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<i64>> {
+    let user_id: Option<i64> =
+        sqlx::query_scalar("SELECT github_id FROM AuthenticatedUsers WHERE github_username = ?")
+            .bind(github_username)
+            .fetch_optional(pool)
+            .await?;
+
+    Ok(user_id)
+}

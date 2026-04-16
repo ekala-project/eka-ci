@@ -78,6 +78,14 @@ This doesn't scale well, and is error prone.
   - Configurable size increase thresholds
   - Automatic warnings when thresholds exceeded
 
+- **Automated Cache Pushing**
+  - Push successful builds to configured caches
+  - Integration with existing cache infrastructure
+
+- **Security Enhancements**
+  - Webhook signature verification (framework ready)
+  - Additional audit logging features
+
 ### 🚧 Partially Implemented
 
 - **Post-Build Hooks**
@@ -100,10 +108,6 @@ This doesn't scale well, and is error prone.
 
 ### 📋 Planned Features
 
-- **Automated Cache Pushing**
-  - Push successful builds to configured caches
-  - Integration with existing cache infrastructure
-
 - **Enhanced Metrics**
   - Dependency comparison between branches
   - Metric visualization in web UI
@@ -114,10 +118,6 @@ This doesn't scale well, and is error prone.
   - Textual diff viewing
   - Metrics dashboard
   - Approval and merge capabilities
-
-- **Security Enhancements**
-  - Webhook signature verification (framework ready)
-  - Additional audit logging features
 
 - **Future Evaluation Modes**
   - "OfBorg" convention (read attr path from commit message)

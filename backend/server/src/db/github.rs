@@ -1230,6 +1230,182 @@ pub async fn get_merge_queue_build_by_sha(
     }))
 }
 
+// ========================================
+// Auto-Merge Functions
+// ========================================
+
+/// Enable auto-merge for a pull request
+pub async fn enable_auto_merge(
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    merge_method: Option<&str>,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE PullRequests
+         SET auto_merge_enabled = TRUE, merge_method = ?
+         WHERE owner = ? AND repo_name = ? AND pr_number = ?",
+    )
+    .bind(merge_method)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Disable auto-merge for a pull request
+pub async fn disable_auto_merge(
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE PullRequests
+         SET auto_merge_enabled = FALSE, merge_method = NULL
+         WHERE owner = ? AND repo_name = ? AND pr_number = ?",
+    )
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Mark a PR as merged
+pub async fn mark_pr_merged(
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    merged_by_user_id: Option<i64>,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE PullRequests
+         SET state = 'merged', merged_by_user_id = ?, merged_at = CURRENT_TIMESTAMP
+         WHERE owner = ? AND repo_name = ? AND pr_number = ?",
+    )
+    .bind(merged_by_user_id)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Get PR by head SHA (for finding PR from jobset)
+pub async fn get_pr_by_head_sha(
+    sha: &str,
+    owner: &str,
+    repo_name: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<PullRequest>> {
+    let pr = sqlx::query_as::<_, PullRequest>(
+        "SELECT * FROM PullRequests
+         WHERE head_sha = ? AND owner = ? AND repo_name = ?",
+    )
+    .bind(sha)
+    .bind(owner)
+    .bind(repo_name)
+    .fetch_optional(pool)
+    .await?;
+    Ok(pr)
+}
+
+/// Get attribute paths (packages) changed in a PR by comparing base_sha to head_sha
+pub async fn get_pr_changed_packages(
+    pr_number: i64,
+    owner: &str,
+    repo_name: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<String>> {
+    // Get the PR's head_sha jobset
+    let jobset_id: Option<i64> = sqlx::query_scalar(
+        "SELECT jobset_id FROM PullRequests pr
+         JOIN GitHubJobSets gjs ON pr.head_sha = gjs.sha
+         WHERE pr.pr_number = ? AND pr.owner = ? AND pr.repo_name = ?
+         AND gjs.owner = ? AND gjs.repo_name = ?
+         LIMIT 1",
+    )
+    .bind(pr_number)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(owner)
+    .bind(repo_name)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(jobset_id) = jobset_id else {
+        // No jobset found, return empty list
+        return Ok(vec![]);
+    };
+
+    // Get all unique attribute paths from job_difference for this jobset
+    // Focus on changed and new packages (not removed)
+    let attr_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT attr_path FROM job_difference
+         WHERE jobset_id = ? AND status IN ('changed', 'new')",
+    )
+    .bind(jobset_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(attr_paths)
+}
+
+/// Check if all changed packages in a PR have maintainer approvals
+/// Returns (eligible, missing_approvals) where:
+/// - eligible: true if requirements are met
+/// - missing_approvals: list of packages still needing approval
+///
+/// NOTE: This function only checks database state. Call `check_maintainer_approvals_with_github`
+/// from the service layer to include real-time GitHub review checking.
+pub async fn check_maintainer_approvals(
+    pr_number: i64,
+    owner: &str,
+    repo_name: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<(bool, Vec<String>)> {
+    // Get changed packages
+    let changed_packages = get_pr_changed_packages(pr_number, owner, repo_name, pool).await?;
+
+    if changed_packages.is_empty() {
+        // No packages changed, can't determine eligibility
+        return Ok((false, vec![]));
+    }
+
+    // This is a database-only check
+    // For full approval checking including GitHub reviews, use the service layer function
+    // For now, we return all packages as needing approval since we don't have review data
+    Ok((false, changed_packages))
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct PullRequest {
+    pub pr_number: i64,
+    pub owner: String,
+    pub repo_name: String,
+    pub head_sha: String,
+    pub base_sha: String,
+    pub title: String,
+    pub author: String,
+    pub state: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub jobset_id: Option<i64>,
+    pub is_merge_queue: bool,
+    pub merge_group_head_sha: Option<String>,
+    pub auto_merge_enabled: bool,
+    pub merge_method: Option<String>,
+    pub merged_by_user_id: Option<i64>,
+    pub merged_at: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::SqlitePool;
