@@ -39,6 +39,7 @@ This doesn't scale well, and is error prone.
   - System features support (respects `requiredSystemFeatures`)
   - Build retry logic with transitive failure propagation
   - Build timeout handling (output-based)
+  - Flake checks mode (similar to Garnix)
 
 - **Binary Cache Integration**
   - Multiple backend support: S3, Cachix, Attic
@@ -69,6 +70,14 @@ This doesn't scale well, and is error prone.
   - Structured logging (tracing)
   - Build log capture and storage
 
+- **Build Metrics & Size Tracking**
+  - Output size tracking (NAR size via `nix path-info`)
+  - Closure size tracking (including all dependencies via `nix path-info -S`)
+  - Historical size tracking per commit and repository
+  - Baseline comparison against base branch
+  - Configurable size increase thresholds
+  - Automatic warnings when thresholds exceeded
+
 ### 🚧 Partially Implemented
 
 - **Post-Build Hooks**
@@ -96,9 +105,9 @@ This doesn't scale well, and is error prone.
   - Integration with existing cache infrastructure
 
 - **Enhanced Metrics**
-  - Closure size calculations
   - Dependency comparison between branches
   - Metric visualization in web UI
+  - GitHub check integration for size warnings
 
 - **PR Review Portal**
   - Ordered list of PRs (by rebuild count, lines changed)
@@ -112,8 +121,6 @@ This doesn't scale well, and is error prone.
 
 - **Future Evaluation Modes**
   - "OfBorg" convention (read attr path from commit message)
-  - Flake checks mode (similar to Garnix)
-  - Flake develop actions (impure command execution)
 
 ## Design
 
@@ -287,7 +294,11 @@ Repository-specific settings (`.eka-ci/config.json`):
       "file": "path/to/file.nix",
       "attr_path": "optional.attr.path",
       "allow_eval_failures": false,
-      "caches": ["cache-id-from-server-config"]
+      "caches": ["cache-id-from-server-config"],
+      "size_check": {
+        "max_increase_percent": 10.0,
+        "base_branch": "main"
+      }
     }
   },
   "checks": {
@@ -300,6 +311,17 @@ Repository-specific settings (`.eka-ci/config.json`):
   }
 }
 ```
+
+**Size Check Configuration:**
+- `size_check.max_increase_percent` - Maximum allowed percentage increase in output/closure size compared to base branch
+- `size_check.base_branch` - Branch to compare against (typically "main" or "master")
+
+When size checks are configured, EkaCI will:
+1. Calculate both output size (NAR) and closure size (including dependencies) for each build
+2. Store sizes in historical database tables
+3. Compare against the most recent build on the base branch
+4. Log warnings when size increases exceed the threshold
+5. Track size trends over time for monitoring
 
 ## Documentation
 
@@ -393,7 +415,9 @@ journalctl -u eka-ci -f
 **Backend:**
 - [x] GitHub OAuth user registration
 - [x] Push successful builds to cache (framework ready)
-- [x] Calculate metrics: closure size, dependencies
+- [x] Calculate and track closure sizes
+- [x] Calculate and track output sizes (NAR)
+- [x] Historical size tracking with baseline comparison
 - [x] Dedicated FOD build queue
 - [x] Multi-source credential support
 - [x] Cache permission system
