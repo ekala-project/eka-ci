@@ -6,6 +6,7 @@ pub mod installations;
 pub mod maintainers;
 #[allow(dead_code, reason = "Only model definition for now, remove once used.")]
 pub mod model;
+pub mod runtime_refs;
 mod service;
 pub mod size;
 

@@ -49,32 +49,28 @@ pub async fn start_services(config: Config) -> Result<()> {
         None
     };
 
-    let (maybe_github_service, maybe_octocrab) =
-        match github::register_app_from_config(github_app_config).await {
-            Ok(octocrab) => {
-                let github_service =
-                    GitHubService::new(db_service.clone(), octocrab.clone()).await?;
-                (Some(github_service), Some(octocrab))
-            },
-            Err(e) => {
-                // In dev environments, there usually is no authentication, but the server should
-                // still be runnable. If someone however tried to configure
-                // authentication, make sure to tell them load and clear if there
-                // was a problem.
-                if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
-                    warn!(
-                        "Skipping GitHub app registration: {}",
-                        anyhow::Chain::new(&e)
-                            .map(|e| e.to_string())
-                            .collect::<Vec<_>>()
-                            .join(": ")
-                    );
-                } else {
-                    Err(e).context("failed to register GitHub app")?;
-                }
-                (None, None)
-            },
-        };
+    // Register GitHub app first (but don't create service yet)
+    let maybe_octocrab = match github::register_app_from_config(github_app_config).await {
+        Ok(octocrab) => Some(octocrab),
+        Err(e) => {
+            // In dev environments, there usually is no authentication, but the server should
+            // still be runnable. If someone however tried to configure
+            // authentication, make sure to tell them load and clear if there
+            // was a problem.
+            if matches!(e, github::AppRegistrationError::InvalidEnv(_)) {
+                warn!(
+                    "Skipping GitHub app registration: {}",
+                    anyhow::Chain::new(&e)
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join(": ")
+                );
+            } else {
+                Err(e).context("failed to register GitHub app")?;
+            }
+            None
+        },
+    };
 
     // Create shared metrics registry for all services
     let metrics_registry = Arc::new(Registry::new());
@@ -95,6 +91,13 @@ pub async fn start_services(config: Config) -> Result<()> {
     .await
     .context("failed to initialize GraphService")?;
     let graph_handle = graph_service.handle(graph_command_sender.clone());
+
+    // Create GitHubService
+    let maybe_github_service = if let Some(ref octocrab) = maybe_octocrab {
+        Some(GitHubService::new(db_service.clone(), octocrab.clone()).await?)
+    } else {
+        None
+    };
     info!(
         "GraphService initialized with {} drvs",
         graph_handle.node_count()

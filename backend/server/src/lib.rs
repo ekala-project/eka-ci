@@ -9,6 +9,7 @@ pub mod ci;
 pub mod client;
 pub mod config;
 pub mod db;
+pub mod dependency_comparison;
 pub mod git;
 pub mod github;
 pub mod github_permissions;
