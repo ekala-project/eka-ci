@@ -52,6 +52,15 @@ pub struct RawDrvInfo {
 
     #[serde(rename = "requiredSystemFeatures")]
     pub required_system_features: Option<String>,
+
+    /// Map of output names to their store paths
+    /// e.g., {"out": "/nix/store/hash-name", "dev": "/nix/store/hash-name-dev"}
+    pub outputs: Option<HashMap<String, DrvOutputInfo>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DrvOutputInfo {
+    pub(crate) path: String,
 }
 
 impl RawDrvInfo {

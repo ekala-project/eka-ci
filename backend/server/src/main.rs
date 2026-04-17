@@ -5,6 +5,7 @@ mod ci;
 mod client;
 mod config;
 mod db;
+mod dependency_comparison;
 mod git;
 mod github;
 mod github_permissions;

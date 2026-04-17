@@ -242,6 +242,11 @@ pub enum GitHubTask {
         pr_number: i64,
         head_sha: String,
     },
+    CreateDependencyChangesGate {
+        ci_check_info: CICheckInfo,
+        jobset_id: i64,
+        base_jobset_id: i64,
+    },
 }
 
 pub type Owner = String;

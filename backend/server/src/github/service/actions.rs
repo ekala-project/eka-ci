@@ -602,3 +602,71 @@ pub async fn check_pr_maintainer_approvals(
 
     Ok((all_packages_approved, missing_approvals))
 }
+
+// ========================================
+// Dependency Changes Gate Functions
+// ========================================
+
+/// Create a neutral check run showing dependency changes for packages in the PR
+///
+/// This gate is informational (non-blocking) and displays which dependencies
+/// were added or removed for each package that had dependency changes.
+pub async fn create_dependency_changes_gate(
+    octocrab: &Octocrab,
+    ci_check_info: &CICheckInfo,
+    dependency_diff: &str,
+    total_packages_with_changes: usize,
+) -> Result<CheckRun> {
+    use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+    debug!(
+        "Creating dependency changes gate for commit {} with {} packages affected",
+        &ci_check_info.commit, total_packages_with_changes
+    );
+
+    let title = "EkaCI: Dependency Changes";
+
+    // Build the summary with diff-style formatting
+    let summary = if total_packages_with_changes == 0 {
+        "# No Dependency Changes\n\nNo packages have dependency changes in this PR.\n\n**Status:** \
+         Informational (non-blocking)"
+            .to_string()
+    } else {
+        format!(
+            "# Dependency Changes Detected\n\n**Packages affected:** {}\n\n**Status:** \
+             Informational (non-blocking)\n\n---\n\n{}",
+            total_packages_with_changes, dependency_diff
+        )
+    };
+
+    let check_run_output = octocrab::params::checks::CheckRunOutput {
+        title: if total_packages_with_changes == 0 {
+            "No dependency changes".to_string()
+        } else {
+            format!(
+                "{} package(s) with dependency changes",
+                total_packages_with_changes
+            )
+        },
+        summary,
+        text: None,
+        annotations: vec![],
+        images: vec![],
+    };
+
+    let check_run = octocrab
+        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+        .create_check_run(title, &ci_check_info.commit)
+        .status(CheckRunStatus::Completed)
+        .conclusion(CheckRunConclusion::Neutral) // Non-blocking
+        .output(check_run_output)
+        .send()
+        .await?;
+
+    debug!(
+        "Successfully created dependency changes gate check run #{} for commit {}",
+        check_run.id, &ci_check_info.commit
+    );
+
+    Ok(check_run)
+}

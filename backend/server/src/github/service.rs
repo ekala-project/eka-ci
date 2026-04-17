@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 use crate::db::DbService;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
+use crate::dependency_comparison;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 pub mod actions;
@@ -238,6 +239,25 @@ impl GitHubService {
 
             // Note: We no longer create check_runs eagerly here
             // Check_runs will be created lazily when jobs fail
+
+            // Queue dependency changes gate creation
+            // This needs the base jobset ID to compare dependencies
+            let base_jobset_id: Option<i64> =
+                sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
+                    .bind(ci_check_info.base_commit.as_ref().unwrap())
+                    .bind(name)
+                    .fetch_optional(&self.db_service.pool)
+                    .await?;
+
+            if let Some(base_jobset_id) = base_jobset_id {
+                self.github_sender
+                    .send(GitHubTask::CreateDependencyChangesGate {
+                        ci_check_info: ci_check_info.clone(),
+                        jobset_id,
+                        base_jobset_id,
+                    })
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -648,6 +668,44 @@ impl GitHubService {
                         );
                     },
                 }
+            },
+            GitHubTask::CreateDependencyChangesGate {
+                ci_check_info,
+                jobset_id,
+                base_jobset_id,
+            } => {
+                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+
+                debug!(
+                    "Creating dependency changes gate for commit {} (jobset: {}, base: {})",
+                    &ci_check_info.commit, jobset_id, base_jobset_id
+                );
+
+                // Compare runtime references between base and head jobsets
+                let comparisons = dependency_comparison::compare_runtime_references_for_jobset(
+                    *base_jobset_id,
+                    *jobset_id,
+                    &self.db_service.pool,
+                )
+                .await?;
+
+                // Format the dependency changes as a diff
+                let dependency_diff =
+                    dependency_comparison::format_dependency_changes_as_diff(&comparisons);
+
+                // Create the neutral check run
+                actions::create_dependency_changes_gate(
+                    &octocrab,
+                    ci_check_info,
+                    &dependency_diff,
+                    comparisons.len(),
+                )
+                .await?;
+
+                debug!(
+                    "Successfully created dependency changes gate with {} packages affected",
+                    comparisons.len()
+                );
             },
         }
         Ok(())
