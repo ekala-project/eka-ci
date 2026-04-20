@@ -193,289 +193,306 @@ impl CredentialSource {
     /// Returns a HashMap of environment variable key-value pairs
     pub async fn load(&self) -> anyhow::Result<HashMap<String, String>> {
         match self {
-            CredentialSource::Env { vars } => {
-                debug!("Loading credentials from environment variables: {:?}", vars);
-                let mut result = HashMap::new();
-                for var in vars {
-                    let value = std::env::var(var)
-                        .with_context(|| format!("Environment variable {} not found", var))?;
-                    result.insert(var.clone(), value);
-                }
-                Ok(result)
-            },
-
-            CredentialSource::File { path } => {
-                debug!("Loading credentials from file: {}", path.display());
-                let contents = tokio::fs::read_to_string(path).await.with_context(|| {
-                    format!("Failed to read credential file: {}", path.display())
-                })?;
-
-                // Parse as JSON or env-style key=value pairs
-                if let Ok(json_creds) = serde_json::from_str::<HashMap<String, String>>(&contents) {
-                    Ok(json_creds)
-                } else {
-                    // Try parsing as KEY=VALUE lines
-                    let mut result = HashMap::new();
-                    for line in contents.lines() {
-                        let line = line.trim();
-                        if line.is_empty() || line.starts_with('#') {
-                            continue;
-                        }
-                        if let Some((key, value)) = line.split_once('=') {
-                            result.insert(key.trim().to_string(), value.trim().to_string());
-                        }
-                    }
-                    if result.is_empty() {
-                        bail!("Failed to parse credentials from file: {}", path.display());
-                    }
-                    Ok(result)
-                }
-            },
-
-            CredentialSource::AwsProfile { profile } => {
-                debug!("Loading AWS credentials from profile: {}", profile);
-                // AWS credentials are typically in ~/.aws/credentials
-                let home = std::env::var("HOME").context("HOME environment variable not set")?;
-                let creds_path = PathBuf::from(home).join(".aws/credentials");
-
-                let contents = tokio::fs::read_to_string(&creds_path)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to read AWS credentials file: {}",
-                            creds_path.display()
-                        )
-                    })?;
-
-                let mut in_profile = false;
-                let mut result = HashMap::new();
-
-                for line in contents.lines() {
-                    let line = line.trim();
-
-                    // Check for profile header
-                    if line.starts_with('[') && line.ends_with(']') {
-                        let profile_name = &line[1..line.len() - 1];
-                        in_profile = profile_name == profile;
-                        continue;
-                    }
-
-                    if in_profile {
-                        if let Some((key, value)) = line.split_once('=') {
-                            let key = key.trim();
-                            let value = value.trim();
-
-                            // Map AWS credential file keys to environment variable names
-                            let env_key = match key {
-                                "aws_access_key_id" => "AWS_ACCESS_KEY_ID",
-                                "aws_secret_access_key" => "AWS_SECRET_ACCESS_KEY",
-                                "aws_session_token" => "AWS_SESSION_TOKEN",
-                                _ => key,
-                            };
-                            result.insert(env_key.to_string(), value.to_string());
-                        }
-                    }
-                }
-
-                if result.is_empty() {
-                    bail!("AWS profile '{}' not found or empty", profile);
-                }
-
-                Ok(result)
-            },
-
-            CredentialSource::CachixToken { env_var } => {
-                debug!("Loading Cachix token from environment: {}", env_var);
-                let token = std::env::var(env_var).with_context(|| {
-                    format!("Cachix token environment variable {} not found", env_var)
-                })?;
-
-                let mut result = HashMap::new();
-                result.insert("CACHIX_AUTH_TOKEN".to_string(), token);
-                Ok(result)
-            },
-
+            CredentialSource::Env { vars } => Self::load_from_env(vars),
+            CredentialSource::File { path } => Self::load_from_file(path).await,
+            CredentialSource::AwsProfile { profile } => Self::load_aws_profile(profile).await,
+            CredentialSource::CachixToken { env_var } => Self::load_cachix_token(env_var),
             CredentialSource::Vault {
                 address,
                 secret_path,
                 token_env,
                 namespace,
-            } => {
-                debug!(
-                    "Loading credentials from Vault: {} at {}",
-                    address, secret_path
-                );
-
-                let token = std::env::var(token_env).with_context(|| {
-                    format!("Vault token environment variable {} not found", token_env)
-                })?;
-
-                // Create Vault client settings builder
-                let mut settings_builder = vaultrs::client::VaultClientSettingsBuilder::default();
-                settings_builder.address(address).token(&token);
-
-                // Set namespace if provided (through settings builder)
-                if let Some(ns) = namespace {
-                    settings_builder.namespace(Some(ns.clone()));
-                }
-
-                let client = vaultrs::client::VaultClient::new(
-                    settings_builder
-                        .build()
-                        .context("Failed to build Vault client settings")?,
-                )
-                .context("Failed to create Vault client")?;
-
-                // Read secret from Vault KV v2
-                let secret: HashMap<String, String> =
-                    vaultrs::kv2::read(&client, "secret", secret_path)
-                        .await
-                        .with_context(|| {
-                            format!("Failed to read secret from Vault path: {}", secret_path)
-                        })?;
-
-                Ok(secret)
-            },
-
+            } => Self::load_from_vault(address, secret_path, token_env, namespace.as_deref()).await,
             CredentialSource::AwsSecretsManager {
                 secret_name,
                 region,
-            } => {
-                debug!(
-                    "Loading credentials from AWS Secrets Manager: {}",
-                    secret_name
-                );
-
-                // Load AWS config
-                let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-
-                if let Some(r) = region {
-                    config_loader = config_loader.region(aws_config::Region::new(r.clone()));
-                }
-
-                let config = config_loader.load().await;
-                let client = aws_sdk_secretsmanager::Client::new(&config);
-
-                let response = client
-                    .get_secret_value()
-                    .secret_id(secret_name)
-                    .send()
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to retrieve secret from AWS Secrets Manager: {}",
-                            secret_name
-                        )
-                    })?;
-
-                let secret_string = response
-                    .secret_string()
-                    .ok_or_else(|| anyhow!("Secret value is not a string"))?;
-
-                // Parse as JSON
-                let credentials: HashMap<String, String> = serde_json::from_str(secret_string)
-                    .context("Failed to parse AWS Secrets Manager secret as JSON")?;
-
-                Ok(credentials)
-            },
-
+            } => Self::load_aws_secrets_manager(secret_name, region.as_deref()).await,
             CredentialSource::SystemdCredential { name } => {
-                debug!("Loading credentials from systemd credential: {}", name);
-
-                // Try to read from systemd credentials directory
-                // Systemd stores credentials in $CREDENTIALS_DIRECTORY or
-                // /run/credentials/<service>
-                let cred_dir = std::env::var("CREDENTIALS_DIRECTORY")
-                    .unwrap_or_else(|_| "/run/credentials".to_string());
-
-                let cred_path = PathBuf::from(cred_dir).join(name);
-
-                let contents = tokio::fs::read_to_string(&cred_path)
-                    .await
-                    .with_context(|| {
-                        format!("Failed to read systemd credential: {}", cred_path.display())
-                    })?;
-
-                // Parse as JSON or key=value
-                if let Ok(json_creds) = serde_json::from_str::<HashMap<String, String>>(&contents) {
-                    Ok(json_creds)
-                } else {
-                    // Treat as single value credential
-                    let mut result = HashMap::new();
-                    result.insert(name.clone(), contents.trim().to_string());
-                    Ok(result)
-                }
+                Self::load_systemd_credential(name).await
             },
-
-            CredentialSource::InstanceMetadata => {
-                debug!("Loading credentials from instance metadata service");
-
-                // For AWS EC2, this will use the instance profile
-                // The AWS SDK automatically uses IMDS when available
-                let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-                    .load()
-                    .await;
-
-                // Verify that we have credentials
-                let credentials = config
-                    .credentials_provider()
-                    .ok_or_else(|| anyhow!("No credentials available from instance metadata"))?
-                    .provide_credentials()
-                    .await
-                    .context("Failed to load credentials from instance metadata")?;
-
-                let mut result = HashMap::new();
-                result.insert(
-                    "AWS_ACCESS_KEY_ID".to_string(),
-                    credentials.access_key_id().to_string(),
-                );
-                result.insert(
-                    "AWS_SECRET_ACCESS_KEY".to_string(),
-                    credentials.secret_access_key().to_string(),
-                );
-
-                if let Some(token) = credentials.session_token() {
-                    result.insert("AWS_SESSION_TOKEN".to_string(), token.to_string());
-                }
-
-                Ok(result)
-            },
-
+            CredentialSource::InstanceMetadata => Self::load_instance_metadata().await,
             CredentialSource::GitHubAppKeyFile {
                 app_id_env,
                 key_file,
-            } => {
-                debug!(
-                    "Loading GitHub App credentials from file: {}",
-                    key_file.display()
-                );
-
-                let app_id = std::env::var(app_id_env).with_context(|| {
-                    format!(
-                        "GitHub App ID environment variable {} not found",
-                        app_id_env
-                    )
-                })?;
-
-                let private_key = tokio::fs::read_to_string(key_file).await.with_context(|| {
-                    format!(
-                        "Failed to read GitHub App private key file: {}",
-                        key_file.display()
-                    )
-                })?;
-
-                let mut result = HashMap::new();
-                result.insert("GITHUB_APP_ID".to_string(), app_id);
-                result.insert("GITHUB_APP_PRIVATE_KEY".to_string(), private_key);
-
-                Ok(result)
-            },
-
+            } => Self::load_github_app_key_file(app_id_env, key_file).await,
             CredentialSource::None => {
                 debug!("No credentials required");
                 Ok(HashMap::new())
             },
         }
+    }
+
+    fn load_from_env(vars: &[String]) -> anyhow::Result<HashMap<String, String>> {
+        debug!("Loading credentials from environment variables: {:?}", vars);
+        let mut result = HashMap::new();
+        for var in vars {
+            let value = std::env::var(var)
+                .with_context(|| format!("Environment variable {} not found", var))?;
+            result.insert(var.clone(), value);
+        }
+        Ok(result)
+    }
+
+    async fn load_from_file(path: &PathBuf) -> anyhow::Result<HashMap<String, String>> {
+        debug!("Loading credentials from file: {}", path.display());
+        let contents = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read credential file: {}", path.display()))?;
+
+        // Parse as JSON or env-style key=value pairs
+        if let Ok(json_creds) = serde_json::from_str::<HashMap<String, String>>(&contents) {
+            return Ok(json_creds);
+        }
+
+        // Try parsing as KEY=VALUE lines
+        let mut result = HashMap::new();
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                result.insert(key.trim().to_string(), value.trim().to_string());
+            }
+        }
+        if result.is_empty() {
+            bail!("Failed to parse credentials from file: {}", path.display());
+        }
+        Ok(result)
+    }
+
+    async fn load_aws_profile(profile: &str) -> anyhow::Result<HashMap<String, String>> {
+        debug!("Loading AWS credentials from profile: {}", profile);
+        // AWS credentials are typically in ~/.aws/credentials
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
+        let creds_path = PathBuf::from(home).join(".aws/credentials");
+
+        let contents = tokio::fs::read_to_string(&creds_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to read AWS credentials file: {}",
+                    creds_path.display()
+                )
+            })?;
+
+        let mut in_profile = false;
+        let mut result = HashMap::new();
+
+        for line in contents.lines() {
+            let line = line.trim();
+
+            // Check for profile header
+            if line.starts_with('[') && line.ends_with(']') {
+                let profile_name = &line[1..line.len() - 1];
+                in_profile = profile_name == profile;
+                continue;
+            }
+
+            if in_profile {
+                if let Some((key, value)) = line.split_once('=') {
+                    let key = key.trim();
+                    let value = value.trim();
+
+                    // Map AWS credential file keys to environment variable names
+                    let env_key = match key {
+                        "aws_access_key_id" => "AWS_ACCESS_KEY_ID",
+                        "aws_secret_access_key" => "AWS_SECRET_ACCESS_KEY",
+                        "aws_session_token" => "AWS_SESSION_TOKEN",
+                        _ => key,
+                    };
+                    result.insert(env_key.to_string(), value.to_string());
+                }
+            }
+        }
+
+        if result.is_empty() {
+            bail!("AWS profile '{}' not found or empty", profile);
+        }
+
+        Ok(result)
+    }
+
+    fn load_cachix_token(env_var: &str) -> anyhow::Result<HashMap<String, String>> {
+        debug!("Loading Cachix token from environment: {}", env_var);
+        let token = std::env::var(env_var)
+            .with_context(|| format!("Cachix token environment variable {} not found", env_var))?;
+
+        let mut result = HashMap::new();
+        result.insert("CACHIX_AUTH_TOKEN".to_string(), token);
+        Ok(result)
+    }
+
+    async fn load_from_vault(
+        address: &str,
+        secret_path: &str,
+        token_env: &str,
+        namespace: Option<&str>,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        debug!(
+            "Loading credentials from Vault: {} at {}",
+            address, secret_path
+        );
+
+        let token = std::env::var(token_env)
+            .with_context(|| format!("Vault token environment variable {} not found", token_env))?;
+
+        // Create Vault client settings builder
+        let mut settings_builder = vaultrs::client::VaultClientSettingsBuilder::default();
+        settings_builder.address(address).token(&token);
+
+        // Set namespace if provided (through settings builder)
+        if let Some(ns) = namespace {
+            settings_builder.namespace(Some(ns.to_string()));
+        }
+
+        let client = vaultrs::client::VaultClient::new(
+            settings_builder
+                .build()
+                .context("Failed to build Vault client settings")?,
+        )
+        .context("Failed to create Vault client")?;
+
+        // Read secret from Vault KV v2
+        let secret: HashMap<String, String> = vaultrs::kv2::read(&client, "secret", secret_path)
+            .await
+            .with_context(|| format!("Failed to read secret from Vault path: {}", secret_path))?;
+
+        Ok(secret)
+    }
+
+    async fn load_aws_secrets_manager(
+        secret_name: &str,
+        region: Option<&str>,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        debug!(
+            "Loading credentials from AWS Secrets Manager: {}",
+            secret_name
+        );
+
+        // Load AWS config
+        let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+
+        if let Some(r) = region {
+            config_loader = config_loader.region(aws_config::Region::new(r.to_string()));
+        }
+
+        let config = config_loader.load().await;
+        let client = aws_sdk_secretsmanager::Client::new(&config);
+
+        let response = client
+            .get_secret_value()
+            .secret_id(secret_name)
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to retrieve secret from AWS Secrets Manager: {}",
+                    secret_name
+                )
+            })?;
+
+        let secret_string = response
+            .secret_string()
+            .ok_or_else(|| anyhow!("Secret value is not a string"))?;
+
+        // Parse as JSON
+        let credentials: HashMap<String, String> = serde_json::from_str(secret_string)
+            .context("Failed to parse AWS Secrets Manager secret as JSON")?;
+
+        Ok(credentials)
+    }
+
+    async fn load_systemd_credential(name: &str) -> anyhow::Result<HashMap<String, String>> {
+        debug!("Loading credentials from systemd credential: {}", name);
+
+        // Try to read from systemd credentials directory
+        // Systemd stores credentials in $CREDENTIALS_DIRECTORY or
+        // /run/credentials/<service>
+        let cred_dir = std::env::var("CREDENTIALS_DIRECTORY")
+            .unwrap_or_else(|_| "/run/credentials".to_string());
+
+        let cred_path = PathBuf::from(cred_dir).join(name);
+
+        let contents = tokio::fs::read_to_string(&cred_path)
+            .await
+            .with_context(|| {
+                format!("Failed to read systemd credential: {}", cred_path.display())
+            })?;
+
+        // Parse as JSON or key=value
+        if let Ok(json_creds) = serde_json::from_str::<HashMap<String, String>>(&contents) {
+            Ok(json_creds)
+        } else {
+            // Treat as single value credential
+            let mut result = HashMap::new();
+            result.insert(name.to_string(), contents.trim().to_string());
+            Ok(result)
+        }
+    }
+
+    async fn load_instance_metadata() -> anyhow::Result<HashMap<String, String>> {
+        debug!("Loading credentials from instance metadata service");
+
+        // For AWS EC2, this will use the instance profile
+        // The AWS SDK automatically uses IMDS when available
+        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .load()
+            .await;
+
+        // Verify that we have credentials
+        let credentials = config
+            .credentials_provider()
+            .ok_or_else(|| anyhow!("No credentials available from instance metadata"))?
+            .provide_credentials()
+            .await
+            .context("Failed to load credentials from instance metadata")?;
+
+        let mut result = HashMap::new();
+        result.insert(
+            "AWS_ACCESS_KEY_ID".to_string(),
+            credentials.access_key_id().to_string(),
+        );
+        result.insert(
+            "AWS_SECRET_ACCESS_KEY".to_string(),
+            credentials.secret_access_key().to_string(),
+        );
+
+        if let Some(token) = credentials.session_token() {
+            result.insert("AWS_SESSION_TOKEN".to_string(), token.to_string());
+        }
+
+        Ok(result)
+    }
+
+    async fn load_github_app_key_file(
+        app_id_env: &str,
+        key_file: &PathBuf,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        debug!(
+            "Loading GitHub App credentials from file: {}",
+            key_file.display()
+        );
+
+        let app_id = std::env::var(app_id_env).with_context(|| {
+            format!(
+                "GitHub App ID environment variable {} not found",
+                app_id_env
+            )
+        })?;
+
+        let private_key = tokio::fs::read_to_string(key_file).await.with_context(|| {
+            format!(
+                "Failed to read GitHub App private key file: {}",
+                key_file.display()
+            )
+        })?;
+
+        let mut result = HashMap::new();
+        result.insert("GITHUB_APP_ID".to_string(), app_id);
+        result.insert("GITHUB_APP_PRIVATE_KEY".to_string(), private_key);
+
+        Ok(result)
     }
 }
 

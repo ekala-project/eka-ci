@@ -49,6 +49,60 @@ impl axum::extract::FromRef<AppState> for JwtService {
     }
 }
 
+impl AppState {
+    /// Build the narrower `crate::auth::oauth::AppState` used by OAuth handlers.
+    fn oauth_state(&self) -> crate::auth::oauth::AppState {
+        crate::auth::oauth::AppState {
+            db: self.db_service.pool.clone(),
+            jwt_service: self.jwt_service.clone(),
+            oauth_config: self.oauth_config.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Small response helpers
+//
+// These collapse the verbose `(StatusCode::X, "msg").into_response()` pattern
+// used throughout this file into self-documenting calls, keeping handler
+// happy-paths visually prominent.
+// ---------------------------------------------------------------------------
+
+fn bad_request(msg: impl Into<String>) -> axum::response::Response {
+    (axum::http::StatusCode::BAD_REQUEST, msg.into()).into_response()
+}
+
+fn not_found(msg: impl Into<String>) -> axum::response::Response {
+    (axum::http::StatusCode::NOT_FOUND, msg.into()).into_response()
+}
+
+fn internal_error(msg: impl Into<String>) -> axum::response::Response {
+    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg.into()).into_response()
+}
+
+fn forbidden(msg: impl Into<String>) -> axum::response::Response {
+    (axum::http::StatusCode::FORBIDDEN, msg.into()).into_response()
+}
+
+fn service_unavailable(msg: impl Into<String>) -> axum::response::Response {
+    (axum::http::StatusCode::SERVICE_UNAVAILABLE, msg.into()).into_response()
+}
+
+/// Parse a `DrvId` from a string, returning a `(status, message)` pair on
+/// failure that is suitable for `?`-propagation in handlers returning
+/// `Result<_, (StatusCode, String)>`.
+fn parse_drv_id(
+    drv: &str,
+) -> Result<crate::db::model::drv_id::DrvId, (axum::http::StatusCode, String)> {
+    crate::db::model::drv_id::DrvId::try_from(drv).map_err(|e| {
+        warn!("Invalid drv format: {}", e);
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("Invalid derivation format: {}", e),
+        )
+    })
+}
+
 pub struct WebService {
     listener: TcpListener,
     state: AppState,
@@ -555,33 +609,18 @@ async fn get_drv_hooks_handler(
 
 // Auth handlers
 async fn auth_login_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let oauth_state = crate::auth::oauth::AppState {
-        db: state.db_service.pool.clone(),
-        jwt_service: state.jwt_service.clone(),
-        oauth_config: state.oauth_config.clone(),
-    };
-    crate::auth::handle_login(State(oauth_state)).await
+    crate::auth::handle_login(State(state.oauth_state())).await
 }
 
 async fn auth_callback_handler(
     query: axum::extract::Query<crate::auth::oauth::CallbackParams>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let oauth_state = crate::auth::oauth::AppState {
-        db: state.db_service.pool.clone(),
-        jwt_service: state.jwt_service.clone(),
-        oauth_config: state.oauth_config.clone(),
-    };
-    crate::auth::handle_callback(query, State(oauth_state)).await
+    crate::auth::handle_callback(query, State(state.oauth_state())).await
 }
 
 async fn auth_me_handler(user: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
-    let oauth_state = crate::auth::oauth::AppState {
-        db: state.db_service.pool.clone(),
-        jwt_service: state.jwt_service.clone(),
-        oauth_config: state.oauth_config.clone(),
-    };
-    crate::auth::handle_me(user, State(oauth_state)).await
+    crate::auth::handle_me(user, State(state.oauth_state())).await
 }
 
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -894,18 +933,7 @@ async fn get_drv_details_handler(
     State(state): State<AppState>,
     axum::extract::Path(drv): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    use crate::db::model::drv_id::DrvId;
-
-    // Parse the drv parameter into a DrvId
-    let drv_id = match DrvId::try_from(drv.as_str()) {
-        Ok(id) => id,
-        Err(e) => {
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                format!("Invalid derivation format: {}", e),
-            ));
-        },
-    };
+    let drv_id = parse_drv_id(&drv)?;
 
     // Use graph_handle for lockfree access to node data
     match state.graph_handle.get_node(&drv_id) {
@@ -933,18 +961,7 @@ async fn get_drv_dependencies_handler(
     State(state): State<AppState>,
     axum::extract::Path(drv): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    use crate::db::model::drv_id::DrvId;
-
-    // Parse the drv parameter into a DrvId
-    let drv_id = match DrvId::try_from(drv.as_str()) {
-        Ok(id) => id,
-        Err(e) => {
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                format!("Invalid derivation format: {}", e),
-            ));
-        },
-    };
+    let drv_id = parse_drv_id(&drv)?;
 
     // Use graph_handle to get dependencies
     match state.graph_handle.get_dependencies(&drv_id).await {
@@ -1208,6 +1225,54 @@ async fn get_pr_github_metadata_handler(
 // Auto-Merge Handlers
 // ============================================================================
 
+/// Ensure the authenticated user is a maintainer of every package changed by
+/// the referenced PR. Returns the changed package list on success, or a ready
+/// `Response` describing the failure that the caller should return directly.
+///
+/// `action_verb_phrase` is a short phrase (e.g. "enable auto-merge") that is
+/// embedded into the `403 Forbidden` body when the user is not a maintainer.
+async fn ensure_pr_maintainer_access(
+    auth_user: &AuthUser,
+    owner: &str,
+    repo: &str,
+    pr_number: i64,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    action_verb_phrase: &str,
+) -> Result<Vec<String>, axum::response::Response> {
+    // Get changed packages for this PR
+    let changed_packages = crate::db::github::get_pr_changed_packages(pr_number, owner, repo, pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to get changed packages for PR: {}", e);
+            internal_error(format!("Failed to get changed packages: {}", e))
+        })?;
+
+    if changed_packages.is_empty() {
+        return Err(bad_request("No changed packages found for this PR"));
+    }
+
+    // Check if user is maintainer of ALL changed packages
+    let is_maintainer = crate::db::maintainers::is_maintainer_of_all_packages(
+        auth_user.github_id,
+        &changed_packages,
+        pool,
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to check maintainer status: {}", e);
+        internal_error(format!("Failed to check maintainer status: {}", e))
+    })?;
+
+    if !is_maintainer {
+        return Err(forbidden(format!(
+            "You must be a maintainer of all changed packages to {}",
+            action_verb_phrase
+        )));
+    }
+
+    Ok(changed_packages)
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct EnableAutoMergeRequest {
     merge_method: Option<String>,
@@ -1220,69 +1285,23 @@ async fn enable_auto_merge_handler(
     Path((owner, repo, pr_number)): Path<(String, String, i64)>,
     Json(payload): Json<EnableAutoMergeRequest>,
 ) -> impl IntoResponse {
-    // Get changed packages for this PR
-    let changed_packages = match crate::db::github::get_pr_changed_packages(
-        pr_number,
+    if let Err(resp) = ensure_pr_maintainer_access(
+        &auth_user,
         &owner,
         &repo,
+        pr_number,
         &state.db_service.pool,
+        "enable auto-merge",
     )
     .await
     {
-        Ok(packages) => packages,
-        Err(e) => {
-            error!("Failed to get changed packages for PR: {}", e);
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get changed packages: {}", e),
-            )
-                .into_response();
-        },
-    };
-
-    if changed_packages.is_empty() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            "No changed packages found for this PR",
-        )
-            .into_response();
-    }
-
-    // Check if user is maintainer of ALL changed packages
-    let is_maintainer = match crate::db::maintainers::is_maintainer_of_all_packages(
-        auth_user.github_id,
-        &changed_packages,
-        &state.db_service.pool,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            error!("Failed to check maintainer status: {}", e);
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to check maintainer status: {}", e),
-            )
-                .into_response();
-        },
-    };
-
-    if !is_maintainer {
-        return (
-            axum::http::StatusCode::FORBIDDEN,
-            "You must be a maintainer of all changed packages to enable auto-merge",
-        )
-            .into_response();
+        return resp;
     }
 
     // Validate merge method if provided
     if let Some(ref method) = payload.merge_method {
         if method != "merge" && method != "squash" && method != "rebase" {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                "Invalid merge method. Must be 'merge', 'squash', or 'rebase'",
-            )
-                .into_response();
+            return bad_request("Invalid merge method. Must be 'merge', 'squash', or 'rebase'");
         }
     }
 
@@ -1305,11 +1324,7 @@ async fn enable_auto_merge_handler(
         },
         Err(e) => {
             error!("Failed to enable auto-merge: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to enable auto-merge: {}", e),
-            )
-                .into_response()
+            internal_error(format!("Failed to enable auto-merge: {}", e))
         },
     }
 }
@@ -1320,59 +1335,17 @@ async fn disable_auto_merge_handler(
     auth_user: crate::auth::AuthUser,
     Path((owner, repo, pr_number)): Path<(String, String, i64)>,
 ) -> impl IntoResponse {
-    // Get changed packages for this PR
-    let changed_packages = match crate::db::github::get_pr_changed_packages(
-        pr_number,
+    if let Err(resp) = ensure_pr_maintainer_access(
+        &auth_user,
         &owner,
         &repo,
+        pr_number,
         &state.db_service.pool,
+        "disable auto-merge",
     )
     .await
     {
-        Ok(packages) => packages,
-        Err(e) => {
-            error!("Failed to get changed packages for PR: {}", e);
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get changed packages: {}", e),
-            )
-                .into_response();
-        },
-    };
-
-    if changed_packages.is_empty() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            "No changed packages found for this PR",
-        )
-            .into_response();
-    }
-
-    // Check if user is maintainer of ALL changed packages
-    let is_maintainer = match crate::db::maintainers::is_maintainer_of_all_packages(
-        auth_user.github_id,
-        &changed_packages,
-        &state.db_service.pool,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            error!("Failed to check maintainer status: {}", e);
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to check maintainer status: {}", e),
-            )
-                .into_response();
-        },
-    };
-
-    if !is_maintainer {
-        return (
-            axum::http::StatusCode::FORBIDDEN,
-            "You must be a maintainer of all changed packages to disable auto-merge",
-        )
-            .into_response();
+        return resp;
     }
 
     // Disable auto-merge
@@ -1388,11 +1361,7 @@ async fn disable_auto_merge_handler(
         },
         Err(e) => {
             error!("Failed to disable auto-merge: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to disable auto-merge: {}", e),
-            )
-                .into_response()
+            internal_error(format!("Failed to disable auto-merge: {}", e))
         },
     }
 }
@@ -1411,68 +1380,20 @@ async fn manual_merge_pr_handler(
 ) -> impl IntoResponse {
     let octocrab = match &state.octocrab {
         Some(o) => o,
-        None => {
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "GitHub API not available",
-            )
-                .into_response();
-        },
+        None => return service_unavailable("GitHub API not available"),
     };
 
-    // Get changed packages for this PR
-    let changed_packages = match crate::db::github::get_pr_changed_packages(
-        pr_number,
+    if let Err(resp) = ensure_pr_maintainer_access(
+        &auth_user,
         &owner,
         &repo,
+        pr_number,
         &state.db_service.pool,
+        "merge",
     )
     .await
     {
-        Ok(packages) => packages,
-        Err(e) => {
-            error!("Failed to get changed packages for PR: {}", e);
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get changed packages: {}", e),
-            )
-                .into_response();
-        },
-    };
-
-    if changed_packages.is_empty() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            "No changed packages found for this PR",
-        )
-            .into_response();
-    }
-
-    // Check if user is maintainer of ALL changed packages
-    let is_maintainer = match crate::db::maintainers::is_maintainer_of_all_packages(
-        auth_user.github_id,
-        &changed_packages,
-        &state.db_service.pool,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            error!("Failed to check maintainer status: {}", e);
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to check maintainer status: {}", e),
-            )
-                .into_response();
-        },
-    };
-
-    if !is_maintainer {
-        return (
-            axum::http::StatusCode::FORBIDDEN,
-            "You must be a maintainer of all changed packages to merge",
-        )
-            .into_response();
+        return resp;
     }
 
     // Validate merge method
@@ -1483,11 +1404,7 @@ async fn manual_merge_pr_handler(
         .unwrap_or("squash");
 
     if merge_method != "merge" && merge_method != "squash" && merge_method != "rebase" {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            "Invalid merge method. Must be 'merge', 'squash', or 'rebase'",
-        )
-            .into_response();
+        return bad_request("Invalid merge method. Must be 'merge', 'squash', or 'rebase'");
     }
 
     // Attempt to merge
@@ -1573,15 +1490,11 @@ async fn check_merge_eligibility_handler(
     {
         Ok(Some(pr)) => pr,
         Ok(None) => {
-            return (axum::http::StatusCode::NOT_FOUND, "Pull request not found").into_response();
+            return not_found("Pull request not found");
         },
         Err(e) => {
             error!("Failed to fetch PR: {}", e);
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch PR: {}", e),
-            )
-                .into_response();
+            return internal_error(format!("Failed to fetch PR: {}", e));
         },
     };
 
