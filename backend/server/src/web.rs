@@ -1139,11 +1139,7 @@ async fn list_pull_requests_handler(State(state): State<AppState>) -> impl IntoR
         Ok(prs) => Json(prs).into_response(),
         Err(e) => {
             error!("Failed to list pull requests: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to list pull requests: {}", e),
-            )
-                .into_response()
+            internal_error(format!("Failed to list pull requests: {}", e))
         },
     }
 }
@@ -1159,21 +1155,13 @@ async fn get_pull_request_handler(
         .await
     {
         Ok(Some(pr)) => Json(pr).into_response(),
-        Ok(None) => (
-            axum::http::StatusCode::NOT_FOUND,
-            format!(
-                "Pull request #{} not found in {}/{}",
-                pr_number, owner, repo
-            ),
-        )
-            .into_response(),
+        Ok(None) => not_found(format!(
+            "Pull request #{} not found in {}/{}",
+            pr_number, owner, repo
+        )),
         Err(e) => {
             error!("Failed to get pull request: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get pull request: {}", e),
-            )
-                .into_response()
+            internal_error(format!("Failed to get pull request: {}", e))
         },
     }
 }
@@ -1192,13 +1180,7 @@ async fn get_pr_github_metadata_handler(
 ) -> impl IntoResponse {
     let octocrab = match &state.octocrab {
         Some(o) => o,
-        None => {
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "GitHub API not available",
-            )
-                .into_response();
-        },
+        None => return service_unavailable("GitHub API not available"),
     };
 
     match octocrab.pulls(&owner, &repo).get(pr_number as u64).await {
@@ -1212,11 +1194,7 @@ async fn get_pr_github_metadata_handler(
         },
         Err(e) => {
             error!("Failed to fetch PR metadata from GitHub: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch PR metadata: {}", e),
-            )
-                .into_response()
+            internal_error(format!("Failed to fetch PR metadata: {}", e))
         },
     }
 }
@@ -1443,11 +1421,7 @@ async fn manual_merge_pr_handler(
         },
         Err(e) => {
             error!("Failed to merge PR: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to merge PR: {}", e),
-            )
-                .into_response()
+            internal_error(format!("Failed to merge PR: {}", e))
         },
     }
 }
@@ -1469,13 +1443,7 @@ async fn check_merge_eligibility_handler(
 ) -> impl IntoResponse {
     let octocrab = match &state.octocrab {
         Some(o) => o,
-        None => {
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "GitHub API not available",
-            )
-                .into_response();
-        },
+        None => return service_unavailable("GitHub API not available"),
     };
 
     // Get PR from database
@@ -1489,9 +1457,7 @@ async fn check_merge_eligibility_handler(
     .await
     {
         Ok(Some(pr)) => pr,
-        Ok(None) => {
-            return not_found("Pull request not found");
-        },
+        Ok(None) => return not_found("Pull request not found"),
         Err(e) => {
             error!("Failed to fetch PR: {}", e);
             return internal_error(format!("Failed to fetch PR: {}", e));
@@ -1510,11 +1476,7 @@ async fn check_merge_eligibility_handler(
         Ok(packages) => packages,
         Err(e) => {
             error!("Failed to get changed packages: {}", e);
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get changed packages: {}", e),
-            )
-                .into_response();
+            return internal_error(format!("Failed to get changed packages: {}", e));
         },
     };
 
@@ -1593,11 +1555,7 @@ async fn list_merge_queue_builds_handler(
         Ok(builds) => Json(builds).into_response(),
         Err(e) => {
             error!("Failed to list merge queue builds: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to list merge queue builds: {}", e),
-            )
-                .into_response()
+            internal_error(format!("Failed to list merge queue builds: {}", e))
         },
     }
 }
@@ -1613,21 +1571,13 @@ async fn get_merge_queue_build_handler(
         .await
     {
         Ok(Some(build)) => Json(build).into_response(),
-        Ok(None) => (
-            axum::http::StatusCode::NOT_FOUND,
-            format!(
-                "Merge queue build not found for commit {} in {}/{}",
-                sha, owner, repo
-            ),
-        )
-            .into_response(),
+        Ok(None) => not_found(format!(
+            "Merge queue build not found for commit {} in {}/{}",
+            sha, owner, repo
+        )),
         Err(e) => {
             error!("Failed to get merge queue build: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get merge queue build: {}", e),
-            )
-                .into_response()
+            internal_error(format!("Failed to get merge queue build: {}", e))
         },
     }
 }
