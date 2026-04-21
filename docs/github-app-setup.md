@@ -175,6 +175,7 @@ eka-ci requires these **Repository permissions**:
 Enable these webhook events:
 
 - ✅ **Pull request** - Triggers builds on PR open, update, close
+- ✅ **Pull request review** - Re-checks auto-merge eligibility when maintainers approve or dismiss reviews
 - ✅ **Workflow run** - For approval workflow integration
 - ✅ **Merge group** - For GitHub merge queue support
 - ✅ **Installation** - Tracks when app is installed/uninstalled
