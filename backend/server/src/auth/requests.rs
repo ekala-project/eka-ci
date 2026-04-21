@@ -11,7 +11,9 @@ use sqlx::SqlitePool;
 
 use super::github_api::GitHubApiClient;
 use super::middleware::{AdminUser, AuthUser};
-use super::types::{MaintainerDetail, MaintainerRequestDetail};
+use super::types::{
+    AttrPathMaintainerRequest, MaintainerDetail, MaintainerRequestDetail, RequestMaintainerRequest,
+};
 use crate::db::maintainers;
 
 /// Shared state for request handlers that need GitHub API access
@@ -58,12 +60,22 @@ pub async fn get_job_maintainers(
 }
 
 /// Request to become a maintainer of an attr path (authenticated endpoint)
-/// Auto-approves if user has triage+ access on the repository
+/// Auto-approves if user has triage+ access on the repository.
+///
+/// Accepts an optional `RequestMaintainerRequest` JSON body so future client
+/// versions can attach extra metadata (e.g. justification text) without
+/// changing the endpoint contract.
 pub async fn request_maintainer(
     user: AuthUser,
     Path(attr_path): Path<String>,
     State(state): State<RequestHandlerState>,
+    body: Option<Json<RequestMaintainerRequest>>,
 ) -> Result<Json<serde_json::Value>, Response> {
+    // The request DTO currently has no fields, but we accept it (optionally)
+    // so callers can start sending a body today and extension fields remain
+    // backwards compatible. Discard the body; only the URL path and auth
+    // identity are used for the request itself.
+    let _ = body;
     let pool = &state.pool;
 
     // Check if user is already a maintainer
@@ -311,4 +323,142 @@ pub async fn reject_request(
     Ok(Json(
         json!({ "success": true, "message": "Request rejected" }),
     ))
+}
+
+/// Get a single maintainer request by ID (authenticated endpoint).
+///
+/// Access is restricted to the requester or an admin; other users receive
+/// 403. Returns 404 if the request does not exist.
+pub async fn get_request_by_id(
+    user: AuthUser,
+    Path(request_id): Path<i64>,
+    State(pool): State<SqlitePool>,
+) -> Result<Json<AttrPathMaintainerRequest>, Response> {
+    let request = maintainers::get_maintainer_request(request_id, &pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to fetch request: {}", e) })),
+            )
+                .into_response()
+        })?;
+
+    let request = request.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Maintainer request not found" })),
+        )
+            .into_response()
+    })?;
+
+    if request.github_user_id != user.github_id && !user.is_admin() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "You may only view your own maintainer requests" })),
+        )
+            .into_response());
+    }
+
+    Ok(Json(request))
+}
+
+/// Request body for `add_maintainer_by_username`: the GitHub login of the
+/// user to grant maintainer status to.
+#[derive(Debug, serde::Deserialize)]
+pub struct AddMaintainerByUsernameRequest {
+    pub github_username: String,
+}
+
+/// Admin-only: add a maintainer to an attr path by GitHub username rather
+/// than numeric id. Returns 404 if the username is unknown to the system
+/// (i.e. the user has not authenticated via OAuth yet).
+pub async fn add_maintainer_by_username(
+    admin: AdminUser,
+    Path(attr_path): Path<String>,
+    State(pool): State<SqlitePool>,
+    Json(req): Json<AddMaintainerByUsernameRequest>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let github_user_id = maintainers::get_github_user_id_by_username(&req.github_username, &pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to look up user: {}", e) })),
+            )
+                .into_response()
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": format!(
+                        "No authenticated user found with github_username '{}'",
+                        req.github_username
+                    )
+                })),
+            )
+                .into_response()
+        })?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO AttrPathMaintainers (attr_path, github_user_id, added_by_user_id)
+        VALUES (?, ?, ?)
+        "#,
+    )
+    .bind(&attr_path)
+    .bind(github_user_id)
+    .bind(admin.github_id)
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE constraint failed") {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "User is already a maintainer of this attr path" })),
+            )
+                .into_response();
+        }
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to add maintainer: {}", e) })),
+        )
+            .into_response()
+    })?;
+
+    Ok(Json(json!({
+        "success": true,
+        "github_user_id": github_user_id,
+        "attr_path": attr_path,
+    })))
+}
+
+/// Request to become a maintainer of the attr path a given job belongs to.
+/// Resolves the job id → attr path and then delegates to
+/// [`request_maintainer`]. Returns 404 if the job id is unknown.
+pub async fn request_maintainer_for_job(
+    user: AuthUser,
+    Path(job_id): Path<i64>,
+    State(state): State<RequestHandlerState>,
+    body: Option<Json<RequestMaintainerRequest>>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let attr_path = maintainers::get_attr_path_for_job(job_id, &state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to look up job: {}", e) })),
+            )
+                .into_response()
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Job not found" })),
+            )
+                .into_response()
+        })?;
+
+    request_maintainer(user, Path(attr_path), State(state), body).await
 }
