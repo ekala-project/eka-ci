@@ -284,6 +284,17 @@ impl RecorderWorker {
                     // Don't fail the build if hooks fail - they run asynchronously
                 }
 
+                // Capture runtime references for dependency tracking first so
+                // that subsequent per-output size updates have rows to land on.
+                if let Err(e) = self.capture_runtime_references(&drv, &job_infos).await {
+                    warn!(
+                        "Failed to capture runtime references for {}: {}",
+                        drv.store_path(),
+                        e
+                    );
+                    // Don't fail the build if runtime ref capture fails
+                }
+
                 // Calculate and check output size if configured
                 if let Err(e) = self.check_output_size(&drv, &job_infos).await {
                     warn!(
@@ -302,16 +313,6 @@ impl RecorderWorker {
                         e
                     );
                     // Don't fail the build if closure size check fails
-                }
-
-                // Capture runtime references for dependency tracking
-                if let Err(e) = self.capture_runtime_references(&drv, &job_infos).await {
-                    warn!(
-                        "Failed to capture runtime references for {}: {}",
-                        drv.store_path(),
-                        e
-                    );
-                    // Don't fail the build if runtime ref capture fails
                 }
 
                 // Clear any transitive failures in graph (fast in-memory operation)
@@ -778,11 +779,11 @@ impl RecorderWorker {
             get_baseline_output_size, store_output_size, update_drv_output_size,
         };
         use crate::github::GitHubTask;
-        use crate::nix::size::get_output_size;
+        use crate::nix::size::get_output_sizes;
 
-        // Get output paths for this derivation
-        let output_paths = match crate::nix::get_drv_outputs(&drv_id.store_path()).await {
-            Ok(outputs) if !outputs.is_empty() => outputs.into_values().collect::<Vec<String>>(),
+        // Get output name → path mapping for this derivation
+        let outputs = match crate::nix::get_drv_outputs(&drv_id.store_path()).await {
+            Ok(outputs) if !outputs.is_empty() => outputs,
             Ok(_) => {
                 debug!(
                     "No output paths found for size check: {}",
@@ -796,18 +797,23 @@ impl RecorderWorker {
             },
         };
 
-        // Calculate output size using nix path-info
-        let output_size = match get_output_size(&output_paths) {
-            Ok(size) => size,
+        let output_paths: Vec<String> = outputs.values().cloned().collect();
+
+        // Calculate per-path output sizes using nix path-info
+        let sizes_by_path = match get_output_sizes(&output_paths) {
+            Ok(sizes) => sizes,
             Err(e) => {
                 warn!(
-                    "Failed to calculate output size for {}: {}",
+                    "Failed to calculate output sizes for {}: {}",
                     drv_id.store_path(),
                     e
                 );
                 return Ok(()); // Skip size check if calculation fails
             },
         };
+
+        // Aggregate total for Drv-level summary
+        let output_size: u64 = sizes_by_path.values().sum();
 
         debug!(
             "Calculated output size for {}: {} bytes ({})",
@@ -822,6 +828,32 @@ impl RecorderWorker {
         // Update the Drv table
         if let Err(e) = update_drv_output_size(pool, &drv_id.store_path(), output_size).await {
             warn!("Failed to update drv output size: {}", e);
+        }
+
+        // Persist per-output sizes into DrvRuntimeRefs (requires capture_runtime_references
+        // to have already created rows for each output).
+        let drv_rowid: Option<i64> = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
+            .bind(&drv_id.store_path())
+            .fetch_optional(pool)
+            .await?;
+        if let Some(drv_rowid) = drv_rowid {
+            for (output_name, output_path) in &outputs {
+                if let Some(size) = sizes_by_path.get(output_path) {
+                    if let Err(e) = crate::db::runtime_refs::update_output_size(
+                        pool,
+                        drv_rowid,
+                        output_name,
+                        *size as i64,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Failed to update per-output size for '{}' ({}): {}",
+                            output_name, output_path, e
+                        );
+                    }
+                }
+            }
         }
 
         // For each job this drv belongs to, check if we have metadata to store historical size
@@ -1001,11 +1033,11 @@ impl RecorderWorker {
         use crate::db::size::{
             get_baseline_closure_size, store_closure_size, update_drv_closure_size,
         };
-        use crate::nix::size::get_closure_size;
+        use crate::nix::size::get_closure_sizes;
 
-        // Get output paths for this derivation
-        let output_paths = match crate::nix::get_drv_outputs(&drv_id.store_path()).await {
-            Ok(outputs) if !outputs.is_empty() => outputs.into_values().collect::<Vec<String>>(),
+        // Get output name → path mapping for this derivation
+        let outputs = match crate::nix::get_drv_outputs(&drv_id.store_path()).await {
+            Ok(outputs) if !outputs.is_empty() => outputs,
             Ok(_) => {
                 debug!(
                     "No output paths found for closure size check: {}",
@@ -1019,18 +1051,23 @@ impl RecorderWorker {
             },
         };
 
-        // Calculate closure size using nix path-info -S
-        let closure_size = match get_closure_size(&output_paths) {
-            Ok(size) => size,
+        let output_paths: Vec<String> = outputs.values().cloned().collect();
+
+        // Calculate per-path closure sizes using nix path-info -S
+        let closures_by_path = match get_closure_sizes(&output_paths) {
+            Ok(sizes) => sizes,
             Err(e) => {
                 warn!(
-                    "Failed to calculate closure size for {}: {}",
+                    "Failed to calculate closure sizes for {}: {}",
                     drv_id.store_path(),
                     e
                 );
                 return Ok(()); // Skip closure size check if calculation fails
             },
         };
+
+        // Aggregate total across all outputs for Drv-level summary
+        let closure_size: u64 = closures_by_path.values().sum();
 
         debug!(
             "Calculated closure size for {}: {} bytes ({})",
@@ -1045,6 +1082,32 @@ impl RecorderWorker {
         // Update the Drv table
         if let Err(e) = update_drv_closure_size(pool, &drv_id.store_path(), closure_size).await {
             warn!("Failed to update drv closure size: {}", e);
+        }
+
+        // Persist per-output closure sizes into DrvRuntimeRefs (requires
+        // capture_runtime_references to have already created rows per output).
+        let drv_rowid: Option<i64> = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
+            .bind(&drv_id.store_path())
+            .fetch_optional(pool)
+            .await?;
+        if let Some(drv_rowid) = drv_rowid {
+            for (output_name, output_path) in &outputs {
+                if let Some(size) = closures_by_path.get(output_path) {
+                    if let Err(e) = crate::db::runtime_refs::update_closure_size(
+                        pool,
+                        drv_rowid,
+                        output_name,
+                        *size as i64,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Failed to update per-output closure size for '{}' ({}): {}",
+                            output_name, output_path, e
+                        );
+                    }
+                }
+            }
         }
 
         // For each job this drv belongs to, check if we have metadata to store historical size
