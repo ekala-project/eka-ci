@@ -55,30 +55,35 @@ impl CachedNode {
     }
 }
 
-/// Commands that can be sent to the GraphService
+/// Commands that can be sent to the GraphService.
+///
+/// Response channels always carry the _success_ payload for the command.
+/// If the service fails to process a command, the response sender is
+/// dropped and the caller observes a `RecvError` which they propagate as
+/// an `anyhow::Error` via `rx.await?`. See `handle_command` for details.
 #[derive(Debug)]
 pub enum GraphCommand {
     /// Update the build state of a drv
     UpdateState {
         drv_id: DrvId,
         new_state: DrvBuildState,
-        response: oneshot::Sender<Result<(), GraphError>>,
+        response: oneshot::Sender<()>,
     },
     /// Insert new drvs and their dependencies
     InsertDrvs {
         drvs: Vec<Drv>,
         refs: Vec<(DrvId, DrvId)>,
-        response: oneshot::Sender<Result<(), GraphError>>,
+        response: oneshot::Sender<()>,
     },
     /// Propagate failure from a failed drv to all transitive dependents
     PropagateFailure {
         failed_drv: DrvId,
-        response: oneshot::Sender<Result<Vec<DrvId>, GraphError>>,
+        response: oneshot::Sender<Vec<DrvId>>,
     },
     /// Clear failure and unblock drvs when a failed drv succeeds
     ClearFailure {
         formerly_failed: DrvId,
-        response: oneshot::Sender<Result<Vec<DrvId>, GraphError>>,
+        response: oneshot::Sender<Vec<DrvId>>,
     },
     /// Get all drvs that are currently buildable
     GetBuildableDrvs {
@@ -103,15 +108,6 @@ pub enum GraphCommand {
     GetAllFailedDrvs {
         response: oneshot::Sender<Vec<DrvId>>,
     },
-}
-
-/// Errors that can occur during graph operations
-#[derive(Debug, thiserror::Error)]
-pub enum GraphError {
-    #[error("Service has shut down")]
-    ServiceShutdown,
-    #[error("Drv not found: {0}")]
-    DrvNotFound(String),
 }
 
 /// The graph service that owns the mutable graph state
@@ -223,7 +219,7 @@ impl GraphService {
             } => {
                 debug!("UpdateState: {:?} -> {:?}", drv_id, new_state);
                 self.update_state(&drv_id, new_state.clone()).await?;
-                let _ = response.send(Ok(()));
+                let _ = response.send(());
             },
 
             GraphCommand::InsertDrvs {
@@ -233,7 +229,7 @@ impl GraphService {
             } => {
                 debug!("InsertDrvs: {} drvs, {} refs", drvs.len(), refs.len());
                 self.insert_drvs(drvs, refs).await?;
-                let _ = response.send(Ok(()));
+                let _ = response.send(());
             },
 
             GraphCommand::PropagateFailure {
@@ -242,7 +238,7 @@ impl GraphService {
             } => {
                 debug!("PropagateFailure: {:?}", failed_drv);
                 let blocked = self.propagate_failure(&failed_drv).await?;
-                let _ = response.send(Ok(blocked));
+                let _ = response.send(blocked);
             },
 
             GraphCommand::ClearFailure {
@@ -251,7 +247,7 @@ impl GraphService {
             } => {
                 debug!("ClearFailure: {:?}", formerly_failed);
                 let unblocked = self.clear_failure(&formerly_failed).await?;
-                let _ = response.send(Ok(unblocked));
+                let _ = response.send(unblocked);
             },
 
             GraphCommand::GetBuildableDrvs { response } => {
@@ -867,7 +863,7 @@ impl GraphServiceHandle {
                 response: tx,
             })
             .await?;
-        rx.await??;
+        rx.await?;
         Ok(())
     }
 }

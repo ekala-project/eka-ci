@@ -260,7 +260,7 @@ impl EvalService {
             response: tx,
         };
         self.graph_command_sender.send(cmd).await?;
-        rx.await??;
+        rx.await?;
 
         for drv in new_drvs {
             let drv_id = drv.drv_path.clone();

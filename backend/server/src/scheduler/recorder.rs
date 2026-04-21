@@ -211,7 +211,7 @@ impl RecorderWorker {
         };
 
         self.graph_command_sender.send(cmd).await?;
-        rx.await??;
+        rx.await?;
         Ok(())
     }
 
@@ -227,7 +227,7 @@ impl RecorderWorker {
         };
 
         self.graph_command_sender.send(cmd).await?;
-        let unblocked = rx.await??;
+        let unblocked = rx.await?;
         Ok(unblocked)
     }
 
@@ -243,7 +243,7 @@ impl RecorderWorker {
         };
 
         self.graph_command_sender.send(cmd).await?;
-        let blocked = rx.await??;
+        let blocked = rx.await?;
         Ok(blocked)
     }
 
