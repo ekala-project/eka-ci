@@ -99,6 +99,7 @@ async fn create_test_server(
         &socket,
         git_sender,
         None, // no GitHub sender
+        None, // no ingress sender
         None, // no octocrab
         scheduler.metrics_registry(),
         false, // no approval required
