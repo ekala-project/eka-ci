@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 
 /// Context for permission checking (re-exported from cache_permissions)
 pub use crate::cache_permissions::PermissionContext;
+use crate::cache_permissions::matches_glob_pattern;
 use crate::config::GitHubAppConfig;
 
 /// Check if a repository/branch is allowed to use a specific GitHub App
@@ -53,28 +54,6 @@ pub fn check_github_app_permission(
     }
 
     Ok(())
-}
-
-/// Simple glob pattern matching for branch names
-/// Supports '*' as wildcard (e.g., "main", "release/*", "*")
-fn matches_glob_pattern(value: &str, pattern: &str) -> bool {
-    // If pattern is just "*", match everything
-    if pattern == "*" {
-        return true;
-    }
-
-    // If pattern ends with "/*", match prefix
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        return value.starts_with(prefix);
-    }
-
-    // If pattern starts with "*/", match suffix
-    if let Some(suffix) = pattern.strip_prefix("*/") {
-        return value.ends_with(suffix);
-    }
-
-    // Otherwise, exact match
-    value == pattern
 }
 
 #[cfg(test)]
@@ -190,15 +169,5 @@ mod tests {
         };
 
         assert!(check_github_app_permission(&app, &context).is_err());
-    }
-
-    #[test]
-    fn test_glob_patterns() {
-        assert!(matches_glob_pattern("main", "main"));
-        assert!(matches_glob_pattern("anything", "*"));
-        assert!(matches_glob_pattern("release/v1.0", "release/*"));
-        assert!(matches_glob_pattern("feature/foo", "feature/*"));
-        assert!(!matches_glob_pattern("main", "release/*"));
-        assert!(!matches_glob_pattern("feature/foo", "main"));
     }
 }

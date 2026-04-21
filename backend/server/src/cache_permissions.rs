@@ -61,7 +61,7 @@ pub fn check_cache_permission(cache: &CacheConfig, context: &PermissionContext) 
 
 /// Simple glob pattern matching for branch names
 /// Supports '*' as wildcard (e.g., "main", "release/*", "*")
-fn matches_glob_pattern(value: &str, pattern: &str) -> bool {
+pub(crate) fn matches_glob_pattern(value: &str, pattern: &str) -> bool {
     // If pattern is just "*", match everything
     if pattern == "*" {
         return true;
