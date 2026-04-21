@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-use super::eviction::{EvictionCandidateSelector, EvictionConfig};
+use super::eviction::EvictionCandidateSelector;
 use super::graph::BuildGraph;
 use crate::db::DbService;
 use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
@@ -171,7 +171,7 @@ impl GraphService {
             last_accessed,
             ref_counts,
             metrics,
-            eviction_selector: EvictionCandidateSelector::new(EvictionConfig::default()),
+            eviction_selector: EvictionCandidateSelector::with_defaults(),
             last_dry_run_check: now,
         };
 

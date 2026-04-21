@@ -173,24 +173,6 @@ impl EvictionCandidateSelector {
         candidates
     }
 
-    /// Select candidates from a specific tier only (for Tier 1 background eviction)
-    pub fn select_tier1_only(
-        &self,
-        graph: &BuildGraph,
-        last_accessed: &HashMap<DrvId, Instant>,
-        ref_counts: &HashMap<DrvId, usize>,
-    ) -> Vec<EvictionCandidate> {
-        let now = Instant::now();
-        self.select_from_tier(
-            graph,
-            last_accessed,
-            ref_counts,
-            EvictionTier::Tier1,
-            now,
-            usize::MAX, // No limit for background eviction
-        )
-    }
-
     /// Select candidates from a specific tier
     fn select_from_tier(
         &self,
