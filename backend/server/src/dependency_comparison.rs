@@ -93,8 +93,6 @@ fn looks_like_version(s: &str) -> bool {
 pub struct DependencyComparison {
     pub attr_path: String,
     pub output_name: String, // Output name: "out", "dev", "doc", etc.
-    pub base_drv_path: String,
-    pub head_drv_path: String,
     pub base_dep_count: usize,
     pub head_dep_count: usize,
     pub added_deps: Vec<String>,   // Store paths
@@ -133,10 +131,10 @@ pub async fn compare_runtime_references_for_jobset(
     let mut comparisons = Vec::new();
 
     for (attr_path, head_drv_path) in head_jobs {
-        // Get base drv ROWID and drv_path for same attr_path
-        let base_drv: Option<(i64, String)> = sqlx::query_as(
+        // Get base drv ROWID for same attr_path
+        let base_drv_id: Option<i64> = sqlx::query_scalar(
             r#"
-            SELECT d.ROWID, d.drv_path
+            SELECT d.ROWID
             FROM Job j
             JOIN Drv d ON d.ROWID = j.drv_id
             WHERE j.jobset = ? AND j.name = ?
@@ -147,7 +145,7 @@ pub async fn compare_runtime_references_for_jobset(
         .fetch_optional(pool)
         .await?;
 
-        let Some((base_drv_id, base_drv_path)) = base_drv else {
+        let Some(base_drv_id) = base_drv_id else {
             // New package, skip comparison (no baseline)
             continue;
         };
@@ -216,8 +214,6 @@ pub async fn compare_runtime_references_for_jobset(
                 comparisons.push(DependencyComparison {
                     attr_path: attr_path.clone(),
                     output_name: output_name.clone(),
-                    base_drv_path: base_drv_path.clone(),
-                    head_drv_path: head_drv_path.clone(),
                     base_dep_count: base_set.len(),
                     head_dep_count: head_set.len(),
                     added_deps: added_filtered,
