@@ -18,15 +18,6 @@ pub async fn clone_git_repo(git_url: &str, path: &str) -> Result<Output> {
     Ok(out)
 }
 
-#[allow(dead_code)]
-pub async fn repo_is_healthy(path: &str) -> Result<bool> {
-    debug!("Checking if {} is a healthy git repository", &path);
-
-    let status = Command::new("git").args(["status", path]).status().await?;
-
-    Ok(status.success())
-}
-
 pub async fn fetch_remote_repo<P: AsRef<Path>>(
     repo_dir: P,
     repo: &GitRepo,
