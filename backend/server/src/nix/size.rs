@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -6,7 +7,6 @@ use serde::Deserialize;
 /// Information about a Nix store path from `nix path-info`
 #[derive(Debug, Deserialize)]
 struct PathInfo {
-    #[allow(dead_code)]
     path: String,
     #[serde(rename = "narSize")]
     nar_size: u64,
@@ -14,39 +14,16 @@ struct PathInfo {
     closure_size: u64,
 }
 
-/// Calculate the total output size for a list of Nix store paths.
-///
-/// This uses `nix path-info --json` to get the NAR (Nix Archive) size for each output path.
-/// The NAR size represents the actual disk space used by the store path.
-///
-/// # Arguments
-/// * `output_paths` - List of Nix store paths to measure (e.g., ["/nix/store/abc-foo"])
-///
-/// # Returns
-/// * `Ok(u64)` - Total size in bytes
-/// * `Err` - If nix command fails or paths don't exist
-///
-/// # Example
-/// ```no_run
-/// use eka_ci_server::nix::size::get_output_size;
-///
-/// let paths = vec!["/nix/store/abc-python".to_string()];
-/// let size = get_output_size(&paths)?;
-/// println!("Total output size: {} MB", size / 1024 / 1024);
-/// # Ok::<(), anyhow::Error>(())
-/// ```
-pub fn get_output_size(output_paths: &[String]) -> Result<u64> {
-    if output_paths.is_empty() {
-        return Ok(0);
+/// Run `nix path-info --json` for the given paths and parse the result.
+fn query_path_infos(output_paths: &[String], include_closure: bool) -> Result<Vec<PathInfo>> {
+    let mut cmd = Command::new("nix");
+    cmd.arg("path-info");
+    if include_closure {
+        cmd.arg("-S");
     }
+    cmd.arg("--json").args(output_paths);
 
-    // Use nix path-info to get size information in JSON format
-    let output = Command::new("nix")
-        .arg("path-info")
-        .arg("--json")
-        .args(output_paths)
-        .output()
-        .context("Failed to execute 'nix path-info'")?;
+    let output = cmd.output().context("Failed to execute 'nix path-info'")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -57,68 +34,39 @@ pub fn get_output_size(output_paths: &[String]) -> Result<u64> {
         );
     }
 
-    // Parse JSON response
-    let path_infos: Vec<PathInfo> = serde_json::from_slice(&output.stdout)
-        .context("Failed to parse nix path-info JSON output")?;
-
-    // Sum up all NAR sizes
-    let total_size: u64 = path_infos.iter().map(|info| info.nar_size).sum();
-
-    Ok(total_size)
+    serde_json::from_slice(&output.stdout).context("Failed to parse nix path-info JSON output")
 }
 
-/// Calculate the total closure size for a list of Nix store paths.
+/// Calculate per-path output (NAR) sizes for a list of Nix store paths.
 ///
-/// This uses `nix path-info -S --json` to get the closure size for each output path.
-/// The closure size includes the path itself plus all of its runtime dependencies.
-///
-/// # Arguments
-/// * `output_paths` - List of Nix store paths to measure (e.g., ["/nix/store/abc-foo"])
-///
-/// # Returns
-/// * `Ok(u64)` - Total closure size in bytes (sum of all paths' closures)
-/// * `Err` - If nix command fails or paths don't exist
-///
-/// # Example
-/// ```no_run
-/// use eka_ci_server::nix::size::get_closure_size;
-///
-/// let paths = vec!["/nix/store/abc-python".to_string()];
-/// let size = get_closure_size(&paths)?;
-/// println!("Total closure size: {} MB", size / 1024 / 1024);
-/// # Ok::<(), anyhow::Error>(())
-/// ```
-pub fn get_closure_size(output_paths: &[String]) -> Result<u64> {
+/// Returns a map from store path → NAR size in bytes. Paths not reported by
+/// `nix path-info` will be absent from the map.
+pub fn get_output_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>> {
     if output_paths.is_empty() {
-        return Ok(0);
+        return Ok(HashMap::new());
     }
 
-    // Use nix path-info with -S flag to get closure size information in JSON format
-    let output = Command::new("nix")
-        .arg("path-info")
-        .arg("-S")
-        .arg("--json")
-        .args(output_paths)
-        .output()
-        .context("Failed to execute 'nix path-info -S'")?;
+    let path_infos = query_path_infos(output_paths, false)?;
+    Ok(path_infos
+        .into_iter()
+        .map(|info| (info.path, info.nar_size))
+        .collect())
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "nix path-info -S failed with status {}: {}",
-            output.status,
-            stderr
-        );
+/// Calculate per-path closure sizes for a list of Nix store paths.
+///
+/// Returns a map from store path → closure size in bytes (path + runtime deps).
+/// Paths not reported by `nix path-info` will be absent from the map.
+pub fn get_closure_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>> {
+    if output_paths.is_empty() {
+        return Ok(HashMap::new());
     }
 
-    // Parse JSON response
-    let path_infos: Vec<PathInfo> = serde_json::from_slice(&output.stdout)
-        .context("Failed to parse nix path-info JSON output")?;
-
-    // Sum up all closure sizes
-    let total_size: u64 = path_infos.iter().map(|info| info.closure_size).sum();
-
-    Ok(total_size)
+    let path_infos = query_path_infos(output_paths, true)?;
+    Ok(path_infos
+        .into_iter()
+        .map(|info| (info.path, info.closure_size))
+        .collect())
 }
 
 /// Format bytes as human-readable size (e.g., "1.5 MB", "234 KB")
@@ -156,8 +104,12 @@ mod tests {
 
     #[test]
     fn test_empty_paths() {
-        let result = get_output_size(&[]);
+        let result = get_output_sizes(&[]);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
+        assert!(result.unwrap().is_empty());
+
+        let result = get_closure_sizes(&[]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }
