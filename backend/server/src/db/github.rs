@@ -1762,4 +1762,201 @@ mod tests {
 
         Ok(())
     }
+
+    // ---- pr_head_build_succeeded test helpers ----
+
+    use crate::db::model::build_event::DrvBuildResult;
+
+    /// Insert a drv row, then overwrite its `build_state` to the desired value.
+    /// `insert_drv` always initializes to `Queued`, which is unhelpful for the
+    /// terminal-state scenarios below.
+    async fn insert_drv_with_state(
+        pool: &SqlitePool,
+        drv_path: &str,
+        state: DrvBuildState,
+    ) -> anyhow::Result<DrvId> {
+        use std::str::FromStr;
+
+        let drv_id = DrvId::from_str(drv_path)?;
+        let drv = Drv {
+            drv_path: drv_id.clone(),
+            system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
+            required_system_features: None,
+            is_fod: false,
+            build_state: DrvBuildState::Queued,
+            output_size: None,
+            closure_size: None,
+        };
+        insert_drv(pool, &drv).await?;
+
+        sqlx::query("UPDATE Drv SET build_state = ? WHERE drv_path = ?")
+            .bind(state)
+            .bind(&drv_id)
+            .execute(pool)
+            .await?;
+
+        Ok(drv_id)
+    }
+
+    fn eval_drv_for(drv_path: &str, attr: &str) -> NixEvalDrv {
+        NixEvalDrv {
+            attr: attr.to_string(),
+            attr_path: vec![attr.to_string()],
+            drv_path: drv_path.to_string(),
+            input_drvs: None,
+            name: format!("{}-1.0.0", attr),
+            system: "x86_64-linux".to_string(),
+            outputs: std::collections::HashMap::new(),
+        }
+    }
+
+    async fn insert_test_pr(pool: &SqlitePool) -> anyhow::Result<()> {
+        upsert_pull_request(
+            42,
+            "owner",
+            "repo",
+            "headsha",
+            "basesha",
+            "test pr",
+            "author",
+            "open",
+            "2025-01-01T00:00:00Z",
+            "2025-01-01T00:00:00Z",
+            pool,
+        )
+        .await
+    }
+
+    /// Case 1: the PR exists but no jobset has been recorded for its head sha.
+    /// The function must not treat "nothing known" as "built successfully".
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_pr_head_build_succeeded_no_jobset_returns_false(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        insert_test_pr(&pool).await?;
+
+        // Intentionally do NOT create a GitHubJobSets row for "headsha".
+        let result = pr_head_build_succeeded(42, "owner", "repo", &pool).await?;
+        assert!(
+            !result,
+            "expected false when no jobset exists for the PR's head sha"
+        );
+        Ok(())
+    }
+
+    /// Case 2: a jobset exists but at least one job is still in a non-terminal
+    /// state (e.g. Building). Auto-merge must wait.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_pr_head_build_succeeded_non_terminal_returns_false(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        insert_test_pr(&pool).await?;
+
+        let drv_done = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg1.drv";
+        let drv_building = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-pkg2.drv";
+        insert_drv_with_state(
+            &pool,
+            drv_done,
+            DrvBuildState::Completed(DrvBuildResult::Success),
+        )
+        .await?;
+        insert_drv_with_state(&pool, drv_building, DrvBuildState::Building).await?;
+
+        let jobset_id = create_jobset("headsha", "ci", "owner", "repo", None, &pool).await?;
+        create_jobs_for_jobset(
+            jobset_id,
+            &[
+                eval_drv_for(drv_done, "pkg1"),
+                eval_drv_for(drv_building, "pkg2"),
+            ],
+            &pool,
+        )
+        .await?;
+
+        let result = pr_head_build_succeeded(42, "owner", "repo", &pool).await?;
+        assert!(
+            !result,
+            "expected false when a job is still in a non-terminal state"
+        );
+        Ok(())
+    }
+
+    /// Case 3: every job has concluded, but a new/changed job ended in a
+    /// failure state. `jobset_has_new_or_changed_failures` should veto the
+    /// merge.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_pr_head_build_succeeded_failure_returns_false(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        insert_test_pr(&pool).await?;
+
+        let drv_ok = "/nix/store/ccccccccccccccccccccccccccccccccc-pkg1.drv";
+        let drv_fail = "/nix/store/dddddddddddddddddddddddddddddddd-pkg2.drv";
+        insert_drv_with_state(
+            &pool,
+            drv_ok,
+            DrvBuildState::Completed(DrvBuildResult::Success),
+        )
+        .await?;
+        insert_drv_with_state(
+            &pool,
+            drv_fail,
+            DrvBuildState::Completed(DrvBuildResult::Failure),
+        )
+        .await?;
+
+        let jobset_id = create_jobset("headsha", "ci", "owner", "repo", None, &pool).await?;
+        create_jobs_for_jobset(
+            jobset_id,
+            &[eval_drv_for(drv_ok, "pkg1"), eval_drv_for(drv_fail, "pkg2")],
+            &pool,
+        )
+        .await?;
+        // `Job.difference` defaults to 0 (New) in the schema, so the failing
+        // job naturally counts as a "new or changed failure".
+
+        let result = pr_head_build_succeeded(42, "owner", "repo", &pool).await?;
+        assert!(
+            !result,
+            "expected false when a new/changed job ended in failure"
+        );
+        Ok(())
+    }
+
+    /// Case 4: every job has concluded successfully. This is the only case
+    /// where the function is allowed to return true and unblock auto-merge.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_pr_head_build_succeeded_all_success_returns_true(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        insert_test_pr(&pool).await?;
+
+        let drv1 = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-pkg1.drv";
+        let drv2 = "/nix/store/fffffffffffffffffffffffffffffffff-pkg2.drv";
+        insert_drv_with_state(
+            &pool,
+            drv1,
+            DrvBuildState::Completed(DrvBuildResult::Success),
+        )
+        .await?;
+        insert_drv_with_state(
+            &pool,
+            drv2,
+            DrvBuildState::Completed(DrvBuildResult::Success),
+        )
+        .await?;
+
+        let jobset_id = create_jobset("headsha", "ci", "owner", "repo", None, &pool).await?;
+        create_jobs_for_jobset(
+            jobset_id,
+            &[eval_drv_for(drv1, "pkg1"), eval_drv_for(drv2, "pkg2")],
+            &pool,
+        )
+        .await?;
+
+        let result = pr_head_build_succeeded(42, "owner", "repo", &pool).await?;
+        assert!(result, "expected true when all jobs concluded successfully");
+        Ok(())
+    }
 }
