@@ -568,6 +568,26 @@ impl GitHubService {
                     pr_number, owner, repo_name
                 );
 
+                // Guard: only consider merging once the head commit's jobset
+                // has fully concluded and no new/changed job failed. This is
+                // idempotent with the scheduler-driven trigger but defends the
+                // review-driven trigger path from merging PRs whose builds are
+                // still in flight or have already failed.
+                if !crate::db::github::pr_head_build_succeeded(
+                    *pr_number,
+                    &owner,
+                    &repo_name,
+                    &self.db_service.pool,
+                )
+                .await?
+                {
+                    info!(
+                        "PR #{} head build not yet successful, deferring auto-merge",
+                        pr_number
+                    );
+                    return Ok(());
+                }
+
                 // Get changed packages for this PR
                 let changed_packages = crate::db::github::get_pr_changed_packages(
                     *pr_number,

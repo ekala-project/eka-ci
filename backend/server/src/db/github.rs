@@ -1358,31 +1358,49 @@ pub async fn get_pr_changed_packages(
     Ok(attr_paths)
 }
 
-/// Check if all changed packages in a PR have maintainer approvals
-/// Returns (eligible, missing_approvals) where:
-/// - eligible: true if requirements are met
-/// - missing_approvals: list of packages still needing approval
+/// Whether a PR's head commit has a fully built, non-failing jobset recorded.
 ///
-/// NOTE: This function only checks database state. Call `check_maintainer_approvals_with_github`
-/// from the service layer to include real-time GitHub review checking.
-pub async fn check_maintainer_approvals(
+/// Returns `true` only when:
+/// - A jobset exists for the PR's head SHA in this owner/repo,
+/// - every job in that jobset has reached a terminal state, and
+/// - no new or changed jobs are in a failure state.
+///
+/// Intended as a guard before attempting approval-gated auto-merge, so that a
+/// review submitted before builds complete does not cause premature merging.
+pub async fn pr_head_build_succeeded(
     pr_number: i64,
     owner: &str,
     repo_name: &str,
     pool: &Pool<Sqlite>,
-) -> Result<(bool, Vec<String>)> {
-    // Get changed packages
-    let changed_packages = get_pr_changed_packages(pr_number, owner, repo_name, pool).await?;
+) -> Result<bool> {
+    let jobset_id: Option<i64> = sqlx::query_scalar(
+        "SELECT gjs.ROWID FROM PullRequests pr
+         JOIN GitHubJobSets gjs ON pr.head_sha = gjs.sha
+         WHERE pr.pr_number = ? AND pr.owner = ? AND pr.repo_name = ?
+         AND gjs.owner = ? AND gjs.repo_name = ?
+         LIMIT 1",
+    )
+    .bind(pr_number)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(owner)
+    .bind(repo_name)
+    .fetch_optional(pool)
+    .await?;
 
-    if changed_packages.is_empty() {
-        // No packages changed, can't determine eligibility
-        return Ok((false, vec![]));
+    let Some(jobset_id) = jobset_id else {
+        return Ok(false);
+    };
+
+    if !all_jobs_concluded(jobset_id, pool).await? {
+        return Ok(false);
     }
 
-    // This is a database-only check
-    // For full approval checking including GitHub reviews, use the service layer function
-    // For now, we return all packages as needing approval since we don't have review data
-    Ok((false, changed_packages))
+    if jobset_has_new_or_changed_failures(jobset_id, pool).await? {
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 #[derive(Debug, Clone, FromRow)]
