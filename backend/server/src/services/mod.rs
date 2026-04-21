@@ -171,6 +171,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         &config.web.address,
         git_service.get_sender(),
         maybe_github_sender.clone(),
+        Some(scheduler_service.ingress_request_sender()),
         maybe_octocrab,
         scheduler_service.metrics_registry(),
         config.require_approval,

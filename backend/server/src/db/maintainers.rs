@@ -299,6 +299,30 @@ pub async fn get_attr_path_for_job(job_id: i64, pool: &Pool<Sqlite>) -> Result<O
     Ok(attr_path)
 }
 
+/// Get all distinct attribute paths (job names) associated with the given
+/// derivation path across all jobs that have built it.
+///
+/// Returns an empty Vec if the derivation is unknown or has no associated job
+/// rows. Used to gate build-control operations on maintainer status.
+pub async fn get_attr_paths_for_drv(
+    drv_path: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<String>> {
+    let attr_paths: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT DISTINCT j.name
+        FROM Job j
+        INNER JOIN Drv d ON d.ROWID = j.drv_id
+        WHERE d.drv_path = ?
+        "#,
+    )
+    .bind(drv_path)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(attr_paths)
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::SqlitePool;

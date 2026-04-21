@@ -20,12 +20,14 @@ use crate::auth::{AdminUser, AuthUser, JwtService, OAuthConfig};
 use crate::db::github::CheckRun;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
+use crate::scheduler::IngressTask;
 use crate::webhook_security::{check_webhook_secret_configured, verify_webhook_signature};
 
 #[derive(Clone)]
 struct AppState {
     git_sender: mpsc::Sender<GitTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    ingress_sender: Option<mpsc::Sender<IngressTask>>,
     octocrab: Option<octocrab::Octocrab>,
     metrics_registry: Arc<Registry>,
     require_approval: bool,
@@ -113,6 +115,7 @@ impl WebService {
         socket: &SocketAddrV4,
         git_sender: mpsc::Sender<GitTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        ingress_sender: Option<mpsc::Sender<IngressTask>>,
         octocrab: Option<octocrab::Octocrab>,
         metrics_registry: Arc<Registry>,
         require_approval: bool,
@@ -140,6 +143,7 @@ impl WebService {
             state: AppState {
                 git_sender,
                 github_sender,
+                ingress_sender,
                 octocrab,
                 metrics_registry,
                 require_approval,
@@ -282,6 +286,10 @@ fn api_routes() -> Router<AppState> {
         // Authenticated maintainer request routes
         .route("/attr-paths/{attr_path}/request-maintainer", post(request_maintainer_handler))
         .route("/users/me/maintainer-requests", get(get_my_requests_handler))
+        // Build-control routes (gated on maintainer status of all attr paths the
+        // drv belongs to, or admin)
+        .route("/drvs/{drv}/rebuild", post(rebuild_drv_handler))
+        .route("/admin/rebuild-all-failed", post(admin_rebuild_all_failed_handler))
 }
 
 async fn handle_github_webhook(
@@ -1633,4 +1641,135 @@ async fn admin_reject_request_handler(
         State(state.db_service.pool.clone()),
     )
     .await
+}
+
+/// Ensure the authenticated user can modify builds for the given derivation:
+/// either an admin, or a maintainer of every attr path the derivation is
+/// associated with via `Job` rows. Returns the list of attr paths on success
+/// or a ready `Response` describing the failure.
+async fn ensure_drv_maintainer_access(
+    auth_user: &AuthUser,
+    drv_path: &str,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    action_verb_phrase: &str,
+) -> Result<Vec<String>, axum::response::Response> {
+    // Admins can modify any build regardless of attr-path association.
+    if auth_user.is_admin() {
+        return Ok(Vec::new());
+    }
+
+    let attr_paths = crate::db::maintainers::get_attr_paths_for_drv(drv_path, pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to get attr paths for drv {}: {}", drv_path, e);
+            internal_error(format!("Failed to look up derivation: {}", e))
+        })?;
+
+    if attr_paths.is_empty() {
+        return Err(forbidden(format!(
+            "No attribute paths are associated with this derivation; only admins can {}",
+            action_verb_phrase
+        )));
+    }
+
+    // The user must be able to modify every attr path this drv participates in.
+    // `can_modify_build` short-circuits for admins and otherwise delegates to
+    // `is_maintainer_of`, so this loop exercises both helpers.
+    for attr_path in &attr_paths {
+        let allowed = auth_user
+            .can_modify_build(pool, attr_path)
+            .await
+            .map_err(|e| {
+                error!("Failed to check maintainer status: {}", e);
+                internal_error(format!("Failed to check maintainer status: {}", e))
+            })?;
+        if !allowed {
+            return Err(forbidden(format!(
+                "You must be a maintainer of all attribute paths for this derivation to {}",
+                action_verb_phrase
+            )));
+        }
+    }
+
+    Ok(attr_paths)
+}
+
+/// Rebuild a failed derivation (admin or maintainer of all associated attr
+/// paths). The derivation must currently be in a failed state; otherwise the
+/// scheduler will log a warning and take no action.
+async fn rebuild_drv_handler(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(drv): Path<String>,
+) -> impl IntoResponse {
+    let drv_id = match parse_drv_id(&drv) {
+        Ok(id) => id,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+
+    // Confirm the derivation exists before doing any authorization work so we
+    // can return a clean 404 rather than a 403 for unknown drvs.
+    match state.db_service.get_drv(&drv_id).await {
+        Ok(Some(_)) => {},
+        Ok(None) => return not_found("Derivation not found"),
+        Err(e) => {
+            error!("Failed to look up drv {}: {}", drv_id.store_path(), e);
+            return internal_error(format!("Failed to look up derivation: {}", e));
+        },
+    }
+
+    if let Err(resp) = ensure_drv_maintainer_access(
+        &auth_user,
+        &drv_id.store_path(),
+        &state.db_service.pool,
+        "rebuild this derivation",
+    )
+    .await
+    {
+        return resp;
+    }
+
+    let sender = match state.ingress_sender.as_ref() {
+        Some(s) => s,
+        None => return service_unavailable("Scheduler is not available"),
+    };
+
+    if let Err(e) = sender
+        .send(IngressTask::RebuildFailed(drv_id.clone()))
+        .await
+    {
+        error!("Failed to enqueue rebuild for {}: {}", drv_id.store_path(), e);
+        return service_unavailable("Failed to enqueue rebuild");
+    }
+
+    info!(
+        "Rebuild requested for {} by user {} (github_id={})",
+        drv_id.store_path(),
+        auth_user.claims.username,
+        auth_user.github_id,
+    );
+    (axum::http::StatusCode::ACCEPTED, "Rebuild queued").into_response()
+}
+
+/// Admin-only: rebuild every failed derivation in the system.
+async fn admin_rebuild_all_failed_handler(
+    State(state): State<AppState>,
+    admin: AdminUser,
+) -> impl IntoResponse {
+    let sender = match state.ingress_sender.as_ref() {
+        Some(s) => s,
+        None => return service_unavailable("Scheduler is not available"),
+    };
+
+    if let Err(e) = sender.send(IngressTask::RebuildAllFailed).await {
+        error!("Failed to enqueue rebuild-all-failed: {}", e);
+        return service_unavailable("Failed to enqueue rebuild");
+    }
+
+    info!(
+        "RebuildAllFailed requested by admin github_id={}",
+        admin.github_id
+    );
+    (axum::http::StatusCode::ACCEPTED, "All failed derivations queued for rebuild")
+        .into_response()
 }
