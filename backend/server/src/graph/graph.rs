@@ -133,18 +133,6 @@ impl BuildGraph {
         self.nodes.peek(drv_id)
     }
 
-    /// Touch a node to mark it as recently used (updates LRU)
-    /// Used for hot path protection to prevent eviction of actively-used nodes
-    pub fn touch(&mut self, drv_id: &DrvId) {
-        // get() updates the LRU position
-        self.nodes.get(drv_id);
-    }
-
-    /// Check if a node is pinned (protected from eviction)
-    pub fn is_pinned(&self, drv_id: &DrvId) -> bool {
-        self.pinned.contains(drv_id)
-    }
-
     /// Get the count of pinned nodes
     pub fn pinned_count(&self) -> usize {
         self.pinned.len()
@@ -211,7 +199,14 @@ impl BuildGraph {
             .unwrap_or_default()
     }
 
-    /// Check if a drv is buildable (all dependencies completed successfully)
+    /// Check if a drv is buildable (all dependencies completed successfully).
+    ///
+    /// Only used by unit tests that exercise the authoritative `BuildGraph`
+    /// dependency logic. Production code paths read from the lock-free
+    /// `GraphServiceHandle::is_buildable` mirror (`graph/service.rs`), which
+    /// is populated from `BuildGraph` but queried via `DashMap` to stay off
+    /// the service's message-passing loop.
+    #[cfg(test)]
     pub fn is_buildable(&self, drv_id: &DrvId) -> bool {
         let Some(node) = self.nodes.peek(drv_id) else {
             return false;

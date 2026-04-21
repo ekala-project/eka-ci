@@ -762,11 +762,13 @@ pub struct GraphServiceHandle {
 }
 
 impl GraphServiceHandle {
-    /// Fast lockfree check if a drv is buildable
-    /// This is the critical hot path - no message passing, no async
+    /// Fast lockfree check if a drv is buildable.
     ///
-    /// Note: This doesn't update LRU. Call touch_buildable_check() afterward
-    /// to protect hot path nodes from eviction.
+    /// This is the critical hot path — no message passing, no async. The
+    /// underlying LRU-based `BuildGraph` is _not_ touched here; non-terminal
+    /// nodes are already kept alive by the explicit `pinned` set in
+    /// `BuildGraph`, so there is no need to bump LRU positions from query
+    /// paths.
     pub fn is_buildable(&self, drv_id: &DrvId) -> bool {
         let Some(node) = self.shared_view.get(drv_id) else {
             return false;
@@ -790,11 +792,6 @@ impl GraphServiceHandle {
     /// Get a cached node
     pub fn get_node(&self, drv_id: &DrvId) -> Option<CachedNode> {
         self.shared_view.get(drv_id).map(|node| node.clone())
-    }
-
-    /// Check if graph contains a drv
-    pub fn contains(&self, drv_id: &DrvId) -> bool {
-        self.shared_view.contains_key(drv_id)
     }
 
     /// Get the number of nodes in the graph
@@ -893,6 +890,10 @@ mod tests {
         };
 
         assert_eq!(handle.node_count(), 0);
-        assert!(!handle.contains(&DrvId::from_str("test-drv.drv").unwrap()));
+        assert!(
+            handle
+                .get_node(&DrvId::from_str("test-drv.drv").unwrap())
+                .is_none()
+        );
     }
 }
