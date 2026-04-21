@@ -642,6 +642,32 @@ impl GitHubService {
                 // Determine merge method
                 let merge_method = pr.merge_method.as_deref().unwrap_or("squash");
 
+                // Validate the selected merge method against the repository's
+                // settings before attempting the merge. This avoids failed
+                // merge calls when the repo has the chosen method disabled,
+                // and surfaces the reason up front in the logs.
+                match actions::validate_merge_method(&octocrab, &owner, &repo_name, merge_method)
+                    .await
+                {
+                    Ok(actions::MergeMethodCheck::Ok) => {},
+                    Ok(actions::MergeMethodCheck::NotAllowed { allowed }) => {
+                        warn!(
+                            "PR #{} in {}/{}: configured merge method '{}' is not allowed by \
+                             repository settings (allowed: {:?}); skipping auto-merge",
+                            pr_number, owner, repo_name, merge_method, allowed
+                        );
+                        return Ok(());
+                    },
+                    Err(e) => {
+                        warn!(
+                            "PR #{} in {}/{}: failed to fetch repository merge settings: {:?}; \
+                             skipping auto-merge",
+                            pr_number, owner, repo_name, e
+                        );
+                        return Ok(());
+                    },
+                }
+
                 info!(
                     "Auto-merging PR #{} in {}/{} using method '{}'",
                     pr_number, owner, repo_name, merge_method

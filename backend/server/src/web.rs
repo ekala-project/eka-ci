@@ -1366,6 +1366,42 @@ async fn manual_merge_pr_handler(
         return bad_request("Invalid merge method. Must be 'merge', 'squash', or 'rebase'");
     }
 
+    // Validate that the chosen method is actually allowed by the repository
+    // settings before calling the merge API. Surface a 409 so the client
+    // can see both what they asked for and what the repo permits.
+    match crate::github::service::actions::validate_merge_method(
+        octocrab,
+        &owner,
+        &repo,
+        merge_method,
+    )
+    .await
+    {
+        Ok(crate::github::service::actions::MergeMethodCheck::Ok) => {},
+        Ok(crate::github::service::actions::MergeMethodCheck::NotAllowed { allowed }) => {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                format!(
+                    "Merge method '{}' is not allowed by repository settings. Allowed methods: {}",
+                    merge_method,
+                    if allowed.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        allowed.join(", ")
+                    }
+                ),
+            )
+                .into_response();
+        },
+        Err(e) => {
+            error!("Failed to fetch repository merge settings: {}", e);
+            return internal_error(format!(
+                "Failed to validate merge method against repository settings: {}",
+                e
+            ));
+        },
+    }
+
     // Attempt to merge
     match crate::github::service::actions::merge_pull_request(
         octocrab,
