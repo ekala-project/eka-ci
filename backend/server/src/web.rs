@@ -274,6 +274,7 @@ fn api_routes() -> Router<AppState> {
         .route("/admin/users/{github_id}/maintained-paths", get(admin_user_maintained_paths_handler))
         // Admin attr path maintainer routes
         .route("/admin/attr-paths/{attr_path}/maintainers", post(admin_add_maintainer_handler))
+        .route("/admin/attr-paths/{attr_path}/maintainers/by-username", post(admin_add_maintainer_by_username_handler))
         .route("/admin/attr-paths/{attr_path}/maintainers/{github_id}", axum::routing::delete(admin_remove_maintainer_handler))
         .route("/admin/attr-paths/{attr_path}/maintainers", get(admin_list_maintainers_handler))
         // Admin maintainer request routes
@@ -285,7 +286,9 @@ fn api_routes() -> Router<AppState> {
         .route("/jobs/{job_id}/maintainers", get(get_job_maintainers_handler))
         // Authenticated maintainer request routes
         .route("/attr-paths/{attr_path}/request-maintainer", post(request_maintainer_handler))
+        .route("/jobs/{job_id}/request-maintainer", post(request_maintainer_for_job_handler))
         .route("/users/me/maintainer-requests", get(get_my_requests_handler))
+        .route("/maintainer-requests/{request_id}", get(get_maintainer_request_handler))
         // Build-control routes (gated on maintainer status of all attr paths the
         // drv belongs to, or admin)
         .route("/drvs/{drv}/rebuild", post(rebuild_drv_handler))
@@ -1590,13 +1593,37 @@ async fn request_maintainer_handler(
     user: AuthUser,
     Path(attr_path): Path<String>,
     State(state): State<AppState>,
+    body: Option<Json<crate::auth::RequestMaintainerRequest>>,
 ) -> impl IntoResponse {
     let request_state = crate::auth::RequestHandlerState {
         pool: state.db_service.pool.clone(),
         github_client: state.github_client.clone(),
     };
 
-    crate::auth::requests::request_maintainer(user, Path(attr_path), State(request_state)).await
+    crate::auth::requests::request_maintainer(user, Path(attr_path), State(request_state), body)
+        .await
+}
+
+/// Request to become a maintainer of the attr path of a given job
+/// (authenticated endpoint). Resolves job → attr path before delegating.
+async fn request_maintainer_for_job_handler(
+    user: AuthUser,
+    Path(job_id): Path<i64>,
+    State(state): State<AppState>,
+    body: Option<Json<crate::auth::RequestMaintainerRequest>>,
+) -> impl IntoResponse {
+    let request_state = crate::auth::RequestHandlerState {
+        pool: state.db_service.pool.clone(),
+        github_client: state.github_client.clone(),
+    };
+
+    crate::auth::requests::request_maintainer_for_job(
+        user,
+        Path(job_id),
+        State(request_state),
+        body,
+    )
+    .await
 }
 
 /// Get current user's maintainer requests (authenticated endpoint)
@@ -1605,6 +1632,37 @@ async fn get_my_requests_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     crate::auth::requests::get_my_requests(user, State(state.db_service.pool.clone())).await
+}
+
+/// Get a specific maintainer request by id (authenticated endpoint; owner
+/// or admin only).
+async fn get_maintainer_request_handler(
+    user: AuthUser,
+    Path(request_id): Path<i64>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    crate::auth::requests::get_request_by_id(
+        user,
+        Path(request_id),
+        State(state.db_service.pool.clone()),
+    )
+    .await
+}
+
+/// Admin: add a maintainer to an attr path by GitHub username.
+async fn admin_add_maintainer_by_username_handler(
+    admin: AdminUser,
+    Path(attr_path): Path<String>,
+    State(state): State<AppState>,
+    body: Json<crate::auth::requests::AddMaintainerByUsernameRequest>,
+) -> impl IntoResponse {
+    crate::auth::requests::add_maintainer_by_username(
+        admin,
+        Path(attr_path),
+        State(state.db_service.pool.clone()),
+        body,
+    )
+    .await
 }
 
 /// List all pending maintainer requests (admin only)
@@ -1738,7 +1796,11 @@ async fn rebuild_drv_handler(
         .send(IngressTask::RebuildFailed(drv_id.clone()))
         .await
     {
-        error!("Failed to enqueue rebuild for {}: {}", drv_id.store_path(), e);
+        error!(
+            "Failed to enqueue rebuild for {}: {}",
+            drv_id.store_path(),
+            e
+        );
         return service_unavailable("Failed to enqueue rebuild");
     }
 
@@ -1770,6 +1832,9 @@ async fn admin_rebuild_all_failed_handler(
         "RebuildAllFailed requested by admin github_id={}",
         admin.github_id
     );
-    (axum::http::StatusCode::ACCEPTED, "All failed derivations queued for rebuild")
+    (
+        axum::http::StatusCode::ACCEPTED,
+        "All failed derivations queued for rebuild",
+    )
         .into_response()
 }

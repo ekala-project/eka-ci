@@ -304,10 +304,7 @@ pub async fn get_attr_path_for_job(job_id: i64, pool: &Pool<Sqlite>) -> Result<O
 ///
 /// Returns an empty Vec if the derivation is unknown or has no associated job
 /// rows. Used to gate build-control operations on maintainer status.
-pub async fn get_attr_paths_for_drv(
-    drv_path: &str,
-    pool: &Pool<Sqlite>,
-) -> Result<Vec<String>> {
+pub async fn get_attr_paths_for_drv(drv_path: &str, pool: &Pool<Sqlite>) -> Result<Vec<String>> {
     let attr_paths: Vec<String> = sqlx::query_scalar(
         r#"
         SELECT DISTINCT j.name
