@@ -462,6 +462,41 @@ pub async fn get_repository_merge_settings(
     Ok(allowed_methods)
 }
 
+/// Outcome of validating a desired merge method against a repository's
+/// settings. Callers distinguish between `Ok` (method is allowed) and
+/// `NotAllowed` (method is disabled on the repo) so they can surface a
+/// proper error to the user or fall back as appropriate. Network/API
+/// failures surface as `Err` from [`validate_merge_method`] instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeMethodCheck {
+    /// The requested method is one of the repository's allowed merge methods.
+    Ok,
+    /// The requested method is not allowed; the enclosed vector lists the
+    /// methods the repository _does_ permit (possibly empty).
+    NotAllowed { allowed: Vec<String> },
+}
+
+/// Validate that `merge_method` is permitted by the target repository's
+/// merge settings.
+///
+/// This should be called before [`merge_pull_request`] to avoid avoidable
+/// merge failures (e.g. asking GitHub to squash-merge a repo that has
+/// squash merges disabled). Returns `Err` only if the repository metadata
+/// could not be fetched.
+pub async fn validate_merge_method(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    merge_method: &str,
+) -> Result<MergeMethodCheck> {
+    let allowed = get_repository_merge_settings(octocrab, owner, repo).await?;
+    if allowed.iter().any(|m| m == merge_method) {
+        Ok(MergeMethodCheck::Ok)
+    } else {
+        Ok(MergeMethodCheck::NotAllowed { allowed })
+    }
+}
+
 /// Merge a pull request using the specified merge method
 pub async fn merge_pull_request(
     octocrab: &Octocrab,
