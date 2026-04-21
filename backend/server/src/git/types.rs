@@ -8,9 +8,11 @@ use tracing::debug;
 use super::actions::{add_git_worktree, clone_git_repo, fetch_remote_repo};
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub enum GitProtocol {
     Https,
+    // Supported by `protocol_prefix`, but no construction site yet.
+    // Retained for future configuration (e.g. self-hosted forges over plain HTTP).
+    #[allow(dead_code)]
     Http,
     Ssh,
 }

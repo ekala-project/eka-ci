@@ -117,7 +117,6 @@ pub struct DrvInfo {
 }
 
 impl DrvInfo {
-    #[allow(dead_code)]
     pub fn is_fod(&self) -> bool {
         self.output_hash.is_some()
     }
