@@ -293,6 +293,15 @@ fn api_routes() -> Router<AppState> {
         // drv belongs to, or admin)
         .route("/drvs/{drv}/rebuild", post(rebuild_drv_handler))
         .route("/admin/rebuild-all-failed", post(admin_rebuild_all_failed_handler))
+        // Admin GitHub API permission-cache maintenance
+        .route(
+            "/admin/github-api-cache/clear",
+            post(admin_github_api_cache_clear_handler),
+        )
+        .route(
+            "/admin/github-api-cache/invalidate",
+            post(admin_github_api_cache_invalidate_handler),
+        )
 }
 
 async fn handle_github_webhook(
@@ -1871,6 +1880,93 @@ async fn admin_rebuild_all_failed_handler(
     (
         axum::http::StatusCode::ACCEPTED,
         "All failed derivations queued for rebuild",
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct InvalidateGitHubApiCacheRequest {
+    /// GitHub user id whose cached permission entry should be invalidated.
+    github_id: i64,
+    owner: String,
+    repo: String,
+}
+
+/// Admin-only: drop every entry in the in-memory GitHub permission cache.
+///
+/// The cache normally expires entries after 10 minutes; this endpoint is for
+/// operators who need an immediate refresh (e.g. after updating collaborator
+/// access on GitHub and wanting the change reflected before the TTL elapses).
+async fn admin_github_api_cache_clear_handler(
+    State(state): State<AppState>,
+    admin: AdminUser,
+) -> impl IntoResponse {
+    state.github_client.clear_cache().await;
+    info!(
+        "GitHub API permission cache cleared by admin github_id={}",
+        admin.github_id
+    );
+    (
+        axum::http::StatusCode::ACCEPTED,
+        "GitHub API permission cache cleared",
+    )
+        .into_response()
+}
+
+/// Admin-only: invalidate a single `(user, owner, repo)` entry in the GitHub
+/// permission cache. The target user is identified by `github_id`; the handler
+/// looks up their stored access token so admins don't need to handle raw
+/// tokens.
+async fn admin_github_api_cache_invalidate_handler(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Json(body): Json<InvalidateGitHubApiCacheRequest>,
+) -> impl IntoResponse {
+    // Look up the target user's access token. The cache is keyed on
+    // `access_token:owner:repo`, so invalidation requires the actual token the
+    // entry was cached under.
+    let token_result = sqlx::query_scalar::<_, String>(
+        "SELECT github_access_token FROM AuthenticatedUsers WHERE github_id = ?",
+    )
+    .bind(body.github_id)
+    .fetch_optional(&state.db_service.pool)
+    .await;
+
+    let access_token = match token_result {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                format!("No authenticated user with github_id={}", body.github_id),
+            )
+                .into_response();
+        },
+        Err(e) => {
+            error!(
+                "Failed to look up access token for github_id={}: {}",
+                body.github_id, e
+            );
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to look up target user's access token".to_string(),
+            )
+                .into_response();
+        },
+    };
+
+    state
+        .github_client
+        .invalidate_cache(&access_token, &body.owner, &body.repo)
+        .await;
+
+    info!(
+        "GitHub API permission cache invalidated for github_id={} {}/{} by admin github_id={}",
+        body.github_id, body.owner, body.repo, admin.github_id
+    );
+
+    (
+        axum::http::StatusCode::ACCEPTED,
+        "GitHub API permission cache entry invalidated",
     )
         .into_response()
 }
