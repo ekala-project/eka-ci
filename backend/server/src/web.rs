@@ -387,20 +387,10 @@ async fn get_derivation_log(
     use axum::http::StatusCode;
     use tracing::warn;
 
-    use crate::db::model::drv_id::DrvId;
-
     // Parse the drv parameter into a DrvId
-    let drv_id = match DrvId::try_from(drv.as_str()) {
+    let drv_id = match parse_drv_id(&drv) {
         Ok(id) => id,
-        Err(e) => {
-            warn!("Invalid drv format: {}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                [(axum::http::header::CONTENT_TYPE, "text/plain")],
-                format!("Invalid derivation format: {}", e),
-            )
-                .into_response();
-        },
+        Err((status, msg)) => return (status, msg).into_response(),
     };
 
     // Construct the log file path: {logs_dir}/{drv_hash}/build.log
@@ -453,20 +443,10 @@ async fn get_hook_log(
     use axum::http::StatusCode;
     use tracing::warn;
 
-    use crate::db::model::drv_id::DrvId;
-
     // Parse the drv parameter into a DrvId
-    let drv_id = match DrvId::try_from(drv.as_str()) {
+    let drv_id = match parse_drv_id(&drv) {
         Ok(id) => id,
-        Err(e) => {
-            warn!("Invalid drv format: {}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                [(axum::http::header::CONTENT_TYPE, "text/plain")],
-                format!("Invalid derivation format: {}", e),
-            )
-                .into_response();
-        },
+        Err((status, msg)) => return (status, msg).into_response(),
     };
 
     // Construct the log file path: {logs_dir}/{drv_hash}/hook-{hook_name}.log
@@ -528,9 +508,6 @@ async fn get_drv_hooks_handler(
 ) -> impl IntoResponse {
     use axum::http::StatusCode;
     use serde::Serialize;
-    use tracing::warn;
-
-    use crate::db::model::drv_id::DrvId;
 
     #[derive(Serialize)]
     struct HookExecutionResponse {
@@ -551,17 +528,10 @@ async fn get_drv_hooks_handler(
     }
 
     // Parse the drv parameter into a DrvId
-    let drv_id = match DrvId::try_from(drv.as_str()) {
+    let drv_id = match parse_drv_id(&drv) {
         Ok(id) => id,
-        Err(e) => {
-            warn!("Invalid drv format: {}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!("Invalid derivation format: {}", e)
-                })),
-            )
-                .into_response();
+        Err((status, msg)) => {
+            return (status, Json(serde_json::json!({ "error": msg }))).into_response();
         },
     };
 
