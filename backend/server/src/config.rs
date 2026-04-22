@@ -545,10 +545,23 @@ pub struct SecurityConfig {
     /// Enable audit logging of hook executions (default: true)
     #[serde(default = "default_true")]
     pub audit_hooks: bool,
-    /// GitHub webhook secret for signature verification (optional)
-    /// If not set, webhooks will be accepted without signature validation
+    /// GitHub webhook secret for signature verification.
+    ///
+    /// Startup fails if this is unset unless `allow_insecure_webhooks`
+    /// is explicitly enabled (development / local-test only).
     #[serde(default)]
     pub webhook_secret: Option<String>,
+    /// Escape hatch: allow the server to start without a webhook
+    /// secret. Intended for local development and tests only.
+    ///
+    /// When enabled **and** `webhook_secret` is unset, the webhook
+    /// handler accepts payloads without signature verification (the
+    /// pre-H1 behaviour). A startup-time warning is logged on every
+    /// boot so operators cannot forget the flag is on. Setting this
+    /// to `true` in a production-exposed deployment is a
+    /// security-critical mistake.
+    #[serde(default)]
+    pub allow_insecure_webhooks: bool,
 }
 
 fn default_hook_timeout() -> u64 {
@@ -701,11 +714,41 @@ impl Config {
             max_hook_timeout_seconds: default_hook_timeout(),
             audit_hooks: true,
             webhook_secret: None,
+            allow_insecure_webhooks: false,
         });
 
         // Allow webhook_secret to be overridden by environment variable
         if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
             security.webhook_secret = Some(secret);
+        }
+
+        // Env override for the insecure-webhooks escape hatch. Accepts
+        // typical boolean spellings so shell `=1` and `=true` both work.
+        if let Ok(raw) = std::env::var("EKACI_ALLOW_INSECURE_WEBHOOKS") {
+            let normalized = raw.trim().to_ascii_lowercase();
+            security.allow_insecure_webhooks =
+                matches!(normalized.as_str(), "1" | "true" | "yes" | "on");
+        }
+
+        // H1: refuse to start without a webhook secret unless the
+        // operator has explicitly opted into the insecure path. This
+        // closes the old silent-accept-all-webhooks behaviour.
+        if security.webhook_secret.is_none() {
+            if security.allow_insecure_webhooks {
+                tracing::warn!(
+                    event = "webhook_secret_missing_insecure_allowed",
+                    "GITHUB_WEBHOOK_SECRET is unset and allow_insecure_webhooks=true. Incoming \
+                     webhooks will be accepted WITHOUT signature verification. This is safe only \
+                     for local development."
+                );
+            } else {
+                anyhow::bail!(
+                    "GitHub webhook secret is not configured. Set GITHUB_WEBHOOK_SECRET (or \
+                     security.webhook_secret in the config file). For local development only you \
+                     may set EKACI_ALLOW_INSECURE_WEBHOOKS=1 (or \
+                     security.allow_insecure_webhooks=true) to bypass this check."
+                );
+            }
         }
 
         Ok(Config {

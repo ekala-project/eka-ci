@@ -1,6 +1,48 @@
 use std::sync::Arc;
 
-use prometheus::{CounterVec, GaugeVec, Opts, Registry};
+use prometheus::{CounterVec, GaugeVec, IntCounterVec, Opts, Registry};
+
+/// Metrics for webhook ingress (H1: observe signature-verification
+/// failures so operators can alert on forgery attempts or secret
+/// rotation lag).
+#[derive(Clone)]
+pub struct WebhookMetrics {
+    /// Count of rejected webhook requests, labelled by failure reason.
+    /// Reasons: `missing_header`, `invalid_header`, `bad_signature`,
+    /// `unsigned_insecure_mode`.
+    pub signature_failures_total: IntCounterVec,
+    /// Count of successfully verified webhook requests.
+    pub signature_verified_total: prometheus::IntCounter,
+}
+
+impl WebhookMetrics {
+    pub fn new(registry: &Registry) -> anyhow::Result<Arc<Self>> {
+        let signature_failures_total = IntCounterVec::new(
+            Opts::new(
+                "webhook_signature_failures_total",
+                "Number of GitHub webhook requests rejected due to signature problems",
+            )
+            .namespace("eka_ci"),
+            &["reason"],
+        )?;
+
+        let signature_verified_total = prometheus::IntCounter::with_opts(
+            Opts::new(
+                "webhook_signature_verified_total",
+                "Number of GitHub webhook requests whose HMAC-SHA256 signature verified",
+            )
+            .namespace("eka_ci"),
+        )?;
+
+        registry.register(Box::new(signature_failures_total.clone()))?;
+        registry.register(Box::new(signature_verified_total.clone()))?;
+
+        Ok(Arc::new(Self {
+            signature_failures_total,
+            signature_verified_total,
+        }))
+    }
+}
 
 /// Metrics for tracking build state across the system
 #[derive(Clone)]

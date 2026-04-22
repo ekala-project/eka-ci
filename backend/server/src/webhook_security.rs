@@ -5,7 +5,6 @@
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use tracing::warn;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -43,20 +42,6 @@ pub fn verify_webhook_signature(
         .map_err(|_| "Signature verification failed".to_string())?;
 
     Ok(())
-}
-
-/// Check if webhook secret is configured and log a warning if not
-pub fn check_webhook_secret_configured(secret: &Option<String>) -> bool {
-    if secret.is_none() {
-        warn!(
-            "SECURITY WARNING: GitHub webhook secret not configured. Webhooks will be accepted \
-             without signature verification. Set GITHUB_WEBHOOK_SECRET environment variable or \
-             configure security.webhook_secret in config file."
-        );
-        false
-    } else {
-        true
-    }
 }
 
 #[cfg(test)]
