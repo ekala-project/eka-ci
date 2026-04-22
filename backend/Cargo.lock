@@ -1155,6 +1155,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "vaultrs 0.7.4",
  "vaultrs-login",

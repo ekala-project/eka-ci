@@ -193,6 +193,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         webhook_metrics,
         github_client,
         config.default_merge_method.clone(),
+        config.web.allowed_origins.clone(),
     )
     .await
     .context("failed to start web service")?;

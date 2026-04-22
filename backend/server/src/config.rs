@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 
@@ -77,6 +77,23 @@ struct ConfigFileWeb {
     pub address: Option<Ipv4Addr>,
     pub port: Option<u16>,
     pub bundle_path: Option<PathBuf>,
+    /// Explicit list of origins allowed by CORS for the HTTP API.
+    ///
+    /// Each entry is an exact-match scheme+host+port origin, e.g.
+    /// `"https://dashboard.example.com"` or `"http://localhost:5173"`.
+    /// Matching is case-sensitive and does not interpret wildcards:
+    /// a literal `"*"` is rejected at load time.
+    ///
+    /// If unset or empty the server refuses all cross-origin requests
+    /// (same-origin API only). This is intentional — historical
+    /// behaviour used `CorsLayer::permissive()` which echoed any
+    /// `Origin` back as `Access-Control-Allow-Origin` and is safe
+    /// today only because auth uses `Authorization: Bearer` (a
+    /// non-simple request header). The strict default protects any
+    /// future cookie or same-site endpoint from ambient-authority
+    /// CSRF.
+    #[serde(default)]
+    pub allowed_origins: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -572,6 +589,44 @@ fn default_true() -> bool {
     true
 }
 
+/// Validate a CORS allow-list entry.
+///
+/// A valid entry is a fully-qualified origin — scheme + authority
+/// with no path, query, or fragment (e.g. `"https://app.example.com"`,
+/// `"http://localhost:5173"`). This deliberately rejects `"*"` so
+/// the allow-list cannot be turned into an allow-all by accident.
+pub(crate) fn validate_cors_origin(origin: &str) -> anyhow::Result<()> {
+    if origin.is_empty() {
+        bail!("origin is empty");
+    }
+    if origin == "*" {
+        bail!("wildcard origin `*` is not accepted; list each origin explicitly");
+    }
+    let url = url::Url::parse(origin).with_context(|| format!("cannot parse {origin:?}"))?;
+    match url.scheme() {
+        "http" | "https" => {},
+        other => bail!("origin scheme {other:?} is not http or https"),
+    }
+    if url.host_str().is_none() {
+        bail!("origin {origin:?} has no host");
+    }
+    // `url::Url::parse("https://a.b/")` returns `path = "/"`. Accept
+    // both `""` and `"/"` to be forgiving, but reject anything else.
+    if !matches!(url.path(), "" | "/") {
+        bail!("origin {origin:?} must not include a path");
+    }
+    if url.query().is_some() {
+        bail!("origin {origin:?} must not include a query string");
+    }
+    if url.fragment().is_some() {
+        bail!("origin {origin:?} must not include a fragment");
+    }
+    if url.username() != "" || url.password().is_some() {
+        bail!("origin {origin:?} must not include userinfo");
+    }
+    Ok(())
+}
+
 #[derive(Deserialize, Debug)]
 struct ConfigEnv {
     #[serde(rename = "eka_ci_config_file")]
@@ -613,6 +668,9 @@ pub struct ConfigOAuth {
 #[derive(Debug)]
 pub struct ConfigWeb {
     pub address: SocketAddrV4,
+    /// Validated CORS allow-list. See `ConfigFileWeb::allowed_origins`
+    /// for semantics. Empty means "refuse all cross-origin requests".
+    pub allowed_origins: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -730,6 +788,51 @@ impl Config {
                 matches!(normalized.as_str(), "1" | "true" | "yes" | "on");
         }
 
+        // M1: resolve the CORS allow-list. Precedence (highest wins):
+        //   1. EKACI_WEB_ALLOWED_ORIGINS env var (comma-separated)
+        //   2. [web].allowed_origins in the config file
+        //   3. empty list (strict default — same-origin only)
+        //
+        // Each entry is individually validated to be (a) non-empty,
+        // (b) not `*` (no wildcard allow-all), and (c) a parseable
+        // `http://` or `https://` origin with no path/query/fragment.
+        // Invalid entries abort startup so the operator sees the
+        // problem immediately instead of silently losing cross-origin
+        // access at runtime.
+        let mut allowed_origins: Vec<String> = match std::env::var("EKACI_WEB_ALLOWED_ORIGINS") {
+            Ok(raw) => raw
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect(),
+            Err(_) => file.web.allowed_origins.unwrap_or_default(),
+        };
+        for origin in &allowed_origins {
+            validate_cors_origin(origin)
+                .with_context(|| format!("invalid web.allowed_origins entry {origin:?}"))?;
+        }
+        // Dedupe while preserving order — it's nicer in logs and
+        // avoids accidentally emitting duplicate header values.
+        {
+            let mut seen = HashSet::new();
+            allowed_origins.retain(|o| seen.insert(o.clone()));
+        }
+        if allowed_origins.is_empty() {
+            tracing::info!(
+                event = "cors_allowlist_empty",
+                "No CORS origins configured; cross-origin API requests will be rejected. Set \
+                 [web].allowed_origins or EKACI_WEB_ALLOWED_ORIGINS to permit specific origins."
+            );
+        } else {
+            tracing::info!(
+                event = "cors_allowlist_configured",
+                count = allowed_origins.len(),
+                origins = ?allowed_origins,
+                "CORS allow-list active"
+            );
+        }
+
         // H1: refuse to start without a webhook secret unless the
         // operator has explicitly opted into the insecure path. This
         // closes the old silent-accept-all-webhooks behaviour.
@@ -754,6 +857,7 @@ impl Config {
         Ok(Config {
             web: ConfigWeb {
                 address: SocketAddrV4::new(bind_addr, bind_port),
+                allowed_origins,
             },
             unix: ConfigUnix {
                 socket_path: match args.socket.or(file.unix.socket_path) {

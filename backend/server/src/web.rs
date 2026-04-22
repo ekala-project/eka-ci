@@ -12,7 +12,7 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, warn};
 
@@ -50,6 +50,10 @@ struct AppState {
     webhook_metrics: Arc<WebhookMetrics>,
     github_client: Arc<crate::auth::GitHubApiClient>,
     default_merge_method: String,
+    /// M1: configured CORS allow-list. Each entry is a full origin
+    /// (scheme + host + optional port). Exact-match; no wildcards. An
+    /// empty list means no cross-origin requests are allowed.
+    allowed_origins: Vec<String>,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState
@@ -118,6 +122,42 @@ pub struct WebService {
     state: AppState,
 }
 
+/// M1: Build an explicit CORS layer from the configured allow-list.
+///
+/// - Origins are compared byte-for-byte against `HeaderValue`s derived from the configured list.
+///   Entries that cannot be parsed as a header value are logged and silently skipped (the
+///   allow-list is already validated at config load, so this should not fire in practice).
+/// - Only `GET`, `POST`, and `OPTIONS` are permitted — this API does not currently expose any
+///   cross-origin mutating verbs beyond `POST`.
+/// - Only `authorization`, `content-type`, and `accept` are permitted on cross-origin requests.
+/// - Credentialed CORS is explicitly NOT enabled: browsers will not attach cookies or
+///   `Authorization` to cross-origin requests, so even an allow-listed origin cannot impersonate
+///   the user.
+fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
+    use axum::http::{HeaderValue, Method, header};
+
+    let origins: Vec<HeaderValue> = allowed_origins
+        .iter()
+        .filter_map(|origin| match HeaderValue::from_str(origin) {
+            Ok(hv) => Some(hv),
+            Err(e) => {
+                warn!(
+                    event = "cors_origin_unparseable",
+                    origin = %origin,
+                    error = %e,
+                    "skipping CORS allow-list entry that could not be converted to a header value"
+                );
+                None
+            },
+        })
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+}
+
 impl WebService {
     pub async fn bind_to_address(
         socket: &SocketAddrV4,
@@ -140,6 +180,7 @@ impl WebService {
         webhook_metrics: Arc<WebhookMetrics>,
         github_client: Arc<crate::auth::GitHubApiClient>,
         default_merge_method: String,
+        allowed_origins: Vec<String>,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -193,6 +234,7 @@ impl WebService {
                 webhook_metrics,
                 github_client,
                 default_merge_method,
+                allowed_origins,
             },
         })
     }
@@ -219,8 +261,21 @@ impl WebService {
         let serve_dir = ServeDir::new(&static_dir)
             .not_found_service(ServeFile::new(static_dir.join("index.html")));
 
-        // Configure CORS to allow frontend requests
-        let cors = CorsLayer::permissive();
+        // M1: Configure CORS from the operator-provided allow-list.
+        //
+        // We deliberately do NOT use `CorsLayer::permissive()` here,
+        // which would reflect any Origin and allow arbitrary methods
+        // and headers. Instead we build an exact-match allow-list
+        // restricted to the methods and headers this API actually
+        // uses, and we do not enable credentialed CORS (so browser
+        // cookies/Authorization are never forwarded on cross-origin
+        // requests even if an attacker spoofs the Origin header).
+        //
+        // An empty allow-list produces a CORS layer that refuses every
+        // cross-origin request, effectively forcing same-origin use.
+        // This is the default when no `web.allowed_origins` config is
+        // set, and is the safe posture.
+        let cors = build_cors_layer(&self.state.allowed_origins);
 
         let app = Router::new()
             .nest("/v1", api_routes())
