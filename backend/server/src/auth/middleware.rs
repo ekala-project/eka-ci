@@ -133,6 +133,44 @@ where
     }
 }
 
+/// Pull a bearer token out of an `Authorization` header, falling back
+/// to an optional `token` query parameter.
+///
+/// Browsers cannot set arbitrary headers on a WebSocket upgrade, so
+/// any handler that must authenticate browser clients needs both
+/// sources. Non-WS handlers should generally use the [`AuthUser`] /
+/// [`AdminUser`] extractors instead of this helper.
+pub fn extract_bearer_or_query_token(
+    headers: &axum::http::HeaderMap,
+    query_token: Option<&str>,
+) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer ").map(str::to_owned))
+        .or_else(|| query_token.map(str::to_owned))
+}
+
+/// Validate a JWT sourced from either the `Authorization: Bearer ...`
+/// header or a `token` query parameter, returning the decoded claims.
+///
+/// Primarily intended for handlers where the extractor pattern
+/// doesn't fit (e.g. WebSocket upgrades, streaming responses that
+/// must return a custom status code before axum's body is produced).
+/// For ordinary HTTP handlers prefer the [`AuthUser`] or [`AdminUser`]
+/// extractors, which internally call the same `JwtService`.
+pub fn authenticate_request(
+    jwt_service: &JwtService,
+    headers: &axum::http::HeaderMap,
+    query_token: Option<&str>,
+) -> Result<Claims, AuthError> {
+    let token =
+        extract_bearer_or_query_token(headers, query_token).ok_or(AuthError::MissingToken)?;
+    jwt_service
+        .validate_token(&token)
+        .map_err(|_| AuthError::InvalidToken)
+}
+
 /// Authentication errors
 #[derive(Debug)]
 pub enum AuthError {
