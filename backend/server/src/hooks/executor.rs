@@ -13,6 +13,16 @@ use tracing::{debug, error, info, warn};
 
 use super::types::{HookContext, HookResult, HookTask, PostBuildHook};
 
+/// Maximum expanded command arg length. Guards against pathological
+/// substitutions (e.g. an attacker-controlled env value exploding a
+/// single arg into gigabytes via repeated `${VAR}` references).
+const MAX_EXPANDED_ARG_LEN: usize = 1 << 20; // 1 MiB
+
+/// Maximum substitution recursion depth. Substitution is single-pass
+/// (we do not re-expand output), so this is effectively the number of
+/// `${...}` references permitted in one argument.
+const MAX_SUBSTITUTIONS_PER_ARG: usize = 1024;
+
 pub struct HookExecutor {
     hook_receiver: mpsc::Receiver<HookTask>,
     logs_dir: PathBuf,
@@ -216,40 +226,65 @@ impl HookExecutor {
             anyhow::bail!("Hook command is empty");
         }
 
-        // Create a shell script that executes the command
-        // This allows environment variable substitution
-        let mut script = String::new();
-
-        // Export all environment variables
-        for (key, value) in env_vars {
-            // Escape single quotes in values
-            let escaped_value = value.replace("'", "'\\''");
-            script.push_str(&format!("export {}='{}'\n", key, escaped_value));
+        // Validate every env var key before we hand the map to the
+        // child. Invalid keys (e.g. `IFS=;foo`) previously injected
+        // shell code via the `export k='v'` emitter; we no longer
+        // use a shell, but invalid keys are still rejected as a
+        // defence in depth and so that downstream tooling sees a
+        // clean environment.
+        for key in env_vars.keys() {
+            validate_env_key(key).with_context(|| format!("invalid hook env key: {key:?}"))?;
         }
 
-        // Add the command
-        script.push_str(&shell_escape_command(command));
+        // Expand `$VAR` / `${VAR}` tokens in each argument against
+        // the assembled env map. This replaces the shell's job
+        // without ever going through a shell, so metacharacters in
+        // arg values (backticks, pipes, redirections, semicolons,
+        // newlines, etc.) remain literal bytes in that `argv[i]`.
+        let expanded: Vec<String> = command
+            .iter()
+            .enumerate()
+            .map(|(idx, arg)| {
+                expand_vars(arg, env_vars)
+                    .with_context(|| format!("failed to expand hook argv[{idx}]: {arg:?}"))
+            })
+            .collect::<Result<_>>()?;
 
-        debug!("Hook script:\n{}", script);
+        debug!(
+            program = %expanded[0],
+            argc = expanded.len(),
+            "Executing hook"
+        );
 
-        // Execute with sh -c
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg(&script)
+        // Build the child. We explicitly clear the inherited
+        // environment and install only the validated, caller-
+        // supplied map, so that secrets / CI-server env state do
+        // not leak into hooks.
+        let mut cmd = Command::new(&expanded[0]);
+        cmd.args(&expanded[1..])
+            .env_clear()
+            .envs(env_vars.iter())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
-        // Execute command with timeout
-        let output = match tokio::time::timeout(self.max_hook_timeout, cmd.output()).await {
-            Ok(result) => result.context("failed to execute hook command")?,
-            Err(_) => {
-                // Timeout occurred
-                return Err(anyhow!(
-                    "Hook execution timed out after {} seconds",
-                    self.max_hook_timeout.as_secs()
-                ));
-            },
-        };
+        let child = cmd.spawn().context("failed to spawn hook command")?;
+
+        // Run to completion with a wall-clock timeout. On timeout
+        // the `wait_with_output` future is cancelled, which drops
+        // the `Child` it owns; because we set `kill_on_drop(true)`
+        // on the `Command` that drop issues SIGKILL and reaps the
+        // child, preventing zombies (fixes M8).
+        let output =
+            match tokio::time::timeout(self.max_hook_timeout, child.wait_with_output()).await {
+                Ok(result) => result.context("failed to execute hook command")?,
+                Err(_) => {
+                    return Err(anyhow!(
+                        "Hook execution timed out after {} seconds",
+                        self.max_hook_timeout.as_secs()
+                    ));
+                },
+            };
 
         // Write output to log file
         let mut log_file = fs::File::create(log_path)
@@ -329,26 +364,134 @@ fn build_hook_env(
     env
 }
 
-/// Escape a command array for shell execution
-fn shell_escape_command(command: &[String]) -> String {
-    command
-        .iter()
-        .map(|arg| {
-            // If the argument contains special characters or spaces, quote it
-            if arg.contains(' ')
-                || arg.contains('$')
-                || arg.contains('*')
-                || arg.contains('?')
-                || arg.contains('[')
-                || arg.contains(']')
-            {
-                format!("'{}'", arg.replace("'", "'\\''"))
-            } else {
-                arg.clone()
+/// Validate that `key` is a well-formed POSIX env-var name:
+/// `[A-Za-z_][A-Za-z0-9_]*`. Rejecting anything else at execute
+/// time prevents CR/LF / `=` / whitespace in keys, which were the
+/// historical shell-injection vector when this crate still wrote
+/// `export k='v'` lines into an `sh -c` script.
+fn validate_env_key(key: &str) -> Result<()> {
+    if key.is_empty() {
+        anyhow::bail!("env var key is empty");
+    }
+    let mut bytes = key.bytes();
+    let first = bytes.next().unwrap();
+    let first_ok = first.is_ascii_alphabetic() || first == b'_';
+    if !first_ok {
+        anyhow::bail!("env var key must start with [A-Za-z_]: {key:?}");
+    }
+    for b in bytes {
+        let ok = b.is_ascii_alphanumeric() || b == b'_';
+        if !ok {
+            anyhow::bail!("env var key has disallowed byte 0x{b:02x}: {key:?}");
+        }
+    }
+    Ok(())
+}
+
+/// Expand `$NAME` / `${NAME}` tokens in `input` against `env`. This
+/// is a deliberately small, shell-like substitution that only
+/// understands variable references — no command substitution, no
+/// globbing, no parameter-expansion modifiers. A literal `$` can be
+/// produced by writing `$$`.
+///
+/// Rules:
+/// * `$NAME` matches `[A-Za-z_][A-Za-z0-9_]*` greedily.
+/// * `${NAME}` requires a closing `}` and validates `NAME` the same way; missing `}` or invalid
+///   inner name is an error.
+/// * `$$` → literal `$`.
+/// * A `$` followed by any other character is an error (rather than silently left literal, to avoid
+///   surprises if callers assume POSIX-like expansion).
+/// * Unknown variable names are an error, not silent empty-string substitution. This means a hook
+///   that references `${UNSET}` fails loudly instead of running with an unexpected empty arg
+///   (which, for `nix copy --to <dest> $OUT_PATHS`, would cause `nix copy` to read from stdin — a
+///   genuine footgun in the old shell-based implementation).
+fn expand_vars(input: &str, env: &HashMap<String, String>) -> Result<String> {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    let mut subs = 0usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b != b'$' {
+            // Fast path: copy a run of non-`$` bytes.
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'$' {
+                i += 1;
             }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+            // Safe: we only advanced over ASCII non-`$` bytes; UTF-8
+            // multibyte sequences have their leading bytes ≥ 0x80, so
+            // slicing here is on a valid UTF-8 boundary.
+            out.push_str(&input[start..i]);
+            if out.len() > MAX_EXPANDED_ARG_LEN {
+                anyhow::bail!("expanded hook arg exceeded {} bytes", MAX_EXPANDED_ARG_LEN);
+            }
+            continue;
+        }
+
+        // Saw `$`.
+        let next = bytes.get(i + 1).copied();
+        match next {
+            None => anyhow::bail!("dangling `$` at end of input"),
+            Some(b'$') => {
+                out.push('$');
+                i += 2;
+            },
+            Some(b'{') => {
+                // Find matching `}`.
+                let name_start = i + 2;
+                let Some(close_rel) = bytes[name_start..].iter().position(|&c| c == b'}') else {
+                    anyhow::bail!("unterminated `${{` in hook arg");
+                };
+                let name_end = name_start + close_rel;
+                let name = &input[name_start..name_end];
+                validate_env_key(name).context("invalid ${...} name")?;
+                let value = env
+                    .get(name)
+                    .ok_or_else(|| anyhow!("hook references unknown env var `{name}`"))?;
+                out.push_str(value);
+                i = name_end + 1;
+                subs += 1;
+            },
+            Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
+                // `$NAME` form. Consume the longest valid identifier.
+                let name_start = i + 1;
+                let mut j = name_start;
+                while j < bytes.len() {
+                    let cj = bytes[j];
+                    let ok = cj.is_ascii_alphanumeric() || cj == b'_';
+                    if !ok {
+                        break;
+                    }
+                    j += 1;
+                }
+                let name = &input[name_start..j];
+                let value = env
+                    .get(name)
+                    .ok_or_else(|| anyhow!("hook references unknown env var `{name}`"))?;
+                out.push_str(value);
+                i = j;
+                subs += 1;
+            },
+            Some(c) => {
+                anyhow::bail!(
+                    "unexpected byte 0x{c:02x} after `$` in hook arg; use `$$` for a literal `$`"
+                );
+            },
+        }
+
+        if subs > MAX_SUBSTITUTIONS_PER_ARG {
+            anyhow::bail!(
+                "too many `${{...}}` substitutions in hook arg (limit {})",
+                MAX_SUBSTITUTIONS_PER_ARG
+            );
+        }
+        if out.len() > MAX_EXPANDED_ARG_LEN {
+            anyhow::bail!("expanded hook arg exceeded {} bytes", MAX_EXPANDED_ARG_LEN);
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -410,28 +553,175 @@ mod tests {
         assert_eq!(env.get("CUSTOM_VAR").unwrap(), "custom_value");
     }
 
+    fn env_with(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    // --- validate_env_key ---
+
     #[test]
-    fn test_shell_escape_command() {
+    fn env_key_accepts_standard_names() {
+        for key in ["OUT_PATHS", "DRV_PATH", "EKA_JOB_NAME", "_foo", "A1"] {
+            validate_env_key(key).unwrap_or_else(|e| panic!("should accept {key}: {e}"));
+        }
+    }
+
+    #[test]
+    fn env_key_rejects_empty() {
+        assert!(validate_env_key("").is_err());
+    }
+
+    #[test]
+    fn env_key_rejects_leading_digit() {
+        assert!(validate_env_key("1FOO").is_err());
+    }
+
+    #[test]
+    fn env_key_rejects_injection_attempts() {
+        // Historical shell-injection vectors: keys that carried
+        // shell metacharacters to break out of the `export k='v'`
+        // line that the old `sh -c` script writer emitted.
+        for bad in [
+            "IFS=;rm",  // `=` + `;`
+            "FOO\nBAR", // newline
+            "FOO BAR",  // space
+            "FOO'; #",  // quote + `;` + `#`
+            "FOO=`id`", // backticks
+            "FOO$(id)", // command substitution
+            "FOO|cat",  // pipe
+            "FOO\0BAR", // NUL
+        ] {
+            assert!(
+                validate_env_key(bad).is_err(),
+                "env_key should reject {bad:?}"
+            );
+        }
+    }
+
+    // --- expand_vars ---
+
+    #[test]
+    fn expand_noop_for_plain_text() {
+        let env = env_with(&[]);
+        assert_eq!(expand_vars("hello world", &env).unwrap(), "hello world");
+        assert_eq!(expand_vars("", &env).unwrap(), "");
+    }
+
+    #[test]
+    fn expand_dollar_name_and_braces() {
+        let env = env_with(&[("OUT_PATHS", "/nix/store/a /nix/store/b")]);
         assert_eq!(
-            shell_escape_command(&["echo".to_string(), "hello".to_string()]),
-            "echo hello"
+            expand_vars("$OUT_PATHS", &env).unwrap(),
+            "/nix/store/a /nix/store/b"
         );
         assert_eq!(
-            shell_escape_command(&["echo".to_string(), "hello world".to_string()]),
-            "echo 'hello world'"
+            expand_vars("${OUT_PATHS}", &env).unwrap(),
+            "/nix/store/a /nix/store/b"
         );
+    }
+
+    #[test]
+    fn expand_greedy_identifier_stops_at_nonword() {
+        let env = env_with(&[("OUT", "/nix/store/x")]);
+        // `$OUT.txt` → value of `OUT` followed by literal `.txt`.
+        assert_eq!(expand_vars("$OUT.txt", &env).unwrap(), "/nix/store/x.txt");
+    }
+
+    #[test]
+    fn expand_double_dollar_is_literal() {
+        let env = env_with(&[]);
+        assert_eq!(expand_vars("price: $$5", &env).unwrap(), "price: $5");
+    }
+
+    #[test]
+    fn expand_unknown_var_is_error() {
+        let env = env_with(&[]);
+        assert!(expand_vars("$MISSING", &env).is_err());
+        assert!(expand_vars("${ALSO_MISSING}", &env).is_err());
+    }
+
+    #[test]
+    fn expand_rejects_unterminated_brace() {
+        let env = env_with(&[("X", "y")]);
+        assert!(expand_vars("${X", &env).is_err());
+    }
+
+    #[test]
+    fn expand_rejects_invalid_brace_name() {
+        let env = env_with(&[]);
+        assert!(expand_vars("${1FOO}", &env).is_err());
+        assert!(expand_vars("${}", &env).is_err());
+    }
+
+    #[test]
+    fn expand_rejects_dangling_dollar() {
+        let env = env_with(&[]);
+        assert!(expand_vars("trailing $", &env).is_err());
+    }
+
+    #[test]
+    fn expand_rejects_dollar_followed_by_punctuation() {
+        let env = env_with(&[]);
+        assert!(expand_vars("$-foo", &env).is_err());
+        assert!(expand_vars("$ ", &env).is_err());
+    }
+
+    #[test]
+    fn expand_leaves_shell_metacharacters_literal_in_value() {
+        // This is the key safety property: an env value containing
+        // `;rm -rf /` survives expansion as data, because the
+        // substituted arg is then passed to `Command::args` without
+        // ever going through a shell.
+        let env = env_with(&[("DRV_PATH", "/nix/store/a; rm -rf / #")]);
         assert_eq!(
-            shell_escape_command(&[
-                "nix".to_string(),
-                "copy".to_string(),
-                "--to".to_string(),
-                "s3://cache".to_string()
-            ]),
-            "nix copy --to s3://cache"
+            expand_vars("$DRV_PATH", &env).unwrap(),
+            "/nix/store/a; rm -rf / #"
         );
+    }
+
+    #[test]
+    fn expand_supports_utf8_literals_alongside_ascii_vars() {
+        let env = env_with(&[("NAME", "world")]);
         assert_eq!(
-            shell_escape_command(&["echo".to_string(), "$OUT_PATHS".to_string()]),
-            "echo '$OUT_PATHS'"
+            expand_vars("héllo, $NAME 🚀", &env).unwrap(),
+            "héllo, world 🚀"
+        );
+    }
+
+    #[test]
+    fn expand_rejects_excessive_output_size() {
+        // A realistic abuse: attacker-controlled env value that is
+        // large and referenced enough times to exceed the byte
+        // cap. Stay under MAX_SUBSTITUTIONS_PER_ARG so we exercise
+        // the size cap, not the substitution-count cap.
+        let big = "A".repeat(4096);
+        let env = env_with(&[("BIG", &big)]);
+        let mut tpl = String::new();
+        for _ in 0..512 {
+            tpl.push_str("${BIG}");
+        }
+        // Expands to 512 * 4096 = 2 MiB (>> 1 MiB cap).
+        let err = expand_vars(&tpl, &env).unwrap_err();
+        assert!(
+            err.to_string().contains("exceeded"),
+            "expected size limit error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_rejects_excessive_substitution_count() {
+        let env = env_with(&[("X", "a")]);
+        let mut tpl = String::new();
+        for _ in 0..(MAX_SUBSTITUTIONS_PER_ARG + 10) {
+            tpl.push_str("${X}");
+        }
+        let err = expand_vars(&tpl, &env).unwrap_err();
+        assert!(
+            err.to_string().contains("too many"),
+            "expected substitution-count error, got: {err}"
         );
     }
 }
