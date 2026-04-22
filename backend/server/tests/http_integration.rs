@@ -32,6 +32,18 @@ async fn create_test_server_with_webhook(
     webhook_secret: Option<String>,
     allow_insecure_webhooks: bool,
 ) -> (WebService, SchedulerService, mpsc::Sender<IngressTask>) {
+    create_test_server_with_options(ctx, webhook_secret, allow_insecure_webhooks, Vec::new()).await
+}
+
+/// Helper to create a test web server with full control over webhook
+/// and CORS configuration. Used by tests that need to exercise the
+/// CORS allow-list (M1).
+async fn create_test_server_with_options(
+    ctx: &TestContext,
+    webhook_secret: Option<String>,
+    allow_insecure_webhooks: bool,
+    allowed_origins: Vec<String>,
+) -> (WebService, SchedulerService, mpsc::Sender<IngressTask>) {
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = mpsc::channel::<GraphCommand>(1000);
     let graph_service = GraphService::new(
@@ -126,6 +138,7 @@ async fn create_test_server_with_webhook(
         webhook_metrics,
         github_client,
         "squash".to_string(), // default merge method for tests
+        allowed_origins,
     )
     .await
     .expect("Failed to create web service");
@@ -431,45 +444,46 @@ async fn test_root_url_serves_frontend() {
 
 #[tokio::test]
 async fn test_cors_headers_present() {
-    // Setup test environment
+    // M1: CORS now uses an exact-match allow-list instead of
+    // `CorsLayer::permissive()`. This test verifies the happy path:
+    // a configured origin gets `access-control-allow-origin` echoed
+    // back on simple (non-preflight) GET requests.
     let ctx = TestContext::new().await.unwrap();
 
-    // Create and start web server
-    let (web_service, _scheduler, _ingress_sender) = create_test_server(&ctx).await;
+    let origin = "http://example.com";
+    let (web_service, _scheduler, _ingress_sender) =
+        create_test_server_with_options(&ctx, None, true, vec![origin.to_string()]).await;
     let addr = web_service.bind_addr();
     let base_url = format!("http://{}", addr);
 
-    // Start the server in the background
     let cancellation_token = CancellationToken::new();
     let cancel = cancellation_token.clone();
     tokio::spawn(async move {
         web_service.run(cancel).await;
     });
 
-    // Give the server a moment to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Make a request with an Origin header to trigger CORS
     let client = reqwest::Client::new();
     let response = client
         .get(format!("{}/v1/repositories", base_url))
-        .header("Origin", "http://example.com")
+        .header("Origin", origin)
         .send()
         .await
         .expect("Failed to send request");
 
-    // Check that CORS headers are present
     let headers = response.headers();
-
-    // Access-Control-Allow-Origin should be present
-    assert!(
-        headers.contains_key("access-control-allow-origin"),
-        "Missing access-control-allow-origin header"
+    let allow_origin = headers
+        .get("access-control-allow-origin")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        allow_origin, origin,
+        "allow-listed origin should be reflected on simple requests"
     );
 
-    println!("✓ CORS headers are present on API responses");
+    println!("✓ CORS headers are present on API responses for allow-listed origin");
 
-    // Cleanup
     cancellation_token.cancel();
 }
 
@@ -834,4 +848,163 @@ async fn test_webhook_returns_503_in_strict_mode_without_secret() {
 
     cancellation_token.cancel();
     println!("✓ webhook returns 503 in strict mode when no secret is configured");
+}
+
+// ---------------------------------------------------------------------------
+// M1: CORS allow-list tests
+//
+// The server no longer uses `CorsLayer::permissive()`. It builds an
+// exact-match allow-list from `web.allowed_origins` (or the
+// `EKACI_WEB_ALLOWED_ORIGINS` env override). An empty list means
+// cross-origin requests are refused; a populated list reflects only
+// the listed origins in `access-control-allow-origin`.
+// ---------------------------------------------------------------------------
+
+/// Issue a CORS preflight OPTIONS request and return the response.
+async fn cors_preflight(
+    client: &reqwest::Client,
+    base_url: &str,
+    path: &str,
+    origin: &str,
+) -> reqwest::Response {
+    client
+        .request(reqwest::Method::OPTIONS, format!("{}{}", base_url, path))
+        .header("origin", origin)
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "content-type")
+        .send()
+        .await
+        .expect("failed to send CORS preflight")
+}
+
+#[tokio::test]
+async fn cors_allows_configured_origin() {
+    let ctx = TestContext::new().await.unwrap();
+
+    let (web_service, _scheduler, _ingress_sender) = create_test_server_with_options(
+        &ctx,
+        None,
+        true,
+        vec!["https://ekaci.example.com".to_string()],
+    )
+    .await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let resp = cors_preflight(
+        &client,
+        &base_url,
+        "/v1/metrics",
+        "https://ekaci.example.com",
+    )
+    .await;
+
+    // Allowed origin should be reflected back; preflight responses are
+    // typically 200 or 204 depending on the CORS middleware version.
+    let status = resp.status().as_u16();
+    assert!(
+        status == 200 || status == 204,
+        "expected 200/204 from preflight, got {status}"
+    );
+    let allow_origin = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        allow_origin, "https://ekaci.example.com",
+        "allowed origin should be reflected exactly"
+    );
+
+    cancellation_token.cancel();
+    println!("✓ configured CORS origin is allowed on preflight");
+}
+
+#[tokio::test]
+async fn cors_denies_unlisted_origin() {
+    let ctx = TestContext::new().await.unwrap();
+
+    let (web_service, _scheduler, _ingress_sender) = create_test_server_with_options(
+        &ctx,
+        None,
+        true,
+        vec!["https://ekaci.example.com".to_string()],
+    )
+    .await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let resp = cors_preflight(
+        &client,
+        &base_url,
+        "/v1/metrics",
+        "https://attacker.example.com",
+    )
+    .await;
+
+    // The CORS layer refuses the preflight; the browser enforces the
+    // absence of `access-control-allow-origin` even if the HTTP
+    // status is 2xx.
+    let allow_origin = resp.headers().get("access-control-allow-origin");
+    assert!(
+        allow_origin.is_none(),
+        "unlisted origin must not be reflected (got {:?})",
+        allow_origin
+    );
+
+    cancellation_token.cancel();
+    println!("✓ unlisted CORS origin is denied on preflight");
+}
+
+#[tokio::test]
+async fn cors_empty_allowlist_denies_all() {
+    let ctx = TestContext::new().await.unwrap();
+
+    // Default posture: empty allow-list -> refuse all cross-origin.
+    let (web_service, _scheduler, _ingress_sender) =
+        create_test_server_with_options(&ctx, None, true, Vec::new()).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let resp = cors_preflight(
+        &client,
+        &base_url,
+        "/v1/metrics",
+        "https://anywhere.example.com",
+    )
+    .await;
+
+    let allow_origin = resp.headers().get("access-control-allow-origin");
+    assert!(
+        allow_origin.is_none(),
+        "empty allow-list must not reflect any origin (got {:?})",
+        allow_origin
+    );
+
+    cancellation_token.cancel();
+    println!("✓ empty CORS allow-list refuses every cross-origin request");
 }
