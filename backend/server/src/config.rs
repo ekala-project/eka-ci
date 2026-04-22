@@ -664,16 +664,22 @@ impl Config {
             .ok()
             .or(file.oauth.jwt_secret)
             .unwrap_or_else(|| {
-                info!(
-                    "JWT_SECRET not set, generating random secret (will not persist across \
-                     restarts!)"
+                // No configured secret: generate a cryptographically random
+                // 256-bit secret via the OS CSPRNG. This is intentionally
+                // not derived from time, PID, or any other predictable
+                // source, which closes the old `insecure-secret-{timestamp}`
+                // brute-force path. Issued tokens will not survive a server
+                // restart, which is the correct failure mode — operators
+                // are expected to configure JWT_SECRET for production.
+                let mut bytes = [0u8; 32];
+                rand::fill(&mut bytes);
+                tracing::warn!(
+                    event = "jwt_secret_generated_ephemeral",
+                    "JWT_SECRET not set; generated an ephemeral 256-bit secret. Sessions will NOT \
+                     survive a server restart. Configure JWT_SECRET (or oauth.jwt_secret) for \
+                     production."
                 );
-                use std::time::{SystemTime, UNIX_EPOCH};
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                format!("insecure-secret-{}", now)
+                hex::encode(bytes)
             });
 
         // Build cache registry as a HashMap
