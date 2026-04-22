@@ -3,7 +3,11 @@
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
-/// Hook execution record stored in the database
+/// Hook execution record stored in the database.
+///
+/// All fields mirror the `HookExecutions` schema so SQLx `FromRow` can hydrate
+/// them, even when Rust callers only read a subset.
+#[allow(dead_code)]
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct HookExecution {
     pub id: i64,

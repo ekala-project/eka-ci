@@ -51,22 +51,6 @@ pub enum TargetState {
     CompletedSuccess,
 }
 
-impl TargetState {
-    /// Check if a DrvBuildState matches this target
-    pub fn matches(&self, state: &DrvBuildState) -> bool {
-        match (self, state) {
-            (TargetState::TransitiveFailure, DrvBuildState::TransitiveFailure) => true,
-            (TargetState::CompletedFailure, DrvBuildState::Completed(DrvBuildResult::Failure)) => {
-                true
-            },
-            (TargetState::CompletedSuccess, DrvBuildState::Completed(DrvBuildResult::Success)) => {
-                true
-            },
-            _ => false,
-        }
-    }
-}
-
 /// Configuration for eviction candidate selection
 #[derive(Debug, Clone)]
 pub struct EvictionConfig {
@@ -282,17 +266,6 @@ mod tests {
     fn test_tier_ordering() {
         assert!(EvictionTier::Tier1 < EvictionTier::Tier2);
         assert!(EvictionTier::Tier2 < EvictionTier::Tier3);
-    }
-
-    #[test]
-    fn test_target_state_matching() {
-        let tier1_state = EvictionTier::Tier1.target_state();
-        assert!(tier1_state.matches(&DrvBuildState::TransitiveFailure));
-        assert!(!tier1_state.matches(&DrvBuildState::Completed(DrvBuildResult::Success)));
-
-        let tier3_state = EvictionTier::Tier3.target_state();
-        assert!(tier3_state.matches(&DrvBuildState::Completed(DrvBuildResult::Success)));
-        assert!(!tier3_state.matches(&DrvBuildState::TransitiveFailure));
     }
 
     #[test]

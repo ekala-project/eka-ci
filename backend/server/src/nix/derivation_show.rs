@@ -44,18 +44,18 @@ pub(crate) struct LegacyAttrsStruct {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawDrvInfo {
+pub(crate) struct RawDrvInfo {
     /// to reattempt the build (depending on the interruption kind).
-    pub system: String,
+    pub(crate) system: String,
 
-    pub env: EnvAttrs,
+    pub(crate) env: EnvAttrs,
 
     #[serde(rename = "requiredSystemFeatures")]
-    pub required_system_features: Option<String>,
+    pub(crate) required_system_features: Option<String>,
 
     /// Map of output names to their store paths
     /// e.g., {"out": "/nix/store/hash-name", "dev": "/nix/store/hash-name-dev"}
-    pub outputs: Option<HashMap<String, DrvOutputInfo>>,
+    pub(crate) outputs: Option<HashMap<String, DrvOutputInfo>>,
 }
 
 #[derive(Debug, Deserialize)]

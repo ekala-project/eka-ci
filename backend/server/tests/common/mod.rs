@@ -172,21 +172,6 @@ pub async fn wait_for_drv_state(
     }
 }
 
-/// Build a Nix derivation using `nix build`.
-///
-/// Returns true if build succeeded, false if it failed.
-pub async fn build_drv(drv_path: &str) -> Result<bool> {
-    let output = tokio::process::Command::new("nix")
-        .arg("build")
-        .arg(drv_path)
-        .arg("--no-link")
-        .output()
-        .await
-        .context("Failed to execute nix build")?;
-
-    Ok(output.status.success())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
