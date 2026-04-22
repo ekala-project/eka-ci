@@ -156,8 +156,11 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let git_service = GitService::new(repo_sender.clone())?;
 
-    // Create JWT service and OAuth config for authentication
-    let jwt_service = JwtService::new(&config.oauth.jwt_secret);
+    // Create JWT service and OAuth config for authentication.
+    // M2: the JWT secret is stored as `Redacted<String>` so that it
+    // cannot leak through `Debug` formatting of `Config`; expose the
+    // raw string here because `JwtService::new` takes `&str`.
+    let jwt_service = JwtService::new(config.oauth.jwt_secret.expose());
     let oauth_config = OAuthConfig {
         client_id: config.oauth.client_id.clone(),
         client_secret: config.oauth.client_secret.clone(),

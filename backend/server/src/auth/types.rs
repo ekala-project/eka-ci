@@ -1,7 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-/// User stored in the database after OAuth authentication
-#[derive(Debug, Clone, sqlx::FromRow)]
+use crate::secret::Redacted;
+
+/// User stored in the database after OAuth authentication.
+///
+/// M2: `github_access_token` remains a `String` (not
+/// [`Redacted<String>`]) so that `sqlx::FromRow` can decode it
+/// transparently. The hand-rolled [`fmt::Debug`] impl below redacts
+/// the token so it cannot leak through `{:?}` / `{:#?}` formatting or
+/// through a parent struct that derives `Debug`.
+#[derive(Clone, sqlx::FromRow)]
 pub struct AuthenticatedUser {
     #[sqlx(rename = "ROWID")]
     #[allow(dead_code)]
@@ -17,10 +25,31 @@ pub struct AuthenticatedUser {
     pub last_login: chrono::NaiveDateTime,
 }
 
-/// Response sent to frontend after successful login
+impl std::fmt::Debug for AuthenticatedUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthenticatedUser")
+            .field("id", &self.id)
+            .field("github_id", &self.github_id)
+            .field("github_username", &self.github_username)
+            .field("github_avatar_url", &self.github_avatar_url)
+            // M2: redact access token; never print it even for debug.
+            .field("github_access_token", &"[REDACTED]")
+            .field("is_admin", &self.is_admin)
+            .field("created_at", &self.created_at)
+            .field("last_login", &self.last_login)
+            .finish()
+    }
+}
+
+/// Response sent to frontend after successful login.
+///
+/// M2: `token` is wrapped in [`Redacted<String>`] so that the JWT is
+/// never printed in debug output. Because `Redacted` serialises
+/// transparently, the on-wire JSON is identical to the unwrapped form
+/// (`{"token": "<jwt>", "user": {...}}`).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoginResponse {
-    pub token: String,
+    pub token: Redacted<String>,
     pub user: UserInfo,
 }
 

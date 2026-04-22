@@ -19,6 +19,7 @@ pub mod metrics;
 pub mod nix;
 pub mod path_safety;
 pub mod scheduler;
+pub mod secret;
 pub mod services;
 pub mod web;
 pub mod webhook_security;

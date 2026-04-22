@@ -16,6 +16,7 @@ use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::graph::{GraphCommand, GraphService};
 use eka_ci_server::metrics::WebhookMetrics;
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
+use eka_ci_server::secret::Redacted;
 use eka_ci_server::services::WebSocketService;
 use eka_ci_server::web::WebService;
 use prometheus::Registry;
@@ -94,10 +95,12 @@ async fn create_test_server_with_options(
     // Create JWT service
     let jwt_service = JwtService::new("test-secret-key-for-integration-tests");
 
-    // Create OAuth config (dummy values for tests)
+    // Create OAuth config (dummy values for tests).
+    // M2: `client_secret` is a `Redacted<String>` so it cannot leak
+    // through `Debug` formatting; tests construct it via `Redacted::new`.
     let oauth_config = OAuthConfig {
         client_id: "test-client-id".to_string(),
-        client_secret: "test-client-secret".to_string(),
+        client_secret: Redacted::new("test-client-secret".to_string()),
         redirect_url: "http://localhost/callback".to_string(),
     };
 
@@ -133,7 +136,9 @@ async fn create_test_server_with_options(
         ctx.logs_dir.clone(),
         websocket_service,
         github_app_configs,
-        webhook_secret,
+        // M2: wrap at the test-helper boundary so individual test call
+        // sites can keep using plain `Option<String>`.
+        webhook_secret.map(Redacted::new),
         allow_insecure_webhooks,
         webhook_metrics,
         github_client,

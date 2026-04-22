@@ -40,7 +40,9 @@ struct AppState {
     logs_dir: PathBuf,
     websocket_service: crate::services::WebSocketService,
     github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
-    webhook_secret: Option<String>,
+    // M2: wrap so the secret cannot leak through any future `Debug`
+    // formatting of `AppState` or a struct embedding it.
+    webhook_secret: Option<crate::secret::Redacted<String>>,
     /// H1: opt-in escape hatch. When `true` and `webhook_secret` is
     /// `None`, the webhook handler accepts unsigned payloads (for
     /// local development only). Production startup refuses to set
@@ -175,7 +177,7 @@ impl WebService {
         logs_dir: PathBuf,
         websocket_service: crate::services::WebSocketService,
         github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
-        webhook_secret: Option<String>,
+        webhook_secret: Option<crate::secret::Redacted<String>>,
         allow_insecure_webhooks: bool,
         webhook_metrics: Arc<WebhookMetrics>,
         github_client: Arc<crate::auth::GitHubApiClient>,
@@ -450,7 +452,7 @@ async fn handle_github_webhook(
                 },
             };
 
-            if let Err(e) = verify_webhook_signature(secret, signature, &body) {
+            if let Err(e) = verify_webhook_signature(secret.expose(), signature, &body) {
                 state
                     .webhook_metrics
                     .signature_failures_total
