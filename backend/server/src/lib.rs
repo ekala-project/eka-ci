@@ -17,6 +17,7 @@ pub mod graph;
 pub mod hooks;
 pub mod metrics;
 pub mod nix;
+pub mod path_safety;
 pub mod scheduler;
 pub mod services;
 pub mod web;

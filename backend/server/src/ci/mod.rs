@@ -358,33 +358,47 @@ fn read_repo_toplevel(path: &mut PathBuf) -> Result<CIConfig> {
     Ok(config)
 }
 
-/// Resolve the file path
-/// Absolute file paths will be traversed from repo root
-/// Relative paths are traversed from .ekaci directory
+/// Resolve the file path for a CI job described in `.ekaci/config.json`.
+///
+/// Only absolute paths (interpreted as repo-root-relative) are
+/// supported today; the relative-path branch is blocked on
+/// `normalize_lexically` being stabilized — see upstream Rust issue
+/// #134694.
+///
+/// Security (H5): the resolved path must remain inside `repo_root`.
+/// The config is read from user-controlled PR content, so a naive
+/// `repo_root.push(...)` lets a malicious entry such as
+/// `"file": "/../../etc/passwd"` escape the checkout. We guard that
+/// two ways:
+/// 1. Lexical rejection of any `..` component before touching the FS.
+/// 2. `fs::canonicalize` of the joined path, asserted to still be a descendant of the canonicalized
+///    `repo_root`. This also catches symlinks that were committed to the PR branch and point
+///    outside the worktree.
 fn resolve_file_path(
-    mut repo_root: PathBuf,
-    mut _file_path_to_config: PathBuf,
+    repo_root: PathBuf,
+    _file_path_to_config: PathBuf,
     file_path_in_config: PathBuf,
 ) -> anyhow::Result<PathBuf> {
-    let file_path = if file_path_in_config.is_absolute() {
-        // pushing an absolute path replaces the old value, we must:
-        //   stringify the value
-        //   remove leading "/"
-        //   and then repush the "relative" directory from root
-        let file_part: String = file_path_in_config.to_string_lossy().into();
-        let file_part = file_part.strip_prefix("/").unwrap();
-        repo_root.push(file_part);
-        repo_root
-    } else {
-        // This is blocked on `normalize_lexically` being stabilized
-        // https://github.com/rust-lang/rust/issues/134694
-        //
-        // file_path_to_config.pop();
-        // file_path_to_config.push(file_path_in_config);
-        // file_path_to_config
+    if !file_path_in_config.is_absolute() {
         anyhow::bail!("File paths must be absolute");
-    };
-    Ok(file_path)
+    }
+
+    // Treat the config-supplied absolute path as repo-relative: strip
+    // the leading separator, then ensure no parent-dir components slip
+    // through before any filesystem access.
+    let file_part_string: String = file_path_in_config.to_string_lossy().into();
+    let file_part = file_part_string
+        .strip_prefix('/')
+        .unwrap_or(&file_part_string);
+    let file_part_path = std::path::Path::new(file_part);
+
+    crate::path_safety::reject_parent_components(file_part_path)
+        .context("CI config job file path rejected lexically")?;
+
+    let joined = repo_root.join(file_part_path);
+
+    crate::path_safety::canonical_within(&joined, &repo_root)
+        .context("CI config job file path escapes repository root")
 }
 
 #[cfg(test)]
@@ -402,14 +416,80 @@ mod tests {
     // file_path_in_config).unwrap();     assert_eq!(resolved_path,
     // PathBuf::from("/foo/foo.nix")); }
 
+    /// The config-supplied "absolute" path is repo-relative. A real
+    /// file inside the repo root must resolve to its canonical form.
     #[test]
-    fn test_absolute_file_resolve() {
-        let repo_root = PathBuf::from("/foo");
-        let file_path_to_config = PathBuf::from("/foo/.ekaci/config.json");
-        let file_path_in_config = PathBuf::from("/foo.nix");
+    fn test_absolute_file_resolve_within_repo() {
+        let repo_root = tempfile::tempdir().unwrap();
+        let job_file = repo_root.path().join("foo.nix");
+        std::fs::write(&job_file, b"").unwrap();
 
-        let resolved_path =
-            resolve_file_path(repo_root, file_path_to_config, file_path_in_config).unwrap();
-        assert_eq!(resolved_path, PathBuf::from("/foo/foo.nix"));
+        let resolved = resolve_file_path(
+            repo_root.path().to_path_buf(),
+            repo_root.path().join(".ekaci/config.json"),
+            PathBuf::from("/foo.nix"),
+        )
+        .unwrap();
+
+        assert_eq!(resolved, std::fs::canonicalize(&job_file).unwrap());
+    }
+
+    /// H5 regression: a config entry such as `"file": "/../etc/passwd"`
+    /// must be rejected by the lexical parent-component check before we
+    /// even touch the filesystem.
+    #[test]
+    fn test_resolve_rejects_parent_traversal() {
+        let repo_root = tempfile::tempdir().unwrap();
+
+        let result = resolve_file_path(
+            repo_root.path().to_path_buf(),
+            repo_root.path().join(".ekaci/config.json"),
+            PathBuf::from("/../etc/passwd"),
+        );
+
+        let err = result.expect_err("parent-dir traversal must be rejected");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("parent-directory"),
+            "expected lexical-rejection error, got: {msg}"
+        );
+    }
+
+    /// H5 regression: a PR could commit a symlink inside the worktree
+    /// pointing to a sensitive file outside it. Canonicalization must
+    /// catch the escape.
+    #[test]
+    fn test_resolve_rejects_symlink_escape() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, b"secret").unwrap();
+
+        let repo_root = tempfile::tempdir().unwrap();
+        let link = repo_root.path().join("escape");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let result = resolve_file_path(
+            repo_root.path().to_path_buf(),
+            repo_root.path().join(".ekaci/config.json"),
+            PathBuf::from("/escape"),
+        );
+
+        assert!(
+            result.is_err(),
+            "symlink pointing outside the repo root must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_resolve_rejects_relative_path() {
+        let repo_root = tempfile::tempdir().unwrap();
+
+        let result = resolve_file_path(
+            repo_root.path().to_path_buf(),
+            repo_root.path().join(".ekaci/config.json"),
+            PathBuf::from("foo.nix"),
+        );
+
+        assert!(result.is_err(), "relative paths are not supported today");
     }
 }

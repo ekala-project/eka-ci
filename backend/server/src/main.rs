@@ -13,6 +13,7 @@ mod graph;
 mod hooks;
 mod metrics;
 mod nix;
+mod path_safety;
 mod scheduler;
 mod services;
 mod web;
