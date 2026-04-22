@@ -16,7 +16,7 @@ use crate::db::DbService;
 use crate::git::GitService;
 use crate::github::{self, GitHubService};
 use crate::graph::{GraphCommand, GraphService, GraphServiceHandle};
-use crate::metrics::{GraphMetrics, WebhookMetrics};
+use crate::metrics::{GraphMetrics, NixEvalMetrics, WebhookMetrics};
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::services::checks::ChecksExecutor;
@@ -129,12 +129,19 @@ pub async fn start_services(config: Config) -> Result<()> {
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
+    // M4: register nix-eval-jobs observability metrics on the shared
+    // Prometheus registry so `/v1/metrics` exposes truncation counters
+    // and output-size histograms to operators.
+    let nix_eval_metrics = NixEvalMetrics::new(&scheduler_service.metrics_registry())
+        .context("failed to register nix-eval-jobs metrics")?;
+
     let eval_service = EvalService::new(
         eval_receiver,
         db_service.clone(),
         scheduler_service.ingress_request_sender(),
         maybe_github_sender.clone(),
         graph_command_sender.clone(),
+        Some(nix_eval_metrics),
     );
 
     // Create ChecksExecutor service
