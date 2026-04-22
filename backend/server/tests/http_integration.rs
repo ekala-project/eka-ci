@@ -451,3 +451,198 @@ async fn test_cors_headers_present() {
     // Cleanup
     cancellation_token.cancel();
 }
+
+// ---------------------------------------------------------------------------
+// H4 regression tests: sensitive endpoints must reject unauthenticated
+// callers. Build-log endpoints are intentionally public and are not
+// exercised here.
+// ---------------------------------------------------------------------------
+
+/// Test helper: forge a valid JWT using the same secret the test web server
+/// is constructed with. `is_admin` toggles the admin claim.
+fn make_test_jwt(is_admin: bool) -> String {
+    use eka_ci_server::auth::types::AuthenticatedUser;
+
+    let jwt_service = JwtService::new("test-secret-key-for-integration-tests");
+    let now = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0)
+        .unwrap()
+        .naive_utc();
+    let user = AuthenticatedUser {
+        id: 1,
+        github_id: 42,
+        github_username: "test-user".to_string(),
+        github_avatar_url: None,
+        github_access_token: "dummy-token".to_string(),
+        is_admin,
+        created_at: now,
+        last_login: now,
+    };
+    jwt_service
+        .create_token(&user)
+        .expect("failed to mint test JWT")
+}
+
+#[tokio::test]
+async fn test_metrics_requires_admin() {
+    let ctx = TestContext::new().await.unwrap();
+    let (web_service, _scheduler, _ingress_sender) = create_test_server(&ctx).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/v1/metrics", base_url);
+
+    // (1) No token → 401.
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("failed to send unauthenticated metrics request");
+    assert_eq!(
+        resp.status(),
+        401,
+        "unauthenticated metrics request must be rejected"
+    );
+
+    // (2) Non-admin JWT → 403.
+    let user_token = make_test_jwt(false);
+    let resp = client
+        .get(&url)
+        .bearer_auth(&user_token)
+        .send()
+        .await
+        .expect("failed to send non-admin metrics request");
+    assert_eq!(
+        resp.status(),
+        403,
+        "non-admin metrics request must be forbidden"
+    );
+
+    // (3) Admin JWT → 200.
+    let admin_token = make_test_jwt(true);
+    let resp = client
+        .get(&url)
+        .bearer_auth(&admin_token)
+        .send()
+        .await
+        .expect("failed to send admin metrics request");
+    assert_eq!(resp.status(), 200, "admin metrics request must succeed");
+
+    cancellation_token.cancel();
+    println!("✓ /v1/metrics enforces admin authentication");
+}
+
+#[tokio::test]
+async fn test_check_runs_requires_auth() {
+    let ctx = TestContext::new().await.unwrap();
+    let (web_service, _scheduler, _ingress_sender) = create_test_server(&ctx).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let url = format!("{}/v1/commits/{}/check_runs", base_url, sha);
+
+    // (1) No token → 401.
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("failed to send unauthenticated check_runs request");
+    assert_eq!(
+        resp.status(),
+        401,
+        "unauthenticated check_runs request must be rejected"
+    );
+
+    // (2) Valid (non-admin) token → not 401/403. We accept either 200 with
+    //     an empty array or 404/5xx depending on backing data; the point is
+    //     that authentication passes.
+    let token = make_test_jwt(false);
+    let resp = client
+        .get(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("failed to send authenticated check_runs request");
+    let status = resp.status();
+    assert!(
+        status != 401 && status != 403,
+        "authenticated check_runs request must not be rejected by auth (got {})",
+        status
+    );
+
+    cancellation_token.cancel();
+    println!("✓ /v1/commits/{{sha}}/check_runs enforces authentication");
+}
+
+#[tokio::test]
+async fn test_ws_builds_rejects_upgrade_without_token() {
+    let ctx = TestContext::new().await.unwrap();
+    let (web_service, _scheduler, _ingress_sender) = create_test_server(&ctx).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/v1/ws/builds", base_url);
+
+    // Unauthenticated upgrade attempt: our handler rejects before
+    // delegating to WebSocketUpgrade, so a plain GET is sufficient to
+    // observe the 401. We still send the upgrade-style headers to
+    // confirm behaviour on the real WS path.
+    let resp = client
+        .get(&url)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .expect("failed to send WS upgrade request");
+    assert_eq!(
+        resp.status(),
+        401,
+        "WS upgrade without a token must be rejected with 401"
+    );
+
+    // A bogus token should also be rejected.
+    let resp = client
+        .get(&url)
+        .bearer_auth("not.a.valid.jwt")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .expect("failed to send WS upgrade with bogus token");
+    assert_eq!(
+        resp.status(),
+        401,
+        "WS upgrade with an invalid token must be rejected with 401"
+    );
+
+    cancellation_token.cancel();
+    println!("✓ /v1/ws/builds rejects unauthenticated upgrade attempts");
+}

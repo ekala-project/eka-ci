@@ -223,11 +223,14 @@ fn github_routes() -> Router<AppState> {
 /// Prefixed with /v1 path
 fn api_routes() -> Router<AppState> {
     Router::new()
-        // Public routes
+        // Public routes — build logs are intentionally readable without
+        // authentication so that anyone reviewing a CI failure can
+        // inspect the output without signing in.
         .route("/logs/{drv}", get(get_derivation_log))
+        // Gated routes (H4): admin-only metrics + auth-required status
+        // reporting, plus the real-time build-event WebSocket.
         .route("/metrics", get(metrics_handler))
         .route("/commits/{sha}/check_runs", get(get_check_runs_for_commit))
-        // WebSocket route for real-time updates
         .route("/ws/builds", get(websocket_handler))
         // Repository management routes
         .route("/repositories", get(list_repositories_handler))
@@ -613,7 +616,15 @@ async fn auth_me_handler(user: AuthUser, State(state): State<AppState>) -> impl 
     crate::auth::handle_me(user, State(state.oauth_state())).await
 }
 
-async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn metrics_handler(
+    // H4: the Prometheus metrics endpoint exposes internal timing and
+    // cardinality information useful to an attacker profiling the
+    // server. Require admin credentials. Operators who scrape metrics
+    // with Prometheus should either (a) scrape with an admin JWT, or
+    // (b) restrict access at the reverse-proxy layer.
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     let encoder = TextEncoder::new();
     let metric_families = state.metrics_registry.gather();
     let mut buffer = Vec::new();
@@ -721,6 +732,9 @@ async fn remove_approved_user_handler(
 }
 
 async fn get_check_runs_for_commit(
+    // H4: check-run status is sensitive because it correlates internal
+    // commit SHAs (including unmerged PR heads) with build outcomes.
+    _auth: AuthUser,
     State(state): State<AppState>,
     Path(sha): Path<String>,
 ) -> Json<Vec<CheckRun>> {
@@ -985,14 +999,48 @@ async fn get_drv_dependencies_handler(
     }
 }
 
-/// WebSocket handler for real-time build updates
+/// Query parameters for the WebSocket upgrade endpoint.
+///
+/// Browsers cannot set arbitrary `Authorization` headers on a
+/// WebSocket upgrade, so we accept the JWT via a `?token=<jwt>` query
+/// parameter. Non-browser clients (curl, test harnesses) may use
+/// either the query parameter or the `Authorization: Bearer <jwt>`
+/// header.
+#[derive(serde::Deserialize, Default)]
+struct WsAuthQuery {
+    token: Option<String>,
+}
+
+/// WebSocket handler for real-time build updates.
+///
+/// H4: gated on a valid JWT. Any authenticated user may subscribe.
+/// Per-subscription filtering (e.g. only jobsets a user can see) is
+/// the responsibility of the subscription manager.
 async fn websocket_handler(
     ws: WebSocketUpgrade,
+    axum::extract::Query(query): axum::extract::Query<WsAuthQuery>,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(
-        move |socket| async move { state.websocket_service.handle_connection(socket).await },
-    )
+) -> axum::response::Response {
+    // Delegate token extraction + validation to the shared helper so
+    // that every auth-sensitive handler applies identical parsing
+    // rules. Browsers hit the `?token=` fallback; everyone else uses
+    // the Bearer header.
+    match crate::auth::authenticate_request(
+        &state.jwt_service,
+        &headers,
+        query.token.as_deref(),
+    ) {
+        Ok(_claims) => ws
+            .on_upgrade(move |socket| async move {
+                state.websocket_service.handle_connection(socket).await
+            })
+            .into_response(),
+        Err(err) => {
+            warn!(event = "ws_upgrade_rejected", reason = ?err);
+            err.into_response()
+        }
+    }
 }
 
 // ========== User Profile Handlers ==========
