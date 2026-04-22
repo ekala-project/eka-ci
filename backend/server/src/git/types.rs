@@ -14,6 +14,9 @@ pub enum GitProtocol {
     // Retained for future configuration (e.g. self-hosted forges over plain HTTP).
     #[allow(dead_code)]
     Http,
+    // Supported by `protocol_prefix`, but no construction site yet.
+    // Retained for future SSH protocol support.
+    #[allow(dead_code)]
     Ssh,
 }
 

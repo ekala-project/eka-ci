@@ -130,7 +130,6 @@ impl RepoReader {
                             repo_name: ci_info.repo_name.clone(),
                             sha: ci_info.commit.clone(),
                             check_name: check_name.clone(),
-                            checkset_id,
                             check_result_id,
                         };
                         github_sender.send(create_check_run_task).await?;
@@ -184,7 +183,6 @@ impl RepoReader {
                                             repo_name: ci_info.repo_name.clone(),
                                             sha: ci_info.commit.clone(),
                                             check_name: check_name.clone(),
-                                            checkset_id,
                                             check_result_id,
                                         };
                                         github_sender.send(create_check_run_task).await?;
@@ -247,7 +245,6 @@ impl RepoReader {
                                             repo_name: ci_info.repo_name.clone(),
                                             sha: ci_info.commit.clone(),
                                             check_name: check_name.clone(),
-                                            checkset_id,
                                             check_result_id,
                                         };
                                         github_sender.send(create_check_run_task).await?;

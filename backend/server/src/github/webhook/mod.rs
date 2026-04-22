@@ -101,6 +101,9 @@ struct MergeGroupData {
     head_commit: MergeGroupCommit,
 }
 
+// Webhook payload structs — fields must match GitHub's JSON schema for
+// deserialization to succeed, even when Rust code doesn't currently read them.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct MergeGroupCommit {
     id: String,
@@ -109,6 +112,7 @@ struct MergeGroupCommit {
     committer: MergeGroupUser,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct MergeGroupUser {
     name: String,

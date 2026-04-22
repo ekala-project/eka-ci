@@ -231,7 +231,6 @@ pub enum GitHubTask {
         repo_name: String,
         sha: String,
         check_name: String,
-        checkset_id: i64,
         check_result_id: i64,
     },
     CheckComplete(CheckResultMessage),

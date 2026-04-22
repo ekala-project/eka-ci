@@ -1403,6 +1403,9 @@ pub async fn pr_head_build_succeeded(
     Ok(true)
 }
 
+// Database row struct — all fields mirror the `PullRequests` schema so
+// SQLx `FromRow` can hydrate them, even when Rust callers only read a subset.
+#[allow(dead_code)]
 #[derive(Debug, Clone, FromRow)]
 pub struct PullRequest {
     pub pr_number: i64,

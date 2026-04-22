@@ -506,7 +506,6 @@ impl GitHubService {
                 repo_name,
                 sha,
                 check_name,
-                checkset_id: _,
                 check_result_id,
             } => {
                 let octocrab = self.octocrab_for_owner(owner)?;

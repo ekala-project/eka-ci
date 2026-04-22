@@ -1269,7 +1269,7 @@ impl RecorderWorker {
     async fn capture_runtime_references(
         &self,
         drv_id: &DrvId,
-        job_infos: &[JobInfo],
+        _job_infos: &[JobInfo],
     ) -> anyhow::Result<()> {
         use std::collections::HashMap;
 

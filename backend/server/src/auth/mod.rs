@@ -12,8 +12,4 @@ pub use jwt::JwtService;
 pub use middleware::{AdminUser, AuthUser};
 pub use oauth::{OAuthConfig, handle_callback, handle_login, handle_me};
 pub use requests::RequestHandlerState;
-pub use types::{
-    AddMaintainerRequest, AttrPathMaintainer, GitHubPermission, MaintainerDetail,
-    MaintainerRequestDetail, RequestMaintainerRequest, RequestStatus, UpdateProfileRequest,
-    UserDetail, UserInfo, UserProfile,
-};
+pub use types::{AddMaintainerRequest, RequestMaintainerRequest, UpdateProfileRequest};
