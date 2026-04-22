@@ -16,11 +16,9 @@ use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalError, NixEvalItem};
 /// M4: the output consumer bounds every growth axis so an adversarial
 /// or accidentally-huge flake cannot OOM the server:
 ///   - `NIX_EVAL_JOBS_MAX_ENTRIES` caps total parsed items (drvs + errors).
-///   - `NIX_EVAL_JOBS_MAX_STDOUT_BYTES` caps total bytes read from
-///     nix-eval-jobs stdout.
-///   - `NIX_EVAL_JOBS_MAX_LINE_BYTES` caps the length of any single
-///     JSONL line (prevents a newline-less adversarial stream from
-///     growing the line buffer without bound).
+///   - `NIX_EVAL_JOBS_MAX_STDOUT_BYTES` caps total bytes read from nix-eval-jobs stdout.
+///   - `NIX_EVAL_JOBS_MAX_LINE_BYTES` caps the length of any single JSONL line (prevents a
+///     newline-less adversarial stream from growing the line buffer without bound).
 /// On any cap hit, the child is killed and reaped, the caller receives
 /// an error, and a `NixEvalMetrics::truncated_total` counter is
 /// incremented with the trigger reason.
@@ -297,9 +295,7 @@ mod tests {
     }
 
     fn error_json(attr: &str, msg: &str) -> String {
-        format!(
-            r#"{{"attr":"{attr}","attrPath":["{attr}"],"error":"{msg}"}}"#
-        )
+        format!(r#"{{"attr":"{attr}","attrPath":["{attr}"],"error":"{msg}"}}"#)
     }
 
     #[test]
@@ -357,7 +353,11 @@ mod tests {
             NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
             NIX_EVAL_JOBS_MAX_LINE_BYTES,
         );
-        assert_eq!(outcome.jobs.len(), 2, "malformed lines must not crash parse");
+        assert_eq!(
+            outcome.jobs.len(),
+            2,
+            "malformed lines must not crash parse"
+        );
         assert_eq!(outcome.errors.len(), 0);
         assert_eq!(outcome.truncation, Truncation::None);
     }

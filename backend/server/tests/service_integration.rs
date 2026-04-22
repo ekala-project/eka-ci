@@ -69,7 +69,8 @@ async fn test_build_simple_drv_success() {
         ctx.logs_dir.clone(),
         vec![], // no remote builders
         None,   // no GitHub integration
-        30,     // 30 second timeout
+        30,     // 30 second no-output timeout
+        3600,   // 1 hour absolute build cap (M5)
         None,   // no WebSocket
         graph_command_sender.clone(),
         graph_handle.clone(),
@@ -168,7 +169,8 @@ async fn test_build_failure_retry_logic() {
         ctx.logs_dir.clone(),
         vec![], // no remote builders
         None,   // no GitHub integration
-        30,     // 30 second timeout
+        30,     // 30 second no-output timeout
+        3600,   // 1 hour absolute build cap (M5)
         None,   // no WebSocket
         graph_command_sender.clone(),
         graph_handle.clone(),

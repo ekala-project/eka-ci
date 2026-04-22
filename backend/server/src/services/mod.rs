@@ -118,6 +118,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.remote_builders,
         maybe_github_sender.clone(),
         config.build_no_output_timeout_seconds,
+        config.build_max_duration_seconds,
         websocket_sender,
         graph_command_sender.clone(),
         graph_handle.clone(),

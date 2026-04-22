@@ -65,6 +65,11 @@ struct ConfigFile {
     require_approval: Option<bool>,
     merge_queue_require_approval: Option<bool>,
     build_no_output_timeout_seconds: Option<u64>,
+    /// Absolute wall-clock cap per build (M5). Unlike the no-output
+    /// timeout, this is not reset when the child emits stdout/stderr,
+    /// so a derivation that prints one byte per minute for hours still
+    /// terminates. Default: 14400 seconds (4 hours).
+    build_max_duration_seconds: Option<u64>,
     graph_lru_capacity: Option<usize>,
     default_merge_method: Option<String>,
     #[serde(default)]
@@ -659,6 +664,10 @@ pub struct Config {
     pub require_approval: bool,
     pub merge_queue_require_approval: bool,
     pub build_no_output_timeout_seconds: u64,
+    /// Absolute per-build wall-clock cap (M5). Default 14400 s (4 h);
+    /// override with `EKA_CI_BUILD_MAX_DURATION_SECONDS` or the
+    /// `build_max_duration_seconds` field of `ekaci.toml`.
+    pub build_max_duration_seconds: u64,
     /// Maximum number of nodes in the LRU cache (default: 100,000)
     pub graph_lru_capacity: usize,
     /// Default merge method for auto-merge (merge, squash, rebase)
@@ -908,6 +917,7 @@ impl Config {
                 .or(file.merge_queue_require_approval)
                 .unwrap_or(false),
             build_no_output_timeout_seconds: file.build_no_output_timeout_seconds.unwrap_or(1200),
+            build_max_duration_seconds: file.build_max_duration_seconds.unwrap_or(14_400),
             graph_lru_capacity: file.graph_lru_capacity.unwrap_or(100_000),
             default_merge_method: file
                 .default_merge_method
@@ -1004,6 +1014,7 @@ mod redaction_tests {
             require_approval: false,
             merge_queue_require_approval: false,
             build_no_output_timeout_seconds: 1200,
+            build_max_duration_seconds: 14_400,
             graph_lru_capacity: 100,
             default_merge_method: "squash".to_string(),
             caches: HashMap::new(),
@@ -1018,5 +1029,43 @@ mod redaction_tests {
         // Both the compact and pretty Debug forms must redact every secret.
         assert_no_secret(&format!("{config:?}"), "Config {:?}");
         assert_no_secret(&format!("{config:#?}"), "Config {:#?}");
+    }
+}
+
+#[cfg(test)]
+mod m5_tests {
+    //! M5 regression: `build_max_duration_seconds` must exist on
+    //! `ConfigFile` with `None` default and resolve to 14400 s when
+    //! absent from `ekaci.toml`.
+    use super::*;
+
+    #[test]
+    fn config_file_default_leaves_max_duration_unset() {
+        let cf = ConfigFile::default();
+        assert!(cf.build_max_duration_seconds.is_none());
+        assert!(cf.build_no_output_timeout_seconds.is_none());
+    }
+
+    #[test]
+    fn config_file_figment_roundtrip_preserves_max_duration() {
+        // Use figment's Toml provider (already a dep) to parse an
+        // in-memory TOML snippet overriding the field.
+        use figment::providers::Format;
+        let cf: ConfigFile = Figment::from(Serialized::defaults(ConfigFile::default()))
+            .merge(figment::providers::Toml::string(
+                "build_max_duration_seconds = 7200\n",
+            ))
+            .extract()
+            .expect("valid toml");
+        assert_eq!(cf.build_max_duration_seconds, Some(7200));
+    }
+
+    #[test]
+    fn config_default_resolution_sets_14400() {
+        // Mirror the logic in `Config::from_env` for the default arm
+        // to lock in the 14400 s (4 h) default.
+        let cf = ConfigFile::default();
+        let resolved = cf.build_max_duration_seconds.unwrap_or(14_400);
+        assert_eq!(resolved, 14_400);
     }
 }

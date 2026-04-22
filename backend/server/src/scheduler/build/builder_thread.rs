@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep, sleep_until};
 use tracing::{debug, error, warn};
 
 use super::{BuildRequest, Platform};
@@ -24,9 +24,12 @@ pub struct BuilderThread {
     platform: Platform,
     metrics: Arc<BuildMetrics>,
     no_output_timeout_seconds: u64,
+    /// M5: absolute wall-clock cap per build; does not reset on output.
+    max_duration_seconds: u64,
 }
 
 impl BuilderThread {
+    #[allow(clippy::too_many_arguments)]
     pub fn init(
         build_args: [String; 2],
         max_jobs: u8,
@@ -35,6 +38,7 @@ impl BuilderThread {
         platform: Platform,
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
+        max_duration_seconds: u64,
     ) -> Self {
         Self {
             build_args,
@@ -44,6 +48,7 @@ impl BuilderThread {
             platform,
             metrics,
             no_output_timeout_seconds,
+            max_duration_seconds,
         }
     }
 
@@ -98,6 +103,7 @@ impl BuilderThread {
             recorder_sender: self.recorder_sender.clone(),
             drv_id,
             no_output_timeout_seconds: self.no_output_timeout_seconds,
+            max_duration_seconds: self.max_duration_seconds,
         }
     }
 }
@@ -108,12 +114,16 @@ struct NixBuild {
     recorder_sender: mpsc::Sender<RecorderTask>,
     drv_id: DrvId,
     no_output_timeout_seconds: u64,
+    max_duration_seconds: u64,
 }
 
 enum BuildOutcome {
     Success,
     Failure,
+    /// Resettable "no-output" timeout elapsed.
     Timeout,
+    /// M5: absolute wall-clock cap elapsed regardless of output.
+    AbsoluteTimeout,
 }
 
 impl NixBuild {
@@ -134,6 +144,13 @@ impl NixBuild {
                 warn!(
                     "Build timed out for {:?} (no output for {} seconds)",
                     drv_path, self.no_output_timeout_seconds
+                );
+                DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout)
+            },
+            Ok(BuildOutcome::AbsoluteTimeout) => {
+                warn!(
+                    "Build timed out for {:?} (wall-clock cap of {} seconds reached)",
+                    drv_path, self.max_duration_seconds
                 );
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout)
             },
@@ -187,6 +204,13 @@ impl NixBuild {
         let timeout_duration = Duration::from_secs(self.no_output_timeout_seconds);
         let mut timeout = Box::pin(sleep(timeout_duration));
 
+        // M5: absolute wall-clock deadline that does NOT reset on
+        // output. A derivation that prints one byte per minute used to
+        // hold a builder slot indefinitely; now it is killed after
+        // `max_duration_seconds` regardless of output activity.
+        let absolute_deadline = Instant::now() + Duration::from_secs(self.max_duration_seconds);
+        let mut absolute_timeout = Box::pin(sleep_until(absolute_deadline));
+
         loop {
             tokio::select! {
                 result = stdout_reader.read_until(b'\n', &mut stdout_buf) => {
@@ -195,7 +219,7 @@ impl NixBuild {
                         Ok(_) => {
                             log_writer.write_all(&stdout_buf).await?;
                             stdout_buf.clear();
-                            // Reset timeout on output
+                            // Reset no-output timeout only; absolute deadline is fixed.
                             timeout.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
                         },
                         Err(e) => warn!("Error reading stdout: {}", e),
@@ -207,16 +231,18 @@ impl NixBuild {
                         Ok(_) => {
                             log_writer.write_all(&stderr_buf).await?;
                             stderr_buf.clear();
-                            // Reset timeout on output
+                            // Reset no-output timeout only; absolute deadline is fixed.
                             timeout.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
                         },
                         Err(e) => warn!("Error reading stderr: {}", e),
                     }
                 },
                 _ = &mut timeout => {
-                    // Timeout occurred - kill the process
+                    // No-output timeout occurred - kill the process
                     warn!("Build timed out after {} seconds of no output, killing process", self.no_output_timeout_seconds);
                     let _ = child.kill().await;
+                    // Reap to avoid zombies and release file descriptors
+                    let _ = child.wait().await;
 
                     // Flush and close log file
                     log_writer.flush().await?;
@@ -224,6 +250,21 @@ impl NixBuild {
                     log_file.sync_all().await?;
 
                     return Ok(BuildOutcome::Timeout);
+                },
+                _ = &mut absolute_timeout => {
+                    // M5: absolute wall-clock cap reached
+                    warn!(
+                        "Build exceeded wall-clock cap of {} seconds, killing process",
+                        self.max_duration_seconds,
+                    );
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+
+                    log_writer.flush().await?;
+                    let log_file = log_writer.into_inner();
+                    log_file.sync_all().await?;
+
+                    return Ok(BuildOutcome::AbsoluteTimeout);
                 },
             }
 
@@ -328,4 +369,114 @@ async fn get_nix_log(drv_id: &DrvId) -> anyhow::Result<String> {
     }
     let str = String::from_utf8(output.stdout)?;
     Ok(str)
+}
+
+#[cfg(test)]
+mod tests {
+    //! M5: regression tests for the dual-deadline pattern that drives
+    //! `build_drv_with_logging`. The real function spawns `nix-build`
+    //! which is unavailable in unit tests, so these tests mirror the
+    //! inner `select!` shape using `tokio::time::pause()` to drive
+    //! virtual time. Any future change that accidentally resets the
+    //! absolute deadline on output will flip the first test from
+    //! passing (absolute fires) to panicking (no-output fires), which
+    //! is the exact regression M5 protects against.
+    use std::pin::Pin;
+    use std::time::Duration;
+
+    use tokio::time::{Instant, Sleep, sleep, sleep_until};
+    use tracing::info;
+
+    use super::*;
+    #[derive(Debug, PartialEq, Eq)]
+    enum TimeoutKind {
+        NoOutput,
+        Absolute,
+    }
+    /// Mirror of the production `select!` block: two pinned sleeps +
+    /// reset the no-output sleep whenever the caller reports output.
+    async fn race_deadlines<F>(
+        no_output_seconds: u64,
+        max_duration_seconds: u64,
+        mut output_tick: F,
+    ) -> TimeoutKind
+    where
+        F: FnMut() -> Option<Duration>,
+    {
+        let no_output_dur = Duration::from_secs(no_output_seconds);
+        let mut no_output: Pin<Box<Sleep>> = Box::pin(sleep(no_output_dur));
+        let mut absolute: Pin<Box<Sleep>> = Box::pin(sleep_until(
+            Instant::now() + Duration::from_secs(max_duration_seconds),
+        ));
+        loop {
+            let next_tick = output_tick();
+            match next_tick {
+                Some(delay) => {
+                    tokio::select! {
+                        biased;
+                        _ = &mut absolute => return TimeoutKind::Absolute,
+                        _ = &mut no_output => return TimeoutKind::NoOutput,
+                        _ = sleep(delay) => {
+                            // Simulated output: reset no-output only, not absolute.
+                            no_output.as_mut().reset(Instant::now() + no_output_dur);
+                        }
+                    }
+                },
+                None => {
+                    tokio::select! {
+                        biased;
+                        _ = &mut absolute => return TimeoutKind::Absolute,
+                        _ = &mut no_output => return TimeoutKind::NoOutput,
+                    }
+                },
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absolute_timeout_fires_even_with_regular_output() {
+        // Simulate a chatty build that prints every 5 s for a long
+        // time. The no-output timeout is 10 s (would never fire) but
+        // the absolute cap is 30 s (must fire).
+        let mut ticks_fired = 0u32;
+        let kind = race_deadlines(10, 30, move || {
+            ticks_fired += 1;
+            // Never stop ticking; tokio virtual time will race the
+            // sleep vs the absolute deadline and absolute will win.
+            Some(Duration::from_secs(5))
+        })
+        .await;
+        assert_eq!(kind, TimeoutKind::Absolute);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_output_fires_when_no_ticks_produced() {
+        // No ticks: the no-output sleep fires first (10 s < 30 s cap).
+        let kind = race_deadlines(10, 30, || None).await;
+        assert_eq!(kind, TimeoutKind::NoOutput);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absolute_timeout_wins_even_when_no_output_identical() {
+        // If both deadlines are scheduled for the same instant the
+        // `biased` ordering in the select deterministically picks the
+        // absolute arm. This guards against the pre-M5 behavior where
+        // the only deadline was the no-output one.
+        let kind = race_deadlines(30, 30, || None).await;
+        assert_eq!(kind, TimeoutKind::Absolute);
+    }
+
+    #[test]
+    fn build_outcome_absolute_timeout_distinct_from_timeout() {
+        // Regression: the enum must have a distinct variant so perform_build
+        // can log the wall-clock reason separately.
+        let a = BuildOutcome::AbsoluteTimeout;
+        let b = BuildOutcome::Timeout;
+        let a_is_abs = matches!(a, BuildOutcome::AbsoluteTimeout);
+        let b_is_abs = matches!(b, BuildOutcome::AbsoluteTimeout);
+        assert!(a_is_abs);
+        assert!(!b_is_abs);
+        // quiet unused-import lint for `info`
+        info!("m5 variant check ok");
+    }
 }

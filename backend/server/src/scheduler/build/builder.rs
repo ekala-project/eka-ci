@@ -28,9 +28,11 @@ pub struct Builder {
     recorder_sender: mpsc::Sender<RecorderTask>,
     metrics: Arc<BuildMetrics>,
     no_output_timeout_seconds: u64,
+    max_duration_seconds: u64,
 }
 
 impl Builder {
+    #[allow(clippy::too_many_arguments)]
     fn new_inner(
         is_local: bool,
         max_jobs: u8,
@@ -43,6 +45,7 @@ impl Builder {
         recorder_sender: Sender<RecorderTask>,
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
+        max_duration_seconds: u64,
     ) -> Self {
         Self {
             is_local,
@@ -56,6 +59,7 @@ impl Builder {
             recorder_sender,
             metrics,
             no_output_timeout_seconds,
+            max_duration_seconds,
         }
     }
 
@@ -97,6 +101,7 @@ impl Builder {
             self.platform.clone(),
             self.metrics.clone(),
             self.no_output_timeout_seconds,
+            self.max_duration_seconds,
         );
 
         thread.run()
@@ -107,6 +112,7 @@ impl Builder {
         recorder_sender: mpsc::Sender<RecorderTask>,
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
+        max_duration_seconds: u64,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -132,6 +138,7 @@ impl Builder {
                     recorder_sender.clone(),
                     metrics.clone(),
                     no_output_timeout_seconds,
+                    max_duration_seconds,
                 )
             })
             .collect();
@@ -144,6 +151,7 @@ impl Builder {
         recorder_sender: mpsc::Sender<RecorderTask>,
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
+        max_duration_seconds: u64,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -168,6 +176,7 @@ impl Builder {
                     recorder_sender.clone(),
                     metrics.clone(),
                     no_output_timeout_seconds,
+                    max_duration_seconds,
                 )
             })
             .collect();
@@ -175,6 +184,7 @@ impl Builder {
         Ok(builders)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn from_remote_builder(
         platform: Platform,
         remote_builder: &RemoteBuilder,
@@ -182,6 +192,7 @@ impl Builder {
         recorder_sender: mpsc::Sender<RecorderTask>,
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
+        max_duration_seconds: u64,
     ) -> Self {
         Self::new_inner(
             false,
@@ -199,6 +210,7 @@ impl Builder {
             recorder_sender,
             metrics,
             no_output_timeout_seconds,
+            max_duration_seconds,
         )
     }
 
