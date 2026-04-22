@@ -16,7 +16,7 @@ use crate::db::DbService;
 use crate::git::GitService;
 use crate::github::{self, GitHubService};
 use crate::graph::{GraphCommand, GraphService, GraphServiceHandle};
-use crate::metrics::GraphMetrics;
+use crate::metrics::{GraphMetrics, WebhookMetrics};
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::services::checks::ChecksExecutor;
@@ -167,6 +167,11 @@ pub async fn start_services(config: Config) -> Result<()> {
     // Initialize GitHub API client for permission checking
     let github_client = Arc::new(crate::auth::GitHubApiClient::new());
 
+    // Register WebhookMetrics with the scheduler's metrics registry so
+    // `/v1/metrics` scrapes include webhook signature counters.
+    let webhook_metrics = WebhookMetrics::new(&scheduler_service.metrics_registry())
+        .context("failed to register webhook metrics")?;
+
     let web_service = WebService::bind_to_address(
         &config.web.address,
         git_service.get_sender(),
@@ -184,6 +189,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         websocket_service.clone(),
         github_app_configs.clone(),
         config.security.webhook_secret.clone(),
+        config.security.allow_insecure_webhooks,
+        webhook_metrics,
         github_client,
         config.default_merge_method.clone(),
     )

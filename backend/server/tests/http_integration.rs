@@ -14,6 +14,7 @@ use eka_ci_server::auth::{GitHubApiClient, JwtService, OAuthConfig};
 use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::graph::{GraphCommand, GraphService};
+use eka_ci_server::metrics::WebhookMetrics;
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
 use eka_ci_server::services::WebSocketService;
 use eka_ci_server::web::WebService;
@@ -22,9 +23,14 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// Helper to create a test web server
-async fn create_test_server(
+/// Helper to create a test web server with explicit webhook config.
+///
+/// `webhook_secret = None, allow_insecure_webhooks = true` matches the
+/// historic test defaults (skip signature verification).
+async fn create_test_server_with_webhook(
     ctx: &TestContext,
+    webhook_secret: Option<String>,
+    allow_insecure_webhooks: bool,
 ) -> (WebService, SchedulerService, mpsc::Sender<IngressTask>) {
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = mpsc::channel::<GraphCommand>(1000);
@@ -95,6 +101,10 @@ async fn create_test_server(
     // Create GitHub API client for tests
     let github_client = Arc::new(GitHubApiClient::new());
 
+    // Register webhook metrics against the shared scheduler registry.
+    let webhook_metrics = WebhookMetrics::new(&scheduler.metrics_registry())
+        .expect("failed to register webhook metrics");
+
     let web_service = WebService::bind_to_address(
         &socket,
         git_sender,
@@ -111,7 +121,9 @@ async fn create_test_server(
         ctx.logs_dir.clone(),
         websocket_service,
         github_app_configs,
-        None, // no webhook secret for tests
+        webhook_secret,
+        allow_insecure_webhooks,
+        webhook_metrics,
         github_client,
         "squash".to_string(), // default merge method for tests
     )
@@ -119,6 +131,15 @@ async fn create_test_server(
     .expect("Failed to create web service");
 
     (web_service, scheduler, ingress_sender)
+}
+
+/// Backwards-compatible default: no webhook secret, insecure mode on.
+/// Existing tests do not touch `/github/webhook`, so this preserves
+/// their behaviour exactly.
+async fn create_test_server(
+    ctx: &TestContext,
+) -> (WebService, SchedulerService, mpsc::Sender<IngressTask>) {
+    create_test_server_with_webhook(ctx, None, true).await
 }
 
 #[tokio::test]
@@ -645,4 +666,172 @@ async fn test_ws_builds_rejects_upgrade_without_token() {
 
     cancellation_token.cancel();
     println!("✓ /v1/ws/builds rejects unauthenticated upgrade attempts");
+}
+
+// ---------------------------------------------------------------------------
+// H1 regression tests: `/github/webhook` signature verification.
+// ---------------------------------------------------------------------------
+
+/// Compute the hex `sha256=<hmac>` header GitHub sends for a given
+/// body, using the same hmac/sha2 crates the server uses.
+fn github_signature_header(secret: &str, body: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body);
+    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+}
+
+#[tokio::test]
+async fn test_webhook_rejects_missing_signature_when_secret_configured() {
+    let ctx = TestContext::new().await.unwrap();
+    let (web_service, _scheduler, _ingress) =
+        create_test_server_with_webhook(&ctx, Some("test-webhook-secret".to_string()), false).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/github/webhook", base_url))
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .expect("failed to send unsigned webhook");
+
+    assert_eq!(
+        resp.status(),
+        401,
+        "missing signature header must be rejected with 401"
+    );
+
+    cancellation_token.cancel();
+    println!("✓ webhook rejects missing X-Hub-Signature-256 with 401");
+}
+
+#[tokio::test]
+async fn test_webhook_rejects_bad_signature() {
+    let ctx = TestContext::new().await.unwrap();
+    let (web_service, _scheduler, _ingress) =
+        create_test_server_with_webhook(&ctx, Some("test-webhook-secret".to_string()), false).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let body = "{}";
+    // HMAC of `body` under the WRONG secret.
+    let forged = github_signature_header("not-the-real-secret", body.as_bytes());
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/github/webhook", base_url))
+        .header("content-type", "application/json")
+        .header("x-hub-signature-256", forged)
+        .body(body)
+        .send()
+        .await
+        .expect("failed to send bad-signature webhook");
+
+    assert_eq!(
+        resp.status(),
+        401,
+        "signature mismatch must be rejected with 401"
+    );
+
+    cancellation_token.cancel();
+    println!("✓ webhook rejects forged X-Hub-Signature-256 with 401");
+}
+
+#[tokio::test]
+async fn test_webhook_accepts_valid_signature() {
+    let ctx = TestContext::new().await.unwrap();
+    let secret = "test-webhook-secret";
+    let (web_service, _scheduler, _ingress) =
+        create_test_server_with_webhook(&ctx, Some(secret.to_string()), false).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let body = "{}";
+    let signature = github_signature_header(secret, body.as_bytes());
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/github/webhook", base_url))
+        .header("content-type", "application/json")
+        .header("x-hub-signature-256", signature)
+        .body(body)
+        .send()
+        .await
+        .expect("failed to send valid-signature webhook");
+
+    // Signature verification passed. The empty `{}` body will not
+    // deserialize into a `WebhookEventPayload`, so we expect the
+    // handler to return 400 after the gate opens. What matters for
+    // H1 is that we are NOT seeing 401/503.
+    let status = resp.status();
+    assert!(
+        status != 401 && status != 503,
+        "valid signature must not be rejected by H1 gate (got {status})"
+    );
+
+    cancellation_token.cancel();
+    println!("✓ webhook accepts valid X-Hub-Signature-256");
+}
+
+#[tokio::test]
+async fn test_webhook_returns_503_in_strict_mode_without_secret() {
+    let ctx = TestContext::new().await.unwrap();
+    // Defence-in-depth path: even if `Config::from_env` is bypassed
+    // and we construct a WebService with no secret and strict mode,
+    // the handler must refuse.
+    let (web_service, _scheduler, _ingress) =
+        create_test_server_with_webhook(&ctx, None, false).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/github/webhook", base_url))
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .expect("failed to send webhook");
+
+    assert_eq!(
+        resp.status(),
+        503,
+        "strict mode without a secret must respond 503"
+    );
+
+    cancellation_token.cancel();
+    println!("✓ webhook returns 503 in strict mode when no secret is configured");
 }

@@ -20,8 +20,9 @@ use crate::auth::{AdminUser, AuthUser, JwtService, OAuthConfig};
 use crate::db::github::CheckRun;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
+use crate::metrics::WebhookMetrics;
 use crate::scheduler::IngressTask;
-use crate::webhook_security::{check_webhook_secret_configured, verify_webhook_signature};
+use crate::webhook_security::verify_webhook_signature;
 
 #[derive(Clone)]
 struct AppState {
@@ -40,6 +41,13 @@ struct AppState {
     websocket_service: crate::services::WebSocketService,
     github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
     webhook_secret: Option<String>,
+    /// H1: opt-in escape hatch. When `true` and `webhook_secret` is
+    /// `None`, the webhook handler accepts unsigned payloads (for
+    /// local development only). Production startup refuses to set
+    /// both simultaneously unless the operator has explicitly asked
+    /// for it.
+    allow_insecure_webhooks: bool,
+    webhook_metrics: Arc<WebhookMetrics>,
     github_client: Arc<crate::auth::GitHubApiClient>,
     default_merge_method: String,
 }
@@ -128,6 +136,8 @@ impl WebService {
         websocket_service: crate::services::WebSocketService,
         github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
         webhook_secret: Option<String>,
+        allow_insecure_webhooks: bool,
+        webhook_metrics: Arc<WebhookMetrics>,
         github_client: Arc<crate::auth::GitHubApiClient>,
         default_merge_method: String,
     ) -> Result<Self> {
@@ -135,8 +145,31 @@ impl WebService {
             .await
             .context(format!("failed to bind to tcp socket at {socket}"))?;
 
-        // Check and warn if webhook secret is not configured
-        check_webhook_secret_configured(&webhook_secret);
+        // The startup-time policy check (refuse to run without a
+        // webhook secret unless the operator has opted in) lives in
+        // `Config::from_env`. Here we only log the runtime posture so
+        // the bind-to-address log line makes the mode obvious.
+        match (&webhook_secret, allow_insecure_webhooks) {
+            (Some(_), _) => {
+                info!(event = "webhook_signature_verification_enabled");
+            },
+            (None, true) => {
+                warn!(
+                    event = "webhook_signature_verification_disabled",
+                    "Webhook signature verification is DISABLED (allow_insecure_webhooks=true)."
+                );
+            },
+            (None, false) => {
+                // Unreachable in practice because `Config::from_env`
+                // bails, but if a test or embedded caller skips that
+                // gate we still refuse to serve unsigned webhooks at
+                // runtime (see `handle_github_webhook`).
+                warn!(
+                    event = "webhook_secret_missing_strict_mode",
+                    "No webhook secret configured; incoming webhooks will be rejected with 503."
+                );
+            },
+        }
 
         Ok(Self {
             listener,
@@ -156,6 +189,8 @@ impl WebService {
                 websocket_service,
                 github_app_configs,
                 webhook_secret,
+                allow_insecure_webhooks,
+                webhook_metrics,
                 github_client,
                 default_merge_method,
             },
@@ -311,51 +346,97 @@ async fn handle_github_webhook(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) {
+) -> axum::response::Response {
+    use axum::http::StatusCode;
     use octocrab::models::webhook_events::EventInstallation;
     use serde_json::Value;
-    use tracing::warn;
 
     use crate::github::handle_webhook_payload;
 
-    // Verify webhook signature if secret is configured
-    if let Some(ref secret) = state.webhook_secret {
-        // Extract signature header
-        let signature = match headers.get("x-hub-signature-256") {
-            Some(sig) => match sig.to_str() {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!(
-                        event = "webhook_signature_invalid_header",
-                        error = %e,
-                        "Failed to parse X-Hub-Signature-256 header"
-                    );
-                    return;
+    // H1: signature verification is the primary gate. Three modes:
+    //
+    //   (a) secret configured            → require a valid signature
+    //   (b) no secret, insecure allowed  → accept everything (dev only)
+    //   (c) no secret, insecure forbidden → refuse with 503
+    //
+    // Mode (c) is defence in depth; `Config::from_env` already refuses
+    // to start in this state, but constructing `WebService` directly
+    // (e.g. in embedded integration tests) could bypass that.
+    match (&state.webhook_secret, state.allow_insecure_webhooks) {
+        (Some(secret), _) => {
+            let signature = match headers.get("x-hub-signature-256") {
+                Some(sig) => match sig.to_str() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        state
+                            .webhook_metrics
+                            .signature_failures_total
+                            .with_label_values(&["invalid_header"])
+                            .inc();
+                        warn!(
+                            event = "webhook_signature_invalid_header",
+                            error = %e,
+                            "Failed to parse X-Hub-Signature-256 header"
+                        );
+                        return (StatusCode::UNAUTHORIZED, "").into_response();
+                    },
                 },
-            },
-            None => {
+                None => {
+                    state
+                        .webhook_metrics
+                        .signature_failures_total
+                        .with_label_values(&["missing_header"])
+                        .inc();
+                    warn!(
+                        event = "webhook_signature_missing",
+                        "Missing X-Hub-Signature-256 header on webhook request"
+                    );
+                    return (StatusCode::UNAUTHORIZED, "").into_response();
+                },
+            };
+
+            if let Err(e) = verify_webhook_signature(secret, signature, &body) {
+                state
+                    .webhook_metrics
+                    .signature_failures_total
+                    .with_label_values(&["bad_signature"])
+                    .inc();
                 warn!(
-                    event = "webhook_signature_missing",
-                    "Missing X-Hub-Signature-256 header on webhook request"
+                    event = "webhook_signature_verification_failed",
+                    error = %e,
+                    "Webhook signature verification failed"
                 );
-                return;
-            },
-        };
+                return (StatusCode::UNAUTHORIZED, "").into_response();
+            }
 
-        // Verify the signature
-        if let Err(e) = verify_webhook_signature(secret, signature, &body) {
-            warn!(
-                event = "webhook_signature_verification_failed",
-                error = %e,
-                "Webhook signature verification failed - rejecting webhook"
+            state.webhook_metrics.signature_verified_total.inc();
+            info!(
+                event = "webhook_signature_verified",
+                "Webhook signature verified successfully"
             );
-            return;
-        }
-
-        info!(
-            event = "webhook_signature_verified",
-            "Webhook signature verified successfully"
-        );
+        },
+        (None, true) => {
+            state
+                .webhook_metrics
+                .signature_failures_total
+                .with_label_values(&["unsigned_insecure_mode"])
+                .inc();
+            warn!(
+                event = "webhook_accepted_without_verification",
+                "Accepting webhook without signature verification (insecure mode)."
+            );
+        },
+        (None, false) => {
+            warn!(
+                event = "webhook_rejected_no_secret",
+                "Refusing webhook: no secret configured and insecure mode disabled."
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Webhook endpoint not configured",
+            )
+                .into_response();
+        },
     }
 
     // First deserialize as generic JSON to extract top-level fields
@@ -363,7 +444,7 @@ async fn handle_github_webhook(
         Ok(json) => json,
         Err(e) => {
             warn!("Failed to parse webhook JSON: {:?}", e);
-            return;
+            return (StatusCode::BAD_REQUEST, "Invalid JSON payload").into_response();
         },
     };
 
@@ -384,7 +465,7 @@ async fn handle_github_webhook(
         Ok(payload) => payload,
         Err(e) => {
             warn!("Failed to deserialize webhook payload: {:?}", e);
-            return;
+            return (StatusCode::BAD_REQUEST, "Invalid webhook event payload").into_response();
         },
     };
 
@@ -401,6 +482,8 @@ async fn handle_github_webhook(
         state.github_app_configs,
     )
     .await;
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn get_derivation_log(
@@ -1026,11 +1109,7 @@ async fn websocket_handler(
     // that every auth-sensitive handler applies identical parsing
     // rules. Browsers hit the `?token=` fallback; everyone else uses
     // the Bearer header.
-    match crate::auth::authenticate_request(
-        &state.jwt_service,
-        &headers,
-        query.token.as_deref(),
-    ) {
+    match crate::auth::authenticate_request(&state.jwt_service, &headers, query.token.as_deref()) {
         Ok(_claims) => ws
             .on_upgrade(move |socket| async move {
                 state.websocket_service.handle_connection(socket).await
@@ -1039,7 +1118,7 @@ async fn websocket_handler(
         Err(err) => {
             warn!(event = "ws_upgrade_rejected", reason = ?err);
             err.into_response()
-        }
+        },
     }
 }
 
