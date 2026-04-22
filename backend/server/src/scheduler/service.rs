@@ -57,6 +57,7 @@ impl SchedulerService {
         remote_builders: Vec<RemoteBuilder>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         build_no_output_timeout_seconds: u64,
+        build_max_duration_seconds: u64,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         graph_handle: GraphServiceHandle,
@@ -97,6 +98,7 @@ impl SchedulerService {
             recorder_sender.clone(),
             build_metrics.clone(),
             build_no_output_timeout_seconds,
+            build_max_duration_seconds,
         )
         .await?;
         let fod_builders = Builder::local_from_env_fod(
@@ -104,6 +106,7 @@ impl SchedulerService {
             recorder_sender.clone(),
             build_metrics.clone(),
             build_no_output_timeout_seconds,
+            build_max_duration_seconds,
         )
         .await?;
         for remote in remote_builders {
@@ -115,6 +118,7 @@ impl SchedulerService {
                     recorder_sender.clone(),
                     build_metrics.clone(),
                     build_no_output_timeout_seconds,
+                    build_max_duration_seconds,
                 );
                 builders.push(remote_builder);
             }
