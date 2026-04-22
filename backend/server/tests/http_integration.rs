@@ -1013,3 +1013,174 @@ async fn cors_empty_allowlist_denies_all() {
     cancellation_token.cancel();
     println!("✓ empty CORS allow-list refuses every cross-origin request");
 }
+
+// ---------------------------------------------------------------------------
+// M3 regression tests: webhook endpoint body-size limit + per-IP rate limit.
+//
+// `/github/webhook` is the only unauthenticated POST endpoint, so a
+// dedicated sub-router attaches two protective layers:
+//   - `DefaultBodyLimit::max(5 MiB)` rejects inflated bodies with 413 before any handler logic
+//     runs.
+//   - `tower_governor::GovernorLayer` (10 req/s, burst 30, keyed by peer IP via
+//     `ConnectInfo<SocketAddr>`) sheds abusive traffic with 429 before the expensive HMAC
+//     verification runs.
+// Sibling routes (`/github/auth/*`) must remain unaffected by either
+// layer.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_webhook_rejects_oversized_body() {
+    let ctx = TestContext::new().await.unwrap();
+    // Insecure mode avoids the HMAC gate so the body-size limit is
+    // exercised in isolation. The body limit is enforced by the axum
+    // layer before the handler runs, so signature configuration is
+    // irrelevant here.
+    let (web_service, _scheduler, _ingress) =
+        create_test_server_with_webhook(&ctx, None, true).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 6 MiB body — exceeds the 5 MiB webhook limit.
+    let big_body = vec![b'a'; 6 * 1024 * 1024];
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/github/webhook", base_url))
+        .header("content-type", "application/octet-stream")
+        .body(big_body)
+        .send()
+        .await
+        .expect("failed to send oversized webhook body");
+
+    assert_eq!(
+        resp.status(),
+        413,
+        "body exceeding the webhook size limit must be rejected with 413"
+    );
+
+    cancellation_token.cancel();
+    println!("✓ webhook rejects oversized bodies with 413");
+}
+
+#[tokio::test]
+async fn test_webhook_rate_limits_bursting_clients() {
+    let ctx = TestContext::new().await.unwrap();
+    let (web_service, _scheduler, _ingress) =
+        create_test_server_with_webhook(&ctx, None, true).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/github/webhook", base_url);
+
+    // Fire 60 webhook requests concurrently from 127.0.0.1. With burst
+    // 30 and refill 10 req/s, a simultaneous burst of 60 far exceeds
+    // what the per-IP bucket allows at any instant, so at least one
+    // request must be shed with 429.
+    let mut handles = Vec::with_capacity(60);
+    for _ in 0..60 {
+        let client = client.clone();
+        let url = url.clone();
+        handles.push(tokio::spawn(async move {
+            client
+                .post(&url)
+                .header("content-type", "application/json")
+                .body("{}")
+                .send()
+                .await
+                .map(|r| r.status().as_u16())
+        }));
+    }
+
+    let mut too_many = 0u32;
+    for h in handles {
+        if let Ok(Ok(status)) = h.await {
+            if status == 429 {
+                too_many += 1;
+            }
+        }
+    }
+
+    assert!(
+        too_many > 0,
+        "expected at least one 429 after bursting 60 webhook calls, got 0"
+    );
+
+    cancellation_token.cancel();
+    println!(
+        "✓ webhook rate-limits bursting clients ({} requests shed with 429)",
+        too_many
+    );
+}
+
+#[tokio::test]
+async fn test_webhook_rate_limit_does_not_affect_auth_routes() {
+    // The M3 layers are scoped to the `/github/webhook` sub-router.
+    // Sibling paths like `/github/auth/me` must not be governed.
+    let ctx = TestContext::new().await.unwrap();
+    let (web_service, _scheduler, _ingress) =
+        create_test_server_with_webhook(&ctx, None, true).await;
+    let addr = web_service.bind_addr();
+    let base_url = format!("http://{}", addr);
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/github/auth/me", base_url);
+
+    // Send 60 unauthenticated GETs — each will 401, none should 429.
+    // If governor were attached to this route we'd see rate-limit
+    // rejections here too.
+    let mut handles = Vec::with_capacity(60);
+    for _ in 0..60 {
+        let client = client.clone();
+        let url = url.clone();
+        handles.push(tokio::spawn(async move {
+            client.get(&url).send().await.map(|r| r.status().as_u16())
+        }));
+    }
+
+    let mut rate_limited = 0u32;
+    let mut unauthorized = 0u32;
+    for h in handles {
+        if let Ok(Ok(status)) = h.await {
+            if status == 429 {
+                rate_limited += 1;
+            } else if status == 401 {
+                unauthorized += 1;
+            }
+        }
+    }
+
+    assert_eq!(
+        rate_limited, 0,
+        "auth route must not share the webhook governor (got {} 429s)",
+        rate_limited
+    );
+    assert!(
+        unauthorized > 0,
+        "auth route should still enforce its own 401 (saw 0 out of 60)"
+    );
+
+    cancellation_token.cancel();
+    println!("✓ webhook governor is scoped — auth routes are not rate-limited");
+}
