@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Json, Path, State, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Json, Path, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use octocrab::models::webhook_events::WebhookEventPayload as WEP;
@@ -12,6 +12,8 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tower_governor::GovernorLayer;
+use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, warn};
@@ -286,12 +288,19 @@ impl WebService {
             .layer(cors)
             .with_state(self.state);
 
-        if let Err(e) = axum::serve(self.listener, app)
-            .with_graceful_shutdown(async move {
-                cancellation_token.cancelled().await;
-                info!("Web service shutting down")
-            })
-            .await
+        // M3: `into_make_service_with_connect_info::<SocketAddr>()` is
+        // required so that `tower_governor`'s default key-extractor
+        // can see the peer address for per-IP rate limiting on
+        // `/github/webhook`.
+        if let Err(e) = axum::serve(
+            self.listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            cancellation_token.cancelled().await;
+            info!("Web service shutting down")
+        })
+        .await
         {
             error!(error = %e, "Failed to start web service");
             return;
@@ -301,11 +310,57 @@ impl WebService {
     }
 }
 
+/// M3: cap on the request body axum is willing to buffer before the
+/// webhook handler runs. GitHub documents a 25 MiB maximum payload
+/// size, but typical events are <50 KiB; the 5 MiB value here rejects
+/// adversarial inflation while leaving comfortable headroom for
+/// legitimate pull-request-synchronize events with large file lists.
+const WEBHOOK_MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
+
+/// M3: per-IP rate limit applied to `/github/webhook`.
+///
+/// Parameters are deliberately conservative:
+/// - `per_second = 10` → steady-state 10 req/s per source IP, which is ~30x GitHub's observed
+///   webhook delivery rate for a busy installation.
+/// - `burst_size = 30` → short bursts (e.g. a push with many dependent events) are allowed without
+///   throttling.
+///
+/// Signature verification (H1) is still the primary abuse gate; this
+/// layer exists to cap the cost of receiving and HMAC-verifying
+/// unsigned or malformed traffic from a single source.
+const WEBHOOK_RATE_PER_SECOND: u64 = 10;
+const WEBHOOK_RATE_BURST: u32 = 30;
+
+/// Build the `/github/webhook` subrouter with M3 hardening applied.
+///
+/// The body-size and rate-limit layers are scoped to this route only
+/// so that OAuth login / callback / auth-me traffic is unaffected.
+fn webhook_router() -> Router<AppState> {
+    // `finish()` only fails if `burst_size == 0`, which cannot happen
+    // with the const defaults above.
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(WEBHOOK_RATE_PER_SECOND)
+            .burst_size(WEBHOOK_RATE_BURST)
+            .finish()
+            .expect("webhook governor config must be valid with non-zero burst"),
+    );
+
+    Router::new()
+        .route("/webhook", post(handle_github_webhook))
+        // Per-route body-size cap: any request body >5 MiB is rejected
+        // with 413 before the handler sees it.
+        .layer(DefaultBodyLimit::max(WEBHOOK_MAX_BODY_BYTES))
+        // Per-IP token bucket; over-limit callers receive 429.
+        .layer(GovernorLayer::new(governor_conf))
+}
+
 /// Prefixed with /github/ path
 fn github_routes() -> Router<AppState> {
     Router::new()
-        // Public routes
-        .route("/webhook", post(handle_github_webhook))
+        // Public routes. `/webhook` carries its own body-size and
+        // rate-limit layers (M3).
+        .merge(webhook_router())
         // Auth routes
         .route("/auth/login", get(auth_login_handler))
         .route("/auth/callback", get(auth_callback_handler))
@@ -496,7 +551,13 @@ async fn handle_github_webhook(
         },
     }
 
-    // First deserialize as generic JSON to extract top-level fields
+    // M3: deserialize the body exactly once. The previous shape
+    // parsed `&body` twice (once as `Value`, once as `WEP`), doubling
+    // the CPU and allocation cost per request. Now we parse into a
+    // `Value` and drive both extractions from it: the typed `WEP`
+    // round-trips via `from_value` (consumes the tree once) and the
+    // top-level repository / installation fields are read by
+    // reference from the same `Value`.
     let webhook_json: Value = match serde_json::from_slice(&body) {
         Ok(json) => json,
         Err(e) => {
@@ -505,20 +566,23 @@ async fn handle_github_webhook(
         },
     };
 
-    // Extract repository info from top level
+    // Extract repository info from top level.
     let repository_info = webhook_json.get("repository").and_then(|repo| {
         let owner = repo.get("owner")?.get("login")?.as_str()?;
         let name = repo.get("name")?.as_str()?;
         Some((owner.to_string(), name.to_string()))
     });
 
-    // Extract installation from top level if present
+    // Extract installation from top level if present. We clone the
+    // sub-tree rather than consuming it because `from_value` below
+    // still needs the full document. The clone is small (just the
+    // `installation` object, typically <100 bytes).
     let installation: Option<EventInstallation> = webhook_json
         .get("installation")
         .and_then(|inst| serde_json::from_value(inst.clone()).ok());
 
-    // Deserialize the specific payload
-    let webhook_payload: WEP = match serde_json::from_slice(&body) {
+    // Consume the `Value` into the strongly-typed payload.
+    let webhook_payload: WEP = match serde_json::from_value(webhook_json) {
         Ok(payload) => payload,
         Err(e) => {
             warn!("Failed to deserialize webhook payload: {:?}", e);
