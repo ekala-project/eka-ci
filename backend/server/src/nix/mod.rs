@@ -5,6 +5,7 @@ pub mod size;
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use lru::LruCache;
@@ -19,6 +20,7 @@ use crate::db::model::drv_id::DrvId;
 use crate::db::model::{Reference, Referrer};
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::graph::GraphCommand;
+use crate::metrics::NixEvalMetrics;
 use crate::scheduler::IngressTask;
 
 pub struct EvalJob {
@@ -43,6 +45,10 @@ pub struct EvalService {
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
     drv_map: LruCache<DrvId, Drv>,
+    /// M4: metrics for `nix-eval-jobs` output volume and truncation
+    /// events. Optional so unit/integration tests that don't care
+    /// about observability can pass `None`.
+    pub(crate) nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
 }
 
 impl EvalService {
@@ -52,6 +58,7 @@ impl EvalService {
         scheduler_sender: mpsc::Sender<IngressTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
+        nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
     ) -> EvalService {
         EvalService {
             db_service,
@@ -60,6 +67,7 @@ impl EvalService {
             github_sender,
             graph_command_sender,
             drv_map: LruCache::new(NonZeroUsize::new(5000).unwrap()),
+            nix_eval_metrics,
         }
     }
 

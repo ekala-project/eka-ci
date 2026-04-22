@@ -237,3 +237,83 @@ impl GraphMetrics {
         }))
     }
 }
+
+/// Metrics for `nix-eval-jobs` invocations (M4: observe eval output
+/// volume so operators can alert on truncation events and track
+/// adversarial / accidental fan-out).
+#[derive(Clone)]
+pub struct NixEvalMetrics {
+    /// Total number of parsed output items, labelled by kind
+    /// (`drv` / `error`).
+    pub items_total: IntCounterVec,
+    /// Total number of truncated eval invocations, labelled by
+    /// truncation reason (`max_entries` / `max_bytes` /
+    /// `max_line_bytes`).
+    pub truncated_total: IntCounterVec,
+    /// Distribution of per-invocation output entry counts (drvs + errors).
+    pub output_entries: prometheus::Histogram,
+    /// Distribution of per-invocation output byte counts.
+    pub output_bytes: prometheus::Histogram,
+}
+
+impl NixEvalMetrics {
+    pub fn new(registry: &Registry) -> anyhow::Result<Arc<Self>> {
+        let items_total = IntCounterVec::new(
+            Opts::new(
+                "nix_eval_jobs_items_total",
+                "Number of parsed nix-eval-jobs output items by kind",
+            )
+            .namespace("eka_ci"),
+            &["kind"],
+        )?;
+
+        let truncated_total = IntCounterVec::new(
+            Opts::new(
+                "nix_eval_jobs_truncated_total",
+                "Number of nix-eval-jobs invocations truncated due to resource caps",
+            )
+            .namespace("eka_ci"),
+            &["reason"],
+        )?;
+
+        let output_entries = prometheus::Histogram::with_opts(
+            prometheus::HistogramOpts::new(
+                "nix_eval_jobs_output_entries",
+                "Distribution of entry counts emitted per nix-eval-jobs invocation",
+            )
+            .namespace("eka_ci")
+            .buckets(vec![
+                1.0, 10.0, 100.0, 500.0, 1_000.0, 5_000.0, 10_000.0, 25_000.0,
+            ]),
+        )?;
+
+        let output_bytes = prometheus::Histogram::with_opts(
+            prometheus::HistogramOpts::new(
+                "nix_eval_jobs_output_bytes",
+                "Distribution of bytes emitted per nix-eval-jobs invocation",
+            )
+            .namespace("eka_ci")
+            .buckets(vec![
+                1_024.0,
+                10_240.0,
+                102_400.0,
+                1_048_576.0,
+                10_485_760.0,
+                52_428_800.0,
+                134_217_728.0,
+            ]),
+        )?;
+
+        registry.register(Box::new(items_total.clone()))?;
+        registry.register(Box::new(truncated_total.clone()))?;
+        registry.register(Box::new(output_entries.clone()))?;
+        registry.register(Box::new(output_bytes.clone()))?;
+
+        Ok(Arc::new(Self {
+            items_total,
+            truncated_total,
+            output_entries,
+            output_bytes,
+        }))
+    }
+}
