@@ -15,6 +15,7 @@ mod metrics;
 mod nix;
 mod path_safety;
 mod scheduler;
+mod secret;
 mod services;
 mod web;
 mod webhook_security;
@@ -24,7 +25,7 @@ mod tests;
 
 use config::Config;
 use rustls::crypto::{CryptoProvider, ring};
-use tracing::debug;
+use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
@@ -47,7 +48,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env()?;
-    debug!("Using configuration {config:?}");
+    // M2: we intentionally do NOT log the full `Config` here (or
+    // anywhere else) because it embeds OAuth secrets, the JWT secret,
+    // the webhook secret, and cache credentials. Individual settings
+    // are logged at the point they take effect.
+    info!("Configuration loaded");
 
     config.ensure_logs_dir()?;
 

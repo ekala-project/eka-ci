@@ -10,6 +10,8 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use crate::secret::Redacted;
+
 mod remote_builder;
 pub use remote_builder::RemoteBuilder;
 use remote_builder::read_nix_machines_file;
@@ -104,9 +106,12 @@ struct ConfigFileUnix {
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct ConfigFileOAuth {
     pub client_id: Option<String>,
-    pub client_secret: Option<String>,
+    // M2: wrap secrets so `ConfigFile`'s derived `Debug` cannot leak
+    // them via log formatting. Serde is transparent, so TOML/env
+    // round-trip as plain strings.
+    pub client_secret: Option<Redacted<String>>,
     pub redirect_url: Option<String>,
-    pub jwt_secret: Option<String>,
+    pub jwt_secret: Option<Redacted<String>>,
 }
 
 /// Cache registry configuration - defines available caches server-side
@@ -240,7 +245,12 @@ impl CredentialSource {
     }
 
     fn load_from_env(vars: &[String]) -> anyhow::Result<HashMap<String, String>> {
-        debug!("Loading credentials from environment variables: {:?}", vars);
+        // M2: `vars` contains only environment variable *names*, not
+        // their values — but even the names (e.g. `AWS_SECRET_ACCESS_KEY`)
+        // hint at what is in flight. Keep this at `trace!` so it is
+        // opt-in for debugging and does not surface under the default
+        // log filter.
+        tracing::trace!("Loading credentials from environment variables: {:?}", vars);
         let mut result = HashMap::new();
         for var in vars {
             let value = std::env::var(var)
@@ -566,8 +576,12 @@ pub struct SecurityConfig {
     ///
     /// Startup fails if this is unset unless `allow_insecure_webhooks`
     /// is explicitly enabled (development / local-test only).
+    ///
+    /// M2: wrapped in `Redacted<_>` so this value cannot leak via
+    /// `Debug` / log formatting of the surrounding config types.
+    /// Serde is transparent, so TOML/env still parse as plain strings.
     #[serde(default)]
-    pub webhook_secret: Option<String>,
+    pub webhook_secret: Option<Redacted<String>>,
     /// Escape hatch: allow the server to start without a webhook
     /// secret. Intended for local development and tests only.
     ///
@@ -660,9 +674,12 @@ pub struct Config {
 #[derive(Debug)]
 pub struct ConfigOAuth {
     pub client_id: String,
-    pub client_secret: String,
+    // M2: wrap secrets so `Debug` / structured log formatters can
+    // never leak them. Read access must go through
+    // [`Redacted::expose`].
+    pub client_secret: Redacted<String>,
     pub redirect_url: String,
-    pub jwt_secret: String,
+    pub jwt_secret: Redacted<String>,
 }
 
 #[derive(Debug)]
@@ -710,10 +727,11 @@ impl Config {
 
         let oauth_client_secret = std::env::var("GITHUB_OAUTH_CLIENT_SECRET")
             .ok()
+            .map(Redacted::new)
             .or(file.oauth.client_secret)
             .unwrap_or_else(|| {
                 info!("GITHUB_OAUTH_CLIENT_SECRET not set, OAuth will not work");
-                String::new()
+                Redacted::new(String::new())
             });
 
         // Determine the actual bind address for the OAuth callback URL
@@ -733,6 +751,7 @@ impl Config {
 
         let jwt_secret = std::env::var("JWT_SECRET")
             .ok()
+            .map(Redacted::new)
             .or(file.oauth.jwt_secret)
             .unwrap_or_else(|| {
                 // No configured secret: generate a cryptographically random
@@ -750,7 +769,7 @@ impl Config {
                      survive a server restart. Configure JWT_SECRET (or oauth.jwt_secret) for \
                      production."
                 );
-                hex::encode(bytes)
+                Redacted::new(hex::encode(bytes))
             });
 
         // Build cache registry as a HashMap
@@ -777,7 +796,7 @@ impl Config {
 
         // Allow webhook_secret to be overridden by environment variable
         if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
-            security.webhook_secret = Some(secret);
+            security.webhook_secret = Some(Redacted::new(secret));
         }
 
         // Env override for the insecure-webhooks escape hatch. Accepts
@@ -903,5 +922,101 @@ impl Config {
     pub fn ensure_logs_dir(&self) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.logs_dir)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    //! M2 regression tests: secrets embedded in config types must not
+    //! appear in `Debug` / `Display` output, even when wrapped in
+    //! outer structs with derived `Debug`.
+    //!
+    //! These tests construct config structs directly rather than
+    //! driving `from_env` because `from_env` has many side effects
+    //! (file I/O, env vars, RNG seeding) that aren't relevant to
+    //! verifying the redaction invariant.
+    use super::*;
+
+    const SECRET_NEEDLES: &[&str] = &[
+        "oauth-client-secret-needle",
+        "jwt-secret-needle",
+        "webhook-secret-needle",
+    ];
+
+    fn assert_no_secret(haystack: &str, context: &str) {
+        for needle in SECRET_NEEDLES {
+            assert!(
+                !haystack.contains(needle),
+                "secret {needle:?} leaked in {context}:\n{haystack}"
+            );
+        }
+        assert!(
+            haystack.contains("[REDACTED]"),
+            "no redaction marker found in {context}:\n{haystack}"
+        );
+    }
+
+    #[test]
+    fn config_oauth_debug_redacts_all_secrets() {
+        let oauth = ConfigOAuth {
+            client_id: "client-id".to_string(),
+            client_secret: Redacted::new("oauth-client-secret-needle".to_string()),
+            redirect_url: "http://localhost/callback".to_string(),
+            jwt_secret: Redacted::new("jwt-secret-needle".to_string()),
+        };
+        assert_no_secret(&format!("{oauth:?}"), "ConfigOAuth {:?}");
+        assert_no_secret(&format!("{oauth:#?}"), "ConfigOAuth {:#?}");
+    }
+
+    #[test]
+    fn security_config_debug_redacts_webhook_secret() {
+        let sec = SecurityConfig {
+            max_hook_timeout_seconds: 300,
+            audit_hooks: true,
+            webhook_secret: Some(Redacted::new("webhook-secret-needle".to_string())),
+            allow_insecure_webhooks: false,
+        };
+        assert_no_secret(&format!("{sec:?}"), "SecurityConfig {:?}");
+        assert_no_secret(&format!("{sec:#?}"), "SecurityConfig {:#?}");
+    }
+
+    #[test]
+    fn full_config_debug_redacts_all_secrets() {
+        // Build a minimal `Config` by hand so we can format it as a
+        // whole and verify redaction reaches every field transitively.
+        let config = Config {
+            web: ConfigWeb {
+                address: std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0),
+                allowed_origins: Vec::new(),
+            },
+            unix: ConfigUnix {
+                socket_path: PathBuf::from("/tmp/ekaci-test.sock"),
+            },
+            oauth: ConfigOAuth {
+                client_id: "client-id".to_string(),
+                client_secret: Redacted::new("oauth-client-secret-needle".to_string()),
+                redirect_url: "http://localhost/callback".to_string(),
+                jwt_secret: Redacted::new("jwt-secret-needle".to_string()),
+            },
+            db_path: PathBuf::from("/tmp/ekaci-test.db"),
+            logs_dir: PathBuf::from("/tmp/ekaci-test-logs"),
+            remote_builders: Vec::new(),
+            require_approval: false,
+            merge_queue_require_approval: false,
+            build_no_output_timeout_seconds: 1200,
+            graph_lru_capacity: 100,
+            default_merge_method: "squash".to_string(),
+            caches: HashMap::new(),
+            github_apps: HashMap::new(),
+            security: SecurityConfig {
+                max_hook_timeout_seconds: 300,
+                audit_hooks: true,
+                webhook_secret: Some(Redacted::new("webhook-secret-needle".to_string())),
+                allow_insecure_webhooks: false,
+            },
+        };
+        // Both the compact and pretty Debug forms must redact every secret.
+        assert_no_secret(&format!("{config:?}"), "Config {:?}");
+        assert_no_secret(&format!("{config:#?}"), "Config {:#?}");
     }
 }

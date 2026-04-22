@@ -14,12 +14,15 @@ use sqlx::SqlitePool;
 use super::jwt::JwtService;
 use super::middleware::AuthUser;
 use super::types::{AuthenticatedUser, GitHubUserInfo, LoginResponse, UserInfo};
+use crate::secret::Redacted;
 
 /// OAuth configuration
 #[derive(Clone)]
 pub struct OAuthConfig {
     pub client_id: String,
-    pub client_secret: String,
+    // M2: wrap so `Debug` (if ever derived or manually invoked on a
+    // struct embedding this) cannot leak the client secret.
+    pub client_secret: Redacted<String>,
     pub redirect_url: String,
 }
 
@@ -28,7 +31,7 @@ impl OAuthConfig {
     fn create_client(&self) -> Result<BasicClient, String> {
         let client = BasicClient::new(
             ClientId::new(self.client_id.clone()),
-            Some(ClientSecret::new(self.client_secret.clone())),
+            Some(ClientSecret::new(self.client_secret.expose().clone())),
             AuthUrl::new("https://github.com/login/oauth/authorize".to_string())
                 .map_err(|e| format!("Invalid auth URL: {}", e))?,
             Some(
@@ -138,7 +141,9 @@ pub async fn handle_callback(
     })?;
 
     Ok(Json(LoginResponse {
-        token,
+        // M2: wrap the JWT so it cannot be leaked through any future
+        // `Debug` impl on `LoginResponse`. Serialisation is transparent.
+        token: Redacted::new(token),
         user: UserInfo {
             github_id: user.github_id,
             username: user.github_username,
