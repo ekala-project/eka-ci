@@ -249,7 +249,28 @@ mod tests {
     use crate::db::model::drv::Drv;
 
     fn make_test_drv(hash: &str, state: DrvBuildState) -> Drv {
-        let drv_path = format!("{}-test.drv", hash);
+        // DrvId::try_from enforces a 32-char nix-base32 hash prefix. Pad the
+        // short test tag with '0' chars (which are in the alphabet) and map
+        // any out-of-alphabet characters (`e`, `o`, `t`, `u`) to the nearest
+        // valid byte so the existing readable tags (`"old"`, `"success"`,
+        // `"middle"`, etc.) keep working.
+        const HASH_LEN: usize = 32;
+        assert!(hash.len() <= HASH_LEN, "test hash tag too long");
+        let sanitized: String = hash
+            .chars()
+            .map(|c| match c {
+                'e' => 'f',
+                'o' => 'p',
+                't' => 's',
+                'u' => 'v',
+                other => other,
+            })
+            .collect();
+        let padded_hash: String = std::iter::repeat('0')
+            .take(HASH_LEN - sanitized.len())
+            .chain(sanitized.chars())
+            .collect();
+        let drv_path = format!("{}-test.drv", padded_hash);
         Drv {
             drv_path: DrvId::from_str(&drv_path).unwrap(),
             system: "x86_64-linux".to_string(),

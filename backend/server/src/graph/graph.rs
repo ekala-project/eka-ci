@@ -443,7 +443,30 @@ mod tests {
     fn make_test_drv(hash: &str, state: DrvBuildState) -> Drv {
         use std::str::FromStr;
 
-        let drv_path = format!("{}-test.drv", hash);
+        // Pad the test-provided short tag out to a valid 32-char nix
+        // base32 hash. The test code only needs distinct hashes, not
+        // cryptographic validity, so we left-extend with `0` (which is
+        // part of the nix base32 alphabet) and map any characters that
+        // fall outside nix's custom alphabet (`e`, `o`, `t`, `u`) to the
+        // nearest alphabet byte so that call sites can keep using
+        // readable tags like `"old"`, `"new"`, `"success"`.
+        const HASH_LEN: usize = 32;
+        assert!(hash.len() <= HASH_LEN, "test hash tag too long");
+        let sanitized: String = hash
+            .chars()
+            .map(|c| match c {
+                'e' => 'f',
+                'o' => 'p',
+                't' => 's',
+                'u' => 'v',
+                other => other,
+            })
+            .collect();
+        let padded_hash: String = std::iter::repeat('0')
+            .take(HASH_LEN - sanitized.len())
+            .chain(sanitized.chars())
+            .collect();
+        let drv_path = format!("{}-test.drv", padded_hash);
         Drv {
             drv_path: DrvId::from_str(&drv_path).unwrap(),
             system: "x86_64-linux".to_string(),

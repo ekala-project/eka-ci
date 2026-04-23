@@ -105,10 +105,10 @@ impl DrvId {
 }
 
 impl std::str::FromStr for DrvId {
-    type Err = anyhow::Error;
+    type Err = InvalidDrvId;
 
-    fn from_str(drv_path: &str) -> Result<Self, anyhow::Error> {
-        Ok(DrvId(strip_store_path(drv_path).to_string()))
+    fn from_str(drv_path: &str) -> Result<Self, InvalidDrvId> {
+        DrvId::try_from(drv_path)
     }
 }
 
@@ -137,23 +137,73 @@ impl TryFrom<&Path> for DrvId {
     }
 }
 
+/// Nix's custom base32 alphabet, used to encode the 160-bit store-path
+/// hash into the 32-character prefix of `hash-name.drv`.
+/// Source: `src/libutil/hash.cc` in the nix source tree. The alphabet
+/// omits `e`, `o`, `t`, `u` to reduce the chance of accidental
+/// profanity in generated names.
+const NIX_BASE32_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+/// Upper bound on the length of a store-path basename (`hash-name.drv`).
+/// Nix itself enforces a 211-char cap on the full basename; anything
+/// longer is either user error or an injection attempt. Keeps
+/// `DrvId::try_from` O(len) with a tight constant.
+const DRV_ID_MAX_LEN: usize = 211;
+
+/// Returns true iff the byte is a valid character of Nix's store-path
+/// name component. The allowed set per the Nix reference manual is
+/// `[A-Za-z0-9+\-._?=]`. This explicitly excludes path separators
+/// (`/`, `\`), whitespace, control characters (< 0x20 or 0x7F),
+/// quoting characters, shell metacharacters beyond the allowed set,
+/// and every multi-byte UTF-8 sequence (all non-ASCII bytes).
+#[inline]
+fn is_valid_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+}
+
 impl TryFrom<&str> for DrvId {
     type Error = InvalidDrvId;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        // enforce that derivation identifiers have a `drv` extension
-        match value.rsplit_once('.') {
-            Some((_, "drv")) => {}, // all is well
+        // strip any potential store paths first so the length / content
+        // checks apply to the basename only.
+        let id = strip_store_path(value);
+
+        // upper-bound the length before doing per-byte work. The empty
+        // string and anything longer than `DRV_ID_MAX_LEN` cannot be a
+        // valid derivation identifier.
+        if id.is_empty() || id.len() > DRV_ID_MAX_LEN {
+            return Err(InvalidDrvId);
+        }
+
+        // enforce the `.drv` extension on the basename.
+        let stem = match id.rsplit_once('.') {
+            Some((stem, "drv")) => stem,
             _ => return Err(InvalidDrvId),
         };
 
-        // strip any potential store paths
-        let id = strip_store_path(value);
-
-        // enforce that derivation identifiers match the `hash-name` pattern
-        match id.split_once('-') {
-            Some((hash, _)) if hash.len() == 32 => {}, // all is well
+        // split into (hash, name) — both non-empty.
+        let (hash, name) = match stem.split_once('-') {
+            Some((h, n)) if !h.is_empty() && !n.is_empty() => (h, n),
             _ => return Err(InvalidDrvId),
+        };
+
+        // hash must be exactly 32 characters from the nix base32
+        // alphabet. Prevents traversal-via-hash-component and makes
+        // `drv_hash()`'s fixed-32 slice safe on any `DrvId`.
+        if hash.len() != 32 {
+            return Err(InvalidDrvId);
+        }
+        if !hash.bytes().all(|b| NIX_BASE32_ALPHABET.contains(&b)) {
+            return Err(InvalidDrvId);
+        }
+
+        // name component must be ASCII and only contain the characters
+        // Nix accepts in store-path names. This rejects path separators
+        // (`/`, `\`), control characters, whitespace, quoting and shell
+        // metacharacters, and any multi-byte UTF-8 sequence.
+        if !name.bytes().all(is_valid_name_byte) {
+            return Err(InvalidDrvId);
         }
 
         Ok(Self(id.to_owned()))
@@ -239,5 +289,145 @@ mod tests {
         let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1").unwrap_err();
         let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85.drv").unwrap_err();
         let _ = DrvId::try_from("hello-2.12.1.drv").unwrap_err();
+    }
+
+    /// Hash component must be exactly 32 chars from nix's custom base32
+    /// alphabet. Anything with `e`, `o`, `t`, `u`, uppercase letters, or
+    /// non-ASCII bytes must fail.
+    #[test]
+    fn drv_id_rejects_invalid_hash_alphabet() {
+        // 'e' is not in nix base32
+        let _ = DrvId::try_from("ed83l3jn2mkn530lgcg0y523jq5qji85-hello.drv").unwrap_err();
+        // 'o' is not in nix base32
+        let _ = DrvId::try_from("od83l3jn2mkn530lgcg0y523jq5qji85-hello.drv").unwrap_err();
+        // 't' is not in nix base32
+        let _ = DrvId::try_from("td83l3jn2mkn530lgcg0y523jq5qji85-hello.drv").unwrap_err();
+        // 'u' is not in nix base32
+        let _ = DrvId::try_from("ud83l3jn2mkn530lgcg0y523jq5qji85-hello.drv").unwrap_err();
+        // uppercase hash rejected
+        let _ = DrvId::try_from("JD83L3JN2MKN530LGCG0Y523JQ5QJI85-hello.drv").unwrap_err();
+    }
+
+    /// Hash must be exactly 32 chars; shorter or longer stems must fail.
+    #[test]
+    fn drv_id_rejects_hash_length_off_by_one() {
+        // 31 chars (too short)
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji8-hello.drv").unwrap_err();
+        // 33 chars (too long)
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji855-hello.drv").unwrap_err();
+        // 32 chars, valid base32 - should succeed
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-x.drv").unwrap();
+    }
+
+    /// Name component must only contain characters from `[A-Za-z0-9+\-._?=]`.
+    /// Slashes, backslashes, whitespace, control chars, shell metachars,
+    /// and non-ASCII bytes must all be rejected.
+    #[test]
+    fn drv_id_rejects_invalid_name_bytes() {
+        // forward slash in name - path-traversal concern
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel/lo.drv").unwrap_err();
+        // backslash
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel\\lo.drv").unwrap_err();
+        // space
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel lo.drv").unwrap_err();
+        // tab
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel\tlo.drv").unwrap_err();
+        // newline
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel\nlo.drv").unwrap_err();
+        // null
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel\0lo.drv").unwrap_err();
+        // single quote (shell injection concern)
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel'lo.drv").unwrap_err();
+        // double quote
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel\"lo.drv").unwrap_err();
+        // semicolon
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel;lo.drv").unwrap_err();
+        // backtick
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel`lo.drv").unwrap_err();
+        // dollar
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hel$lo.drv").unwrap_err();
+        // non-ASCII (utf-8)
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-helló.drv").unwrap_err();
+    }
+
+    /// The characters explicitly allowed by the nix reference manual in
+    /// store-path names: `[A-Za-z0-9+\-._?=]`.
+    #[test]
+    fn drv_id_accepts_full_name_alphabet() {
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-A-z.0+_=?.drv").unwrap();
+    }
+
+    /// Nix's 211-char basename cap must be enforced so overly-long inputs
+    /// from an attacker cannot bloat memory or slow validation.
+    #[test]
+    fn drv_id_rejects_overlong_basename() {
+        // name is 211 - 32 (hash) - 1 ('-') - 4 (".drv") = 174 valid chars
+        let ok_name: String = "a".repeat(174);
+        let ok = format!("jd83l3jn2mkn530lgcg0y523jq5qji85-{ok_name}.drv");
+        assert_eq!(ok.len(), 211);
+        let _ = DrvId::try_from(ok.as_str()).unwrap();
+
+        // one byte past the cap
+        let bad_name: String = "a".repeat(175);
+        let bad = format!("jd83l3jn2mkn530lgcg0y523jq5qji85-{bad_name}.drv");
+        assert_eq!(bad.len(), 212);
+        let _ = DrvId::try_from(bad.as_str()).unwrap_err();
+    }
+
+    /// A leading or trailing `-` in the stem produces an empty hash or name
+    /// component - both must be rejected.
+    #[test]
+    fn drv_id_rejects_empty_components() {
+        // empty hash
+        let _ = DrvId::try_from("-name.drv").unwrap_err();
+        // empty name
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-.drv").unwrap_err();
+        // stem with no hyphen at all
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85x.drv").unwrap_err();
+    }
+
+    /// The `.drv` extension is enforced case-sensitively - anything else
+    /// must be rejected.
+    #[test]
+    fn drv_id_rejects_wrong_extension() {
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello.DRV").unwrap_err();
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello.drvv").unwrap_err();
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello.txt").unwrap_err();
+        let _ = DrvId::try_from("jd83l3jn2mkn530lgcg0y523jq5qji85-hello").unwrap_err();
+    }
+
+    /// `strip_store_path` only keeps the last path segment, so path-traversal
+    /// style inputs are reduced to their basename before validation.
+    #[test]
+    fn drv_id_strips_store_path_prefixes() {
+        let got = DrvId::try_from("/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-hello.drv").unwrap();
+        assert_eq!(&*got, "jd83l3jn2mkn530lgcg0y523jq5qji85-hello.drv");
+
+        // even oddly-nested inputs collapse to the basename
+        let got = DrvId::try_from("../../jd83l3jn2mkn530lgcg0y523jq5qji85-hello.drv").unwrap();
+        assert_eq!(&*got, "jd83l3jn2mkn530lgcg0y523jq5qji85-hello.drv");
+    }
+
+    /// `FromStr` must delegate to the same validation as `TryFrom<&str>`;
+    /// it must not accept anything `try_from` rejects.
+    #[test]
+    fn drv_id_from_str_matches_try_from() {
+        use std::str::FromStr;
+
+        let inputs = [
+            "jd83l3jn2mkn530lgcg0y523jq5qji85-hello.drv",
+            "ed83l3jn2mkn530lgcg0y523jq5qji85-hello.drv", // invalid (e)
+            "jd83l3jn2mkn530lgcg0y523jq5qji85-he/llo.drv", // invalid (/)
+            "",
+            "jd83l3jn2mkn530lgcg0y523jq5qji85.drv",
+        ];
+
+        for input in inputs {
+            assert_eq!(
+                DrvId::from_str(input).is_ok(),
+                DrvId::try_from(input).is_ok(),
+                "divergent validation for {input:?}"
+            );
+        }
     }
 }

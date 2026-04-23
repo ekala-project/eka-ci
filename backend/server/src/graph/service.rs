@@ -928,7 +928,7 @@ mod tests {
         assert_eq!(handle.node_count(), 0);
         assert!(
             handle
-                .get_node(&DrvId::from_str("test-drv.drv").unwrap())
+                .get_node(&DrvId::from_str("00000000000000000000000000000000-test.drv").unwrap())
                 .is_none()
         );
     }
