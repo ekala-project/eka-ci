@@ -8,7 +8,7 @@ use clap::Parser;
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::secret::Redacted;
 
@@ -620,6 +620,42 @@ fn default_true() -> bool {
     true
 }
 
+// Timeout clamp bounds. Rejects obvious misconfiguration (0, u64::MAX)
+// while leaving legitimate operational choices untouched.
+const BUILD_NO_OUTPUT_TIMEOUT_MIN_S: u64 = 30;
+const BUILD_NO_OUTPUT_TIMEOUT_MAX_S: u64 = 24 * 60 * 60;
+const BUILD_MAX_DURATION_MIN_S: u64 = 60;
+const BUILD_MAX_DURATION_MAX_S: u64 = 7 * 24 * 60 * 60;
+const HOOK_TIMEOUT_MIN_S: u64 = 1;
+const HOOK_TIMEOUT_MAX_S: u64 = 24 * 60 * 60;
+
+/// Clamp a timeout (seconds) into `[min, max]`, warning if clamped.
+fn clamp_timeout_seconds(field: &'static str, value: u64, min: u64, max: u64) -> u64 {
+    debug_assert!(
+        min < max,
+        "clamp_timeout_seconds: min ({min}) >= max ({max})"
+    );
+    if value < min {
+        warn!(
+            field,
+            requested = value,
+            clamped_to = min,
+            "timeout below minimum; clamping up"
+        );
+        return min;
+    }
+    if value > max {
+        warn!(
+            field,
+            requested = value,
+            clamped_to = max,
+            "timeout above maximum; clamping down"
+        );
+        return max;
+    }
+    value
+}
+
 /// Validate a CORS allow-list entry.
 ///
 /// A valid entry is a fully-qualified origin — scheme + authority
@@ -999,6 +1035,13 @@ impl Config {
                 matches!(normalized.as_str(), "1" | "true" | "yes" | "on");
         }
 
+        security.max_hook_timeout_seconds = clamp_timeout_seconds(
+            "security.max_hook_timeout_seconds",
+            security.max_hook_timeout_seconds,
+            HOOK_TIMEOUT_MIN_S,
+            HOOK_TIMEOUT_MAX_S,
+        );
+
         // M6: validate every `[[caches]].destination` before building
         // the registry. An invalid entry aborts startup so operators
         // see the problem immediately, the same pattern used for CORS
@@ -1150,8 +1193,18 @@ impl Config {
                 .merge_queue_require_approval
                 .or(file.merge_queue_require_approval)
                 .unwrap_or(false),
-            build_no_output_timeout_seconds: file.build_no_output_timeout_seconds.unwrap_or(1200),
-            build_max_duration_seconds: file.build_max_duration_seconds.unwrap_or(14_400),
+            build_no_output_timeout_seconds: clamp_timeout_seconds(
+                "build_no_output_timeout_seconds",
+                file.build_no_output_timeout_seconds.unwrap_or(1200),
+                BUILD_NO_OUTPUT_TIMEOUT_MIN_S,
+                BUILD_NO_OUTPUT_TIMEOUT_MAX_S,
+            ),
+            build_max_duration_seconds: clamp_timeout_seconds(
+                "build_max_duration_seconds",
+                file.build_max_duration_seconds.unwrap_or(14_400),
+                BUILD_MAX_DURATION_MIN_S,
+                BUILD_MAX_DURATION_MAX_S,
+            ),
             graph_lru_capacity: file.graph_lru_capacity.unwrap_or(100_000),
             default_merge_method: file
                 .default_merge_method
@@ -1303,6 +1356,64 @@ mod m5_tests {
         let cf = ConfigFile::default();
         let resolved = cf.build_max_duration_seconds.unwrap_or(14_400);
         assert_eq!(resolved, 14_400);
+    }
+}
+
+#[cfg(test)]
+mod clamp_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn in_range_returns_input() {
+        assert_eq!(clamp_timeout_seconds("f", 300, 1, 1000), 300);
+        assert_eq!(
+            clamp_timeout_seconds(
+                "f",
+                14_400,
+                BUILD_MAX_DURATION_MIN_S,
+                BUILD_MAX_DURATION_MAX_S
+            ),
+            14_400
+        );
+    }
+
+    #[test]
+    fn below_min_returns_min() {
+        assert_eq!(clamp_timeout_seconds("f", 0, 30, 86_400), 30);
+        assert_eq!(clamp_timeout_seconds("f", 1, 30, 86_400), 30);
+        assert_eq!(clamp_timeout_seconds("f", 29, 30, 86_400), 30);
+    }
+
+    #[test]
+    fn above_max_returns_max() {
+        assert_eq!(clamp_timeout_seconds("f", 86_401, 30, 86_400), 86_400);
+        assert_eq!(clamp_timeout_seconds("f", u64::MAX, 30, 86_400), 86_400);
+    }
+
+    #[test]
+    fn boundaries_are_inclusive() {
+        assert_eq!(clamp_timeout_seconds("f", 30, 30, 86_400), 30);
+        assert_eq!(clamp_timeout_seconds("f", 86_400, 30, 86_400), 86_400);
+    }
+
+    #[test]
+    #[should_panic(expected = "clamp_timeout_seconds")]
+    fn inverted_bounds_panic_in_debug() {
+        clamp_timeout_seconds("f", 100, 500, 50);
+    }
+
+    #[test]
+    fn defaults_sit_inside_bounds() {
+        assert!((BUILD_NO_OUTPUT_TIMEOUT_MIN_S..=BUILD_NO_OUTPUT_TIMEOUT_MAX_S).contains(&1200));
+        assert!((BUILD_MAX_DURATION_MIN_S..=BUILD_MAX_DURATION_MAX_S).contains(&14_400));
+        assert!((HOOK_TIMEOUT_MIN_S..=HOOK_TIMEOUT_MAX_S).contains(&default_hook_timeout()));
+    }
+
+    #[test]
+    fn bounds_are_consistent() {
+        assert!(BUILD_NO_OUTPUT_TIMEOUT_MIN_S < BUILD_NO_OUTPUT_TIMEOUT_MAX_S);
+        assert!(BUILD_MAX_DURATION_MIN_S < BUILD_MAX_DURATION_MAX_S);
+        assert!(HOOK_TIMEOUT_MIN_S < HOOK_TIMEOUT_MAX_S);
     }
 }
 
