@@ -1,7 +1,10 @@
 use std::path::Path;
+use std::time::Duration;
 
 use sqlx::migrate;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 use tracing::{debug, info};
 
 use super::model::drv::Drv;
@@ -33,10 +36,18 @@ impl DbService {
         let opts = SqliteConnectOptions::new()
             .filename(location)
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal);
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(5))
+            .foreign_keys(true);
         debug!("Creating database pool with {:?}", opts);
 
-        let pool: SqlitePool = SqlitePool::connect_with(opts).await?;
+        let pool: SqlitePool = SqlitePoolOptions::new()
+            .max_connections(32)
+            .min_connections(2)
+            .acquire_timeout(Duration::from_secs(30))
+            .connect_with(opts)
+            .await?;
 
         info!("Running database migrations");
         migrate!("sql/migrations").run(&pool).await?;
