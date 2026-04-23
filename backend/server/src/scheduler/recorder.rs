@@ -126,7 +126,7 @@ impl RecorderWorker {
         loop {
             if let Some(task) = self.recorder_receiver.recv().await {
                 debug!("Received recorder task {:?}", &task);
-                if let Err(e) = self.handle_recorder_request(task.clone()).await {
+                if let Err(e) = self.handle_recorder_request(&task).await {
                     warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
                 }
             }
@@ -251,19 +251,18 @@ impl RecorderWorker {
         Ok(blocked)
     }
 
-    async fn handle_recorder_request(&self, task: RecorderTask) -> anyhow::Result<()> {
+    async fn handle_recorder_request(&self, task: &RecorderTask) -> anyhow::Result<()> {
         use build_event::*;
         use {DrvBuildResult as DBR, DrvBuildState as DBS};
 
-        let drv = task.derivation.clone();
+        let drv = &task.derivation;
         let build_id = build::DrvBuildId {
-            derivation: task.derivation,
+            derivation: drv.clone(),
             // TODO: build_attempt seems like something we should query
             build_attempt: std::num::NonZeroU32::new(1).unwrap(),
         };
 
-        // Get job info to broadcast stats updates later
-        let job_infos = self.db_service.get_job_info_for_drv(&drv).await?;
+        let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
 
         match &task.result {
             DBS::Completed(DBR::Success) => {
