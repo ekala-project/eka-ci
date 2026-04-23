@@ -218,7 +218,7 @@ impl GraphService {
                 response,
             } => {
                 debug!("UpdateState: {:?} -> {:?}", drv_id, new_state);
-                self.update_state(&drv_id, new_state.clone()).await?;
+                self.update_state(&drv_id, new_state).await?;
                 if response.send(()).is_err() {
                     warn!(
                         "UpdateState caller dropped the response oneshot for {:?}",
@@ -455,15 +455,14 @@ impl GraphService {
         drv_id: &DrvId,
         new_state: DrvBuildState,
     ) -> anyhow::Result<()> {
-        // Update in-memory graph
+        // In-memory graph update takes the first clone.
         self.graph.update_state(drv_id, new_state.clone());
 
-        // Update shared view cache
+        // Shared view cache and DB persistence share the original.
         if let Some(mut cached) = self.shared_view.get_mut(drv_id) {
             cached.build_state = new_state.clone();
         }
 
-        // Persist all state changes to SQLite
         self.db_service
             .update_drv_status(drv_id, &new_state)
             .await?;

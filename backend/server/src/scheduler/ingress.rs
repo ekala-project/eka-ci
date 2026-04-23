@@ -66,14 +66,14 @@ impl IngressWorker {
     async fn ingest_requests(mut self) {
         loop {
             if let Some(task) = self.request_receiver.recv().await {
-                if let Err(e) = self.handle_ingress_request(task.clone()).await {
+                if let Err(e) = self.handle_ingress_request(&task).await {
                     warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
                 }
             }
         }
     }
 
-    async fn handle_ingress_request(&self, task: IngressTask) -> anyhow::Result<()> {
+    async fn handle_ingress_request(&self, task: &IngressTask) -> anyhow::Result<()> {
         use IngressTask::*;
 
         match task {
@@ -86,29 +86,25 @@ impl IngressWorker {
         Ok(())
     }
 
-    async fn handle_check_buildable_task(&self, drv_id: drv_id::DrvId) -> anyhow::Result<()> {
+    async fn handle_check_buildable_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
         use crate::db::model::build_event::DrvBuildState;
-        debug!("checking if {:?} is buildable", &drv_id);
+        debug!("checking if {:?} is buildable", drv_id);
 
-        // Use graph for fast buildability check (no SQL query!)
-        if self.graph_handle.is_buildable(&drv_id) {
-            debug!("{:?} is now buildable", &drv_id);
+        if self.graph_handle.is_buildable(drv_id) {
+            debug!("{:?} is now buildable", drv_id);
 
-            // Get current drv from graph to check its state
             let cached_node = self
                 .graph_handle
-                .get_node(&drv_id)
+                .get_node(drv_id)
                 .context("drv is missing from graph")?;
 
-            // Only update state to Buildable if it's not already in FailedRetry
-            // FailedRetry state should be preserved so the recorder can detect second failures
+            // FailedRetry must be preserved so the recorder can detect second failures.
             if cached_node.build_state != DrvBuildState::FailedRetry {
                 self.graph_handle
-                    .update_state(&drv_id, DrvBuildState::Buildable)
+                    .update_state(drv_id, DrvBuildState::Buildable)
                     .await?;
             }
 
-            // Convert CachedNode to Drv for BuildRequest
             let drv = cached_node.to_drv();
             self.buildable_sender.send(BuildRequest(drv)).await?;
         }
@@ -118,13 +114,12 @@ impl IngressWorker {
 
     /// This attempts to update the status of a drv by inspecting the
     /// status of the dependencies.
-    async fn handle_eval_task(&self, drv_id: drv_id::DrvId) -> anyhow::Result<()> {
-        // Check if drv is already in a terminal state
-        if let Some(build_state) = self.graph_handle.get_build_state(&drv_id) {
+    async fn handle_eval_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
+        if let Some(build_state) = self.graph_handle.get_build_state(drv_id) {
             if build_state.is_terminal() {
                 debug!(
                     "{:?} is already in terminal state {:?}, skipping build",
-                    &drv_id, build_state
+                    drv_id, build_state
                 );
                 return Ok(());
             }
@@ -135,57 +130,51 @@ impl IngressWorker {
         Ok(())
     }
 
-    /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking
-    /// This also recursively rebuilds any failed dependencies
-    async fn handle_rebuild_failed_task(&self, drv_id: drv_id::DrvId) -> anyhow::Result<()> {
+    /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking.
+    /// Also recursively rebuilds any failed dependencies.
+    async fn handle_rebuild_failed_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
         use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 
-        debug!("Attempting to rebuild failed drv: {:?}", &drv_id);
+        debug!("Attempting to rebuild failed drv: {:?}", drv_id);
 
-        // Get the drv from the graph to check its current state
         let node = self
             .graph_handle
-            .get_node(&drv_id)
+            .get_node(drv_id)
             .context("drv not found")?;
 
-        // Only rebuild if drv is in a failed state
         match &node.build_state {
             DrvBuildState::Completed(DrvBuildResult::Failure)
             | DrvBuildState::TransitiveFailure
             | DrvBuildState::FailedRetry => {
                 debug!(
                     "{:?} is in failed state {:?}, rebuilding",
-                    &drv_id, &node.build_state
+                    drv_id, &node.build_state
                 );
 
-                // First, recursively rebuild any failed dependencies
-                let failed_deps = self.graph_handle.get_failed_dependencies(&drv_id).await?;
-                for dep in failed_deps {
+                let failed_deps = self.graph_handle.get_failed_dependencies(drv_id).await?;
+                for dep in &failed_deps {
                     debug!(
                         "{:?} has failed dependency {:?}, rebuilding it first",
-                        &drv_id, &dep
+                        drv_id, dep
                     );
                     Box::pin(self.handle_rebuild_failed_task(dep)).await?;
                 }
 
-                // Reset the drv state to Queued (updates both graph and database)
                 self.graph_handle
-                    .update_state(&drv_id, DrvBuildState::Queued)
+                    .update_state(drv_id, DrvBuildState::Queued)
                     .await?;
 
-                // Clear transitive failure records
-                // This is handled by the graph service's ClearFailure command
-                // when the drv succeeds, so we don't need to do it explicitly here
+                // Transitive-failure cleanup happens in the graph service's
+                // ClearFailure command when the drv succeeds.
 
-                // Re-queue the drv to check if it's now buildable
-                self.handle_check_buildable_task(drv_id.clone()).await?;
+                self.handle_check_buildable_task(drv_id).await?;
 
-                debug!("{:?} has been reset and re-queued", &drv_id);
+                debug!("{:?} has been reset and re-queued", drv_id);
             },
             _ => {
                 warn!(
                     "{:?} is not in a failed state (current state: {:?}), cannot rebuild",
-                    &drv_id, &node.build_state
+                    drv_id, &node.build_state
                 );
             },
         }
@@ -197,13 +186,10 @@ impl IngressWorker {
     async fn handle_rebuild_all_failed_task(&self) -> anyhow::Result<()> {
         debug!("Rebuilding all failed drvs");
 
-        // Get all failed drvs from the graph
         let failed_drvs = self.graph_handle.get_all_failed_drvs().await?;
-
         debug!("Found {} failed drvs to rebuild", failed_drvs.len());
 
-        // Rebuild each failed drv (this will handle dependencies recursively)
-        for drv_id in failed_drvs {
+        for drv_id in &failed_drvs {
             self.handle_rebuild_failed_task(drv_id).await?;
         }
 
