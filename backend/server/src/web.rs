@@ -121,6 +121,22 @@ fn parse_drv_id(
     })
 }
 
+/// Defense-in-depth: verify `candidate` is `base` or a descendant of it.
+/// Rejects `..`, absolute, or prefix components appended after `base` so
+/// a future regression in upstream validation can't silently enable
+/// directory traversal via `Path::join`.
+fn path_is_under(base: &std::path::Path, candidate: &std::path::Path) -> bool {
+    use std::path::Component;
+    if !candidate.starts_with(base) {
+        return false;
+    }
+    let base_len = base.components().count();
+    candidate
+        .components()
+        .skip(base_len)
+        .all(|c| matches!(c, Component::Normal(_)))
+}
+
 pub struct WebService {
     listener: TcpListener,
     state: AppState,
@@ -624,6 +640,20 @@ async fn get_derivation_log(
     let drv_hash = drv_id.drv_hash();
     let log_path = state.logs_dir.join(drv_hash).join("build.log");
 
+    // Defense-in-depth: refuse to serve anything outside logs_dir.
+    if !path_is_under(&state.logs_dir, &log_path) {
+        error!(
+            "Refusing to serve build log outside logs_dir: {}",
+            log_path.display()
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            "internal error",
+        )
+            .into_response();
+    }
+
     // Read the log file
     match tokio::fs::read_to_string(&log_path).await {
         Ok(contents) => (
@@ -682,6 +712,20 @@ async fn get_hook_log(
         .logs_dir
         .join(drv_hash)
         .join(format!("hook-{}.log", hook_name));
+
+    // Defense-in-depth: refuse to serve anything outside logs_dir.
+    if !path_is_under(&state.logs_dir, &log_path) {
+        error!(
+            "Refusing to serve hook log outside logs_dir: {}",
+            log_path.display()
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            "internal error",
+        )
+            .into_response();
+    }
 
     // Read the log file
     match tokio::fs::read_to_string(&log_path).await {
@@ -2217,4 +2261,65 @@ async fn admin_github_api_cache_invalidate_handler(
         "GitHub API permission cache entry invalidated",
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod path_containment_tests {
+    use std::path::PathBuf;
+
+    use super::path_is_under;
+
+    fn base() -> PathBuf {
+        PathBuf::from("/var/lib/ekaci/logs")
+    }
+
+    #[test]
+    fn accepts_base_itself() {
+        assert!(path_is_under(&base(), &base()));
+    }
+
+    #[test]
+    fn accepts_nested_normal_components() {
+        let p = base().join("abcdef").join("build.log");
+        assert!(path_is_under(&base(), &p));
+    }
+
+    #[test]
+    fn rejects_parent_dir_escape_after_base() {
+        // {base}/abc/../../etc/passwd lexically starts with base,
+        // but the `..` component must still be rejected.
+        let p = base().join("abc").join("..").join("..").join("etc");
+        assert!(!path_is_under(&base(), &p));
+    }
+
+    #[test]
+    fn rejects_sibling_prefix() {
+        // /var/lib/ekaci/logs-evil does not start with /var/lib/ekaci/logs
+        // at the component level.
+        let p = PathBuf::from("/var/lib/ekaci/logs-evil/x");
+        assert!(!path_is_under(&base(), &p));
+    }
+
+    #[test]
+    fn rejects_absolute_component_after_base() {
+        // Path::join with an absolute path replaces the prefix on Unix,
+        // producing a candidate that does not start_with(base). Sanity
+        // check that this too is rejected.
+        let p = base().join("/etc/passwd");
+        assert!(!path_is_under(&base(), &p));
+    }
+
+    #[test]
+    fn rejects_parent_dir_as_first_suffix_component() {
+        // {base}/../etc must be rejected: the first suffix
+        // component attempts to escape upward.
+        let p = base().join("..").join("etc");
+        assert!(!path_is_under(&base(), &p));
+    }
+
+    #[test]
+    fn rejects_candidate_disjoint_from_base() {
+        let p = PathBuf::from("/etc/passwd");
+        assert!(!path_is_under(&base(), &p));
+    }
 }
