@@ -148,8 +148,11 @@ impl RecorderWorker {
                 timestamp: Utc::now(),
             });
 
-            // Broadcast the event (ignore if no receivers)
-            let _ = sender.send(event);
+            // Broadcast the event. `broadcast::Sender::send` returns
+            // `Err(SendError)` iff there are no active receivers — a
+            // normal operational state when no WebSocket clients are
+            // connected — so the drop here is deliberate.
+            let _no_receivers = sender.send(event);
         }
     }
 
@@ -173,8 +176,9 @@ impl RecorderWorker {
                     timestamp: Utc::now(),
                 });
 
-                // Broadcast the event (ignore if no receivers)
-                let _ = sender.send(event);
+                // Broadcast the event. Err iff no active WebSocket
+                // subscribers — a normal operational state.
+                let _no_receivers = sender.send(event);
             }
         }
     }

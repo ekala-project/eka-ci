@@ -240,9 +240,13 @@ impl NixBuild {
                 _ = &mut timeout => {
                     // No-output timeout occurred - kill the process
                     warn!("Build timed out after {} seconds of no output, killing process", self.no_output_timeout_seconds);
-                    let _ = child.kill().await;
+                    if let Err(e) = child.kill().await {
+                        warn!("Failed to kill build child on no-output timeout (may already be dead): {:?}", e);
+                    }
                     // Reap to avoid zombies and release file descriptors
-                    let _ = child.wait().await;
+                    if let Err(e) = child.wait().await {
+                        warn!("Failed to reap build child on no-output timeout: {:?}", e);
+                    }
 
                     // Flush and close log file
                     log_writer.flush().await?;
@@ -257,8 +261,12 @@ impl NixBuild {
                         "Build exceeded wall-clock cap of {} seconds, killing process",
                         self.max_duration_seconds,
                     );
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
+                    if let Err(e) = child.kill().await {
+                        warn!("Failed to kill build child on absolute timeout (may already be dead): {:?}", e);
+                    }
+                    if let Err(e) = child.wait().await {
+                        warn!("Failed to reap build child on absolute timeout: {:?}", e);
+                    }
 
                     log_writer.flush().await?;
                     let log_file = log_writer.into_inner();

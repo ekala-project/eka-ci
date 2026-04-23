@@ -245,9 +245,8 @@ pub async fn start_services(config: Config) -> Result<()> {
     let checks_handle = tokio::spawn(checks_service.run(cancellation_token.clone()));
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
     let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
-    if let Some(github_service) = maybe_github_service {
-        let _ = tokio::spawn(github_service.run(cancellation_token.clone()));
-    }
+    let github_handle =
+        maybe_github_service.map(|svc| tokio::spawn(svc.run(cancellation_token.clone())));
 
     let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
@@ -280,6 +279,15 @@ pub async fn start_services(config: Config) -> Result<()> {
         repo_handle,
         git_handle
     );
+
+    // The GitHub service is only spawned when configured; await it
+    // explicitly here so shutdown waits for a clean exit and any join
+    // error is surfaced.
+    if let Some(handle) = github_handle {
+        if let Err(e) = handle.await {
+            warn!("GitHub service task exited with error: {:?}", e);
+        }
+    }
 
     db_pool.close().await;
 

@@ -5,7 +5,7 @@ use std::time::Instant;
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::eviction::EvictionCandidateSelector;
 use super::graph::BuildGraph;
@@ -219,7 +219,12 @@ impl GraphService {
             } => {
                 debug!("UpdateState: {:?} -> {:?}", drv_id, new_state);
                 self.update_state(&drv_id, new_state.clone()).await?;
-                let _ = response.send(());
+                if response.send(()).is_err() {
+                    warn!(
+                        "UpdateState caller dropped the response oneshot for {:?}",
+                        drv_id
+                    );
+                }
             },
 
             GraphCommand::InsertDrvs {
@@ -228,8 +233,14 @@ impl GraphService {
                 response,
             } => {
                 debug!("InsertDrvs: {} drvs, {} refs", drvs.len(), refs.len());
+                let (drv_count, ref_count) = (drvs.len(), refs.len());
                 self.insert_drvs(drvs, refs).await?;
-                let _ = response.send(());
+                if response.send(()).is_err() {
+                    warn!(
+                        "InsertDrvs caller dropped the response oneshot ({} drvs, {} refs)",
+                        drv_count, ref_count
+                    );
+                }
             },
 
             GraphCommand::PropagateFailure {
@@ -238,7 +249,12 @@ impl GraphService {
             } => {
                 debug!("PropagateFailure: {:?}", failed_drv);
                 let blocked = self.propagate_failure(&failed_drv).await?;
-                let _ = response.send(blocked);
+                if response.send(blocked).is_err() {
+                    warn!(
+                        "PropagateFailure caller dropped the response oneshot for {:?}",
+                        failed_drv
+                    );
+                }
             },
 
             GraphCommand::ClearFailure {
@@ -247,44 +263,66 @@ impl GraphService {
             } => {
                 debug!("ClearFailure: {:?}", formerly_failed);
                 let unblocked = self.clear_failure(&formerly_failed).await?;
-                let _ = response.send(unblocked);
+                if response.send(unblocked).is_err() {
+                    warn!(
+                        "ClearFailure caller dropped the response oneshot for {:?}",
+                        formerly_failed
+                    );
+                }
             },
 
             GraphCommand::GetBuildableDrvs { response } => {
                 let buildable = self.graph.get_drvs_by_state(&DrvBuildState::Buildable);
-                let _ = response.send(buildable);
+                if response.send(buildable).is_err() {
+                    warn!("GetBuildableDrvs caller dropped the response oneshot");
+                }
             },
 
             GraphCommand::GetDependents { drv_id, response } => {
                 // Ensure node is loaded (may have been evicted)
-                if let Err(e) = self.ensure_loaded(&drv_id).await {
+                let reply = if let Err(e) = self.ensure_loaded(&drv_id).await {
                     error!("Failed to ensure loaded for GetDependents: {:?}", e);
-                    let _ = response.send(Vec::new());
+                    Vec::new()
                 } else {
-                    let dependents = self.graph.get_dependents(&drv_id);
-                    let _ = response.send(dependents);
+                    self.graph.get_dependents(&drv_id)
+                };
+                if response.send(reply).is_err() {
+                    warn!(
+                        "GetDependents caller dropped the response oneshot for {:?}",
+                        drv_id
+                    );
                 }
             },
 
             GraphCommand::GetDependencies { drv_id, response } => {
                 // Ensure node is loaded (may have been evicted)
-                if let Err(e) = self.ensure_loaded(&drv_id).await {
+                let reply = if let Err(e) = self.ensure_loaded(&drv_id).await {
                     error!("Failed to ensure loaded for GetDependencies: {:?}", e);
-                    let _ = response.send(Vec::new());
+                    Vec::new()
                 } else {
-                    let dependencies = self.graph.get_dependencies(&drv_id);
-                    let _ = response.send(dependencies);
+                    self.graph.get_dependencies(&drv_id)
+                };
+                if response.send(reply).is_err() {
+                    warn!(
+                        "GetDependencies caller dropped the response oneshot for {:?}",
+                        drv_id
+                    );
                 }
             },
 
             GraphCommand::GetFailedDependencies { drv_id, response } => {
                 // Ensure node is loaded (may have been evicted)
-                if let Err(e) = self.ensure_loaded(&drv_id).await {
+                let reply = if let Err(e) = self.ensure_loaded(&drv_id).await {
                     error!("Failed to ensure loaded for GetFailedDependencies: {:?}", e);
-                    let _ = response.send(Vec::new());
+                    Vec::new()
                 } else {
-                    let failed_deps = self.graph.get_failed_dependencies(&drv_id);
-                    let _ = response.send(failed_deps);
+                    self.graph.get_failed_dependencies(&drv_id)
+                };
+                if response.send(reply).is_err() {
+                    warn!(
+                        "GetFailedDependencies caller dropped the response oneshot for {:?}",
+                        drv_id
+                    );
                 }
             },
 
@@ -292,7 +330,9 @@ impl GraphService {
                 let failed = self
                     .graph
                     .get_drvs_by_state(&DrvBuildState::Completed(DrvBuildResult::Failure));
-                let _ = response.send(failed);
+                if response.send(failed).is_err() {
+                    warn!("GetAllFailedDrvs caller dropped the response oneshot");
+                }
             },
         }
 

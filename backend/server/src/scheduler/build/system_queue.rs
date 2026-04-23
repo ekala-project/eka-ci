@@ -198,8 +198,15 @@ impl PlatformQueue {
                     };
                     // We can't await in a closure, so we spawn a task
                     let sender_clone = sender.clone();
+                    let drv_path = work.0.drv_path.clone();
                     tokio::spawn(async move {
-                        let _ = sender_clone.send(task).await;
+                        if let Err(e) = sender_clone.send(task).await {
+                            warn!(
+                                "Failed to report UnsatisfiableRequirements for {:?} to recorder: \
+                                 {:?}",
+                                drv_path, e
+                            );
+                        }
                     });
                 }
                 return true; // Is orphan

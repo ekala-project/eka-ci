@@ -31,9 +31,13 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize Rustls crypto provider (required for reqwest/octocrab TLS)
-    // This must be done before any HTTP clients are created
-    let _ = CryptoProvider::install_default(ring::default_provider());
+    // Initialize Rustls crypto provider (required for reqwest/octocrab TLS).
+    // This must be done before any HTTP clients are created. The call
+    // returns `Err` only when a default provider has already been
+    // installed in-process, which for this binary means a second call
+    // from the same process — benign and ignored. (No tracing yet;
+    // `tracing_subscriber` is initialised below.)
+    let _already_installed = CryptoProvider::install_default(ring::default_provider());
 
     tracing_subscriber::fmt()
         .with_env_filter(

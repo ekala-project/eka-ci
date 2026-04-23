@@ -219,9 +219,18 @@ impl super::EvalService {
 
         if outcome.truncation != Truncation::None {
             // Kill + reap the child to avoid zombies / writing forever
-            // into a closed pipe.
-            let _ = cmd.kill();
-            let _ = cmd.wait();
+            // into a closed pipe. If the child already exited on its
+            // own, kill() may return ESRCH — not a correctness issue,
+            // but log in case it signals a deeper pipe / signal bug.
+            if let Err(e) = cmd.kill() {
+                warn!(
+                    "nix-eval-jobs child kill failed (may already be dead): {:?}",
+                    e
+                );
+            }
+            if let Err(e) = cmd.wait() {
+                warn!("nix-eval-jobs child wait failed: {:?}", e);
+            }
 
             if let Some(metrics) = self.nix_eval_metrics.as_ref() {
                 metrics
@@ -247,7 +256,9 @@ impl super::EvalService {
             );
         } else {
             // Reap the child on the clean path too.
-            let _ = cmd.wait();
+            if let Err(e) = cmd.wait() {
+                warn!("nix-eval-jobs child wait failed on clean path: {:?}", e);
+            }
         }
 
         // Observability for the clean path.
