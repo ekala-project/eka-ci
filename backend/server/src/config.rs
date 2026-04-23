@@ -670,14 +670,12 @@ pub(crate) fn validate_cors_origin(origin: &str) -> anyhow::Result<()> {
 /// EC2/GCP metadata endpoint on every build.
 ///
 /// This validator enforces:
-///   * If the value looks like a URL (contains `"://"`), the scheme
-///     must be in a small allow-list and the host must not resolve to
-///     a private/loopback/link-local address unless
+///   * If the value looks like a URL (contains `"://"`), the scheme must be in a small allow-list
+///     and the host must not resolve to a private/loopback/link-local address unless
 ///     `allow_private_hosts == true`.
-///   * Bare identifiers (no `"://"`) are only accepted for
-///     `CacheType::Cachix` and must match a conservative
-///     `[A-Za-z0-9._-]+` pattern so they cannot smuggle argv
-///     separators or shell metacharacters downstream.
+///   * Bare identifiers (no `"://"`) are only accepted for `CacheType::Cachix` and must match a
+///     conservative `[A-Za-z0-9._-]+` pattern so they cannot smuggle argv separators or shell
+///     metacharacters downstream.
 ///
 /// Returns `Err` on rejection so startup aborts with a clear message
 /// rather than silently deferring the failure to the first push.
@@ -1005,8 +1003,7 @@ impl Config {
         // the registry. An invalid entry aborts startup so operators
         // see the problem immediately, the same pattern used for CORS
         // origins above.
-        let mut caches: HashMap<String, CacheConfig> =
-            HashMap::with_capacity(file.caches.len());
+        let mut caches: HashMap<String, CacheConfig> = HashMap::with_capacity(file.caches.len());
         for cache in file.caches {
             validate_cache_destination(
                 &cache.destination,
@@ -1510,8 +1507,7 @@ mod m6_tests {
     fn allow_private_cache_hosts_roundtrips_via_toml() {
         use figment::providers::Format;
         let sc: SecurityConfig = Figment::from(figment::providers::Toml::string(
-            "max_hook_timeout_seconds = 60\naudit_hooks = true\nallow_private_cache_hosts = \
-             true\n",
+            "max_hook_timeout_seconds = 60\naudit_hooks = true\nallow_private_cache_hosts = true\n",
         ))
         .extract()
         .expect("valid security config");
@@ -1534,9 +1530,6 @@ mod m6_tests {
         // restriction — passwords in URLs are still a bad idea but
         // that is the operator's call, and argv carries them safely
         // (no shell expansion per H3).
-        allowed(
-            "ssh://deploy-user@cache.example.com",
-            CacheType::Attic,
-        );
+        allowed("ssh://deploy-user@cache.example.com", CacheType::Attic);
     }
 }

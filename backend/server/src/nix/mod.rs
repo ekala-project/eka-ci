@@ -300,8 +300,9 @@ async fn drv_requisites(drv_path: &str) -> Result<Vec<DrvId>> {
         // but rather files which were added to the nix store through
         // path literals or `nix-store --add`
         .filter(|x| x.ends_with(".drv"))
-        .map(|x| DrvId::from_str(x).unwrap())
-        .collect::<Vec<DrvId>>();
+        .map(DrvId::from_str)
+        .collect::<Result<Vec<DrvId>, _>>()
+        .context("failed to parse drv path from nix-store --requisites output")?;
 
     Ok(drvs)
 }

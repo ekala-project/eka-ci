@@ -86,10 +86,9 @@ fn parse_nix_machines_line(line: &str) -> anyhow::Result<RemoteBuilder> {
 /// Reads a comma separate list into a list of Strings.
 /// Also accounts for the value not being specified, or using the "-" placeholder
 fn parse_many_values(value: Option<&str>) -> Vec<String> {
-    if value.is_none() {
+    let Some(inner_value) = value else {
         return Vec::new();
-    }
-    let inner_value = value.unwrap();
+    };
     if inner_value == "-" {
         return Vec::new();
     }

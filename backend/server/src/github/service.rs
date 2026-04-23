@@ -218,14 +218,10 @@ impl GitHubService {
 
         // This is only relevant on PRs, missing a base commit denotes that
         // this jobset creation is done for a base_commit
-        if ci_check_info.base_commit.is_some() {
+        if let Some(base_commit) = ci_check_info.base_commit.as_ref() {
             let (new_jobs, changed_drvs, _removed_jobs) = self
                 .db_service
-                .job_difference(
-                    &ci_check_info.commit,
-                    ci_check_info.base_commit.as_ref().unwrap(),
-                    name,
-                )
+                .job_difference(&ci_check_info.commit, base_commit, name)
                 .await?;
 
             // Update the Job table to mark which jobs are new/changed
@@ -244,7 +240,7 @@ impl GitHubService {
             // This needs the base jobset ID to compare dependencies
             let base_jobset_id: Option<i64> =
                 sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
-                    .bind(ci_check_info.base_commit.as_ref().unwrap())
+                    .bind(base_commit)
                     .bind(name)
                     .fetch_optional(&self.db_service.pool)
                     .await?;
