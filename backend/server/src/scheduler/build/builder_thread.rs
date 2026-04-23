@@ -438,9 +438,7 @@ mod tests {
         // Simulate a chatty build that prints every 5 s for a long
         // time. The no-output timeout is 10 s (would never fire) but
         // the absolute cap is 30 s (must fire).
-        let mut ticks_fired = 0u32;
-        let kind = race_deadlines(10, 30, move || {
-            ticks_fired += 1;
+        let kind = race_deadlines(10, 30, || {
             // Never stop ticking; tokio virtual time will race the
             // sleep vs the absolute deadline and absolute will win.
             Some(Duration::from_secs(5))

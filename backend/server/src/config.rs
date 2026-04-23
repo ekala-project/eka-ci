@@ -598,6 +598,18 @@ pub struct SecurityConfig {
     /// security-critical mistake.
     #[serde(default)]
     pub allow_insecure_webhooks: bool,
+    /// M6 escape hatch: permit `[[caches]].destination` values whose
+    /// host resolves to a private, loopback, or link-local address
+    /// (e.g. `http://127.0.0.1:5000`, `http://10.0.0.5`, `ssh://[::1]`).
+    ///
+    /// By default (`false`) such destinations are rejected at startup
+    /// to prevent an operator or malicious PR author from coercing the
+    /// build host into issuing requests to internal services or cloud
+    /// metadata endpoints (SSRF). Enable only for local development
+    /// or isolated test deployments where the private host is known
+    /// to be safe.
+    #[serde(default)]
+    pub allow_private_cache_hosts: bool,
 }
 
 fn default_hook_timeout() -> u64 {
@@ -644,6 +656,196 @@ pub(crate) fn validate_cors_origin(origin: &str) -> anyhow::Result<()> {
         bail!("origin {origin:?} must not include userinfo");
     }
     Ok(())
+}
+
+/// M6: validate a `[[caches]].destination` value.
+///
+/// The `destination` field is passed directly as an argv element to
+/// `nix copy --to <dest>`, `cachix push <dest>`, or `attic push <dest>`
+/// (see `scheduler::recorder::build_cache_push_hook`). The sub-command
+/// in turn issues network requests to the given endpoint, so an
+/// unvalidated destination is an SSRF primitive: an operator-authored
+/// or config-reload-authored value such as
+/// `http://169.254.169.254/...` would cause the build host to hit the
+/// EC2/GCP metadata endpoint on every build.
+///
+/// This validator enforces:
+///   * If the value looks like a URL (contains `"://"`), the scheme
+///     must be in a small allow-list and the host must not resolve to
+///     a private/loopback/link-local address unless
+///     `allow_private_hosts == true`.
+///   * Bare identifiers (no `"://"`) are only accepted for
+///     `CacheType::Cachix` and must match a conservative
+///     `[A-Za-z0-9._-]+` pattern so they cannot smuggle argv
+///     separators or shell metacharacters downstream.
+///
+/// Returns `Err` on rejection so startup aborts with a clear message
+/// rather than silently deferring the failure to the first push.
+pub(crate) fn validate_cache_destination(
+    destination: &str,
+    cache_type: &CacheType,
+    allow_private_hosts: bool,
+) -> anyhow::Result<()> {
+    if destination.is_empty() {
+        bail!("cache destination is empty");
+    }
+
+    // Bare identifier path (Cachix cache name). `nix copy` and `attic`
+    // both require a scheme, so anything without `"://"` is only
+    // meaningful for Cachix.
+    if !destination.contains("://") {
+        if !matches!(cache_type, CacheType::Cachix) {
+            bail!(
+                "cache destination {destination:?} has no scheme; only `cachix` caches may use a \
+                 bare identifier (e.g. `mycache`). Use e.g. `s3://…`, `https://…`, or `ssh://…` \
+                 for `nix-copy` / `attic`."
+            );
+        }
+        // Conservative pattern: ASCII alnum plus `.`, `_`, `-`. This is
+        // a superset of Cachix cache names but excludes whitespace,
+        // shell metacharacters, and argv separators.
+        let ok = destination
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if !ok {
+            bail!(
+                "cachix destination {destination:?} contains disallowed characters; expected \
+                 [A-Za-z0-9._-]+"
+            );
+        }
+        return Ok(());
+    }
+
+    // URL path — scheme + host + private-address checks.
+    let url = url::Url::parse(destination)
+        .with_context(|| format!("cache destination {destination:?} is not a valid URL"))?;
+
+    // Allow-list schemes. Everything outside this set is rejected even
+    // if `url` would happily parse it (e.g. `javascript:`, `file:`,
+    // `data:`) — cache pushing has no use for them and they are a
+    // common SSRF / LFI vector if the downstream tool happens to
+    // honour them.
+    match url.scheme() {
+        // Recognised by `nix copy` / `cachix` / `attic`.
+        "s3" | "https" | "http" | "ssh" | "ssh-ng" => {},
+        other => bail!(
+            "cache destination {destination:?} uses disallowed scheme {other:?}; allowed: s3, \
+             https, http, ssh, ssh-ng"
+        ),
+    }
+
+    // `url::Url` requires a host for `http`/`https`/`ssh`, but `s3://`
+    // URLs can legitimately encode the bucket as the host. Either
+    // way, absence of a host is a hard error — we cannot apply the
+    // private-address check to it. `url` sometimes returns
+    // `Some(Domain(""))` for inputs like `https:///path`, so guard
+    // against the empty-string case too.
+    let host = url
+        .host()
+        .ok_or_else(|| anyhow!("cache destination {destination:?} has no host component"))?;
+    if let url::Host::Domain(d) = &host {
+        if d.is_empty() {
+            bail!("cache destination {destination:?} has an empty host component");
+        }
+    }
+
+    if !allow_private_hosts && host_is_private(&host) {
+        bail!(
+            "cache destination {destination:?} resolves to a private / loopback / link-local \
+             host; set `security.allow_private_cache_hosts = true` (or \
+             `EKACI_ALLOW_PRIVATE_CACHE_HOSTS=1`) to override. This check prevents accidental \
+             SSRF into internal services or cloud-metadata endpoints."
+        );
+    }
+
+    Ok(())
+}
+
+/// M6 helper: is the given `url::Host` "private" in the SSRF sense?
+///
+/// Covers RFC 1918 IPv4, loopback (127.0.0.0/8, ::1), link-local
+/// (169.254.0.0/16 incl. cloud metadata, fe80::/10), unique-local IPv6
+/// (fc00::/7), unspecified (0.0.0.0, ::), and a small set of hostnames
+/// that commonly point at localhost.
+fn host_is_private(host: &url::Host<&str>) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    match host {
+        url::Host::Ipv4(ip) => ipv4_is_private(ip),
+        url::Host::Ipv6(ip) => ipv6_is_private(ip),
+        url::Host::Domain(name) => {
+            let lower = name.to_ascii_lowercase();
+            // Exact-match hostnames commonly resolving to the loopback
+            // interface or cloud-metadata service. This list is
+            // intentionally conservative — a determined operator can
+            // still register e.g. `internal.example.com -> 127.0.0.1`,
+            // but those cases require `allow_private_cache_hosts`.
+            if matches!(
+                lower.as_str(),
+                "localhost"
+                    | "localhost.localdomain"
+                    | "ip6-localhost"
+                    | "ip6-loopback"
+                    | "metadata.google.internal"
+                    | "metadata.goog"
+            ) {
+                return true;
+            }
+            // Reject suffix matches for common loopback-ish TLDs used
+            // by local resolvers / dev setups.
+            if lower.ends_with(".localhost") || lower.ends_with(".local") {
+                return true;
+            }
+            // Some operators configure `[[caches]].destination` with a
+            // literal numeric host that `url` parsed as a `Domain`
+            // when using IPv6 brackets or unusual formats. Attempt a
+            // best-effort parse.
+            if let Ok(v4) = lower.parse::<Ipv4Addr>() {
+                return ipv4_is_private(&v4);
+            }
+            if let Ok(v6) = lower.parse::<Ipv6Addr>() {
+                return ipv6_is_private(&v6);
+            }
+            false
+        },
+    }
+}
+
+fn ipv4_is_private(ip: &std::net::Ipv4Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        // 100.64.0.0/10 — CGNAT; treat as private to be conservative.
+        || (ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 0x40)
+}
+
+fn ipv6_is_private(ip: &std::net::Ipv6Addr) -> bool {
+    if ip.is_loopback() || ip.is_unspecified() {
+        return true;
+    }
+    let segments = ip.segments();
+    // fe80::/10 — link-local.
+    if (segments[0] & 0xffc0) == 0xfe80 {
+        return true;
+    }
+    // fc00::/7 — unique local addresses (ULA).
+    if (segments[0] & 0xfe00) == 0xfc00 {
+        return true;
+    }
+    // IPv4-mapped (::ffff:0:0/96) — extract and re-check against v4.
+    if segments[0] == 0
+        && segments[1] == 0
+        && segments[2] == 0
+        && segments[3] == 0
+        && segments[4] == 0
+        && segments[5] == 0xffff
+    {
+        let octets = ip.octets();
+        let v4 = std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+        return ipv4_is_private(&v4);
+    }
+    false
 }
 
 #[derive(Deserialize, Debug)]
@@ -781,12 +983,55 @@ impl Config {
                 Redacted::new(hex::encode(bytes))
             });
 
-        // Build cache registry as a HashMap
-        let caches = file
-            .caches
-            .into_iter()
-            .map(|cache| (cache.id.clone(), cache))
-            .collect::<HashMap<String, CacheConfig>>();
+        // Get security config or use defaults (needed early for the
+        // M6 cache-destination validator below).
+        let mut security = file.security.unwrap_or_else(|| SecurityConfig {
+            max_hook_timeout_seconds: default_hook_timeout(),
+            audit_hooks: true,
+            webhook_secret: None,
+            allow_insecure_webhooks: false,
+            allow_private_cache_hosts: false,
+        });
+
+        // Env override for the M6 escape hatch. Accepts the usual
+        // boolean spellings so shell `=1` / `=true` both work.
+        if let Ok(raw) = std::env::var("EKACI_ALLOW_PRIVATE_CACHE_HOSTS") {
+            let normalized = raw.trim().to_ascii_lowercase();
+            security.allow_private_cache_hosts =
+                matches!(normalized.as_str(), "1" | "true" | "yes" | "on");
+        }
+
+        // M6: validate every `[[caches]].destination` before building
+        // the registry. An invalid entry aborts startup so operators
+        // see the problem immediately, the same pattern used for CORS
+        // origins above.
+        let mut caches: HashMap<String, CacheConfig> =
+            HashMap::with_capacity(file.caches.len());
+        for cache in file.caches {
+            validate_cache_destination(
+                &cache.destination,
+                &cache.cache_type,
+                security.allow_private_cache_hosts,
+            )
+            .with_context(|| {
+                format!(
+                    "invalid [[caches]] entry id={:?} destination={:?}",
+                    cache.id, cache.destination
+                )
+            })?;
+            if caches.insert(cache.id.clone(), cache).is_some() {
+                // Duplicate IDs silently clobbered before M6; surface
+                // them now because later lookups rely on a single
+                // canonical config per ID.
+                // (Intentionally not a hard error to preserve
+                //  backwards compat with existing deployments that
+                //  may accidentally duplicate; emit a warning only.)
+                tracing::warn!(
+                    event = "cache_config_duplicate_id",
+                    "duplicate [[caches]] id; last entry wins"
+                );
+            }
+        }
 
         // Build GitHub App registry as a HashMap
         let github_apps = file
@@ -794,14 +1039,6 @@ impl Config {
             .into_iter()
             .map(|app| (app.id.clone(), app))
             .collect::<HashMap<String, GitHubAppConfig>>();
-
-        // Get security config or use defaults
-        let mut security = file.security.unwrap_or_else(|| SecurityConfig {
-            max_hook_timeout_seconds: default_hook_timeout(),
-            audit_hooks: true,
-            webhook_secret: None,
-            allow_insecure_webhooks: false,
-        });
 
         // Allow webhook_secret to be overridden by environment variable
         if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
@@ -985,6 +1222,7 @@ mod redaction_tests {
             audit_hooks: true,
             webhook_secret: Some(Redacted::new("webhook-secret-needle".to_string())),
             allow_insecure_webhooks: false,
+            allow_private_cache_hosts: false,
         };
         assert_no_secret(&format!("{sec:?}"), "SecurityConfig {:?}");
         assert_no_secret(&format!("{sec:#?}"), "SecurityConfig {:#?}");
@@ -1024,6 +1262,7 @@ mod redaction_tests {
                 audit_hooks: true,
                 webhook_secret: Some(Redacted::new("webhook-secret-needle".to_string())),
                 allow_insecure_webhooks: false,
+                allow_private_cache_hosts: false,
             },
         };
         // Both the compact and pretty Debug forms must redact every secret.
@@ -1067,5 +1306,237 @@ mod m5_tests {
         let cf = ConfigFile::default();
         let resolved = cf.build_max_duration_seconds.unwrap_or(14_400);
         assert_eq!(resolved, 14_400);
+    }
+}
+
+#[cfg(test)]
+mod m6_tests {
+    //! M6 regression tests for `validate_cache_destination` and the
+    //! underlying private-host classifier. The validator exists to
+    //! prevent the operator-configured `[[caches]].destination`
+    //! field from being coerced into an SSRF primitive (e.g.
+    //! `http://169.254.169.254/latest/meta-data/...`) against cloud
+    //! metadata or internal services.
+    use super::*;
+
+    fn allowed(dest: &str, ty: CacheType) {
+        validate_cache_destination(dest, &ty, false)
+            .unwrap_or_else(|e| panic!("expected {dest:?} to be allowed, got {e:?}"));
+    }
+
+    fn rejected(dest: &str, ty: CacheType) {
+        let r = validate_cache_destination(dest, &ty, false);
+        assert!(
+            r.is_err(),
+            "expected {dest:?} to be rejected, but it was accepted"
+        );
+    }
+
+    // --- happy path: allowed schemes with public-looking hosts ---
+
+    #[test]
+    fn allows_s3_https_http_ssh_schemes() {
+        allowed("s3://my-bucket/prefix", CacheType::NixCopy);
+        allowed("https://cache.example.com", CacheType::NixCopy);
+        allowed("http://cache.example.com:5000", CacheType::NixCopy);
+        allowed("ssh://builder@cache.example.com", CacheType::Attic);
+        allowed("ssh-ng://builder@cache.example.com", CacheType::Attic);
+    }
+
+    #[test]
+    fn allows_cachix_bare_name() {
+        allowed("my-cache", CacheType::Cachix);
+        allowed("my.cache_1", CacheType::Cachix);
+    }
+
+    // --- scheme allow-list enforcement ---
+
+    #[test]
+    fn rejects_disallowed_schemes() {
+        // LFI / RCE primitives if honoured by a downstream parser.
+        rejected("file:///etc/passwd", CacheType::NixCopy);
+        rejected("javascript:alert(1)", CacheType::NixCopy);
+        rejected("data:text/plain,hi", CacheType::NixCopy);
+        rejected("gopher://example.com", CacheType::NixCopy);
+        rejected("ftp://example.com/bucket", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_non_cachix_without_scheme() {
+        rejected("bare-name", CacheType::NixCopy);
+        rejected("bare-name", CacheType::Attic);
+    }
+
+    #[test]
+    fn rejects_cachix_bare_name_with_metacharacters() {
+        rejected("my cache", CacheType::Cachix); // whitespace
+        rejected("my;cache", CacheType::Cachix); // shell sep
+        rejected("my$cache", CacheType::Cachix); // expansion
+        rejected("my`cache`", CacheType::Cachix); // backtick
+        rejected("my\ncache", CacheType::Cachix); // newline
+    }
+
+    #[test]
+    fn rejects_empty_destination() {
+        rejected("", CacheType::NixCopy);
+        rejected("", CacheType::Cachix);
+    }
+
+    // --- private-IPv4 rejection (SSRF primary vector) ---
+
+    #[test]
+    fn rejects_loopback_ipv4() {
+        rejected("http://127.0.0.1/", CacheType::NixCopy);
+        rejected("http://127.1.2.3:8080/", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_rfc1918_ipv4() {
+        rejected("http://10.0.0.1/", CacheType::NixCopy);
+        rejected("http://172.16.5.2/", CacheType::NixCopy);
+        rejected("http://172.31.255.255/", CacheType::NixCopy);
+        rejected("http://192.168.1.1/", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_link_local_ipv4_and_cloud_metadata() {
+        // 169.254.169.254 is EC2/GCP/Azure IMDS — the canonical SSRF
+        // target. Confirm it is rejected by default.
+        rejected("http://169.254.169.254/", CacheType::NixCopy);
+        rejected(
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            CacheType::NixCopy,
+        );
+        rejected("http://169.254.0.1/", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_unspecified_and_broadcast_ipv4() {
+        rejected("http://0.0.0.0/", CacheType::NixCopy);
+        rejected("http://255.255.255.255/", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_cgnat_ipv4() {
+        // 100.64.0.0/10 — carrier-grade NAT, commonly used inside
+        // cloud VPC meshes.
+        rejected("http://100.64.0.1/", CacheType::NixCopy);
+        rejected("http://100.127.255.254/", CacheType::NixCopy);
+    }
+
+    // --- private-IPv6 rejection ---
+
+    #[test]
+    fn rejects_loopback_ipv6() {
+        rejected("http://[::1]/", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_link_local_ipv6() {
+        rejected("http://[fe80::1]/", CacheType::NixCopy);
+        rejected("http://[fe80::a00:27ff:fe4e:66a1]/", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_ula_ipv6() {
+        // fc00::/7 — unique-local addresses.
+        rejected("http://[fc00::1]/", CacheType::NixCopy);
+        rejected("http://[fd12:3456:789a::1]/", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_ipv4_mapped_ipv6_loopback() {
+        // ::ffff:127.0.0.1 — sneaky way to bypass IPv4-only checks.
+        rejected("http://[::ffff:127.0.0.1]/", CacheType::NixCopy);
+        rejected("http://[::ffff:7f00:1]/", CacheType::NixCopy);
+    }
+
+    // --- private-host domain rejection ---
+
+    #[test]
+    fn rejects_localhost_domain() {
+        rejected("http://localhost/", CacheType::NixCopy);
+        rejected("http://localhost.localdomain/", CacheType::NixCopy);
+        rejected("http://LOCALHOST/", CacheType::NixCopy); // case-insensitive
+    }
+
+    #[test]
+    fn rejects_gcp_metadata_domain() {
+        rejected("http://metadata.google.internal/", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn rejects_dot_localhost_and_dot_local_suffixes() {
+        rejected("http://foo.localhost/", CacheType::NixCopy);
+        rejected("http://printer.local/", CacheType::NixCopy); // mDNS
+    }
+
+    // --- allow-list escape hatch ---
+
+    #[test]
+    fn allow_private_hosts_permits_loopback() {
+        validate_cache_destination("http://127.0.0.1:5000", &CacheType::NixCopy, true)
+            .expect("loopback must be allowed under allow_private_hosts");
+        validate_cache_destination("http://localhost/", &CacheType::NixCopy, true)
+            .expect("localhost must be allowed under allow_private_hosts");
+        validate_cache_destination("http://[::1]/", &CacheType::NixCopy, true)
+            .expect("ipv6 loopback must be allowed under allow_private_hosts");
+    }
+
+    #[test]
+    fn allow_private_hosts_does_not_unlock_disallowed_schemes() {
+        // Scheme check is independent of private-host flag.
+        let r = validate_cache_destination("file:///etc/passwd", &CacheType::NixCopy, true);
+        assert!(r.is_err());
+    }
+
+    // --- security config default ---
+
+    #[test]
+    fn allow_private_cache_hosts_defaults_to_false() {
+        // Serde deserialization must yield `false` when the field is
+        // absent, so existing deployments don't silently flip to
+        // permissive behaviour after an upgrade.
+        use figment::providers::Format;
+        let sc: SecurityConfig = Figment::from(figment::providers::Toml::string(
+            "max_hook_timeout_seconds = 60\naudit_hooks = true\n",
+        ))
+        .extract()
+        .expect("valid security config");
+        assert!(!sc.allow_private_cache_hosts);
+    }
+
+    #[test]
+    fn allow_private_cache_hosts_roundtrips_via_toml() {
+        use figment::providers::Format;
+        let sc: SecurityConfig = Figment::from(figment::providers::Toml::string(
+            "max_hook_timeout_seconds = 60\naudit_hooks = true\nallow_private_cache_hosts = \
+             true\n",
+        ))
+        .extract()
+        .expect("valid security config");
+        assert!(sc.allow_private_cache_hosts);
+    }
+
+    // --- no-host / malformed-URL guards ---
+
+    #[test]
+    fn rejects_malformed_https_url() {
+        // Missing host entirely — `url` returns a parse error for
+        // this, which the validator surfaces as a rejection.
+        rejected("https://", CacheType::NixCopy);
+    }
+
+    #[test]
+    fn userinfo_in_url_is_allowed() {
+        // SSH URLs legitimately encode a username (`ssh://user@host`).
+        // We do not replicate the CORS validator's no-userinfo
+        // restriction — passwords in URLs are still a bad idea but
+        // that is the operator's call, and argv carries them safely
+        // (no shell expansion per H3).
+        allowed(
+            "ssh://deploy-user@cache.example.com",
+            CacheType::Attic,
+        );
     }
 }
