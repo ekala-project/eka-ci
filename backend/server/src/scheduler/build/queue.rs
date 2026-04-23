@@ -164,12 +164,11 @@ impl BuildQueue {
                     }
                     continue;
                 };
-                while let Some(front) = queue.front() {
+                while !queue.is_empty() {
                     match sender.try_reserve() {
                         Ok(permit) => {
-                            // Safe: front() returned Some, so
+                            // Safe: is_empty() returned false, so
                             // pop_front() cannot be None.
-                            let _ = front;
                             permit.send(queue.pop_front().unwrap());
                         },
                         Err(_) => break, // downstream full; retry next tick

@@ -115,7 +115,8 @@ fn prepare_path(socket_path: &Path) -> Result<()> {
 
     if !parent.exists() {
         info!("Creating socket directory: {:?}", &parent);
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create socket parent directory {:?}", parent))?;
     }
 
     // Not deleting the previous socket file results in a:
