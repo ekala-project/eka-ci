@@ -1,11 +1,71 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use octocrab::models::Repository;
 use shared::types::GitRequest;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::actions::{add_git_worktree, clone_git_repo, fetch_remote_repo};
+
+/// RAII guard that removes `path` on drop unless `disarm()` is called.
+///
+/// Used to keep multi-step git checkouts cancellation-safe: if the
+/// owning future is dropped mid-`git clone` / `git worktree add` the
+/// child process is killed and leaves a partial directory; this guard
+/// removes it so the next attempt starts clean.
+struct CleanupGuard {
+    path: Option<PathBuf>,
+    /// If set, run `git worktree prune` in this repo on drop (best-effort)
+    /// so stale worktree admin entries do not accumulate.
+    prune_in: Option<PathBuf>,
+}
+
+impl CleanupGuard {
+    fn dir(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            prune_in: None,
+        }
+    }
+
+    fn worktree(worktree_path: PathBuf, repo_path: PathBuf) -> Self {
+        Self {
+            path: Some(worktree_path),
+            prune_in: Some(repo_path),
+        }
+    }
+
+    fn disarm(mut self) {
+        self.path.take();
+        self.prune_in.take();
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if let Some(p) = self.path.take() {
+            warn!(path = %p.display(), "removing partial checkout after cancellation or failure");
+            if let Err(e) = std::fs::remove_dir_all(&p) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!(path = %p.display(), error = %e, "failed to clean up partial checkout");
+                }
+            }
+        }
+        if let Some(repo) = self.prune_in.take() {
+            // Best-effort: clean up the git-internal worktree admin entry
+            // so a later `git worktree add` at the same path succeeds.
+            let _ = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(["worktree", "prune"])
+                .output();
+        }
+    }
+}
+
+fn path_to_str(p: &Path) -> Result<&str> {
+    p.to_str()
+        .with_context(|| format!("path is not valid UTF-8: {}", p.display()))
+}
 
 /// Return the directory that contains all ekaci-managed git checkouts.
 /// Every worktree and master clone lives underneath this directory, so
@@ -139,20 +199,30 @@ impl GitWorkspace {
         Self::new(repo, rev_parse, repos_dir)
     }
 
-    /// Ensure that the main clone exists and is healthy
+    /// Ensure that the main clone exists and is healthy.
+    ///
+    /// A `CleanupGuard` removes the target dir if the clone is
+    /// cancelled (future dropped) or exits non-zero, so the next
+    /// attempt starts from a clean slate instead of reusing a
+    /// half-populated repo.
     pub async fn ensure_master_clone(&self) -> anyhow::Result<()> {
-        if !self.repo_path.exists() {
-            debug!("{:?} does not exist, creating", &self.repo_path);
-            std::fs::create_dir_all(self.repo_path.parent().unwrap())?;
-            let dest_dir = self
-                .repo_path
-                .clone()
-                .into_os_string()
-                .into_string()
-                .unwrap();
-            clone_git_repo(&self.repo.checkout_url(), &dest_dir).await?;
+        if self.repo_path.exists() {
+            return Ok(());
         }
+        debug!("{:?} does not exist, creating", &self.repo_path);
+        std::fs::create_dir_all(self.repo_path.parent().unwrap())?;
 
+        let dest_dir = path_to_str(&self.repo_path)?.to_string();
+        let guard = CleanupGuard::dir(self.repo_path.clone());
+        let out = clone_git_repo(&self.repo.checkout_url(), &dest_dir).await?;
+        if !out.status.success() {
+            bail!(
+                "git clone of {} failed: {}",
+                self.repo.checkout_url(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        guard.disarm();
         Ok(())
     }
 
@@ -168,17 +238,23 @@ impl GitWorkspace {
     pub async fn create_worktree(&self) -> anyhow::Result<()> {
         self.ensure_master_clone().await?;
 
-        if !self.worktree_path.exists() {
-            std::fs::create_dir_all(self.worktree_path.parent().unwrap())?;
-            let dest_dir = self
-                .worktree_path
-                .clone()
-                .into_os_string()
-                .into_string()
-                .unwrap();
-            add_git_worktree(&self.repo_path, &dest_dir, &self.rev_parse).await?;
+        if self.worktree_path.exists() {
+            return Ok(());
         }
+        std::fs::create_dir_all(self.worktree_path.parent().unwrap())?;
 
+        let dest_dir = path_to_str(&self.worktree_path)?.to_string();
+        // Worktree guard also prunes the parent repo's admin entry on drop.
+        let guard = CleanupGuard::worktree(self.worktree_path.clone(), self.repo_path.clone());
+        let out = add_git_worktree(&self.repo_path, &dest_dir, &self.rev_parse).await?;
+        if !out.status.success() {
+            bail!(
+                "git worktree add at {} failed: {}",
+                dest_dir,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        guard.disarm();
         Ok(())
     }
 
@@ -226,5 +302,93 @@ mod tests {
 
         let expected_url = "https://github.com/XAMPPRocky/octocrab.git";
         assert_eq!(repo.checkout_url(), expected_url);
+    }
+}
+
+#[cfg(test)]
+mod cleanup_guard_tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn populate_dir(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(path.join("partial.txt"), b"half-written").unwrap();
+    }
+
+    #[test]
+    fn drop_removes_target_when_armed() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("partial-clone");
+        populate_dir(&target);
+        assert!(target.exists());
+
+        let guard = CleanupGuard::dir(target.clone());
+        drop(guard);
+
+        assert!(
+            !target.exists(),
+            "armed guard must remove partial dir on drop"
+        );
+    }
+
+    #[test]
+    fn disarm_preserves_target() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("committed-clone");
+        populate_dir(&target);
+
+        let guard = CleanupGuard::dir(target.clone());
+        guard.disarm();
+
+        assert!(
+            target.exists(),
+            "disarmed guard must leave successful checkout in place"
+        );
+        assert!(target.join("partial.txt").exists());
+    }
+
+    #[test]
+    fn drop_tolerates_missing_target() {
+        // If the child process never managed to create the dir, drop must not panic.
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("never-created");
+        assert!(!target.exists());
+
+        let guard = CleanupGuard::dir(target.clone());
+        drop(guard);
+    }
+
+    #[test]
+    fn worktree_guard_removes_worktree_dir_on_drop() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir_all(&repo).unwrap();
+        populate_dir(&worktree);
+
+        let guard = CleanupGuard::worktree(worktree.clone(), repo.clone());
+        drop(guard);
+
+        assert!(!worktree.exists());
+        // Repo dir itself is unaffected (prune is best-effort, no repo → no-op).
+        assert!(repo.exists());
+    }
+
+    #[test]
+    fn worktree_guard_disarm_preserves_both() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir_all(&repo).unwrap();
+        populate_dir(&worktree);
+
+        let guard = CleanupGuard::worktree(worktree.clone(), repo.clone());
+        guard.disarm();
+
+        assert!(worktree.exists());
+        assert!(repo.exists());
     }
 }
