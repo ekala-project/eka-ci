@@ -1703,7 +1703,7 @@ mod tests {
             "bfr8b3xlygv2a64ff7fq7564j4sxv4lc",
             "cfr8b3xlygv2a64ff7fq7564j4sxv4lc",
             "dfr8b3xlygv2a64ff7fq7564j4sxv4lc",
-            "efr8b3xlygv2a64ff7fq7564j4sxv4lc",
+            "ffr8b3xlygv2a64ff7fq7564j4sxv4lc",
         ];
 
         for (i, hash) in base_hashes.iter().enumerate() {
@@ -1894,7 +1894,7 @@ mod tests {
     ) -> anyhow::Result<()> {
         insert_test_pr(&pool).await?;
 
-        let drv_ok = "/nix/store/ccccccccccccccccccccccccccccccccc-pkg1.drv";
+        let drv_ok = "/nix/store/cccccccccccccccccccccccccccccccc-pkg1.drv";
         let drv_fail = "/nix/store/dddddddddddddddddddddddddddddddd-pkg2.drv";
         insert_drv_with_state(
             &pool,
@@ -1935,8 +1935,9 @@ mod tests {
     ) -> anyhow::Result<()> {
         insert_test_pr(&pool).await?;
 
-        let drv1 = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-pkg1.drv";
-        let drv2 = "/nix/store/fffffffffffffffffffffffffffffffff-pkg2.drv";
+        // Hashes must be 32 chars from nix base32 (no e/o/t/u).
+        let drv1 = "/nix/store/gggggggggggggggggggggggggggggggg-pkg1.drv";
+        let drv2 = "/nix/store/ffffffffffffffffffffffffffffffff-pkg2.drv";
         insert_drv_with_state(
             &pool,
             drv1,
