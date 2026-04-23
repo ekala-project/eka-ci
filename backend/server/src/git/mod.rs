@@ -1,7 +1,7 @@
 mod actions;
 mod types;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -54,8 +54,20 @@ impl AsyncService<GitTask> for GitService {
                 self.repo_sender.send(repo_task).await?;
             },
             GitTask::GitHubCheckout(pr) => {
-                let pr_base_repo = GitRepo::from_gh_repo(pr.base.repo.as_ref().unwrap().clone())?;
-                let head_repo = GitRepo::from_gh_repo(pr.head.repo.as_ref().unwrap().clone())?;
+                let pr_base_repo = GitRepo::from_gh_repo(
+                    pr.base
+                        .repo
+                        .as_ref()
+                        .context("PR base has no repository information")?
+                        .clone(),
+                )?;
+                let head_repo = GitRepo::from_gh_repo(
+                    pr.head
+                        .repo
+                        .as_ref()
+                        .context("PR head has no repository information")?
+                        .clone(),
+                )?;
 
                 let base_repo = GitWorkspace::from_git_repo(pr_base_repo.clone(), &pr.base.sha);
                 base_repo.ensure_master_clone().await?;
@@ -72,8 +84,8 @@ impl AsyncService<GitTask> for GitService {
                 repo.fetch_remote_repo(&head_repo, &pr.head.ref_field)
                     .await?;
                 repo.create_worktree().await?;
-                let base_ci_info = CICheckInfo::from_gh_pr_base(&pr);
-                let head_ci_info = CICheckInfo::from_gh_pr_head(&pr);
+                let base_ci_info = CICheckInfo::from_gh_pr_base(&pr)?;
+                let head_ci_info = CICheckInfo::from_gh_pr_head(&pr)?;
                 let base_task = RepoTask::ReadGitHub {
                     repo_path: base_repo.worktree_path(),
                     ci_info: base_ci_info,

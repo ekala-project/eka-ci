@@ -1,6 +1,6 @@
 use std::fmt;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::PullRequest;
@@ -105,33 +105,51 @@ pub struct CICheckInfo {
 }
 
 impl CICheckInfo {
-    pub fn from_gh_pr_base(pr: &PullRequest) -> Self {
+    pub fn from_gh_pr_base(pr: &PullRequest) -> anyhow::Result<Self> {
         let commit = pr.base.sha.clone();
-        let repo = pr.base.repo.as_ref().unwrap();
-        let owner = repo.owner.as_ref().unwrap().login.clone();
+        let repo = pr
+            .base
+            .repo
+            .as_ref()
+            .context("PR base has no repository information")?;
+        let owner = repo
+            .owner
+            .as_ref()
+            .context("PR base repository has no owner information")?
+            .login
+            .clone();
         let repo_name = repo.name.clone();
 
-        Self {
+        Ok(Self {
             commit,
             base_commit: None,
             owner,
             repo_name,
-        }
+        })
     }
 
-    pub fn from_gh_pr_head(pr: &PullRequest) -> Self {
+    pub fn from_gh_pr_head(pr: &PullRequest) -> anyhow::Result<Self> {
         let commit = pr.head.sha.clone();
         let base_commit = pr.base.sha.clone();
-        let repo = pr.head.repo.as_ref().unwrap();
-        let owner = repo.owner.as_ref().unwrap().login.clone();
+        let repo = pr
+            .head
+            .repo
+            .as_ref()
+            .context("PR head has no repository information")?;
+        let owner = repo
+            .owner
+            .as_ref()
+            .context("PR head repository has no owner information")?
+            .login
+            .clone();
         let repo_name = repo.name.clone();
 
-        Self {
+        Ok(Self {
             commit,
             base_commit: Some(base_commit),
             owner,
             repo_name,
-        }
+        })
     }
 
     pub async fn create_gh_check_run(

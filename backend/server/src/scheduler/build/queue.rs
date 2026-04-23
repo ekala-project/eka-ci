@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use super::{Builder, Platform, PlatformQueue};
 use crate::db::model::drv::Drv;
@@ -81,7 +81,17 @@ impl BuildQueue {
             .into_iter()
             .map(|(system, queue)| (system, queue.run()))
             .collect();
-        let default_platform = default_platform().await;
+        let default_platform = match default_platform().await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                warn!(
+                    "Failed to resolve default platform via nix-instantiate (`builtin` builds \
+                     will be rejected): {:?}",
+                    e
+                );
+                None
+            },
+        };
 
         loop {
             if let Some(build_request) = self.build_request_receiver.recv().await {
@@ -90,7 +100,16 @@ impl BuildQueue {
                 // 'system = "builtin";' is for <nix/fetchurl> and a few others which are the first
                 // FOD to be made for a drv graph
                 let platform = if &build_request.0.system == "builtin" {
-                    &default_platform
+                    match default_platform.as_ref() {
+                        Some(p) => p,
+                        None => {
+                            error!(
+                                "Cannot route `builtin` build: default platform unknown \
+                                 (nix-instantiate unavailable)"
+                            );
+                            continue;
+                        },
+                    }
                 } else {
                     &build_request.0.system
                 };
@@ -107,14 +126,17 @@ impl BuildQueue {
     }
 }
 
-async fn default_platform() -> Platform {
+async fn default_platform() -> anyhow::Result<Platform> {
+    use anyhow::Context;
+
     let output = Command::new("nix-instantiate")
         .args(["--eval", "--raw", "-E", "builtins.currentSystem"])
         .output()
         .await
-        .expect("failed to run nix-instantiate")
+        .context("failed to run nix-instantiate to determine default platform")?
         .stdout;
-    let platform = String::from_utf8(output).expect("Invalid string from nix-instantiate");
+    let platform = String::from_utf8(output)
+        .context("nix-instantiate emitted non-UTF-8 output for default platform")?;
     debug!("Using {} as default platform", &platform);
-    platform
+    Ok(platform)
 }

@@ -144,9 +144,13 @@ impl ChecksExecutor {
     async fn clone_and_checkout(&self, clone_url: &str, sha: &str, path: &Path) -> Result<()> {
         debug!("Cloning {} to {:?}", clone_url, path);
 
+        let path_str = path
+            .to_str()
+            .with_context(|| format!("checkout path contains non-UTF-8 bytes: {:?}", path))?;
+
         // Clone the repository
         let clone_output = Command::new("git")
-            .args(["clone", clone_url, path.to_str().unwrap()])
+            .args(["clone", clone_url, path_str])
             .output()
             .await
             .context("failed to execute git clone")?;

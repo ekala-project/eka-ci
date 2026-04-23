@@ -259,10 +259,31 @@ async fn handle_github_pr(
             store_pr_metadata(&pr.pull_request, "open", &db_service).await;
 
             if require_approval && is_valid_user(&pr.pull_request, &db_service).await.is_err() {
+                let username = match &pr.pull_request.user {
+                    Some(user) => user.login.clone(),
+                    None => {
+                        warn!(
+                            "PR #{} has no user information, skipping approval gate",
+                            pr.pull_request.number
+                        );
+                        return;
+                    },
+                };
+                let ci_check_info = match CICheckInfo::from_gh_pr_head(&pr.pull_request) {
+                    Ok(info) => info,
+                    Err(e) => {
+                        warn!(
+                            "PR #{} missing head repo/owner data, cannot create approval check: \
+                             {:?}",
+                            pr.pull_request.number, e
+                        );
+                        return;
+                    },
+                };
                 if let Err(e) = github_sender
                     .send(GitHubTask::CreateApprovalRequiredCheckRun {
-                        ci_check_info: CICheckInfo::from_gh_pr_head(&pr.pull_request),
-                        username: pr.pull_request.user.unwrap().login.clone(),
+                        ci_check_info,
+                        username,
                     })
                     .await
                 {
@@ -303,7 +324,16 @@ async fn handle_github_pr(
             };
             store_pr_metadata(&pr.pull_request, state, &db_service).await;
 
-            let ci_check_info = CICheckInfo::from_gh_pr_head(&pr.pull_request);
+            let ci_check_info = match CICheckInfo::from_gh_pr_head(&pr.pull_request) {
+                Ok(info) => info,
+                Err(e) => {
+                    warn!(
+                        "PR #{} missing head repo/owner data, cannot cancel check runs: {:?}",
+                        pr.pull_request.number, e
+                    );
+                    return;
+                },
+            };
 
             if let Err(e) = github_sender
                 .send(GitHubTask::CancelCheckRunsForCommit { ci_check_info })
@@ -330,10 +360,31 @@ async fn handle_github_pr(
             store_pr_metadata(&pr.pull_request, "open", &db_service).await;
 
             if require_approval && is_valid_user(&pr.pull_request, &db_service).await.is_err() {
+                let username = match &pr.pull_request.user {
+                    Some(user) => user.login.clone(),
+                    None => {
+                        warn!(
+                            "PR #{} has no user information, skipping approval gate",
+                            pr.pull_request.number
+                        );
+                        return;
+                    },
+                };
+                let ci_check_info = match CICheckInfo::from_gh_pr_head(&pr.pull_request) {
+                    Ok(info) => info,
+                    Err(e) => {
+                        warn!(
+                            "PR #{} missing head repo/owner data, cannot create approval check: \
+                             {:?}",
+                            pr.pull_request.number, e
+                        );
+                        return;
+                    },
+                };
                 if let Err(e) = github_sender
                     .send(GitHubTask::CreateApprovalRequiredCheckRun {
-                        ci_check_info: CICheckInfo::from_gh_pr_head(&pr.pull_request),
-                        username: pr.pull_request.user.unwrap().login.clone(),
+                        ci_check_info,
+                        username,
                     })
                     .await
                 {
