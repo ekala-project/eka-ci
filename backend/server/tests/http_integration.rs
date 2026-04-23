@@ -105,7 +105,8 @@ async fn create_test_server_with_options(
         redirect_url: "http://localhost/callback".to_string(),
     };
 
-    // Create git channel (unused in tests)
+    // Create git channel. Tests use a default-capacity throw-away
+    // channel; the receiver is unused for these HTTP tests.
     let (git_sender, _git_receiver) = mpsc::channel(100);
 
     // Bind to random port
