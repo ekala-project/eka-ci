@@ -199,7 +199,7 @@ impl GitHubService {
 
     async fn create_job_set(
         &mut self,
-        ci_check_info: &CICheckInfo,
+        ci_check_info: &std::sync::Arc<CICheckInfo>,
         name: &str,
         jobs: &[NixEvalDrv],
         config_json: Option<&str>,
@@ -248,7 +248,7 @@ impl GitHubService {
             if let Some(base_jobset_id) = base_jobset_id {
                 self.github_sender
                     .send(GitHubTask::CreateDependencyChangesGate {
-                        ci_check_info: ci_check_info.clone(),
+                        ci_check_info: std::sync::Arc::clone(ci_check_info),
                         jobset_id,
                         base_jobset_id,
                     })

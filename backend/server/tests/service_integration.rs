@@ -86,7 +86,9 @@ async fn test_build_simple_drv_success() {
 
     // Send the drv to the scheduler
     ingress_sender
-        .send(IngressTask::EvalRequest(drv.drv_path.clone()))
+        .send(IngressTask::EvalRequest(std::sync::Arc::new(
+            drv.drv_path.clone(),
+        )))
         .await
         .expect("Failed to send ingress task");
 
@@ -186,7 +188,9 @@ async fn test_build_failure_retry_logic() {
 
     // Send the drv to the scheduler
     ingress_sender
-        .send(IngressTask::EvalRequest(drv.drv_path.clone()))
+        .send(IngressTask::EvalRequest(std::sync::Arc::new(
+            drv.drv_path.clone(),
+        )))
         .await
         .expect("Failed to send ingress task");
 

@@ -261,7 +261,9 @@ async fn test_drv_state_updates_via_api() {
 
     // Send drv to scheduler to trigger build
     ingress_sender
-        .send(IngressTask::EvalRequest(drv.drv_path.clone()))
+        .send(IngressTask::EvalRequest(std::sync::Arc::new(
+            drv.drv_path.clone(),
+        )))
         .await
         .expect("Failed to send ingress task");
 

@@ -110,6 +110,8 @@ impl EvalService {
                         .github_sender
                         .as_mut()
                         .context("github sender missing")?;
+                    // Clone once into Arc so the 2–3 downstream sends share one refcount.
+                    let ci_info = std::sync::Arc::new((*ci_info).clone());
 
                     // Check if we should fail due to eval errors
                     if !eval_job.allow_failures && !errors.is_empty() {
@@ -120,7 +122,7 @@ impl EvalService {
                             errors.len()
                         );
                         let fail_task = GitHubTask::FailCIEvalJob {
-                            ci_check_info: ci_info.clone(),
+                            ci_check_info: ci_info,
                             job_name: eval_job.name.clone(),
                             errors,
                         };
@@ -130,13 +132,13 @@ impl EvalService {
                     }
 
                     let create_task = GitHubTask::CreateCIEvalJob {
-                        ci_check_info: ci_info.clone(),
+                        ci_check_info: std::sync::Arc::clone(&ci_info),
                         job_title: eval_job.name.clone(),
                     };
                     gh_sender.send(create_task).await?;
 
                     let gh_task = GitHubTask::CreateJobSet {
-                        ci_check_info: ci_info.clone(),
+                        ci_check_info: ci_info,
                         name: eval_job.name.to_string(),
                         jobs,
                         config_json: eval_job.config_json.clone(),
@@ -271,7 +273,7 @@ impl EvalService {
         rx.await?;
 
         for drv in new_drvs {
-            let drv_id = drv.drv_path.clone();
+            let drv_id = std::sync::Arc::new(drv.drv_path.clone());
             self.scheduler_sender
                 .send(IngressTask::EvalRequest(drv_id))
                 .await?;

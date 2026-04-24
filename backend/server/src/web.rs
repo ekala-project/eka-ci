@@ -2130,7 +2130,9 @@ async fn rebuild_drv_handler(
     };
 
     if let Err(e) = sender
-        .send(IngressTask::RebuildFailed(drv_id.clone()))
+        .send(IngressTask::RebuildFailed(std::sync::Arc::new(
+            drv_id.clone(),
+        )))
         .await
     {
         error!(
