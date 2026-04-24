@@ -305,7 +305,7 @@ async fn enqueue_buildable_builds(
 
     info!("Checking {} drvs for build candidates", queued_drvs.len());
     for drv_id in queued_drvs {
-        let ingress_task = IngressTask::CheckBuildable(drv_id);
+        let ingress_task = IngressTask::CheckBuildable(std::sync::Arc::new(drv_id));
         ingress_sender.send(ingress_task).await?;
     }
 

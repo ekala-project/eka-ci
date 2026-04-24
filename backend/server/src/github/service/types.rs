@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use octocrab::Octocrab;
@@ -191,14 +192,18 @@ impl CICheckInfo {
     }
 }
 
+/// `drv_id` and `ci_check_info` fields carry `Arc<_>` so fan-out call sites
+/// (e.g. the recorder's per-jobset loop or the ingress path creating multiple
+/// check-runs per commit) can `Arc::clone` refcount bumps instead of cloning
+/// the inner `DrvId` string or the 4-String `CICheckInfo`.
 #[derive(Debug)]
 pub enum GitHubTask {
     UpdateBuildStatus {
-        drv_id: DrvId,
+        drv_id: Arc<DrvId>,
         status: DrvBuildState,
     },
     UpdateBuildStatusWithSizeWarning {
-        drv_id: DrvId,
+        drv_id: Arc<DrvId>,
         status: DrvBuildState,
         baseline_size: u64,
         current_size: u64,
@@ -206,41 +211,41 @@ pub enum GitHubTask {
         threshold_percent: f64,
     },
     CreateJobSet {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
         name: String,
         jobs: Vec<NixEvalDrv>,
         config_json: Option<String>, // Serialized job config for hooks
     },
     CreateCIConfigureGate {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
     },
     CompleteCIConfigureGate {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
     },
     CreateCIEvalJob {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
         job_title: String,
     },
     CompleteCIEvalJob {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
         job_name: String,
         conclusion: octocrab::params::checks::CheckRunConclusion,
     },
     CancelCheckRunsForCommit {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
     },
     CreateFailureCheckRun {
-        drv_id: DrvId,
+        drv_id: Arc<DrvId>,
         jobset_id: i64,
         job_attr_name: String,
         difference: JobDifference,
     },
     CreateApprovalRequiredCheckRun {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
         username: String,
     },
     FailCIEvalJob {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
         job_name: String,
         errors: Vec<NixEvalError>,
     },
@@ -260,7 +265,7 @@ pub enum GitHubTask {
         head_sha: String,
     },
     CreateDependencyChangesGate {
-        ci_check_info: CICheckInfo,
+        ci_check_info: Arc<CICheckInfo>,
         jobset_id: i64,
         base_jobset_id: i64,
     },

@@ -192,7 +192,7 @@ impl PlatformQueue {
                         work.0.drv_path, required_features_str
                     );
                     let task = crate::scheduler::recorder::RecorderTask {
-                        derivation: work.0.drv_path.clone(),
+                        derivation: std::sync::Arc::new(work.0.drv_path.clone()),
                         result:
                             crate::db::model::build_event::DrvBuildState::UnsatisfiableRequirements,
                     };

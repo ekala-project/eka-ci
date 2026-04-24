@@ -282,7 +282,7 @@ async fn handle_github_pr(
                 };
                 if let Err(e) = github_sender
                     .send(GitHubTask::CreateApprovalRequiredCheckRun {
-                        ci_check_info,
+                        ci_check_info: std::sync::Arc::new(ci_check_info),
                         username,
                     })
                     .await
@@ -336,7 +336,9 @@ async fn handle_github_pr(
             };
 
             if let Err(e) = github_sender
-                .send(GitHubTask::CancelCheckRunsForCommit { ci_check_info })
+                .send(GitHubTask::CancelCheckRunsForCommit {
+                    ci_check_info: std::sync::Arc::new(ci_check_info),
+                })
                 .await
             {
                 warn!(
@@ -383,7 +385,7 @@ async fn handle_github_pr(
                 };
                 if let Err(e) = github_sender
                     .send(GitHubTask::CreateApprovalRequiredCheckRun {
-                        ci_check_info,
+                        ci_check_info: std::sync::Arc::new(ci_check_info),
                         username,
                     })
                     .await

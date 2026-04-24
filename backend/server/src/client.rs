@@ -237,7 +237,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 } else {
                     // Rebuild specific drv
                     if let Ok(drv_id) = drv_id::DrvId::from_str(&build_info.drv_path) {
-                        let task = IngressTask::RebuildFailed(drv_id);
+                        let task = IngressTask::RebuildFailed(std::sync::Arc::new(drv_id));
                         dispatch
                             .ingress_sender
                             .send(task)

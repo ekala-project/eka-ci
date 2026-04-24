@@ -314,8 +314,10 @@ impl AsyncService<RepoTask> for RepoReader {
                 }
             },
             RepoTask::ReadGitHub { repo_path, ci_info } => {
+                // Wrap once so both gate tasks share the same refcounted payload.
+                let ci_info = std::sync::Arc::new(ci_info);
                 let configure_task = GitHubTask::CreateCIConfigureGate {
-                    ci_check_info: ci_info.clone(),
+                    ci_check_info: std::sync::Arc::clone(&ci_info),
                 };
                 let github_sender = self
                     .github_sender

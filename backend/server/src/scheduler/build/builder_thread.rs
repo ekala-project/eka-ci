@@ -354,7 +354,7 @@ impl NixBuild {
         // drvs, we let the recorder deal with updating the build_event task
         // and determining if other drv's now can be queued
         let recorder_task = RecorderTask {
-            derivation: self.drv_id,
+            derivation: std::sync::Arc::new(self.drv_id),
             result: build_state.clone(),
         };
 

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Context as _;
 use chrono::Utc;
 use tokio::sync::{broadcast, mpsc};
@@ -14,9 +16,12 @@ use crate::hooks::types::{HookContext, HookTask};
 use crate::scheduler::ingress::IngressTask;
 use crate::services::websocket::events::{BuildStateChange, JobStatsUpdate, ServerEvent};
 
+/// `derivation` is `Arc<DrvId>` so `handle_recorder_request` can fan out the
+/// drv id into multiple downstream tasks (ingress requeue, github status,
+/// websocket event) via cheap `Arc::clone` refcount bumps.
 #[derive(Debug, Clone)]
 pub struct RecorderTask {
-    pub derivation: drv_id::DrvId,
+    pub derivation: Arc<drv_id::DrvId>,
     pub result: build_event::DrvBuildState,
 }
 
@@ -257,7 +262,8 @@ impl RecorderWorker {
 
         let drv = &task.derivation;
         let build_id = build::DrvBuildId {
-            derivation: drv.clone(),
+            // `DrvBuildId` stores an owned `DrvId`; Arc deref + clone.
+            derivation: (**drv).clone(),
             // TODO: build_attempt seems like something we should query
             build_attempt: std::num::NonZeroU32::new(1).unwrap(),
         };
@@ -326,14 +332,14 @@ impl RecorderWorker {
 
                 // Re-queue drvs that were unblocked
                 for unblocked_drv in unblocked_drvs {
-                    let task = IngressTask::CheckBuildable(unblocked_drv);
+                    let task = IngressTask::CheckBuildable(std::sync::Arc::new(unblocked_drv));
                     self.ingress_sender.send(task).await?;
                 }
 
                 // Check direct referrers for buildability
                 let referrers = self.graph_handle.get_dependents(&drv).await?;
                 for referrer in referrers {
-                    let task = IngressTask::CheckBuildable(referrer);
+                    let task = IngressTask::CheckBuildable(std::sync::Arc::new(referrer));
                     self.ingress_sender.send(task).await?;
                 }
             },
@@ -362,7 +368,7 @@ impl RecorderWorker {
                             .await?;
 
                         // Re-queue immediately for retry
-                        let task = IngressTask::CheckBuildable(drv.clone());
+                        let task = IngressTask::CheckBuildable(Arc::clone(drv));
                         self.ingress_sender.send(task).await?;
                     },
                     DBS::FailedRetry => {
@@ -414,7 +420,7 @@ impl RecorderWorker {
 
                     for job_info in job_infos {
                         let create_task = GitHubTask::CreateFailureCheckRun {
-                            drv_id: drv.clone(),
+                            drv_id: Arc::clone(drv),
                             jobset_id: job_info.jobset_id,
                             job_attr_name: job_info.name.clone(),
                             difference: job_info.difference,
@@ -432,7 +438,7 @@ impl RecorderWorker {
 
             // Send update for existing check_runs
             let github_task = GitHubTask::UpdateBuildStatus {
-                drv_id: drv.clone(),
+                drv_id: Arc::clone(drv),
                 status: task.result.clone(),
             };
             if let Err(e) = github_sender.send(github_task).await {
@@ -472,12 +478,12 @@ impl RecorderWorker {
                             self.db_service.get_jobset_info(job_info.jobset_id).await?;
 
                         let complete_task = GitHubTask::CompleteCIEvalJob {
-                            ci_check_info: crate::github::CICheckInfo {
+                            ci_check_info: Arc::new(crate::github::CICheckInfo {
                                 commit: jobset_info.sha.clone(),
                                 base_commit: None,
                                 owner: jobset_info.owner.clone(),
                                 repo_name: jobset_info.repo_name.clone(),
-                            },
+                            }),
                             job_name: jobset_info.job.clone(),
                             conclusion,
                         };
@@ -994,7 +1000,7 @@ impl RecorderWorker {
                     use crate::db::model::build_event::DrvBuildState;
 
                     let task = GitHubTask::UpdateBuildStatusWithSizeWarning {
-                        drv_id: drv_id.clone(),
+                        drv_id: Arc::new(drv_id.clone()),
                         status: DrvBuildState::Completed(
                             crate::db::model::build_event::DrvBuildResult::Success,
                         ),

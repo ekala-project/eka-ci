@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Context;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -23,17 +25,20 @@ pub struct IngressWorker {
     graph_handle: GraphServiceHandle,
 }
 
+/// Variants carry `Arc<DrvId>` so fan-out senders (recorder, webhooks,
+/// nix eval) can `Arc::clone` instead of cloning the inner `String`
+/// when the same drv crosses multiple channel hops.
 #[derive(Debug, Clone)]
 pub enum IngressTask {
     /// This is a Drv which was determined by an evaluation
     /// The actual status is unknown. Could be new, or could have already completed.
-    EvalRequest(drv_id::DrvId),
+    EvalRequest(Arc<drv_id::DrvId>),
     /// This is a Drv which we can safely assume had already added and
     /// a dependency was successfully built, and now we should recheck to
     /// to see if the Drv is now buildable
-    CheckBuildable(drv_id::DrvId),
+    CheckBuildable(Arc<drv_id::DrvId>),
     /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking
-    RebuildFailed(drv_id::DrvId),
+    RebuildFailed(Arc<drv_id::DrvId>),
     /// Rebuild all failed drvs in the system
     RebuildAllFailed,
 }
@@ -82,6 +87,8 @@ impl IngressWorker {
             RebuildFailed(drv) => self.handle_rebuild_failed_task(drv).await?,
             RebuildAllFailed => self.handle_rebuild_all_failed_task().await?,
         }
+
+        // `drv` above is `&Arc<DrvId>`; handlers accept `&DrvId` via Arc deref coercion.
 
         Ok(())
     }
