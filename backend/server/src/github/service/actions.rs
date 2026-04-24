@@ -1,10 +1,12 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use octocrab::Octocrab;
 use octocrab::models::CheckRunId;
 use octocrab::models::checks::CheckRun;
+use octocrab::models::reactions::ReactionContent;
 use octocrab::params::checks::CheckRunConclusion;
 use tracing::debug;
 
+use crate::auth::types::GitHubPermission;
 use crate::db::model::build_event::DrvBuildState;
 use crate::github::CICheckInfo;
 use crate::nix::nix_eval_jobs::NixEvalError;
@@ -704,4 +706,178 @@ pub async fn create_dependency_changes_gate(
     );
 
     Ok(check_run)
+}
+
+// ---- Issue comments, reactions, and permission checks ----
+//
+// Helpers for the `@eka-ci merge` comment command. All require an
+// installation-authenticated `Octocrab` (i.e. `octocrab_for_owner`).
+
+/// Map a reaction string to `ReactionContent`; unknown → `Eyes`
+/// (neutral) so typos don't fail the call site.
+fn reaction_from_str(content: &str) -> ReactionContent {
+    match content {
+        "+1" => ReactionContent::PlusOne,
+        "-1" => ReactionContent::MinusOne,
+        "rocket" => ReactionContent::Rocket,
+        "confused" => ReactionContent::Confused,
+        "laugh" => ReactionContent::Laugh,
+        "heart" => ReactionContent::Heart,
+        "hooray" => ReactionContent::Hooray,
+        _ => ReactionContent::Eyes,
+    }
+}
+
+/// Add an emoji reaction to an issue/PR comment. See
+/// `docs/github-pr-comment-support.md` for the reaction legend.
+pub async fn add_comment_reaction(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    comment_id: i64,
+    content: &str,
+) -> Result<()> {
+    let reaction = reaction_from_str(content);
+    debug!(
+        "Adding reaction {:?} to comment {} in {}/{}",
+        reaction, comment_id, owner, repo
+    );
+    octocrab
+        .issues(owner, repo)
+        .create_comment_reaction(comment_id as u64, reaction)
+        .await
+        .with_context(|| format!("failed to add reaction to comment {}", comment_id))?;
+    Ok(())
+}
+
+/// Post a new issue/PR comment.
+pub async fn post_issue_comment(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    issue_number: i64,
+    body: &str,
+) -> Result<()> {
+    debug!(
+        "Posting comment on {}/{}#{} ({} bytes)",
+        owner,
+        repo,
+        issue_number,
+        body.len()
+    );
+    octocrab
+        .issues(owner, repo)
+        .create_comment(issue_number as u64, body)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to post comment on {}/{}#{}",
+                owner, repo, issue_number
+            )
+        })?;
+    Ok(())
+}
+
+/// Response shape of `GET /repos/{owner}/{repo}/collaborators/{username}/permission`.
+/// `role_name` is finer-grained (admin|maintain|write|triage|read) than
+/// `permission` (admin|write|read|none); prefer it when present.
+#[derive(Debug, serde::Deserialize)]
+struct CollaboratorPermissionResponse {
+    permission: String,
+    #[serde(default)]
+    role_name: Option<String>,
+}
+
+/// Check an arbitrary user's permission on a repo using the App
+/// installation token. Unlike `auth::github_api::check_repo_permission`
+/// (OAuth, self-only), this hits the collaborators endpoint which
+/// requires push access. 404 → `None`.
+pub async fn check_repo_permission_for_user(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    username: &str,
+) -> Result<GitHubPermission> {
+    let route = format!(
+        "/repos/{}/{}/collaborators/{}/permission",
+        owner, repo, username
+    );
+
+    let resp: std::result::Result<CollaboratorPermissionResponse, octocrab::Error> =
+        octocrab.get(&route, None::<&()>).await;
+
+    let resp = match resp {
+        Ok(r) => r,
+        // Treat "not a collaborator" as None rather than an error.
+        Err(octocrab::Error::GitHub {
+            source,
+            backtrace: _,
+        }) if source.status_code == http::StatusCode::NOT_FOUND => {
+            return Ok(GitHubPermission::None);
+        },
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "failed to fetch collaborator permission for {} in {}/{}: {:?}",
+                username,
+                owner,
+                repo,
+                e
+            ));
+        },
+    };
+
+    // Prefer `role_name`; fall back to `permission`. Same enum as the
+    // user-token path so downstream gates treat both modes identically.
+    let role = resp
+        .role_name
+        .as_deref()
+        .unwrap_or(resp.permission.as_str());
+    let perm = match role {
+        "admin" => GitHubPermission::Admin,
+        "maintain" => GitHubPermission::Maintain,
+        "write" => GitHubPermission::Write,
+        "triage" => GitHubPermission::Triage,
+        "read" => GitHubPermission::Read,
+        _ => GitHubPermission::None,
+    };
+    debug!(
+        "collaborator permission for {} on {}/{}: {:?}",
+        username, owner, repo, perm
+    );
+    Ok(perm)
+}
+
+/// Fetch a commit's committer date (best-effort force-push signal for
+/// the `@eka-ci merge` handler). `Ok(None)` for missing/unparseable
+/// dates — treat as "unknown, accept". Cherry-picked old commits won't
+/// trigger the gate; the sync-drift hook is the backstop.
+pub async fn fetch_head_commit_date(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let route = format!("/repos/{}/{}/commits/{}", owner, repo, sha);
+
+    let commit: octocrab::models::commits::Commit = octocrab
+        .get(&route, None::<&()>)
+        .await
+        .with_context(|| format!("fetching commit {}@{}/{}", sha, owner, repo))?;
+
+    // `committer.date` absent is unusual but valid per the spec.
+    let Some(date_str) = commit.commit.committer.and_then(|g| g.date) else {
+        debug!("commit {}@{}/{} has no committer date", sha, owner, repo);
+        return Ok(None);
+    };
+
+    match chrono::DateTime::parse_from_rfc3339(&date_str) {
+        Ok(dt) => Ok(Some(dt.with_timezone(&chrono::Utc))),
+        Err(e) => {
+            debug!(
+                "commit {}@{}/{} committer date {:?} failed to parse: {:?}",
+                sha, owner, repo, date_str, e
+            );
+            Ok(None)
+        },
+    }
 }

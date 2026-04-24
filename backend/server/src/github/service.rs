@@ -279,27 +279,15 @@ impl GitHubService {
                 increase_percent,
                 threshold_percent,
             } => {
-                let check_runs = self.db_service.check_runs_for_drv_path(drv_id).await?;
-
-                for check_run in check_runs {
-                    debug!(
-                        "Updating checkrun with size warning for {}",
-                        &check_run.check_run_id
-                    );
-                    let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
-
-                    // Update status with size warning details
-                    actions::update_check_run_with_size_warning(
-                        &octocrab,
-                        &check_run,
-                        status,
-                        *baseline_size,
-                        *current_size,
-                        *increase_percent,
-                        *threshold_percent,
-                    )
-                    .await?;
-                }
+                self.handle_update_build_status_with_size_warning(
+                    drv_id,
+                    status,
+                    *baseline_size,
+                    *current_size,
+                    *increase_percent,
+                    *threshold_percent,
+                )
+                .await?;
             },
             GitHubTask::CreateJobSet {
                 ci_check_info,
@@ -363,76 +351,8 @@ impl GitHubService {
                 .await?;
             },
             GitHubTask::CancelCheckRunsForCommit { ci_check_info } => {
-                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-
-                // Cancel any in-progress configure gate
-                if let Some(check_run_id) =
-                    self.github_configure_checks.remove(&ci_check_info.commit)
-                {
-                    if let Err(e) = actions::update_ci_configure_gate(
-                        &octocrab,
-                        ci_check_info,
-                        check_run_id,
-                        CheckRunStatus::Completed,
-                        CheckRunConclusion::Cancelled,
-                    )
-                    .await
-                    {
-                        warn!(
-                            "Failed to cancel configure gate for {}: {:?}",
-                            &ci_check_info.commit, e
-                        );
-                    }
-                }
-
-                // Cancel any in-progress eval gates (there may be multiple for different jobs)
-                let keys_to_remove: Vec<_> = self
-                    .github_eval_checks
-                    .keys()
-                    .filter(|(commit, _)| commit == &ci_check_info.commit)
-                    .cloned()
-                    .collect();
-
-                for key in keys_to_remove {
-                    if let Some(check_run_id) = self.github_eval_checks.remove(&key) {
-                        if let Err(e) = actions::update_ci_eval_job(
-                            &octocrab,
-                            ci_check_info,
-                            check_run_id,
-                            CheckRunStatus::Completed,
-                            CheckRunConclusion::Cancelled,
-                        )
-                        .await
-                        {
-                            warn!(
-                                "Failed to cancel eval gate for {}: {:?}",
-                                &ci_check_info.commit, e
-                            );
-                        }
-                    }
-                }
-
-                // Cancel all job check_runs for this commit
-                let check_runs = self
-                    .db_service
-                    .check_runs_for_commit(&ci_check_info.commit)
+                self.handle_cancel_check_runs_for_commit(ci_check_info)
                     .await?;
-                for check_run in check_runs {
-                    if let Err(e) = check_run
-                        .send_gh_update(
-                            &octocrab,
-                            &DrvBuildState::Interrupted(
-                                crate::db::model::build_event::DrvBuildInterruptionKind::Cancelled,
-                            ),
-                        )
-                        .await
-                    {
-                        warn!(
-                            "Failed to cancel check_run {} for {}: {:?}",
-                            check_run.check_run_id, &ci_check_info.commit, e
-                        );
-                    }
-                }
             },
             GitHubTask::CreateFailureCheckRun {
                 drv_id,
@@ -440,45 +360,7 @@ impl GitHubService {
                 job_attr_name,
                 difference,
             } => {
-                // Get jobset info to get commit, repo, etc.
-                let jobset_info = self.db_service.get_jobset_info(*jobset_id).await?;
-                let octocrab = self.octocrab_for_owner(&jobset_info.owner)?;
-
-                // Get current build state
-                let drv = self.db_service.get_drv(drv_id).await?;
-                let state = drv
-                    .map(|x| x.build_state)
-                    .unwrap_or(DrvBuildState::Completed(
-                        crate::db::model::build_event::DrvBuildResult::Failure,
-                    ));
-
-                // Create CICheckInfo
-                let ci_check_info = CICheckInfo {
-                    commit: jobset_info.sha.clone(),
-                    base_commit: None,
-                    owner: jobset_info.owner.clone(),
-                    repo_name: jobset_info.repo_name.clone(),
-                };
-
-                // Create the check_run
-                let check_run = ci_check_info
-                    .create_gh_check_run(
-                        &octocrab,
-                        &jobset_info.job,
-                        job_attr_name,
-                        state,
-                        difference,
-                    )
-                    .await?;
-
-                // Store the check_run info in the database
-                self.db_service
-                    .insert_check_run_info(
-                        check_run.id.0 as i64,
-                        drv_id,
-                        &jobset_info.repo_name,
-                        &jobset_info.owner,
-                    )
+                self.handle_create_failure_check_run(drv_id, *jobset_id, job_attr_name, difference)
                     .await?;
             },
             GitHubTask::CreateApprovalRequiredCheckRun {
@@ -504,18 +386,7 @@ impl GitHubService {
                 check_name,
                 check_result_id,
             } => {
-                let octocrab = self.octocrab_for_owner(owner)?;
-                let check_run =
-                    actions::create_check_run(&octocrab, owner, repo_name, sha, check_name).await?;
-
-                // Store the check_run info in the database
-                self.db_service
-                    .insert_check_run_info_for_check(
-                        check_run.id.0 as i64,
-                        *check_result_id,
-                        repo_name,
-                        owner,
-                    )
+                self.handle_create_check_run(owner, repo_name, sha, check_name, *check_result_id)
                     .await?;
             },
             GitHubTask::CheckComplete(result) => {
@@ -554,201 +425,1047 @@ impl GitHubService {
                 owner,
                 repo_name,
                 pr_number,
-                head_sha,
             } => {
-                let octocrab = self.octocrab_for_owner(&owner)?;
-
-                info!(
-                    "Checking auto-merge eligibility for PR #{} in {}/{}",
-                    pr_number, owner, repo_name
-                );
-
-                // Guard: only consider merging once the head commit's jobset
-                // has fully concluded and no new/changed job failed. This is
-                // idempotent with the scheduler-driven trigger but defends the
-                // review-driven trigger path from merging PRs whose builds are
-                // still in flight or have already failed.
-                if !crate::db::github::pr_head_build_succeeded(
-                    *pr_number,
-                    &owner,
-                    &repo_name,
-                    &self.db_service.pool,
-                )
-                .await?
-                {
-                    info!(
-                        "PR #{} head build not yet successful, deferring auto-merge",
-                        pr_number
-                    );
-                    return Ok(());
-                }
-
-                // Get changed packages for this PR
-                let changed_packages = crate::db::github::get_pr_changed_packages(
-                    *pr_number,
-                    &owner,
-                    &repo_name,
-                    &self.db_service.pool,
-                )
-                .await?;
-
-                if changed_packages.is_empty() {
-                    info!(
-                        "PR #{} has no changed packages, skipping auto-merge",
-                        pr_number
-                    );
-                    return Ok(());
-                }
-
-                // Check if all packages have maintainer approvals
-                let (eligible, missing_approvals) = actions::check_pr_maintainer_approvals(
-                    &octocrab,
-                    &owner,
-                    &repo_name,
-                    *pr_number as u64,
-                    &changed_packages,
-                    &self.db_service.pool,
-                )
-                .await?;
-
-                if !eligible {
-                    info!(
-                        "PR #{} is not eligible for auto-merge. Missing approvals for packages: \
-                         {:?}",
-                        pr_number, missing_approvals
-                    );
-                    return Ok(());
-                }
-
-                // Get PR to determine merge method
-                let pr = crate::db::github::get_pr_by_head_sha(
-                    &head_sha,
-                    &owner,
-                    &repo_name,
-                    &self.db_service.pool,
-                )
-                .await?;
-
-                let Some(pr) = pr else {
-                    warn!("PR not found for head_sha {}", head_sha);
-                    return Ok(());
-                };
-
-                // Determine merge method
-                let merge_method = pr.merge_method.as_deref().unwrap_or("squash");
-
-                // Validate the selected merge method against the repository's
-                // settings before attempting the merge. This avoids failed
-                // merge calls when the repo has the chosen method disabled,
-                // and surfaces the reason up front in the logs.
-                match actions::validate_merge_method(&octocrab, &owner, &repo_name, merge_method)
-                    .await
-                {
-                    Ok(actions::MergeMethodCheck::Ok) => {},
-                    Ok(actions::MergeMethodCheck::NotAllowed { allowed }) => {
-                        warn!(
-                            "PR #{} in {}/{}: configured merge method '{}' is not allowed by \
-                             repository settings (allowed: {:?}); skipping auto-merge",
-                            pr_number, owner, repo_name, merge_method, allowed
-                        );
-                        return Ok(());
-                    },
-                    Err(e) => {
-                        warn!(
-                            "PR #{} in {}/{}: failed to fetch repository merge settings: {:?}; \
-                             skipping auto-merge",
-                            pr_number, owner, repo_name, e
-                        );
-                        return Ok(());
-                    },
-                }
-
-                info!(
-                    "Auto-merging PR #{} in {}/{} using method '{}'",
-                    pr_number, owner, repo_name, merge_method
-                );
-
-                // Attempt to merge the PR
-                match actions::merge_pull_request(
-                    &octocrab,
-                    &owner,
-                    &repo_name,
-                    *pr_number as u64,
-                    merge_method,
-                    None, // Let GitHub use the PR title
-                    None, // Let GitHub use the PR description
-                )
-                .await
-                {
-                    Ok(_) => {
-                        info!(
-                            "Successfully auto-merged PR #{} in {}/{}",
-                            pr_number, owner, repo_name
-                        );
-
-                        // Mark PR as merged in database
-                        if let Err(e) = crate::db::github::mark_pr_merged(
-                            &owner,
-                            &repo_name,
-                            *pr_number,
-                            None, // System merge, no user ID
-                            &self.db_service.pool,
-                        )
-                        .await
-                        {
-                            warn!(
-                                "Failed to mark PR #{} as merged in database: {:?}",
-                                pr_number, e
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        warn!(
-                            "Failed to auto-merge PR #{} in {}/{}: {:?}",
-                            pr_number, owner, repo_name, e
-                        );
-                    },
-                }
+                self.handle_check_auto_merge(owner, repo_name, *pr_number)
+                    .await?;
             },
             GitHubTask::CreateDependencyChangesGate {
                 ci_check_info,
                 jobset_id,
                 base_jobset_id,
             } => {
-                let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-
-                debug!(
-                    "Creating dependency changes gate for commit {} (jobset: {}, base: {})",
-                    &ci_check_info.commit, jobset_id, base_jobset_id
-                );
-
-                // Compare runtime references between base and head jobsets
-                let comparisons = dependency_comparison::compare_runtime_references_for_jobset(
-                    *base_jobset_id,
-                    *jobset_id,
-                    &self.db_service.pool,
-                )
-                .await?;
-
-                // Format the dependency changes as a diff
-                let dependency_diff =
-                    dependency_comparison::format_dependency_changes_as_diff(&comparisons);
-
-                // Create the neutral check run
-                actions::create_dependency_changes_gate(
-                    &octocrab,
+                self.handle_create_dependency_changes_gate(
                     ci_check_info,
-                    &dependency_diff,
-                    comparisons.len(),
+                    *jobset_id,
+                    *base_jobset_id,
                 )
                 .await?;
-
-                debug!(
-                    "Successfully created dependency changes gate with {} packages affected",
-                    comparisons.len()
-                );
+            },
+            GitHubTask::ProcessMergeCommand {
+                owner,
+                repo_name,
+                pr_number,
+                comment_id,
+                requester_id,
+                requester_login,
+                body,
+                comment_created_at,
+            } => {
+                self.handle_process_merge_command(
+                    owner,
+                    repo_name,
+                    *pr_number,
+                    *comment_id,
+                    *requester_id,
+                    requester_login,
+                    body,
+                    comment_created_at,
+                )
+                .await?;
+            },
+            GitHubTask::CommentMergeDriftCancelled {
+                owner,
+                repo_name,
+                pr_number,
+                expected_sha,
+                actual_sha,
+                requester_login,
+            } => {
+                self.handle_comment_merge_drift_cancelled(
+                    owner,
+                    repo_name,
+                    *pr_number,
+                    expected_sha,
+                    actual_sha,
+                    requester_login,
+                )
+                .await?;
+            },
+            GitHubTask::ReactToComment {
+                owner,
+                repo_name,
+                comment_id,
+                content,
+            } => {
+                let octocrab = self.octocrab_for_owner(owner)?;
+                if let Err(e) =
+                    actions::add_comment_reaction(&octocrab, owner, repo_name, *comment_id, content)
+                        .await
+                {
+                    warn!(
+                        "Failed to react {} to comment {} on {}/{}: {:?}",
+                        content, comment_id, owner, repo_name, e
+                    );
+                }
+            },
+            GitHubTask::PostIssueComment {
+                owner,
+                repo_name,
+                issue_number,
+                body,
+            } => {
+                let octocrab = self.octocrab_for_owner(owner)?;
+                if let Err(e) =
+                    actions::post_issue_comment(&octocrab, owner, repo_name, *issue_number, body)
+                        .await
+                {
+                    warn!(
+                        "Failed to post comment on {}/{}#{}: {:?}",
+                        owner, repo_name, issue_number, e
+                    );
+                }
             },
         }
         Ok(())
     }
+
+    async fn handle_update_build_status_with_size_warning(
+        &self,
+        drv_id: &DrvId,
+        status: &DrvBuildState,
+        baseline_size: u64,
+        current_size: u64,
+        increase_percent: f64,
+        threshold_percent: f64,
+    ) -> Result<()> {
+        let check_runs = self.db_service.check_runs_for_drv_path(drv_id).await?;
+        for check_run in check_runs {
+            debug!(
+                "Updating checkrun with size warning for {}",
+                &check_run.check_run_id
+            );
+            let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
+            actions::update_check_run_with_size_warning(
+                &octocrab,
+                &check_run,
+                status,
+                baseline_size,
+                current_size,
+                increase_percent,
+                threshold_percent,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_cancel_check_runs_for_commit(
+        &mut self,
+        ci_check_info: &CICheckInfo,
+    ) -> Result<()> {
+        use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+        let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+
+        // Cancel any in-progress configure gate.
+        if let Some(check_run_id) = self.github_configure_checks.remove(&ci_check_info.commit) {
+            if let Err(e) = actions::update_ci_configure_gate(
+                &octocrab,
+                ci_check_info,
+                check_run_id,
+                CheckRunStatus::Completed,
+                CheckRunConclusion::Cancelled,
+            )
+            .await
+            {
+                warn!(
+                    "Failed to cancel configure gate for {}: {:?}",
+                    &ci_check_info.commit, e
+                );
+            }
+        }
+
+        // Cancel in-progress eval gates (may be multiple per commit).
+        let keys_to_remove: Vec<_> = self
+            .github_eval_checks
+            .keys()
+            .filter(|(commit, _)| commit == &ci_check_info.commit)
+            .cloned()
+            .collect();
+
+        for key in keys_to_remove {
+            if let Some(check_run_id) = self.github_eval_checks.remove(&key) {
+                if let Err(e) = actions::update_ci_eval_job(
+                    &octocrab,
+                    ci_check_info,
+                    check_run_id,
+                    CheckRunStatus::Completed,
+                    CheckRunConclusion::Cancelled,
+                )
+                .await
+                {
+                    warn!(
+                        "Failed to cancel eval gate for {}: {:?}",
+                        &ci_check_info.commit, e
+                    );
+                }
+            }
+        }
+
+        // Cancel all job check_runs for this commit.
+        let check_runs = self
+            .db_service
+            .check_runs_for_commit(&ci_check_info.commit)
+            .await?;
+        for check_run in check_runs {
+            if let Err(e) = check_run
+                .send_gh_update(
+                    &octocrab,
+                    &DrvBuildState::Interrupted(
+                        crate::db::model::build_event::DrvBuildInterruptionKind::Cancelled,
+                    ),
+                )
+                .await
+            {
+                warn!(
+                    "Failed to cancel check_run {} for {}: {:?}",
+                    check_run.check_run_id, &ci_check_info.commit, e
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_create_failure_check_run(
+        &self,
+        drv_id: &DrvId,
+        jobset_id: i64,
+        job_attr_name: &str,
+        difference: &JobDifference,
+    ) -> Result<()> {
+        let jobset_info = self.db_service.get_jobset_info(jobset_id).await?;
+        let octocrab = self.octocrab_for_owner(&jobset_info.owner)?;
+
+        let drv = self.db_service.get_drv(drv_id).await?;
+        let state = drv
+            .map(|x| x.build_state)
+            .unwrap_or(DrvBuildState::Completed(
+                crate::db::model::build_event::DrvBuildResult::Failure,
+            ));
+
+        let ci_check_info = CICheckInfo {
+            commit: jobset_info.sha.clone(),
+            base_commit: None,
+            owner: jobset_info.owner.clone(),
+            repo_name: jobset_info.repo_name.clone(),
+        };
+
+        let check_run = ci_check_info
+            .create_gh_check_run(
+                &octocrab,
+                &jobset_info.job,
+                job_attr_name,
+                state,
+                difference,
+            )
+            .await?;
+
+        self.db_service
+            .insert_check_run_info(
+                check_run.id.0 as i64,
+                drv_id,
+                &jobset_info.repo_name,
+                &jobset_info.owner,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_create_check_run(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        sha: &str,
+        check_name: &str,
+        check_result_id: i64,
+    ) -> Result<()> {
+        let octocrab = self.octocrab_for_owner(owner)?;
+        let check_run =
+            actions::create_check_run(&octocrab, owner, repo_name, sha, check_name).await?;
+        self.db_service
+            .insert_check_run_info_for_check(
+                check_run.id.0 as i64,
+                check_result_id,
+                repo_name,
+                owner,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_create_dependency_changes_gate(
+        &self,
+        ci_check_info: &CICheckInfo,
+        jobset_id: i64,
+        base_jobset_id: i64,
+    ) -> Result<()> {
+        let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+
+        debug!(
+            "Creating dependency changes gate for commit {} (jobset: {}, base: {})",
+            &ci_check_info.commit, jobset_id, base_jobset_id
+        );
+
+        let comparisons = dependency_comparison::compare_runtime_references_for_jobset(
+            base_jobset_id,
+            jobset_id,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        let dependency_diff =
+            dependency_comparison::format_dependency_changes_as_diff(&comparisons);
+
+        actions::create_dependency_changes_gate(
+            &octocrab,
+            ci_check_info,
+            &dependency_diff,
+            comparisons.len(),
+        )
+        .await?;
+
+        debug!(
+            "Successfully created dependency changes gate with {} packages affected",
+            comparisons.len()
+        );
+        Ok(())
+    }
+
+    async fn handle_comment_merge_drift_cancelled(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        expected_sha: &str,
+        actual_sha: &str,
+        requester_login: &str,
+    ) -> Result<()> {
+        let octocrab = self.octocrab_for_owner(owner)?;
+        let body = format!(
+            "@{} your `@eka-ci merge` request was cancelled because new commits landed on this PR \
+             since you issued the command.\n\n- expected head: `{}`\n- current head: `{}`\n\nIf \
+             you still want to merge, re-issue `@eka-ci merge` on the updated PR.",
+            requester_login,
+            short_sha(expected_sha),
+            short_sha(actual_sha),
+        );
+        if let Err(e) =
+            actions::post_issue_comment(&octocrab, owner, repo_name, pr_number, &body).await
+        {
+            warn!(
+                "Failed to post SHA-drift comment on {}/{}#{}: {:?}",
+                owner, repo_name, pr_number, e
+            );
+        }
+        Ok(())
+    }
+
+    // ---- Auto-merge evaluator ----
+
+    async fn handle_check_auto_merge(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+    ) -> Result<()> {
+        let octocrab = self.octocrab_for_owner(owner)?;
+
+        info!(
+            "Checking auto-merge eligibility for PR #{} in {}/{}",
+            pr_number, owner, repo_name
+        );
+
+        // Defer until head-commit jobset has fully succeeded. Idempotent
+        // with the scheduler-driven trigger; defends the review-driven
+        // path from merging in-flight or already-failed builds.
+        if !crate::db::github::pr_head_build_succeeded(
+            pr_number,
+            owner,
+            repo_name,
+            &self.db_service.pool,
+        )
+        .await?
+        {
+            info!(
+                "PR #{} head build not yet successful, deferring auto-merge",
+                pr_number
+            );
+            return Ok(());
+        }
+
+        // Look up by (owner, repo, pr_number) — not head_sha, which
+        // may have drifted. Need the raw row for `comment_merge_*`.
+        let Some(pr) = crate::db::github::get_pull_request_row(
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?
+        else {
+            warn!(
+                "PR #{} not found in {}/{} while evaluating auto-merge",
+                pr_number, owner, repo_name
+            );
+            return Ok(());
+        };
+
+        let pending_cmt_merge = pr.pending_comment_merge();
+
+        // SHA-drift check: comment-merges are pinned to a commit.
+        if let Some(cmr) = pending_cmt_merge.as_ref() {
+            if cmr.sha != pr.head_sha {
+                self.cancel_drifted_comment_merge(owner, repo_name, pr_number, cmr, &pr.head_sha)
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        // At least one merge path must be active.
+        if !pr.auto_merge_enabled && pending_cmt_merge.is_none() {
+            debug!(
+                "PR #{} in {}/{} has no active auto-merge or comment-merge request; skipping",
+                pr_number, owner, repo_name
+            );
+            return Ok(());
+        }
+
+        let changed_packages = crate::db::github::get_pr_changed_packages(
+            pr_number,
+            owner,
+            repo_name,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        if changed_packages.is_empty() {
+            info!(
+                "PR #{} has no changed packages, skipping auto-merge",
+                pr_number
+            );
+            return Ok(());
+        }
+
+        // Maintainer-approval gate. Skipped for comment-driven merges —
+        // authority was verified at ProcessMergeCommand time. UI
+        // auto-merge still requires per-package approvals.
+        if pending_cmt_merge.is_none() {
+            let (eligible, missing_approvals) = actions::check_pr_maintainer_approvals(
+                &octocrab,
+                owner,
+                repo_name,
+                pr_number as u64,
+                &changed_packages,
+                &self.db_service.pool,
+            )
+            .await?;
+
+            if !eligible {
+                info!(
+                    "PR #{} is not eligible for auto-merge. Missing approvals for packages: {:?}",
+                    pr_number, missing_approvals
+                );
+                return Ok(());
+            }
+        }
+
+        // Method: comment request → PR-stored preference → squash.
+        let merge_method = pending_cmt_merge
+            .as_ref()
+            .and_then(|cmr| cmr.method.as_deref())
+            .or(pr.merge_method.as_deref())
+            .unwrap_or("squash");
+
+        // Validate against repo settings before trying.
+        match actions::validate_merge_method(&octocrab, owner, repo_name, merge_method).await {
+            Ok(actions::MergeMethodCheck::Ok) => {},
+            Ok(actions::MergeMethodCheck::NotAllowed { allowed }) => {
+                warn!(
+                    "PR #{} in {}/{}: configured merge method '{}' is not allowed by repository \
+                     settings (allowed: {:?}); skipping auto-merge",
+                    pr_number, owner, repo_name, merge_method, allowed
+                );
+                return Ok(());
+            },
+            Err(e) => {
+                warn!(
+                    "PR #{} in {}/{}: failed to fetch repository merge settings: {:?}; skipping \
+                     auto-merge",
+                    pr_number, owner, repo_name, e
+                );
+                return Ok(());
+            },
+        }
+
+        self.auto_merge_execute(
+            &octocrab,
+            owner,
+            repo_name,
+            pr_number,
+            merge_method,
+            pending_cmt_merge.as_ref(),
+        )
+        .await;
+
+        Ok(())
+    }
+
+    /// Notify requester, react `:confused:`, and clear the pending row
+    /// when a comment-merge's pinned SHA no longer matches the PR head.
+    async fn cancel_drifted_comment_merge(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        cmr: &crate::db::github::CommentMergeRequest,
+        current_head: &str,
+    ) -> Result<()> {
+        warn!(
+            "PR #{} in {}/{}: comment-merge SHA drift (requested {}, now {}); cancelling",
+            pr_number, owner, repo_name, cmr.sha, current_head
+        );
+
+        // Best-effort notifications; errors logged downstream.
+        let _ = self
+            .github_sender
+            .send(GitHubTask::CommentMergeDriftCancelled {
+                owner: owner.to_string(),
+                repo_name: repo_name.to_string(),
+                pr_number,
+                expected_sha: cmr.sha.clone(),
+                actual_sha: current_head.to_string(),
+                requester_login: cmr.requester_login.clone(),
+            })
+            .await;
+        let _ = self
+            .github_sender
+            .send(GitHubTask::ReactToComment {
+                owner: owner.to_string(),
+                repo_name: repo_name.to_string(),
+                comment_id: cmr.comment_id,
+                content: "confused",
+            })
+            .await;
+
+        crate::db::github::clear_comment_merge_request(
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Execute the merge + record post-conditions. Infallible at the
+    /// caller level — a failed merge is logged and swallowed (the next
+    /// trigger will retry).
+    async fn auto_merge_execute(
+        &self,
+        octocrab: &Octocrab,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        merge_method: &str,
+        pending_cmt_merge: Option<&crate::db::github::CommentMergeRequest>,
+    ) {
+        info!(
+            "Auto-merging PR #{} in {}/{} using method '{}'",
+            pr_number, owner, repo_name, merge_method
+        );
+
+        match actions::merge_pull_request(
+            octocrab,
+            owner,
+            repo_name,
+            pr_number as u64,
+            merge_method,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(_) => {
+                info!(
+                    "Successfully auto-merged PR #{} in {}/{}",
+                    pr_number, owner, repo_name
+                );
+
+                // Capture comment_id before `mark_pr_merged` clears the
+                // pending row; used below for the rocket ack.
+                let pending_comment_id = pending_cmt_merge.map(|c| c.comment_id);
+
+                if let Err(e) = crate::db::github::mark_pr_merged(
+                    owner,
+                    repo_name,
+                    pr_number,
+                    pending_cmt_merge.map(|c| c.requester_id),
+                    &self.db_service.pool,
+                )
+                .await
+                {
+                    warn!(
+                        "Failed to mark PR #{} as merged in database: {:?}",
+                        pr_number, e
+                    );
+                }
+
+                if let Some(comment_id) = pending_comment_id {
+                    let _ = self
+                        .github_sender
+                        .send(GitHubTask::ReactToComment {
+                            owner: owner.to_string(),
+                            repo_name: repo_name.to_string(),
+                            comment_id,
+                            content: "rocket",
+                        })
+                        .await;
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to auto-merge PR #{} in {}/{}: {:?}",
+                    pr_number, owner, repo_name, e
+                );
+            },
+        }
+    }
+
+    // ---- Comment-command handler ----
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_process_merge_command(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        comment_id: i64,
+        requester_id: i64,
+        requester_login: &str,
+        body: &str,
+        comment_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        use crate::github::webhook::comment_command::{CommentCommand, parse_comment_command};
+
+        let octocrab = self.octocrab_for_owner(owner)?;
+
+        // Re-parse rather than carrying a typed command — payload stays
+        // POD and parsing stays in one place.
+        let Some(cmd) = parse_comment_command(body) else {
+            debug!(
+                "Comment {} on {}/{}#{} no longer parses as a command; dropping",
+                comment_id, owner, repo_name, pr_number
+            );
+            return Ok(());
+        };
+
+        match cmd {
+            CommentCommand::MergeCancel => {
+                self.handle_merge_cancel(
+                    &octocrab,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    comment_id,
+                    requester_id,
+                    requester_login,
+                )
+                .await
+            },
+            CommentCommand::Merge { method } => {
+                self.handle_merge_accept(
+                    &octocrab,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    comment_id,
+                    requester_id,
+                    requester_login,
+                    method.as_ref().map(|m| m.as_str()),
+                    comment_created_at,
+                )
+                .await
+            },
+        }
+    }
+
+    /// Outcome of an authorization check against a commenter.
+    async fn authorize_commenter(
+        &self,
+        octocrab: &Octocrab,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        requester_id: i64,
+        requester_login: &str,
+    ) -> Result<Authorization> {
+        let perm = match actions::check_repo_permission_for_user(
+            octocrab,
+            owner,
+            repo_name,
+            requester_login,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "Failed to check repo permission for {} on {}/{}: {:?}",
+                    requester_login, owner, repo_name, e
+                );
+                return Ok(Authorization::Abort);
+            },
+        };
+        let has_write = matches!(
+            perm,
+            crate::auth::types::GitHubPermission::Admin
+                | crate::auth::types::GitHubPermission::Maintain
+                | crate::auth::types::GitHubPermission::Write
+        );
+        if has_write {
+            return Ok(Authorization::Granted { has_write: true });
+        }
+
+        let changed = crate::db::github::get_pr_changed_packages(
+            pr_number,
+            owner,
+            repo_name,
+            &self.db_service.pool,
+        )
+        .await
+        .unwrap_or_default();
+        let is_pkg_maintainer = if changed.is_empty() {
+            false
+        } else {
+            crate::db::maintainers::is_maintainer_of_all_packages(
+                requester_id,
+                &changed,
+                &self.db_service.pool,
+            )
+            .await
+            .unwrap_or(false)
+        };
+
+        if is_pkg_maintainer {
+            Ok(Authorization::Granted { has_write: false })
+        } else {
+            Ok(Authorization::Denied)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_merge_cancel(
+        &self,
+        octocrab: &Octocrab,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        comment_id: i64,
+        requester_id: i64,
+        requester_login: &str,
+    ) -> Result<()> {
+        // Silent no-op when nothing is pending so unauthorized commenters
+        // learn no bot state.
+        let pr_row = crate::db::github::get_pull_request_row(
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?;
+        let Some(pending) = pr_row.as_ref().and_then(|p| p.pending_comment_merge()) else {
+            debug!(
+                "No pending comment-merge on {}/{}#{}; ignoring cancel from {}",
+                owner, repo_name, pr_number, requester_login
+            );
+            return Ok(());
+        };
+
+        let is_self = requester_id == pending.requester_id;
+
+        // Self-cancel fast path: skip API permission lookup.
+        let authorized = if is_self {
+            true
+        } else {
+            match self
+                .authorize_commenter(
+                    octocrab,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    requester_id,
+                    requester_login,
+                )
+                .await?
+            {
+                Authorization::Granted { .. } => true,
+                Authorization::Denied => false,
+                Authorization::Abort => return Ok(()),
+            }
+        };
+
+        if !authorized {
+            info!(
+                "Denying @eka-ci merge cancel from {} on {}/{}#{}: not the original requester, no \
+                 repo write, and not a maintainer of all changed packages",
+                requester_login, owner, repo_name, pr_number
+            );
+            if let Err(e) =
+                actions::add_comment_reaction(octocrab, owner, repo_name, comment_id, "-1").await
+            {
+                warn!("Failed to react to denied merge-cancel: {:?}", e);
+            }
+            let _ = actions::post_issue_comment(
+                octocrab,
+                owner,
+                repo_name,
+                pr_number,
+                &format!(
+                    "@{} I can't cancel this merge request — you must be the original requester, \
+                     have write access to the repository, or be a maintainer of all affected \
+                     packages.",
+                    requester_login
+                ),
+            )
+            .await;
+            return Ok(());
+        }
+
+        // Authorized: clear the pending request and ack.
+        crate::db::github::clear_comment_merge_request(
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?;
+        if let Err(e) =
+            actions::add_comment_reaction(octocrab, owner, repo_name, comment_id, "+1").await
+        {
+            warn!(
+                "Failed to ack merge-cancel on comment {}: {:?}",
+                comment_id, e
+            );
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_merge_accept(
+        &self,
+        octocrab: &Octocrab,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        comment_id: i64,
+        requester_id: i64,
+        requester_login: &str,
+        method_str: Option<&str>,
+        comment_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        match self
+            .authorize_commenter(
+                octocrab,
+                owner,
+                repo_name,
+                pr_number,
+                requester_id,
+                requester_login,
+            )
+            .await?
+        {
+            Authorization::Granted { .. } => {},
+            Authorization::Abort => return Ok(()),
+            Authorization::Denied => {
+                info!(
+                    "Denying @eka-ci merge from {} on {}/{}#{}: no repo write and not a \
+                     maintainer of all changed packages",
+                    requester_login, owner, repo_name, pr_number
+                );
+                if let Err(e) =
+                    actions::add_comment_reaction(octocrab, owner, repo_name, comment_id, "-1")
+                        .await
+                {
+                    warn!("Failed to react to denied merge: {:?}", e);
+                }
+                let _ = actions::post_issue_comment(
+                    octocrab,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    &format!(
+                        "@{} I can't merge this PR — you need write access to the repository or \
+                         be a maintainer of all affected packages.",
+                        requester_login
+                    ),
+                )
+                .await;
+                return Ok(());
+            },
+        }
+
+        // Pin the merge to the current head SHA.
+        let Some(pr) = crate::db::github::get_pull_request_row(
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?
+        else {
+            warn!(
+                "PR {}/{}#{} not found when processing merge command",
+                owner, repo_name, pr_number
+            );
+            return Ok(());
+        };
+
+        if !self
+            .check_push_timing(
+                octocrab,
+                owner,
+                repo_name,
+                pr_number,
+                comment_id,
+                requester_login,
+                &pr.head_sha,
+                comment_created_at,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
+        let rows = crate::db::github::set_comment_merge_request(
+            owner,
+            repo_name,
+            pr_number,
+            &pr.head_sha,
+            method_str,
+            requester_id,
+            requester_login,
+            comment_id,
+            &self.db_service.pool,
+        )
+        .await?;
+        if rows == 0 {
+            warn!(
+                "set_comment_merge_request affected 0 rows for {}/{}#{}",
+                owner, repo_name, pr_number
+            );
+            return Ok(());
+        }
+
+        // Ack; the actual merge fires via the auto-merge evaluator.
+        if let Err(e) =
+            actions::add_comment_reaction(octocrab, owner, repo_name, comment_id, "+1").await
+        {
+            warn!("Failed to ack merge command: {:?}", e);
+        }
+
+        // Fire the evaluator in case gates are already green.
+        let _ = self
+            .github_sender
+            .send(GitHubTask::CheckAutoMerge {
+                owner: owner.to_string(),
+                repo_name: repo_name.to_string(),
+                pr_number,
+            })
+            .await;
+
+        Ok(())
+    }
+
+    /// Best-effort force-push detection. Returns `Ok(true)` to proceed,
+    /// `Ok(false)` to refuse (caller must return early). API errors and
+    /// missing dates fall through to accept — the post-acceptance drift
+    /// hook is the backstop. 30s grace is deliberately tight.
+    #[allow(clippy::too_many_arguments)]
+    async fn check_push_timing(
+        &self,
+        octocrab: &Octocrab,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        comment_id: i64,
+        requester_login: &str,
+        head_sha: &str,
+        comment_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        const PUSH_GRACE: chrono::Duration = chrono::Duration::seconds(30);
+        match actions::fetch_head_commit_date(octocrab, owner, repo_name, head_sha).await {
+            Ok(Some(commit_date)) if commit_date > *comment_created_at + PUSH_GRACE => {
+                info!(
+                    "Refusing @eka-ci merge from {} on {}/{}#{}: head commit {} committed at {} \
+                     is newer than the command comment at {} (grace={}s); likely post-command push",
+                    requester_login,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    head_sha,
+                    commit_date,
+                    comment_created_at,
+                    PUSH_GRACE.num_seconds()
+                );
+                if let Err(e) =
+                    actions::add_comment_reaction(octocrab, owner, repo_name, comment_id, "-1")
+                        .await
+                {
+                    warn!("Failed to react to refused merge (push drift): {:?}", e);
+                }
+                let _ = actions::post_issue_comment(
+                    octocrab,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    &format!(
+                        "@{} I can't merge this PR — the head commit (`{}`) appears to have been \
+                         pushed after your `@eka-ci merge` command. Please review the latest \
+                         changes and re-issue the command if you still want to merge.",
+                        requester_login,
+                        short_sha(head_sha)
+                    ),
+                )
+                .await;
+                Ok(false)
+            },
+            Ok(Some(_)) => Ok(true), // commit predates the comment
+            Ok(None) => {
+                warn!(
+                    "Head commit {}@{}/{} has no parseable committer date; proceeding without \
+                     push-time check (best effort)",
+                    head_sha, owner, repo_name
+                );
+                Ok(true)
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to fetch head commit date for {}/{}@{}: {:?}; proceeding without \
+                     push-time check (best effort)",
+                    owner, repo_name, head_sha, e
+                );
+                Ok(true)
+            },
+        }
+    }
+}
+
+/// Result of the commenter authorization check.
+enum Authorization {
+    /// Commenter is authorized. `has_write` distinguishes the "repo
+    /// write" path from the "package maintainer" path (kept for logging).
+    Granted {
+        #[allow(dead_code)]
+        has_write: bool,
+    },
+    /// Commenter is not authorized. Caller should react `-1` + post
+    /// explanation comment.
+    Denied,
+    /// Permission lookup failed; caller should drop the command silently.
+    Abort,
+}
+
+/// Abbreviate a SHA to 7 chars; shorter inputs are returned unchanged.
+fn short_sha(sha: &str) -> &str {
+    if sha.len() >= 7 { &sha[..7] } else { sha }
 }
