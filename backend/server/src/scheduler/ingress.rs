@@ -5,9 +5,11 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::drv_id;
 use crate::graph::GraphServiceHandle;
 use crate::scheduler::build::BuildRequest;
+use crate::scheduler::recorder::RecorderTask;
 
 /// This acts as the service which filters incoming drv build requests
 /// and determines if the drv is "buildable", already successful,
@@ -22,6 +24,9 @@ pub struct IngressWorker {
     request_receiver: mpsc::Receiver<IngressTask>,
     /// To send buildable requests to builder service
     buildable_sender: mpsc::Sender<BuildRequest>,
+    /// To short-circuit cache hits straight to "successful build" without
+    /// going through the builder thread.
+    recorder_sender: mpsc::Sender<RecorderTask>,
     graph_handle: GraphServiceHandle,
 }
 
@@ -37,6 +42,16 @@ pub enum IngressTask {
     /// a dependency was successfully built, and now we should recheck to
     /// to see if the Drv is now buildable
     CheckBuildable(Arc<drv_id::DrvId>),
+    /// Re-run the substitution check for this drv. Normally fired
+    /// implicitly during `EvalRequest` handling; exposed as a task so
+    /// operators / tests can re-trigger it explicitly (e.g. after a
+    /// remote cache becomes reachable).
+    ///
+    /// Not yet constructed in production code — kept on the public
+    /// task surface for forthcoming admin endpoints. Silence the
+    /// dead-code lint until a caller lands.
+    #[allow(dead_code)]
+    CheckSubstitution(Arc<drv_id::DrvId>),
     /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking
     RebuildFailed(Arc<drv_id::DrvId>),
     /// Rebuild all failed drvs in the system
@@ -55,10 +70,15 @@ impl IngressService {
         (res, request_sender)
     }
 
-    pub fn run(self, buildable_sender: mpsc::Sender<BuildRequest>) -> JoinHandle<()> {
+    pub fn run(
+        self,
+        buildable_sender: mpsc::Sender<BuildRequest>,
+        recorder_sender: mpsc::Sender<RecorderTask>,
+    ) -> JoinHandle<()> {
         let worker = IngressWorker {
             request_receiver: self.request_receiver,
             buildable_sender,
+            recorder_sender,
             graph_handle: self.graph_handle,
         };
         tokio::spawn(async move {
@@ -84,6 +104,17 @@ impl IngressWorker {
         match task {
             EvalRequest(drv) => self.handle_eval_task(drv).await?,
             CheckBuildable(drv) => self.handle_check_buildable_task(drv).await?,
+            CheckSubstitution(drv) => {
+                // Standalone re-check: if cached, short-circuit; otherwise no-op.
+                // Errors here are non-fatal (substitution check is best-effort).
+                if let Err(e) = self.handle_check_substitution_task(drv).await {
+                    warn!(
+                        "substitution check failed for {}: {:?}",
+                        drv.store_path(),
+                        e
+                    );
+                }
+            },
             RebuildFailed(drv) => self.handle_rebuild_failed_task(drv).await?,
             RebuildAllFailed => self.handle_rebuild_all_failed_task().await?,
         }
@@ -94,7 +125,6 @@ impl IngressWorker {
     }
 
     async fn handle_check_buildable_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
-        use crate::db::model::build_event::DrvBuildState;
         debug!("checking if {:?} is buildable", drv_id);
 
         if self.graph_handle.is_buildable(drv_id) {
@@ -132,9 +162,120 @@ impl IngressWorker {
             }
         }
 
+        // Try to short-circuit via substitution before queuing a real build.
+        // A successful cache hit marks this drv (and any cached requisites) as
+        // Completed(Success) via the recorder, which will fan out CheckBuildable
+        // to dependents — no need to fall through.
+        match self.handle_check_substitution_task(drv_id).await {
+            Ok(true) => {
+                debug!("{} short-circuited via substitution", drv_id.store_path());
+                return Ok(());
+            },
+            Ok(false) => { /* not cached; fall through */ },
+            Err(e) => {
+                // Best-effort optimization — log and proceed to build.
+                warn!(
+                    "substitution check errored for {} (falling back to build): {:?}",
+                    drv_id.store_path(),
+                    e
+                );
+            },
+        }
+
         self.handle_check_buildable_task(drv_id).await?;
 
         Ok(())
+    }
+
+    /// Run `nix-store --realise --dry-run` against `drv_id`. If the drv is
+    /// already available (locally or via any configured substituter), mark
+    /// it AND every transitively-cached requisite as `Completed(Success)`
+    /// via the recorder.
+    ///
+    /// Returns `Ok(true)` iff the root drv was a cache hit (and the caller
+    /// should skip queuing a real build).
+    async fn handle_check_substitution_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<bool> {
+        let report = crate::nix::dry_run_realise(drv_id).await?;
+
+        // Root must be cached (i.e. NOT in will_build) to short-circuit.
+        if !report.is_cached(drv_id) {
+            return Ok(false);
+        }
+
+        debug!(
+            "substitution hit for {} ({} requisites would be built, {} fetched)",
+            drv_id.store_path(),
+            report.will_build.len(),
+            report.will_fetch.len()
+        );
+
+        // Collect the root + all transitively-cached requisites. We walk
+        // `nix-store --query --requisites` (which returns the root plus all
+        // transitive deps) and keep only the ones NOT marked as
+        // "will be built", since those are the cache hits.
+        let mut cache_hits: Vec<drv_id::DrvId> = Vec::new();
+        match crate::nix::drv_requisites(&drv_id.store_path()).await {
+            Ok(requisites) => {
+                for req in requisites {
+                    if !report.will_build.contains(&req.store_path()) {
+                        cache_hits.push(req);
+                    }
+                }
+            },
+            Err(e) => {
+                // If we can't enumerate requisites, fall back to marking just
+                // the root drv. The dependents-cascade in the recorder will
+                // still correctly re-trigger child evaluation via existing
+                // CheckBuildable flow.
+                warn!(
+                    "failed to enumerate requisites for {} (marking root only): {:?}",
+                    drv_id.store_path(),
+                    e
+                );
+                cache_hits.push(drv_id.clone());
+            },
+        }
+
+        // Always include the root, in case it wasn't returned by --requisites
+        // (defensive — the requisites query normally includes the root, but
+        // we protect against any future behavior change).
+        if !cache_hits.iter().any(|d| d == drv_id) {
+            cache_hits.push(drv_id.clone());
+        }
+
+        // For each cache hit, only emit a recorder task if the current state
+        // is not already terminal AND not currently building. This avoids
+        // racing with an in-flight build or clobbering a previously recorded
+        // success/failure.
+        for hit in cache_hits {
+            let current = self.graph_handle.get_build_state(&hit);
+            let safe_to_mark = match &current {
+                None => true, // not in graph yet; recorder will reject if no DB row
+                Some(DrvBuildState::Building) => false,
+                Some(state) if state.is_terminal() => false,
+                Some(_) => true,
+            };
+            if !safe_to_mark {
+                debug!(
+                    "skipping cache-hit mark for {} (state: {:?})",
+                    hit.store_path(),
+                    current
+                );
+                continue;
+            }
+
+            let task = RecorderTask {
+                derivation: Arc::new(hit),
+                result: DrvBuildState::Completed(DrvBuildResult::Success),
+            };
+            // If recorder is gone we can't make progress; surface the error.
+            self.recorder_sender
+                .send(task)
+                .await
+                .context("recorder channel closed while recording cache hits")?;
+        }
+
+        Ok(true)
     }
 
     /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking.

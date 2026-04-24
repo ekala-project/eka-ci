@@ -126,7 +126,10 @@ impl SchedulerService {
 
         let (builder_service, builder_sender) =
             BuildQueue::init(builders, fod_builders, build_metrics).await;
-        let ingress_thread = ingress_service.run(builder_sender.clone());
+        // Ingress now needs the recorder channel as well, so it can short-circuit
+        // cache-hit drvs straight to "successful build" without queuing them on
+        // the builder.
+        let ingress_thread = ingress_service.run(builder_sender.clone(), recorder_sender.clone());
         let recorder_thread = recorder_service.run(ingress_sender.clone());
         let builder_thread = builder_service.run();
 
