@@ -506,18 +506,25 @@ impl RecorderWorker {
                             )
                             .await
                             {
-                                // Check if auto-merge is enabled for this PR
-                                if pr.auto_merge_enabled && pr.state == "open" {
+                                // Fire CheckAutoMerge if UI auto-merge is on or a
+                                // comment-merge is pending. The handler re-validates
+                                // all gates (SHA-drift included), so over-triggering
+                                // is safe — drifted requests cancel cleanly.
+                                let has_pending_comment_merge = pr.comment_merge_sha.is_some();
+                                let is_open = pr.state == "open";
+                                if is_open && (pr.auto_merge_enabled || has_pending_comment_merge) {
                                     debug!(
-                                        "PR #{} has auto-merge enabled, checking eligibility",
-                                        pr.pr_number
+                                        "PR #{} eligible for auto-merge check (auto_merge={}, \
+                                         comment_merge_pending={}), scheduling",
+                                        pr.pr_number,
+                                        pr.auto_merge_enabled,
+                                        has_pending_comment_merge
                                     );
 
                                     let auto_merge_task = GitHubTask::CheckAutoMerge {
                                         owner: jobset_info.owner.clone(),
                                         repo_name: jobset_info.repo_name.clone(),
                                         pr_number: pr.pr_number,
-                                        head_sha: pr.head_sha.clone(),
                                     };
 
                                     if let Err(e) = github_sender.send(auto_merge_task).await {

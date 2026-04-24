@@ -1276,7 +1276,7 @@ pub async fn disable_auto_merge(
     Ok(())
 }
 
-/// Mark a PR as merged
+/// Mark a PR as merged; also clears any pending comment-merge.
 pub async fn mark_pr_merged(
     owner: &str,
     repo_name: &str,
@@ -1286,7 +1286,15 @@ pub async fn mark_pr_merged(
 ) -> Result<()> {
     sqlx::query(
         "UPDATE PullRequests
-         SET state = 'merged', merged_by_user_id = ?, merged_at = CURRENT_TIMESTAMP
+         SET state = 'merged',
+             merged_by_user_id = ?,
+             merged_at = CURRENT_TIMESTAMP,
+             comment_merge_sha = NULL,
+             comment_merge_method = NULL,
+             comment_merge_requester_id = NULL,
+             comment_merge_requester_login = NULL,
+             comment_merge_comment_id = NULL,
+             comment_merge_requested_at = NULL
          WHERE owner = ? AND repo_name = ? AND pr_number = ?",
     )
     .bind(merged_by_user_id)
@@ -1296,6 +1304,91 @@ pub async fn mark_pr_merged(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Record a pending `@eka-ci merge` on a PR; overwrites any prior
+/// request (single active request per PR). Returns rows updated
+/// (0 means the PR row is missing — callers should treat as error).
+pub async fn set_comment_merge_request(
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    sha: &str,
+    method: Option<&str>,
+    requester_id: i64,
+    requester_login: &str,
+    comment_id: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
+    let rows = sqlx::query(
+        "UPDATE PullRequests
+         SET comment_merge_sha = ?,
+             comment_merge_method = ?,
+             comment_merge_requester_id = ?,
+             comment_merge_requester_login = ?,
+             comment_merge_comment_id = ?,
+             comment_merge_requested_at = CURRENT_TIMESTAMP
+         WHERE owner = ? AND repo_name = ? AND pr_number = ?",
+    )
+    .bind(sha)
+    .bind(method)
+    .bind(requester_id)
+    .bind(requester_login)
+    .bind(comment_id)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(rows)
+}
+
+/// Clear any pending comment-merge on a PR (on merge success, SHA
+/// drift, explicit cancel, or PR close).
+pub async fn clear_comment_merge_request(
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE PullRequests
+         SET comment_merge_sha = NULL,
+             comment_merge_method = NULL,
+             comment_merge_requester_id = NULL,
+             comment_merge_requester_login = NULL,
+             comment_merge_comment_id = NULL,
+             comment_merge_requested_at = NULL
+         WHERE owner = ? AND repo_name = ? AND pr_number = ?",
+    )
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Fetch the pending comment-merge for a PR; `None` if none
+/// outstanding or PR missing.
+#[allow(dead_code)]
+pub async fn get_comment_merge_request(
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<CommentMergeRequest>> {
+    let pr = sqlx::query_as::<_, PullRequest>(
+        "SELECT * FROM PullRequests
+         WHERE owner = ? AND repo_name = ? AND pr_number = ?",
+    )
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .fetch_optional(pool)
+    .await?;
+    Ok(pr.and_then(|pr| pr.pending_comment_merge()))
 }
 
 /// Get PR by head SHA (for finding PR from jobset)
@@ -1312,6 +1405,27 @@ pub async fn get_pr_by_head_sha(
     .bind(sha)
     .bind(owner)
     .bind(repo_name)
+    .fetch_optional(pool)
+    .await?;
+    Ok(pr)
+}
+
+/// Fetch the raw `PullRequest` row (no stats). For callers needing
+/// `comment_merge_*` / `auto_merge_enabled` / `head_sha`; use
+/// `get_pull_request` for the stats-augmented variant.
+pub async fn get_pull_request_row(
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<PullRequest>> {
+    let pr = sqlx::query_as::<_, PullRequest>(
+        "SELECT * FROM PullRequests
+         WHERE owner = ? AND repo_name = ? AND pr_number = ?",
+    )
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
     .fetch_optional(pool)
     .await?;
     Ok(pr)
@@ -1425,6 +1539,41 @@ pub struct PullRequest {
     pub merge_method: Option<String>,
     pub merged_by_user_id: Option<i64>,
     pub merged_at: Option<String>,
+    // Pending `@eka-ci merge` request; all six NULL iff none pending.
+    // See 20260419_pr_comment_merge.sql.
+    pub comment_merge_sha: Option<String>,
+    pub comment_merge_method: Option<String>,
+    pub comment_merge_requester_id: Option<i64>,
+    pub comment_merge_requester_login: Option<String>,
+    pub comment_merge_comment_id: Option<i64>,
+    pub comment_merge_requested_at: Option<String>,
+}
+
+/// Typed view of a pending `@eka-ci merge` on a PR (unresolved: not yet
+/// merged, cancelled, or superseded).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentMergeRequest {
+    pub sha: String,
+    pub method: Option<String>,
+    pub requester_id: i64,
+    pub requester_login: String,
+    pub comment_id: i64,
+    pub requested_at: String,
+}
+
+impl PullRequest {
+    /// Pending comment-merge, if any. `comment_merge_*` columns are
+    /// set together, so `comment_merge_sha` being `Some` implies the rest.
+    pub fn pending_comment_merge(&self) -> Option<CommentMergeRequest> {
+        Some(CommentMergeRequest {
+            sha: self.comment_merge_sha.clone()?,
+            method: self.comment_merge_method.clone(),
+            requester_id: self.comment_merge_requester_id?,
+            requester_login: self.comment_merge_requester_login.clone()?,
+            comment_id: self.comment_merge_comment_id?,
+            requested_at: self.comment_merge_requested_at.clone()?,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -262,12 +262,54 @@ pub enum GitHubTask {
         owner: String,
         repo_name: String,
         pr_number: i64,
-        head_sha: String,
     },
     CreateDependencyChangesGate {
         ci_check_info: Arc<CICheckInfo>,
         jobset_id: i64,
         base_jobset_id: i64,
+    },
+    /// Handle an `@eka-ci merge …` comment on a PR: verify authorization,
+    /// pin the current head SHA, record a pending comment-merge.
+    ProcessMergeCommand {
+        owner: String,
+        repo_name: String,
+        pr_number: i64,
+        comment_id: i64,
+        requester_id: i64,
+        requester_login: String,
+        /// Raw comment body; re-parsed on the handler side.
+        body: String,
+        /// Comment creation time from the webhook. Used by the push-time
+        /// gate to detect commits pushed after the command was issued.
+        comment_created_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// Notify a requester that their pending comment-merge was cancelled
+    /// due to head-SHA drift.
+    CommentMergeDriftCancelled {
+        owner: String,
+        repo_name: String,
+        pr_number: i64,
+        expected_sha: String,
+        actual_sha: String,
+        requester_login: String,
+    },
+    /// React to an issue comment (`+1`, `-1`, `rocket`, `confused`, …).
+    ReactToComment {
+        owner: String,
+        repo_name: String,
+        comment_id: i64,
+        /// GitHub reaction content string: `+1` | `-1` | `laugh` |
+        /// `confused` | `heart` | `hooray` | `rocket` | `eyes`.
+        content: &'static str,
+    },
+    /// Post an issue/PR comment. Currently unused; kept for future call
+    /// sites (e.g., queued merge-failure explanations).
+    #[allow(dead_code)]
+    PostIssueComment {
+        owner: String,
+        repo_name: String,
+        issue_number: i64,
+        body: String,
     },
 }
 

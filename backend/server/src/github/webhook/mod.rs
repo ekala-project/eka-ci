@@ -15,6 +15,8 @@ use crate::git::GitTask;
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::github_permissions::{PermissionContext, check_github_app_permission};
 
+pub(crate) mod comment_command;
+
 pub async fn handle_webhook_payload(
     webhook_payload: WEP,
     repository_info: Option<(String, String)>, // (owner, repo_name)
@@ -63,6 +65,9 @@ pub async fn handle_webhook_payload(
         },
         WEP::PullRequestReview(review) => {
             handle_github_pr_review(*review, github_sender, db_service).await
+        },
+        WEP::IssueComment(comment_event) => {
+            handle_github_issue_comment(*comment_event, repository_info, github_sender).await
         },
         // We probably don't want to react to every push
         // WEP::Push(pr) => handle_github_push(*pr).await,
@@ -200,6 +205,106 @@ async fn store_pr_metadata(pr: &PullRequest, state: &str, db_service: &DbService
     }
 }
 
+/// On `Synchronize`, cancel any pending `@eka-ci merge` whose pinned SHA
+/// no longer matches the head. Posts a notification, reacts `:confused:`
+/// on the original command, and clears the DB fields. Per-step failures
+/// are logged but non-fatal.
+async fn check_comment_merge_drift(
+    pr: &PullRequest,
+    db_service: &DbService,
+    github_sender: &mpsc::Sender<GitHubTask>,
+) {
+    let Some(base_repo) = pr.base.repo.as_ref() else {
+        return;
+    };
+    let Some(owner) = base_repo.owner.as_ref().map(|o| o.login.clone()) else {
+        return;
+    };
+    let repo_name = base_repo.name.clone();
+    let pr_number = pr.number as i64;
+
+    let pr_row = match crate::db::github::get_pull_request_row(
+        &owner,
+        &repo_name,
+        pr_number,
+        &db_service.pool,
+    )
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => return,
+        Err(e) => {
+            warn!(
+                "Failed to look up PR row for drift check on {}/{}#{}: {:?}",
+                owner, repo_name, pr_number, e
+            );
+            return;
+        },
+    };
+
+    let Some(pending) = pr_row.pending_comment_merge() else {
+        return; // nothing pending
+    };
+
+    if pending.sha == pr.head.sha {
+        // Possible on a no-op force-push; just skip.
+        return;
+    }
+
+    debug!(
+        "Comment-merge SHA drift on {}/{}#{}: pinned={} new_head={}",
+        owner, repo_name, pr_number, pending.sha, pr.head.sha
+    );
+
+    if let Err(e) = github_sender
+        .send(GitHubTask::CommentMergeDriftCancelled {
+            owner: owner.clone(),
+            repo_name: repo_name.clone(),
+            pr_number,
+            expected_sha: pending.sha.clone(),
+            actual_sha: pr.head.sha.clone(),
+            requester_login: pending.requester_login.clone(),
+        })
+        .await
+    {
+        warn!(
+            "Failed to enqueue CommentMergeDriftCancelled for {}/{}#{}: {:?}",
+            owner, repo_name, pr_number, e
+        );
+    }
+
+    // `:confused:` the original command so the thread reflects the cancel.
+    if let Err(e) = github_sender
+        .send(GitHubTask::ReactToComment {
+            owner: owner.clone(),
+            repo_name: repo_name.clone(),
+            comment_id: pending.comment_id,
+            content: "confused",
+        })
+        .await
+    {
+        warn!(
+            "Failed to enqueue drift-cancel reaction on {}/{}#{}: {:?}",
+            owner, repo_name, pr_number, e
+        );
+    }
+
+    // Clear pending so downstream schedulers don't re-fire on the drifted head.
+    if let Err(e) = crate::db::github::clear_comment_merge_request(
+        &owner,
+        &repo_name,
+        pr_number,
+        &db_service.pool,
+    )
+    .await
+    {
+        warn!(
+            "Failed to clear comment_merge_request for {}/{}#{}: {:?}",
+            owner, repo_name, pr_number, e
+        );
+    }
+}
+
 async fn handle_github_pr(
     pr: payload::PullRequestWebhookEventPayload,
     git_sender: mpsc::Sender<GitTask>,
@@ -257,6 +362,19 @@ async fn handle_github_pr(
 
             // Store PR metadata in database
             store_pr_metadata(&pr.pull_request, "open", &db_service).await;
+
+            // SHA-drift cancellation for pending @eka-ci merge commands.
+            // `@eka-ci merge` is SHA-pinned: once a user issues the command,
+            // we refuse to merge a newer head (new commits imply unreviewed
+            // changes). On Synchronize, if the stored pinned sha differs
+            // from the new head, clear the pending request and notify the
+            // requester. Opened/Reopened can't have drifted state worth
+            // cancelling (no prior comment-merge on a just-opened PR; a
+            // reopened PR's previous pending merge would already have been
+            // cleared at close-time).
+            if matches!(pr.action, PRWEA::Synchronize) {
+                check_comment_merge_drift(&pr.pull_request, &db_service, &github_sender).await;
+            }
 
             if require_approval && is_valid_user(&pr.pull_request, &db_service).await.is_err() {
                 let username = match &pr.pull_request.user {
@@ -790,7 +908,6 @@ async fn handle_github_pr_review(
         owner: owner.clone(),
         repo_name: repo_name.clone(),
         pr_number,
-        head_sha: pr.head.sha.clone(),
     };
 
     if let Err(e) = github_sender.send(task).await {
@@ -802,6 +919,118 @@ async fn handle_github_pr_review(
         debug!(
             "Queued CheckAutoMerge for PR #{} in {}/{} after review event",
             pr_number, owner, repo_name
+        );
+    }
+}
+
+/// Handle `issue_comment` webhook events.
+///
+/// GitHub fires this for both plain-issue and PR comments (PRs are issues
+/// underneath). We filter to PR comments only, parse the body for an
+/// `@eka-ci …` command (via [`comment_command::parse_comment_command`]),
+/// and enqueue a `ProcessMergeCommand` for the GitHub service to authorize
+/// and action.
+///
+/// Comments authored by bots (including eka-ci itself) are ignored to
+/// prevent feedback loops from our own rocket/+1 reaction flow if we ever
+/// start posting parseable bodies.
+async fn handle_github_issue_comment(
+    comment_event: payload::IssueCommentWebhookEventPayload,
+    repository_info: Option<(String, String)>,
+    github_sender: Option<mpsc::Sender<GitHubTask>>,
+) {
+    use payload::IssueCommentWebhookEventAction as ICWEA;
+
+    let Some(github_sender) = github_sender else {
+        warn!("GitHub service is down, unable to service issue_comment webhook. Restart Eka-CI");
+        return;
+    };
+
+    // Only newly-created comments trigger commands; edit/delete is a no-op.
+    if comment_event.action != ICWEA::Created {
+        debug!("Ignoring issue_comment action: {:?}", comment_event.action);
+        return;
+    }
+
+    // `issue.pull_request` is `Some` iff the issue is a PR.
+    if comment_event.issue.pull_request.is_none() {
+        debug!(
+            "Ignoring comment on non-PR issue #{}",
+            comment_event.issue.number
+        );
+        return;
+    }
+
+    // Skip bot-authored comments to prevent self-reaction loops.
+    if comment_event
+        .comment
+        .user
+        .r#type
+        .eq_ignore_ascii_case("Bot")
+    {
+        debug!(
+            "Ignoring bot-authored comment on PR #{}",
+            comment_event.issue.number
+        );
+        return;
+    }
+
+    let Some(body) = comment_event.comment.body.as_ref() else {
+        debug!(
+            "Ignoring empty-body comment on PR #{}",
+            comment_event.issue.number
+        );
+        return;
+    };
+
+    // Pre-filter: skip the task queue for the vast majority (non-commands).
+    if comment_command::parse_comment_command(body).is_none() {
+        return;
+    }
+
+    let Some((owner, repo_name)) = repository_info else {
+        warn!(
+            "issue_comment on PR #{} missing repository info; cannot process command",
+            comment_event.issue.number
+        );
+        return;
+    };
+
+    // Per-(user, owner, repo) rate limit. Silent drop on rejection —
+    // any feedback would amplify the spam we're containing.
+    let requester_id = comment_event.comment.user.id.0 as i64;
+    if !comment_command::check_and_record_rate_limit(requester_id, &owner, &repo_name) {
+        debug!(
+            "Rate-limited @eka-ci command from user {} on {}/{}#{} (comment {})",
+            comment_event.comment.user.login,
+            owner,
+            repo_name,
+            comment_event.issue.number,
+            comment_event.comment.id.0
+        );
+        return;
+    }
+
+    let task = GitHubTask::ProcessMergeCommand {
+        owner,
+        repo_name,
+        pr_number: comment_event.issue.number as i64,
+        comment_id: comment_event.comment.id.0 as i64,
+        requester_id,
+        requester_login: comment_event.comment.user.login.clone(),
+        body: body.clone(),
+        comment_created_at: comment_event.comment.created_at,
+    };
+
+    if let Err(e) = github_sender.send(task).await {
+        warn!(
+            "Failed to enqueue ProcessMergeCommand for PR #{}: {:?}",
+            comment_event.issue.number, e
+        );
+    } else {
+        debug!(
+            "Queued ProcessMergeCommand for PR #{} (comment {})",
+            comment_event.issue.number, comment_event.comment.id.0
         );
     }
 }
