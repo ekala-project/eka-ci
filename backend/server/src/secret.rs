@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct Redacted<T>(T);
 
+#[allow(dead_code)]
 impl<T> Redacted<T> {
     /// Wrap a value as a redacted secret.
     pub fn new(inner: T) -> Self {

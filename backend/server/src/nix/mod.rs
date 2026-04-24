@@ -3,9 +3,10 @@ pub mod jobs;
 pub mod nix_eval_jobs;
 pub mod size;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use lru::LruCache;
@@ -284,9 +285,141 @@ impl EvalService {
     }
 }
 
+/// Result of a `nix-store --realise --dry-run` invocation against a derivation.
+///
+/// Nix prints two relevant sections to stderr:
+/// * `(this|these N) derivation(s) will be built:` followed by indented `.drv` paths that are NOT
+///   available locally and CANNOT be substituted from any configured binary cache — i.e. they would
+///   actually need to run.
+/// * `(this|these N) path(s) will be fetched (...)` followed by indented store output paths that
+///   are not in the local store but ARE available from a binary cache.
+///
+/// Anything not mentioned in either section is already valid in the local store.
+///
+/// We treat a derivation as "cached" iff its `.drv` path does not appear in
+/// `will_build` — meaning it is either already built locally OR pullable from
+/// a substituter, both of which mean we don't need to run a real build.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DryRunReport {
+    /// Full store paths (`/nix/store/...drv`) that nix says still need building.
+    pub will_build: HashSet<String>,
+    /// Full store paths (`/nix/store/...`) that nix says will be substituted.
+    pub will_fetch: HashSet<String>,
+}
+
+impl DryRunReport {
+    /// Parse the stderr emitted by `nix-store --realise --dry-run`.
+    ///
+    /// The format is fairly stable across modern Nix versions; we tolerate
+    /// minor variations (singular vs. plural section headers, optional
+    /// download-size annotations, leading whitespace differences).
+    pub fn parse(stderr: &str) -> Self {
+        #[derive(Clone, Copy)]
+        enum Section {
+            Build,
+            Fetch,
+        }
+
+        let mut report = DryRunReport::default();
+        let mut current: Option<Section> = None;
+
+        for raw_line in stderr.lines() {
+            // Identify section headers regardless of pluralization. Nix emits
+            // these without leading whitespace and ending with `:`.
+            let trimmed = raw_line.trim_end();
+            let lower = trimmed.trim_start().to_ascii_lowercase();
+
+            // Section headers start a new section. Order matters: check
+            // headers BEFORE treating an indented line as a path, because
+            // a header is never indented in practice but we trim defensively.
+            if !raw_line.starts_with(char::is_whitespace) {
+                if lower.contains("will be built") || lower.starts_with("don't know how to build") {
+                    current = Some(Section::Build);
+                    continue;
+                }
+                if lower.contains("will be fetched") {
+                    current = Some(Section::Fetch);
+                    continue;
+                }
+                // Any other unindented non-blank line ends the current section
+                // (e.g. warnings, the empty line nix prints between sections,
+                // the final summary line).
+                if !trimmed.is_empty() {
+                    current = None;
+                }
+                continue;
+            }
+
+            // Indented line — interpret as a path entry IF we're in a section.
+            let path = trimmed.trim();
+            if path.is_empty() {
+                continue;
+            }
+            // Only accept absolute store paths; ignore stray indented text.
+            if !path.starts_with('/') {
+                continue;
+            }
+            match current {
+                Some(Section::Build) => {
+                    report.will_build.insert(path.to_string());
+                },
+                Some(Section::Fetch) => {
+                    report.will_fetch.insert(path.to_string());
+                },
+                None => {},
+            }
+        }
+
+        report
+    }
+
+    /// True iff `drv` does not appear in `will_build` — i.e. its output is
+    /// either already in the local store or pullable from a substituter.
+    pub fn is_cached(&self, drv: &DrvId) -> bool {
+        !self.will_build.contains(&drv.store_path())
+    }
+}
+
+/// How long to wait for `nix-store --realise --dry-run` to complete before
+/// giving up. Substituter HTTP queries are the dominant cost; 30s comfortably
+/// covers a slow but reachable cache while still failing fast on a wedged one.
+const DRY_RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run `nix-store --realise --dry-run <drv>` and parse the result.
+///
+/// Returns `Err` for any I/O / process failure or non-zero exit so callers can
+/// safely fall back to a real build (substitution checks are an optimization,
+/// never a correctness requirement).
+pub async fn dry_run_realise(drv: &DrvId) -> Result<DryRunReport> {
+    let store_path = drv.store_path();
+    let output = tokio::time::timeout(
+        DRY_RUN_TIMEOUT,
+        Command::new("nix-store")
+            .args(["--realise", "--dry-run", &store_path])
+            .output(),
+    )
+    .await
+    .with_context(|| format!("nix-store --realise --dry-run timed out for {store_path}"))?
+    .with_context(|| format!("failed to spawn nix-store --realise --dry-run for {store_path}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "nix-store --realise --dry-run failed for {} (exit {:?}): {}",
+            store_path,
+            output.status.code(),
+            stderr.trim()
+        );
+    }
+
+    // Nix writes the build/fetch plan to stderr; stdout is empty under --dry-run.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(DryRunReport::parse(&stderr))
+}
+
 /// Retreive the requisites of a drv. This is a global list of all direct
 /// and transitive drvs
-async fn drv_requisites(drv_path: &str) -> Result<Vec<DrvId>> {
+pub(crate) async fn drv_requisites(drv_path: &str) -> Result<Vec<DrvId>> {
     use std::str::FromStr;
 
     let output = Command::new("nix-store")
@@ -469,3 +602,125 @@ pub async fn get_drv_outputs(drv_path: &str) -> Result<HashMap<String, String>> 
 //
 //     Ok(drvs)
 // }
+
+#[cfg(test)]
+mod dry_run_tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    fn drv(name: &str) -> DrvId {
+        // 32-char base32-only stub hash; the actual value is irrelevant — we
+        // only need a syntactically valid DrvId so we can call store_path().
+        DrvId::from_str(&format!("jd83l3jn2mkn530lgcg0y523jq5qji85-{name}.drv")).unwrap()
+    }
+
+    #[test]
+    fn parse_empty_means_already_built_locally() {
+        let report = DryRunReport::parse("");
+        assert!(report.will_build.is_empty());
+        assert!(report.will_fetch.is_empty());
+        assert!(report.is_cached(&drv("hello")));
+    }
+
+    #[test]
+    fn parse_will_be_built_singular() {
+        let stderr = "this derivation will be built:\n  /nix/store/aaa-foo.drv\n";
+        let report = DryRunReport::parse(stderr);
+        assert_eq!(report.will_build.len(), 1);
+        assert!(report.will_build.contains("/nix/store/aaa-foo.drv"));
+        assert!(report.will_fetch.is_empty());
+    }
+
+    #[test]
+    fn parse_will_be_built_plural_with_count() {
+        let stderr = "these 3 derivations will be built:\n  /nix/store/a-foo.drv\n  \
+                      /nix/store/b-bar.drv\n  /nix/store/c-baz.drv\n";
+        let report = DryRunReport::parse(stderr);
+        assert_eq!(report.will_build.len(), 3);
+    }
+
+    #[test]
+    fn parse_will_be_fetched_with_size_annotation() {
+        let stderr = "these 2 paths will be fetched (1.23 MiB download, 5.67 MiB unpacked):\n  \
+                      /nix/store/aaa-foo\n  /nix/store/bbb-bar\n";
+        let report = DryRunReport::parse(stderr);
+        assert!(report.will_build.is_empty());
+        assert_eq!(report.will_fetch.len(), 2);
+        assert!(report.will_fetch.contains("/nix/store/aaa-foo"));
+        assert!(report.will_fetch.contains("/nix/store/bbb-bar"));
+    }
+
+    #[test]
+    fn parse_mixed_sections() {
+        let stderr = "these 2 derivations will be built:\n  /nix/store/a-build.drv\n  \
+                      /nix/store/b-build.drv\nthese 1 paths will be fetched (1 KiB download):\n  \
+                      /nix/store/c-fetch\n";
+        let report = DryRunReport::parse(stderr);
+        assert_eq!(report.will_build.len(), 2);
+        assert_eq!(report.will_fetch.len(), 1);
+    }
+
+    #[test]
+    fn is_cached_uses_will_build_membership() {
+        // The drv we are checking is in will_build — NOT cached.
+        let target = drv("foo");
+        let stderr = format!(
+            "this derivation will be built:\n  {}\n",
+            target.store_path()
+        );
+        let report = DryRunReport::parse(&stderr);
+        assert!(!report.is_cached(&target));
+
+        // The drv is only in will_fetch (its OUTPUT is fetchable from cache).
+        // The .drv path itself is not in will_build, so we're "cached".
+        let report = DryRunReport::parse(
+            "these 1 paths will be fetched (1 KiB download):\n  /nix/store/aaa-foo\n",
+        );
+        assert!(report.is_cached(&target));
+    }
+
+    #[test]
+    fn parse_dont_know_how_to_build_treated_as_build() {
+        // When substitution is unavailable and the drv isn't in the local store,
+        // nix prints "don't know how to build the following paths:" — we treat
+        // these the same as "will be built" so the caller falls back to the
+        // normal build path (which will surface the error properly).
+        let stderr = "don't know how to build the following paths:\n  /nix/store/x-foo.drv\n";
+        let report = DryRunReport::parse(stderr);
+        assert_eq!(report.will_build.len(), 1);
+        assert!(report.will_build.contains("/nix/store/x-foo.drv"));
+    }
+
+    #[test]
+    fn parse_ignores_non_path_indented_lines() {
+        // An indented line that isn't an absolute store path must not pollute
+        // the section — guards against future nix output additions like
+        // "  (note: ...)" inside a section.
+        let stderr = "this derivation will be built:\n  /nix/store/aaa-foo.drv\n  (note: foo)\n";
+        let report = DryRunReport::parse(stderr);
+        assert_eq!(report.will_build.len(), 1);
+    }
+
+    #[test]
+    fn parse_section_resets_on_unrelated_unindented_line() {
+        // Unindented non-blank lines that aren't section headers terminate the
+        // active section so warnings don't get mis-attributed as path entries.
+        let stderr = "this derivation will be built:\n  /nix/store/aaa-foo.drv\nwarning: \
+                      something\n  /nix/store/bbb-bar\n";
+        let report = DryRunReport::parse(stderr);
+        assert_eq!(report.will_build.len(), 1);
+        assert!(report.will_build.contains("/nix/store/aaa-foo.drv"));
+        // The bbb-bar line came after the section was reset, so it's neither.
+        assert!(report.will_fetch.is_empty());
+    }
+
+    #[test]
+    fn parse_blank_line_between_sections() {
+        let stderr = "these 1 derivations will be built:\n  /nix/store/a-foo.drv\n\nthese 1 paths \
+                      will be fetched (1 KiB):\n  /nix/store/b-bar\n";
+        let report = DryRunReport::parse(stderr);
+        assert_eq!(report.will_build.len(), 1);
+        assert_eq!(report.will_fetch.len(), 1);
+    }
+}
