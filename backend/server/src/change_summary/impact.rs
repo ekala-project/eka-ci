@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use anyhow::Context;
 use sqlx::{Pool, Sqlite};
 
+use super::cache;
 use super::types::{PerSystemImpact, RebuildImpactResponse, TopBlastRadiusEntry};
 use crate::db::model::DrvId;
 use crate::graph::GraphServiceHandle;
@@ -155,6 +156,49 @@ pub async fn build_rebuild_impact_response(
         per_system,
         total_unique_drvs,
     }))
+}
+
+/// Cached wrapper around [`build_rebuild_impact_response`].
+///
+/// Behaviour:
+///   1. Look up the cache by `(head_sha, base_sha, job)`. On hit, return.
+///   2. On miss, compute fresh via [`build_rebuild_impact_response`]. If the head jobset is missing
+///      (`Ok(None)`), do **not** cache — propagate the 404.
+///   3. On a successful compute, upsert into the cache and return.
+///
+/// Cache write failures are logged at WARN but don't fail the request:
+/// the freshly-computed answer is still correct, just unmemoised.
+pub async fn build_rebuild_impact_response_cached(
+    pool: &Pool<Sqlite>,
+    graph: &GraphServiceHandle,
+    head_sha: &str,
+    base_sha: &str,
+    job: &str,
+    max_top_blast_radius: usize,
+) -> anyhow::Result<Option<RebuildImpactResponse>> {
+    if let Some(hit) = cache::lookup(pool, head_sha, base_sha, job).await? {
+        return Ok(Some(hit));
+    }
+
+    let computed =
+        build_rebuild_impact_response(pool, graph, head_sha, base_sha, job, max_top_blast_radius)
+            .await?;
+
+    let Some(response) = computed else {
+        return Ok(None);
+    };
+
+    if let Err(err) = cache::upsert(pool, &response).await {
+        tracing::warn!(
+            error = %err,
+            head_sha,
+            base_sha,
+            job,
+            "Failed to write RebuildImpactCache entry; serving uncached response"
+        );
+    }
+
+    Ok(Some(response))
 }
 
 /// Load rows for impact analysis: every (drv_path, pname, system) for the
@@ -423,6 +467,127 @@ mod tests {
         // changes for the system, regardless of top_k.
         assert_eq!(sys.rebuild_count, 5);
         assert_eq!(sys.top_blast_radius.len(), 2);
+        Ok(())
+    }
+
+    /// First call computes; the cache row should appear and a second
+    /// call should be served from cache. We assert the second response
+    /// is byte-equal (after JSON round-trip) and that exactly one cache
+    /// row exists.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn cached_first_call_populates_cache(pool: SqlitePool) -> anyhow::Result<()> {
+        let path = drv_path("aaa1", "hello-1.0");
+        let eval = make_eval("hello", &path, "hello-1.0");
+        let db = make_db_drv(&path, Some("hello"), "x86_64-linux");
+        make_jobset(&pool, "head-sha", "ci", &[(eval, db)]).await;
+
+        let graph = spawn_graph(&pool).await;
+
+        let first = build_rebuild_impact_response_cached(
+            &pool,
+            &graph,
+            "head-sha",
+            "missing-base",
+            "ci",
+            5,
+        )
+        .await?
+        .expect("expected Some on first call");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM RebuildImpactCache")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(
+            count, 1,
+            "cache should have exactly one entry after compute"
+        );
+
+        let second = build_rebuild_impact_response_cached(
+            &pool,
+            &graph,
+            "head-sha",
+            "missing-base",
+            "ci",
+            5,
+        )
+        .await?
+        .expect("expected Some on second call");
+
+        // Wire-equivalent (modulo `computed_at` which is preserved
+        // verbatim from the cache row).
+        assert_eq!(first.head_sha, second.head_sha);
+        assert_eq!(first.base_sha, second.base_sha);
+        assert_eq!(first.job, second.job);
+        assert_eq!(first.total_unique_drvs, second.total_unique_drvs);
+        assert_eq!(first.computed_at, second.computed_at);
+        assert_eq!(first.per_system.len(), second.per_system.len());
+        assert_eq!(
+            first.per_system[0].rebuild_count,
+            second.per_system[0].rebuild_count
+        );
+        Ok(())
+    }
+
+    /// A `head-sha` with no jobset should propagate as `Ok(None)` and
+    /// must NOT poison the cache with a row.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn cached_404_does_not_populate_cache(pool: SqlitePool) -> anyhow::Result<()> {
+        let graph = spawn_graph(&pool).await;
+        let result = build_rebuild_impact_response_cached(
+            &pool,
+            &graph,
+            "missing-sha",
+            "missing-base",
+            "ci",
+            5,
+        )
+        .await?;
+        assert!(result.is_none());
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM RebuildImpactCache")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(count, 0, "404 must not produce a cache row");
+        Ok(())
+    }
+
+    /// A pre-existing cache row should be returned verbatim; the
+    /// underlying computation should NOT run (we verify this indirectly
+    /// by inserting a synthetic row whose `total_unique_drvs` differs
+    /// from what the live computation would yield).
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn cached_lookup_short_circuits_computation(pool: SqlitePool) -> anyhow::Result<()> {
+        let path = drv_path("bbb1", "hello-1.0");
+        let eval = make_eval("hello", &path, "hello-1.0");
+        let db = make_db_drv(&path, Some("hello"), "x86_64-linux");
+        make_jobset(&pool, "head-sha", "ci", &[(eval, db)]).await;
+
+        // Pre-populate the cache with a sentinel total_unique_drvs that
+        // a fresh compute could never produce (live compute would be 1).
+        let sentinel = RebuildImpactResponse {
+            head_sha: "head-sha".to_string(),
+            base_sha: "missing-base".to_string(),
+            job: "ci".to_string(),
+            computed_at: "2026-04-25T00:00:00Z".to_string(),
+            per_system: vec![],
+            total_unique_drvs: 9999,
+        };
+        cache::upsert(&pool, &sentinel).await?;
+
+        let graph = spawn_graph(&pool).await;
+        let got = build_rebuild_impact_response_cached(
+            &pool,
+            &graph,
+            "head-sha",
+            "missing-base",
+            "ci",
+            5,
+        )
+        .await?
+        .expect("expected Some response");
+
+        assert_eq!(got.total_unique_drvs, 9999);
+        assert!(got.per_system.is_empty());
         Ok(())
     }
 }

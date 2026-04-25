@@ -20,6 +20,7 @@
 //! - [`PackageChange`], [`PackageChangesResponse`] — wire types for the new
 //!   `/v1/commits/{sha}/package-changes` endpoint.
 
+pub mod cache;
 pub mod classify;
 pub mod impact;
 pub mod types;

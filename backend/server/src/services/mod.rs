@@ -37,6 +37,23 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let db_pool = db_service.pool.clone();
 
+    // Prune stale RebuildImpactCache rows on startup. The cache is a
+    // memoisation layer for `/v1/commits/{sha}/rebuild-impact`; rows
+    // older than 7 days are very unlikely to be queried again and
+    // letting the table grow unbounded would slowly bloat the SQLite
+    // file. Cleanup is best-effort: a failure here logs at WARN but
+    // does not abort startup.
+    match crate::change_summary::cache::cleanup_old_entries(
+        &db_pool,
+        crate::change_summary::cache::DEFAULT_CACHE_TTL_DAYS,
+    )
+    .await
+    {
+        Ok(0) => {},
+        Ok(n) => info!("Pruned {n} stale RebuildImpactCache rows on startup"),
+        Err(err) => warn!("RebuildImpactCache startup cleanup failed: {err:?}"),
+    }
+
     // Wrap GitHub App configs in Arc for sharing across services
     let github_app_configs = Arc::new(config.github_apps.clone());
 
