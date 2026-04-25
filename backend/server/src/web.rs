@@ -1245,7 +1245,7 @@ async fn get_rebuild_impact_handler(
     axum::extract::Query(query): axum::extract::Query<RebuildImpactQuery>,
 ) -> Result<Json<crate::change_summary::RebuildImpactResponse>, (axum::http::StatusCode, String)> {
     use crate::change_summary::impact::{
-        DEFAULT_MAX_TOP_BLAST_RADIUS, build_rebuild_impact_response,
+        DEFAULT_MAX_TOP_BLAST_RADIUS, build_rebuild_impact_response_cached,
     };
 
     // Clamp top-K. Floor at 1 (asking for "0 entries" would still need a
@@ -1257,7 +1257,7 @@ async fn get_rebuild_impact_handler(
         .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
         .max(1);
 
-    match build_rebuild_impact_response(
+    match build_rebuild_impact_response_cached(
         &state.db_service.pool,
         &state.graph_handle,
         &sha,
