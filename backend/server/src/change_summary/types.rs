@@ -186,3 +186,39 @@ pub struct RebuildImpactResponse {
     /// somewhere across all systems.
     pub total_unique_drvs: usize,
 }
+
+/// Aggregate response for `/v1/commits/{sha}/change-summary`.
+///
+/// Combines the package-change list (A1) with the rebuild-impact data
+/// (A2) plus a pre-rendered markdown view that the GitHub check
+/// publisher (P5) will paste into the check-run summary.
+///
+/// The shape matches §10.2 of the design doc, with `markdown` exposing
+/// exactly what the markdown endpoint (`.../change-summary.md`) returns
+/// so the JSON consumer never has to re-render client-side.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangeSummary {
+    pub head_sha: String,
+    pub base_sha: String,
+    pub job: String,
+    pub computed_at: String,
+    pub metadata_available: bool,
+    pub package_changes: Vec<PackageChange>,
+    pub rebuild_impact: ChangeSummaryRebuildImpact,
+    /// True if either the package-change list or the rebuild-impact
+    /// computation hit a configured cap (renderer surface as a footnote).
+    pub truncated: bool,
+    /// Pre-rendered markdown matching the GitHub-check-summary output.
+    /// Populated by the renderer; the structured fields above remain
+    /// authoritative for programmatic consumers.
+    pub markdown: String,
+}
+
+/// The rebuild-impact slice as embedded in [`ChangeSummary`]. Drops the
+/// `(head_sha, base_sha, job, computed_at)` envelope since that lives on
+/// the parent struct.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangeSummaryRebuildImpact {
+    pub per_system: Vec<PerSystemImpact>,
+    pub total_unique_drvs: usize,
+}

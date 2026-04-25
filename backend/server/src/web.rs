@@ -421,6 +421,14 @@ fn api_routes() -> Router<AppState> {
             "/commits/{sha}/rebuild-impact",
             get(get_rebuild_impact_handler),
         )
+        .route(
+            "/commits/{sha}/change-summary",
+            get(get_change_summary_handler),
+        )
+        .route(
+            "/commits/{sha}/change-summary.md",
+            get(get_change_summary_markdown_handler),
+        )
         .route("/jobs/{jobset_id}", get(get_jobset_details_handler))
         .route("/jobs/{jobset_id}/drvs", get(get_jobset_drvs_handler))
         .route("/builds/active", get(get_active_builds_handler))
@@ -1280,6 +1288,138 @@ async fn get_rebuild_impact_handler(
             Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to compute rebuild impact: {e}"),
+            ))
+        },
+    }
+}
+
+/// Query parameters for the change-summary endpoints.
+///
+/// Same `(base_sha, job)` triple as the component endpoints. The
+/// `max_packages_listed` and `max_top_blast_radius` knobs match the
+/// per-repo config defaults from design §11.1 and are clamped to sane
+/// upper bounds to keep the JSON payload size predictable.
+#[derive(Deserialize)]
+struct ChangeSummaryQuery {
+    base_sha: String,
+    job: String,
+    #[serde(default)]
+    max_packages_listed: Option<usize>,
+    #[serde(default)]
+    max_top_blast_radius: Option<usize>,
+}
+
+/// `GET /v1/commits/{sha}/change-summary?base_sha=<sha>&job=<job>`
+///
+/// Returns the full structured change summary (package changes +
+/// rebuild impact + pre-rendered markdown) for a `(head, base, job)`
+/// triple. Authenticated per design §10.1.
+async fn get_change_summary_handler(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(sha): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ChangeSummaryQuery>,
+) -> Result<Json<crate::change_summary::ChangeSummary>, (axum::http::StatusCode, String)> {
+    use crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
+    use crate::change_summary::{DEFAULT_MAX_PACKAGES_LISTED, build_change_summary};
+
+    // Clamp both knobs to ×10 their defaults (§11.1) to keep payload
+    // sizes predictable and the BFS work bounded.
+    let max_packages_listed = query
+        .max_packages_listed
+        .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
+        .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
+        .max(1);
+    let max_top_blast_radius = query
+        .max_top_blast_radius
+        .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
+        .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
+        .max(1);
+
+    match build_change_summary(
+        &state.db_service.pool,
+        &state.graph_handle,
+        &sha,
+        &query.base_sha,
+        &query.job,
+        max_packages_listed,
+        max_top_blast_radius,
+    )
+    .await
+    {
+        Ok(Some(resp)) => Ok(Json(resp)),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("No jobset found for sha={sha} job={}", query.job),
+        )),
+        Err(e) => {
+            error!(
+                "Failed to build change summary for sha={} job={}: {}",
+                sha, query.job, e
+            );
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to build change summary: {e}"),
+            ))
+        },
+    }
+}
+
+/// `GET /v1/commits/{sha}/change-summary.md?base_sha=<sha>&job=<job>`
+///
+/// Returns the pre-rendered Markdown view (matching what the GitHub
+/// check posting will display). Per design §10.1 this endpoint is
+/// **public** — the same data is visible on the PR's check tab.
+async fn get_change_summary_markdown_handler(
+    State(state): State<AppState>,
+    Path(sha): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ChangeSummaryQuery>,
+) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
+    use axum::http::header;
+    use axum::response::IntoResponse;
+
+    use crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
+    use crate::change_summary::{DEFAULT_MAX_PACKAGES_LISTED, build_change_summary};
+
+    let max_packages_listed = query
+        .max_packages_listed
+        .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
+        .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
+        .max(1);
+    let max_top_blast_radius = query
+        .max_top_blast_radius
+        .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
+        .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
+        .max(1);
+
+    match build_change_summary(
+        &state.db_service.pool,
+        &state.graph_handle,
+        &sha,
+        &query.base_sha,
+        &query.job,
+        max_packages_listed,
+        max_top_blast_radius,
+    )
+    .await
+    {
+        Ok(Some(resp)) => Ok((
+            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+            resp.markdown,
+        )
+            .into_response()),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("No jobset found for sha={sha} job={}", query.job),
+        )),
+        Err(e) => {
+            error!(
+                "Failed to render change summary for sha={} job={}: {}",
+                sha, query.job, e
+            );
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to render change summary: {e}"),
             ))
         },
     }

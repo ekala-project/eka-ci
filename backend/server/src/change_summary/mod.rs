@@ -23,6 +23,7 @@
 pub mod cache;
 pub mod classify;
 pub mod impact;
+pub mod render;
 pub mod types;
 
 // `PackageChange` is part of the public API surface for downstream phases
@@ -32,8 +33,8 @@ use anyhow::Context;
 use sqlx::{Pool, Sqlite};
 #[allow(unused_imports)]
 pub use types::{
-    PackageChange, PackageChangesResponse, PerSystemImpact, RebuildImpactResponse,
-    TopBlastRadiusEntry,
+    ChangeSummary, ChangeSummaryRebuildImpact, PackageChange, PackageChangesResponse,
+    PerSystemImpact, RebuildImpactResponse, TopBlastRadiusEntry,
 };
 
 /// Build a [`PackageChangesResponse`] for a `(head_sha, base_sha, job)`
@@ -103,6 +104,86 @@ pub async fn build_package_changes_response(
 
 /// Default truncation limit per design §11.1 (`max_packages_listed`).
 pub const DEFAULT_MAX_PACKAGES_LISTED: usize = 100;
+
+/// Build a complete [`ChangeSummary`] for a `(head_sha, base_sha, job)`
+/// triple by composing:
+///
+///  1. [`build_package_changes_response`] — A1 classification.
+///  2. [`impact::build_rebuild_impact_response_cached`] — A2 rebuild impact (read-through cached).
+///  3. [`render::render`] — markdown rendering with truncation.
+///
+/// Returns `Ok(None)` when the head jobset is missing (mirroring the
+/// component endpoints, so the caller maps to a 404). When the head
+/// jobset *exists* but has no `Drv ⋈ Job` rows, both component calls
+/// return non-empty envelopes with empty data — the renderer handles
+/// the empty-table case gracefully.
+///
+/// `package_changes` is **never** truncated by this orchestrator; the
+/// JSON endpoint always returns the full structured set. Markdown
+/// truncation happens inside [`render::render`] and is reported in the
+/// rendered string's footer (and reflected in `ChangeSummary.truncated`
+/// when *any* drop step fired).
+pub async fn build_change_summary(
+    pool: &Pool<Sqlite>,
+    graph: &crate::graph::GraphServiceHandle,
+    head_sha: &str,
+    base_sha: &str,
+    job: &str,
+    max_packages_listed: usize,
+    max_top_blast_radius: usize,
+) -> anyhow::Result<Option<ChangeSummary>> {
+    let pkg_resp =
+        build_package_changes_response(pool, head_sha, base_sha, job, max_packages_listed).await?;
+    let Some(pkg_resp) = pkg_resp else {
+        return Ok(None);
+    };
+
+    // Impact may legitimately return None if the head jobset disappears
+    // between the two queries (race vs. a delete). Treat as "no impact"
+    // rather than failing — the package-change view is still useful.
+    let impact_resp = impact::build_rebuild_impact_response_cached(
+        pool,
+        graph,
+        head_sha,
+        base_sha,
+        job,
+        max_top_blast_radius,
+    )
+    .await?;
+
+    let (per_system, total_unique_drvs, impact_computed_at) = match impact_resp {
+        Some(r) => (r.per_system, r.total_unique_drvs, Some(r.computed_at)),
+        None => (Vec::new(), 0, None),
+    };
+
+    // Use the impact's `computed_at` when available — that's the timestamp
+    // the cache will key future re-renders off. Falls back to the
+    // package-change response's value otherwise.
+    let computed_at = impact_computed_at.unwrap_or(pkg_resp.computed_at);
+
+    let mut summary = ChangeSummary {
+        head_sha: pkg_resp.head_sha,
+        base_sha: pkg_resp.base_sha,
+        job: pkg_resp.job,
+        computed_at,
+        metadata_available: pkg_resp.metadata_available,
+        package_changes: pkg_resp.package_changes,
+        rebuild_impact: ChangeSummaryRebuildImpact {
+            per_system,
+            total_unique_drvs,
+        },
+        truncated: pkg_resp.truncated,
+        markdown: String::new(),
+    };
+
+    let (markdown, render_truncation) = render::render(&summary);
+    summary.markdown = markdown;
+    if render_truncation.any() {
+        summary.truncated = true;
+    }
+
+    Ok(Some(summary))
+}
 
 #[cfg(test)]
 mod tests {
@@ -282,6 +363,103 @@ mod tests {
 
         assert_eq!(resp.package_changes.len(), 2);
         assert!(resp.truncated);
+        Ok(())
+    }
+
+    // ---- build_change_summary orchestrator tests --------------------
+    //
+    // These exercise the classify + impact + render integration end-to-end.
+    // They reuse the helpers above plus a `spawn_graph` helper for the
+    // impact pass, mirroring the pattern in `change_summary::impact::tests`.
+
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use crate::db::DbService;
+    use crate::graph::{GraphCommand, GraphService};
+
+    async fn spawn_graph(pool: &SqlitePool) -> crate::graph::GraphServiceHandle {
+        let db_service = DbService { pool: pool.clone() };
+        let (tx, rx) = mpsc::channel::<GraphCommand>(64);
+        let service = GraphService::new(db_service, rx, None, 1_000_000)
+            .await
+            .expect("GraphService::new failed");
+        let handle = service.handle(tx);
+        let cancel = CancellationToken::new();
+        tokio::spawn(async move {
+            service.run(cancel).await;
+        });
+        handle
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn build_summary_returns_none_when_head_jobset_missing(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        let graph = spawn_graph(&pool).await;
+        let summary =
+            build_change_summary(&pool, &graph, "missing-sha", "base-sha", "ci", 100, 5).await?;
+        assert!(summary.is_none());
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn build_summary_renders_markdown_with_added_package(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        // Just a head jobset with one Added package; base missing.
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+
+        let graph = spawn_graph(&pool).await;
+        let summary = build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", 100, 5)
+            .await?
+            .expect("expected Some summary");
+
+        assert_eq!(summary.package_changes.len(), 1);
+        assert!(matches!(
+            summary.package_changes[0],
+            PackageChange::Added { .. }
+        ));
+        // Markdown should contain headline + the Added row.
+        assert!(summary.markdown.contains("## Change summary for"));
+        assert!(summary.markdown.contains("### Packages changed (1)"));
+        assert!(summary.markdown.contains("| Added | `hello` | 2.13 |"));
+        // Rebuild-impact section is rendered even with empty data — but
+        // since the head jobset has 1 New job, impact should populate it.
+        assert!(summary.markdown.contains("### Rebuild impact"));
+        // metadata_available should propagate.
+        assert!(summary.metadata_available);
+        // Both jobsets present in DB → summary is small → no truncation.
+        assert!(!summary.truncated);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn build_summary_propagates_classify_truncation_flag(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        // 5 head packages, ask for max 2 listed.
+        let mut rows = Vec::new();
+        for i in 0..5 {
+            let hash = format!("{:0>32}", format!("a{i}"));
+            let path = format!("/nix/store/{hash}-pkg{i}-1.0.drv");
+            let eval = make_eval(&format!("pkg{i}"), &path, &format!("pkg{i}-1.0"));
+            let db = make_db_drv(&path, Some(&format!("pkg{i}")), Some("1.0"), None, None);
+            rows.push((eval, db));
+        }
+        make_jobset(&pool, "head-sha", "ci", &rows).await;
+
+        let graph = spawn_graph(&pool).await;
+        let summary = build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", 2, 5)
+            .await?
+            .expect("expected Some summary");
+
+        assert_eq!(summary.package_changes.len(), 2);
+        // classify::truncated → orchestrator surfaces it.
+        assert!(summary.truncated);
         Ok(())
     }
 }
