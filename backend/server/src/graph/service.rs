@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -114,6 +114,25 @@ pub enum GraphCommand {
     /// Get all drvs that are in failed state
     GetAllFailedDrvs {
         response: oneshot::Sender<Vec<DrvId>>,
+    },
+    /// Compute the union of transitive dependents reachable from any of the
+    /// supplied seeds. Used by the A2 rebuild-impact endpoint to answer
+    /// "how many unique drvs would have to rebuild?"
+    ///
+    /// Returns the full reachable set (including the seeds themselves when
+    /// they are present in the graph). Missing seeds are skipped silently.
+    ReverseReachableFromSet {
+        seeds: Vec<DrvId>,
+        response: oneshot::Sender<HashSet<DrvId>>,
+    },
+    /// Compute, for each seed, the count of strict transitive dependents.
+    /// Used by the A2 rebuild-impact endpoint for per-package "blast radius"
+    /// rankings.
+    ///
+    /// Missing seeds map to `0`.
+    BlastRadiusPerSeed {
+        seeds: Vec<DrvId>,
+        response: oneshot::Sender<HashMap<DrvId, usize>>,
     },
 }
 
@@ -339,6 +358,47 @@ impl GraphService {
                     .get_drvs_by_state(&DrvBuildState::Completed(DrvBuildResult::Failure));
                 if response.send(failed).is_err() {
                     warn!("GetAllFailedDrvs caller dropped the response oneshot");
+                }
+            },
+
+            GraphCommand::ReverseReachableFromSet { seeds, response } => {
+                debug!("ReverseReachableFromSet: {} seeds", seeds.len());
+                // Best-effort reload of each seed; missing-from-DB seeds
+                // simply contribute nothing to the BFS (matches BuildGraph
+                // semantics).
+                for seed in &seeds {
+                    if let Err(e) = self.ensure_loaded(seed).await {
+                        debug!(
+                            "ReverseReachableFromSet: ensure_loaded skipped {:?}: {:?}",
+                            seed, e
+                        );
+                    }
+                }
+                let reachable = self.graph.reverse_reachable_from_set(&seeds);
+                if response.send(reachable).is_err() {
+                    warn!(
+                        "ReverseReachableFromSet caller dropped the response oneshot ({} seeds)",
+                        seeds.len()
+                    );
+                }
+            },
+
+            GraphCommand::BlastRadiusPerSeed { seeds, response } => {
+                debug!("BlastRadiusPerSeed: {} seeds", seeds.len());
+                for seed in &seeds {
+                    if let Err(e) = self.ensure_loaded(seed).await {
+                        debug!(
+                            "BlastRadiusPerSeed: ensure_loaded skipped {:?}: {:?}",
+                            seed, e
+                        );
+                    }
+                }
+                let radii = self.graph.blast_radius_per_seed(&seeds);
+                if response.send(radii).is_err() {
+                    warn!(
+                        "BlastRadiusPerSeed caller dropped the response oneshot ({} seeds)",
+                        seeds.len()
+                    );
                 }
             },
         }
@@ -911,6 +971,40 @@ impl GraphServiceHandle {
             .await?;
         rx.await?;
         Ok(())
+    }
+
+    /// Compute the union of transitive dependents reachable from any drv in
+    /// `seeds`. Used by the A2 rebuild-impact endpoint to compute the total
+    /// "blast radius" of a commit.
+    pub async fn reverse_reachable_from_set(
+        &self,
+        seeds: Vec<DrvId>,
+    ) -> anyhow::Result<HashSet<DrvId>> {
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(GraphCommand::ReverseReachableFromSet {
+                seeds,
+                response: tx,
+            })
+            .await?;
+        Ok(rx.await?)
+    }
+
+    /// Compute, for each seed, the count of strict transitive dependents.
+    /// Used by the A2 rebuild-impact endpoint for per-package "blast radius"
+    /// rankings.
+    pub async fn blast_radius_per_seed(
+        &self,
+        seeds: Vec<DrvId>,
+    ) -> anyhow::Result<HashMap<DrvId, usize>> {
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(GraphCommand::BlastRadiusPerSeed {
+                seeds,
+                response: tx,
+            })
+            .await?;
+        Ok(rx.await?)
     }
 }
 

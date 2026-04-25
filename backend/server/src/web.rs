@@ -417,6 +417,10 @@ fn api_routes() -> Router<AppState> {
             "/commits/{sha}/package-changes",
             get(get_package_changes_handler),
         )
+        .route(
+            "/commits/{sha}/rebuild-impact",
+            get(get_rebuild_impact_handler),
+        )
         .route("/jobs/{jobset_id}", get(get_jobset_details_handler))
         .route("/jobs/{jobset_id}/drvs", get(get_jobset_drvs_handler))
         .route("/builds/active", get(get_active_builds_handler))
@@ -1175,13 +1179,8 @@ async fn get_package_changes_handler(
     State(state): State<AppState>,
     Path(sha): Path<String>,
     axum::extract::Query(query): axum::extract::Query<PackageChangesQuery>,
-) -> Result<
-    Json<crate::change_summary::PackageChangesResponse>,
-    (axum::http::StatusCode, String),
-> {
-    use crate::change_summary::{
-        DEFAULT_MAX_PACKAGES_LISTED, build_package_changes_response,
-    };
+) -> Result<Json<crate::change_summary::PackageChangesResponse>, (axum::http::StatusCode, String)> {
+    use crate::change_summary::{DEFAULT_MAX_PACKAGES_LISTED, build_package_changes_response};
 
     // Clamp to the design default cap (×10 ceiling). A request can ask for
     // a smaller list, but never for an unbounded one.
@@ -1213,6 +1212,74 @@ async fn get_package_changes_handler(
             Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to compute package changes: {e}"),
+            ))
+        },
+    }
+}
+
+/// Query parameters for `/v1/commits/{sha}/rebuild-impact`.
+///
+/// Mandatory `base_sha` and `job` mirror the package-changes endpoint —
+/// the impact endpoint is designed to be invoked alongside it for the
+/// same `(head, base, job)` triple.
+#[derive(Deserialize)]
+struct RebuildImpactQuery {
+    base_sha: String,
+    job: String,
+    /// Optional override for `max_top_blast_radius`; clamped to a sane
+    /// upper bound to keep response size predictable.
+    #[serde(default)]
+    max_top_blast_radius: Option<usize>,
+}
+
+/// `GET /v1/commits/{sha}/rebuild-impact?base_sha=<sha>&job=<job>`
+///
+/// Returns the per-system rebuild count + per-package blast-radius
+/// ranking for the given `(head, base, job)` triple. Authenticated
+/// (per design §10.1 + findings.md H4) — the response correlates
+/// internal SHAs with reverse-reachability data.
+async fn get_rebuild_impact_handler(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(sha): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<RebuildImpactQuery>,
+) -> Result<Json<crate::change_summary::RebuildImpactResponse>, (axum::http::StatusCode, String)> {
+    use crate::change_summary::impact::{
+        DEFAULT_MAX_TOP_BLAST_RADIUS, build_rebuild_impact_response,
+    };
+
+    // Clamp top-K. Floor at 1 (asking for "0 entries" would still need a
+    // pass through the ranking and is more confusing than a 1-entry
+    // response). Ceiling matches §11.1's rebuild-impact knob × 10.
+    let top_k = query
+        .max_top_blast_radius
+        .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
+        .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
+        .max(1);
+
+    match build_rebuild_impact_response(
+        &state.db_service.pool,
+        &state.graph_handle,
+        &sha,
+        &query.base_sha,
+        &query.job,
+        top_k,
+    )
+    .await
+    {
+        Ok(Some(resp)) => Ok(Json(resp)),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("No jobset found for sha={sha} job={}", query.job),
+        )),
+        Err(e) => {
+            error!(
+                "Failed to compute rebuild impact for sha={} job={}: {}",
+                sha, query.job, e
+            );
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to compute rebuild impact: {e}"),
             ))
         },
     }

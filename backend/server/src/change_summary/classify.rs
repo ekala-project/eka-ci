@@ -7,10 +7,10 @@
 //!
 //! ## Layering
 //!
-//! - [`compute_package_changes`] is **pure**: it operates on already-loaded
-//!   `Vec<JobDrvRow>` slices and is fully covered by unit tests.
-//! - [`load_job_drv_rows`] is the thin DB loader that reads `Job ⋈ Drv` for
-//!   a single jobset id; it is exercised by the integration tests.
+//! - [`compute_package_changes`] is **pure**: it operates on already-loaded `Vec<JobDrvRow>` slices
+//!   and is fully covered by unit tests.
+//! - [`load_job_drv_rows`] is the thin DB loader that reads `Job ⋈ Drv` for a single jobset id; it
+//!   is exercised by the integration tests.
 //!
 //! Splitting the pure logic from the IO surface keeps the classification
 //! testable without spinning up a sqlite pool.
@@ -21,10 +21,9 @@ use anyhow::Context;
 use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
 
+use super::types::PackageChange;
 use crate::db::model::DrvId;
 use crate::dependency_comparison::{pname_from_name, version_from_name};
-
-use super::types::PackageChange;
 
 /// One row of `Job ⋈ Drv` for a single jobset, holding only the columns
 /// classify needs. Mapping by hand (rather than reusing the full `Drv`
@@ -33,11 +32,11 @@ use super::types::PackageChange;
 pub struct JobDrvRow {
     pub attr_path: String, // `Job.name`
     pub drv_path: DrvId,
-    pub name: String,                       // `Drv.name`-equivalent (last `-` segment of drv_path)
-    pub pname: Option<String>,              // `Drv.pname`
-    pub version: Option<String>,            // `Drv.version`
-    pub license_json: Option<String>,       // `Drv.license_json`
-    pub maintainers_json: Option<String>,   // `Drv.maintainers_json`
+    pub name: String, // `Drv.name`-equivalent (last `-` segment of drv_path)
+    pub pname: Option<String>, // `Drv.pname`
+    pub version: Option<String>, // `Drv.version`
+    pub license_json: Option<String>, // `Drv.license_json`
+    pub maintainers_json: Option<String>, // `Drv.maintainers_json`
 }
 
 impl JobDrvRow {
@@ -82,38 +81,46 @@ pub async fn load_job_drv_rows(
     pool: &Pool<Sqlite>,
     jobset_id: i64,
 ) -> anyhow::Result<Vec<JobDrvRow>> {
-    let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            r#"
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        r#"
             SELECT j.name, d.drv_path, d.pname, d.version, d.license_json, d.maintainers_json
             FROM Job j
             INNER JOIN Drv d ON j.drv_id = d.ROWID
             WHERE j.jobset = ?
             "#,
-        )
-        .bind(jobset_id)
-        .fetch_all(pool)
-        .await
-        .context("Failed to load Job ⋈ Drv rows for classify")?;
+    )
+    .bind(jobset_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to load Job ⋈ Drv rows for classify")?;
 
     rows.into_iter()
-        .map(|(attr_path, drv_path_str, pname, version, license_json, maintainers_json)| {
-            let drv_path = DrvId::try_from(drv_path_str.as_str())
-                .with_context(|| format!("Invalid drv_path in DB: {drv_path_str}"))?;
-            // Derive a name-like field from the drv path tail: store paths
-            // are `<hash>-<name>.drv`. This gives us a heuristic fallback
-            // when `pname`/`version` columns are NULL.
-            let name = drv_name_from_path(&drv_path_str);
-            Ok(JobDrvRow {
-                attr_path,
-                drv_path,
-                name,
-                pname,
-                version,
-                license_json,
-                maintainers_json,
-            })
-        })
+        .map(
+            |(attr_path, drv_path_str, pname, version, license_json, maintainers_json)| {
+                let drv_path = DrvId::try_from(drv_path_str.as_str())
+                    .with_context(|| format!("Invalid drv_path in DB: {drv_path_str}"))?;
+                // Derive a name-like field from the drv path tail: store paths
+                // are `<hash>-<name>.drv`. This gives us a heuristic fallback
+                // when `pname`/`version` columns are NULL.
+                let name = drv_name_from_path(&drv_path_str);
+                Ok(JobDrvRow {
+                    attr_path,
+                    drv_path,
+                    name,
+                    pname,
+                    version,
+                    license_json,
+                    maintainers_json,
+                })
+            },
+        )
         .collect()
 }
 
@@ -122,10 +129,7 @@ pub async fn load_job_drv_rows(
 /// doesn't match — heuristic only, never panics.
 fn drv_name_from_path(drv_path: &str) -> String {
     // Strip leading `/nix/store/<hash>-` and trailing `.drv`.
-    let after_store = drv_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(drv_path);
+    let after_store = drv_path.rsplit('/').next().unwrap_or(drv_path);
     let no_drv = after_store.strip_suffix(".drv").unwrap_or(after_store);
     // Drop the leading `<hash>-` if present.
     match no_drv.split_once('-') {
@@ -172,7 +176,7 @@ pub fn compute_package_changes(
                     version: head_row.version_or_heuristic(),
                     drv_path: head_row.drv_path.clone(),
                 });
-            }
+            },
             Some(base_row) => {
                 // Same drv hash → unchanged. Note: equal `DrvId` implies
                 // bit-identical drv (Nix-derivation hash includes inputs).
@@ -180,7 +184,7 @@ pub fn compute_package_changes(
                     continue;
                 }
                 classify_changed(head_row, base_row, &mut out);
-            }
+            },
         }
     }
 
@@ -223,10 +227,7 @@ fn classify_changed(head: &JobDrvRow, base: &JobDrvRow, out: &mut Vec<PackageCha
             version: head_version.clone(),
             drv_path: head.drv_path.clone(),
         });
-    } else if head_version != base_version
-        && head_version.is_some()
-        && base_version.is_some()
-    {
+    } else if head_version != base_version && head_version.is_some() && base_version.is_some() {
         // Step 2: version change → VersionBump (requires both versions
         // known; missing version on either side falls through to
         // RebuildOnly to avoid false positives).
@@ -344,10 +345,7 @@ fn parse_license_labels(json: Option<&str>) -> Vec<String> {
 /// We key on `github` first (most stable identifier); when absent fall back
 /// to `name`, then `email`. Returns `None` if both lists collapse to the
 /// same set after normalisation.
-fn diff_maintainers(
-    head: Option<&str>,
-    base: Option<&str>,
-) -> Option<(Vec<String>, Vec<String>)> {
+fn diff_maintainers(head: Option<&str>, base: Option<&str>) -> Option<(Vec<String>, Vec<String>)> {
     let head_set = parse_maintainer_labels(head);
     let base_set = parse_maintainer_labels(base);
     if head_set == base_set {
@@ -435,7 +433,15 @@ mod tests {
 
     #[test]
     fn classify_added_and_removed() {
-        let head = vec![row("hello", H1, "hello-2.12", Some("hello"), Some("2.12"), None, None)];
+        let head = vec![row(
+            "hello",
+            H1,
+            "hello-2.12",
+            Some("hello"),
+            Some("2.12"),
+            None,
+            None,
+        )];
         let base = vec![row(
             "goodbye",
             H2,
@@ -453,7 +459,15 @@ mod tests {
 
     #[test]
     fn classify_unchanged_omitted() {
-        let r = row("hello", H1, "hello-2.12", Some("hello"), Some("2.12"), None, None);
+        let r = row(
+            "hello",
+            H1,
+            "hello-2.12",
+            Some("hello"),
+            Some("2.12"),
+            None,
+            None,
+        );
         let head = vec![r.clone()];
         let base = vec![r];
         let (changes, _) = compute_package_changes(&head, &base);
@@ -483,11 +497,13 @@ mod tests {
         let (changes, _) = compute_package_changes(&head, &base);
         assert_eq!(changes.len(), 1);
         match &changes[0] {
-            PackageChange::VersionBump { pname, old, new, .. } => {
+            PackageChange::VersionBump {
+                pname, old, new, ..
+            } => {
                 assert_eq!(pname, "hello");
                 assert_eq!(old, "2.12");
                 assert_eq!(new, "2.13");
-            }
+            },
             other => panic!("expected VersionBump, got {other:?}"),
         }
     }
@@ -566,11 +582,13 @@ mod tests {
         assert_eq!(changes.len(), 2);
         assert!(matches!(changes[0], PackageChange::RebuildOnly { .. }));
         match &changes[1] {
-            PackageChange::LicenseChange { old, new, pname, .. } => {
+            PackageChange::LicenseChange {
+                old, new, pname, ..
+            } => {
                 assert_eq!(pname, "hello");
                 assert_eq!(old, &vec!["GPL-3.0-only".to_string()]);
                 assert_eq!(new, &vec!["MIT".to_string()]);
-            }
+            },
             other => panic!("expected LicenseChange, got {other:?}"),
         }
     }
@@ -628,7 +646,7 @@ mod tests {
             PackageChange::MaintainerChange { added, removed, .. } => {
                 assert_eq!(added, &vec!["bob".to_string()]);
                 assert_eq!(removed, &vec!["carol".to_string()]);
-            }
+            },
             other => panic!("expected MaintainerChange, got {other:?}"),
         }
     }
@@ -685,11 +703,13 @@ mod tests {
         assert!(!available); // metadata still considered unavailable
         assert_eq!(changes.len(), 1);
         match &changes[0] {
-            PackageChange::VersionBump { pname, old, new, .. } => {
+            PackageChange::VersionBump {
+                pname, old, new, ..
+            } => {
                 assert_eq!(pname, "hello");
                 assert_eq!(old, "2.12");
                 assert_eq!(new, "2.13");
-            }
+            },
             other => panic!("expected heuristic VersionBump, got {other:?}"),
         }
     }

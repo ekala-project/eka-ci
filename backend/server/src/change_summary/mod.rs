@@ -6,41 +6,41 @@
 //!
 //! ## Phases
 //!
-//! - **P1 (this commit)**: [`classify`] — derives a list of [`PackageChange`]
-//!   entries for a `(head_sha, base_sha, job)` triple by joining `Job` and
-//!   `Drv` rows and matching by `Job.name` (attr_path).
+//! - **P1 (this commit)**: [`classify`] — derives a list of [`PackageChange`] entries for a
+//!   `(head_sha, base_sha, job)` triple by joining `Job` and `Drv` rows and matching by `Job.name`
+//!   (attr_path).
 //! - **P2**: `impact` — rebuild count + multi-source BFS for blast radius.
 //! - **P4**: `render` — markdown rendering for GitHub check posting.
 //!
 //! ## Public API surface (P1)
 //!
-//! - [`classify::compute_package_changes`] — pure-logic classification driven
-//!   off two `Vec<JobDrvRow>` inputs (head + base).
-//! - [`classify::load_job_drv_rows`] — DB loader that produces `JobDrvRow`s
-//!   for a given jobset id.
+//! - [`classify::compute_package_changes`] — pure-logic classification driven off two
+//!   `Vec<JobDrvRow>` inputs (head + base).
+//! - [`classify::load_job_drv_rows`] — DB loader that produces `JobDrvRow`s for a given jobset id.
 //! - [`PackageChange`], [`PackageChangesResponse`] — wire types for the new
 //!   `/v1/commits/{sha}/package-changes` endpoint.
 
 pub mod classify;
+pub mod impact;
 pub mod types;
 
 // `PackageChange` is part of the public API surface for downstream phases
 // (P2 impact + P4 render); the bin target doesn't reach for it directly
 // yet, hence the explicit allow.
-#[allow(unused_imports)]
-pub use types::{PackageChange, PackageChangesResponse};
-
 use anyhow::Context;
 use sqlx::{Pool, Sqlite};
+#[allow(unused_imports)]
+pub use types::{
+    PackageChange, PackageChangesResponse, PerSystemImpact, RebuildImpactResponse,
+    TopBlastRadiusEntry,
+};
 
 /// Build a [`PackageChangesResponse`] for a `(head_sha, base_sha, job)`
 /// triple by:
 ///
 /// 1. Resolving both SHAs to jobset ids in `GitHubJobSets`.
-/// 2. Loading `Job ⋈ Drv` rows for each side via
-///    [`classify::load_job_drv_rows`].
-/// 3. Calling [`classify::compute_package_changes`] for the structured
-///    diff.
+/// 2. Loading `Job ⋈ Drv` rows for each side via [`classify::load_job_drv_rows`].
+/// 3. Calling [`classify::compute_package_changes`] for the structured diff.
 ///
 /// Returns `Ok(None)` when the **head** jobset is missing — the caller
 /// should map this to a 404. A missing **base** jobset is treated as
@@ -109,13 +109,12 @@ mod tests {
 
     use sqlx::SqlitePool;
 
+    use super::*;
     use crate::db::github::{create_jobs_for_jobset, create_jobset};
     use crate::db::model::DrvId;
     use crate::db::model::build_event::DrvBuildState;
     use crate::db::model::drv::{Drv, insert_drv};
     use crate::nix::nix_eval_jobs::NixEvalDrv;
-
-    use super::*;
 
     /// Build a [`NixEvalDrv`] sufficient to satisfy `create_jobs_for_jobset`.
     /// This is the *evaluation-shape* counterpart of the DB-shape `Drv`
@@ -184,9 +183,7 @@ mod tests {
             .await
             .expect("create_jobset failed");
         for (_eval, db_drv) in rows {
-            insert_drv(pool, db_drv)
-                .await
-                .expect("insert_drv failed");
+            insert_drv(pool, db_drv).await.expect("insert_drv failed");
         }
         let evals: Vec<NixEvalDrv> = rows.iter().map(|(e, _)| e.clone()).collect();
         create_jobs_for_jobset(jobset_id, &evals, pool)
@@ -199,8 +196,8 @@ mod tests {
     async fn build_response_returns_none_when_head_jobset_missing(
         pool: SqlitePool,
     ) -> anyhow::Result<()> {
-        let resp = build_package_changes_response(&pool, "missing-sha", "base-sha", "ci", 100)
-            .await?;
+        let resp =
+            build_package_changes_response(&pool, "missing-sha", "base-sha", "ci", 100).await?;
         assert!(resp.is_none());
         Ok(())
     }
@@ -251,11 +248,13 @@ mod tests {
 
         assert_eq!(resp.package_changes.len(), 1);
         match &resp.package_changes[0] {
-            PackageChange::VersionBump { pname, old, new, .. } => {
+            PackageChange::VersionBump {
+                pname, old, new, ..
+            } => {
                 assert_eq!(pname, "hello");
                 assert_eq!(old, "2.12");
                 assert_eq!(new, "2.13");
-            }
+            },
             other => panic!("expected VersionBump, got {other:?}"),
         }
         Ok(())
