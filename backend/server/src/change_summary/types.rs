@@ -133,3 +133,56 @@ pub struct PackageChangesResponse {
     /// True if the list was clipped to `max_packages_listed`.
     pub truncated: bool,
 }
+
+/// One entry in the per-system `top_blast_radius` ranking.
+///
+/// `pname` is best-effort — it's present when the head-side `Drv` row had
+/// a non-NULL `pname`. Renderers should fall back to a label derived from
+/// `drv_path` when absent.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct TopBlastRadiusEntry {
+    pub pname: Option<String>,
+    pub drv_path: DrvId,
+    /// Count of strict transitive dependents reachable from this drv via
+    /// the `dependents` adjacency. Excludes the drv itself.
+    pub blast_radius: usize,
+}
+
+/// Per-system slice of the rebuild-impact response.
+///
+/// `rebuild_count` is the number of `Job` rows for this system on the
+/// head-jobset whose `difference` is `New` (0) or `Changed` (1) — i.e.,
+/// the number of drvs that would have to build (or rebuild) on this
+/// system if the PR landed.
+///
+/// `top_blast_radius` is the largest-impact subset, ordered by descending
+/// blast radius (with `drv_path` as a deterministic tie-breaker), capped
+/// at `max_top_blast_radius` per design §11.1.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PerSystemImpact {
+    pub system: String,
+    pub rebuild_count: usize,
+    pub top_blast_radius: Vec<TopBlastRadiusEntry>,
+}
+
+/// HTTP response body for `/v1/commits/{sha}/rebuild-impact`.
+///
+/// Mirrors the `rebuild_impact` slice of the aggregated `change-summary`
+/// JSON shape from design §10.2, plus the `(head_sha, base_sha, job,
+/// computed_at)` envelope so the response is self-describing for
+/// individual consumers (the renderer + cache).
+#[derive(Debug, Clone, Serialize)]
+pub struct RebuildImpactResponse {
+    pub head_sha: String,
+    pub base_sha: String,
+    pub job: String,
+    /// RFC 3339 / ISO 8601 timestamp; stringly-typed for the same reason
+    /// as [`PackageChangesResponse::computed_at`].
+    pub computed_at: String,
+    /// One entry per system (deterministic alphabetical order).
+    pub per_system: Vec<PerSystemImpact>,
+    /// Size of the union of `reverse_reachable({all_changed_seeds})` —
+    /// the total count of distinct drvs that would have to rebuild
+    /// somewhere across all systems.
+    pub total_unique_drvs: usize,
+}

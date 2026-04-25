@@ -245,6 +245,79 @@ impl BuildGraph {
         visited.into_iter().collect()
     }
 
+    /// Multi-source reverse-reachability BFS.
+    ///
+    /// Computes the union of transitive dependents reachable from any drv in
+    /// `seeds`, traversing the `dependents` adjacency. Uses a single shared
+    /// `visited` set so each node is visited at most once across the whole
+    /// fan-out — significantly cheaper than running independent BFSes when
+    /// seeds share descendants.
+    ///
+    /// The seeds themselves are included in the returned set when they are
+    /// present in the graph; callers wanting "strict descendants only" should
+    /// subtract the seed set.
+    ///
+    /// Seeds whose `DrvId` is not in the graph are silently skipped (they
+    /// contribute nothing to the BFS). This matches the semantics of
+    /// [`Self::get_all_transitive_dependents`].
+    ///
+    /// Used by [`crate::change_summary`] (A2 rebuild impact) for the
+    /// "blast radius" computation described in design §8.2.
+    pub fn reverse_reachable_from_set(&self, seeds: &[DrvId]) -> HashSet<DrvId> {
+        let mut visited: HashSet<DrvId> = HashSet::new();
+        let mut queue: VecDeque<DrvId> = VecDeque::new();
+
+        for seed in seeds {
+            // Only enqueue seeds that exist in the graph; missing seeds are a
+            // no-op (matches `get_all_transitive_dependents`).
+            if self.nodes.peek(seed).is_some() && visited.insert(seed.clone()) {
+                queue.push_back(seed.clone());
+            }
+        }
+
+        while let Some(current) = queue.pop_front() {
+            let Some(node) = self.nodes.peek(&current) else {
+                continue;
+            };
+
+            for dependent_id in &node.dependents {
+                if visited.insert(dependent_id.clone()) {
+                    queue.push_back(dependent_id.clone());
+                }
+            }
+        }
+
+        visited
+    }
+
+    /// Per-seed blast radius: for each seed, the count of strict transitive
+    /// dependents reachable from that seed.
+    ///
+    /// Runs an independent BFS for each seed because seeds can share
+    /// descendants — a shared-visited multi-source BFS would under-count
+    /// individual seeds' radii. The seed itself is excluded from its own
+    /// count (so a leaf drv has radius `0`).
+    ///
+    /// Seeds whose `DrvId` is not in the graph map to `0`.
+    ///
+    /// Used to identify "critical path" packages — those whose change forces
+    /// the largest dependent set rebuild.
+    pub fn blast_radius_per_seed(&self, seeds: &[DrvId]) -> HashMap<DrvId, usize> {
+        let mut out = HashMap::with_capacity(seeds.len());
+        for seed in seeds {
+            // Reuse the existing per-seed BFS; it already excludes the seed.
+            let count = if self.nodes.peek(seed).is_some() {
+                self.get_all_transitive_dependents(seed).len()
+            } else {
+                0
+            };
+            // Last writer wins on duplicate seeds — count is deterministic
+            // either way since BFS is pure.
+            out.insert(seed.clone(), count);
+        }
+        out
+    }
+
     /// Propagate failure from a drv to all its transitive dependents
     /// Returns the list of drvs that were marked as TransitiveFailure
     pub fn propagate_failure(&mut self, failed_drv: &DrvId) -> Vec<DrvId> {
@@ -592,6 +665,135 @@ mod tests {
             graph.get_node(&id_b).unwrap().build_state,
             DrvBuildState::TransitiveFailure
         );
+    }
+
+    #[test]
+    fn test_reverse_reachable_from_set_single_seed() {
+        let mut graph = BuildGraph::new(1000);
+
+        // A -> B -> C  (A depends on B, B depends on C)
+        let drv_a = make_test_drv("aaa", DrvBuildState::Queued);
+        let drv_b = make_test_drv("bbb", DrvBuildState::Queued);
+        let drv_c = make_test_drv("ccc", DrvBuildState::Queued);
+        let id_a = drv_a.drv_path.clone();
+        let id_b = drv_b.drv_path.clone();
+        let id_c = drv_c.drv_path.clone();
+        graph.insert_node(drv_a);
+        graph.insert_node(drv_b);
+        graph.insert_node(drv_c);
+        graph.add_edge(id_a.clone(), id_b.clone());
+        graph.add_edge(id_b.clone(), id_c.clone());
+
+        // From C we should reach C, B, A
+        let reachable = graph.reverse_reachable_from_set(&[id_c.clone()]);
+        assert_eq!(reachable.len(), 3);
+        assert!(reachable.contains(&id_a));
+        assert!(reachable.contains(&id_b));
+        assert!(reachable.contains(&id_c));
+    }
+
+    #[test]
+    fn test_reverse_reachable_from_set_shared_descendants() {
+        // Diamond:
+        //       A
+        //      / \
+        //     B   C
+        //      \ /
+        //       D     (A depends on B and C; B and C depend on D)
+        let mut graph = BuildGraph::new(1000);
+        let drv_a = make_test_drv("aaa", DrvBuildState::Queued);
+        let drv_b = make_test_drv("bbb", DrvBuildState::Queued);
+        let drv_c = make_test_drv("ccc", DrvBuildState::Queued);
+        let drv_d = make_test_drv("ddd", DrvBuildState::Queued);
+        let id_a = drv_a.drv_path.clone();
+        let id_b = drv_b.drv_path.clone();
+        let id_c = drv_c.drv_path.clone();
+        let id_d = drv_d.drv_path.clone();
+        graph.insert_node(drv_a);
+        graph.insert_node(drv_b);
+        graph.insert_node(drv_c);
+        graph.insert_node(drv_d);
+        graph.add_edge(id_a.clone(), id_b.clone());
+        graph.add_edge(id_a.clone(), id_c.clone());
+        graph.add_edge(id_b.clone(), id_d.clone());
+        graph.add_edge(id_c.clone(), id_d.clone());
+
+        // Seeds = {B, C}. Union covers B, C, A (shared dependent).
+        let reachable = graph.reverse_reachable_from_set(&[id_b.clone(), id_c.clone()]);
+        assert_eq!(reachable.len(), 3);
+        assert!(reachable.contains(&id_a));
+        assert!(reachable.contains(&id_b));
+        assert!(reachable.contains(&id_c));
+        assert!(!reachable.contains(&id_d));
+    }
+
+    #[test]
+    fn test_reverse_reachable_from_set_missing_seed() {
+        use std::str::FromStr;
+
+        let mut graph = BuildGraph::new(1000);
+        let drv_a = make_test_drv("aaa", DrvBuildState::Queued);
+        let id_a = drv_a.drv_path.clone();
+        graph.insert_node(drv_a);
+
+        let phantom =
+            DrvId::from_str("/nix/store/00000000000000000000000000000099-phantom.drv").unwrap();
+
+        // Mix of valid + invalid seed: only the valid one should contribute.
+        let reachable = graph.reverse_reachable_from_set(&[id_a.clone(), phantom.clone()]);
+        assert_eq!(reachable.len(), 1);
+        assert!(reachable.contains(&id_a));
+        assert!(!reachable.contains(&phantom));
+    }
+
+    #[test]
+    fn test_reverse_reachable_from_set_empty_seeds() {
+        let graph = BuildGraph::new(1000);
+        let reachable = graph.reverse_reachable_from_set(&[]);
+        assert!(reachable.is_empty());
+    }
+
+    #[test]
+    fn test_blast_radius_per_seed() {
+        // A -> B -> C  ;  D (isolated leaf)
+        let mut graph = BuildGraph::new(1000);
+        let drv_a = make_test_drv("aaa", DrvBuildState::Queued);
+        let drv_b = make_test_drv("bbb", DrvBuildState::Queued);
+        let drv_c = make_test_drv("ccc", DrvBuildState::Queued);
+        let drv_d = make_test_drv("ddd", DrvBuildState::Queued);
+        let id_a = drv_a.drv_path.clone();
+        let id_b = drv_b.drv_path.clone();
+        let id_c = drv_c.drv_path.clone();
+        let id_d = drv_d.drv_path.clone();
+        graph.insert_node(drv_a);
+        graph.insert_node(drv_b);
+        graph.insert_node(drv_c);
+        graph.insert_node(drv_d);
+        graph.add_edge(id_a.clone(), id_b.clone());
+        graph.add_edge(id_b.clone(), id_c.clone());
+
+        let radii =
+            graph.blast_radius_per_seed(&[id_a.clone(), id_b.clone(), id_c.clone(), id_d.clone()]);
+
+        // A has nothing depending on it => 0.
+        assert_eq!(radii.get(&id_a).copied(), Some(0));
+        // B has A => 1.
+        assert_eq!(radii.get(&id_b).copied(), Some(1));
+        // C has B and A => 2.
+        assert_eq!(radii.get(&id_c).copied(), Some(2));
+        // D has nothing => 0.
+        assert_eq!(radii.get(&id_d).copied(), Some(0));
+    }
+
+    #[test]
+    fn test_blast_radius_per_seed_missing_seed() {
+        use std::str::FromStr;
+
+        let graph = BuildGraph::new(1000);
+        let phantom =
+            DrvId::from_str("/nix/store/00000000000000000000000000000099-phantom.drv").unwrap();
+        let radii = graph.blast_radius_per_seed(&[phantom.clone()]);
+        assert_eq!(radii.get(&phantom).copied(), Some(0));
     }
 
     #[test]
