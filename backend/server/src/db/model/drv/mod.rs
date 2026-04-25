@@ -37,6 +37,32 @@ pub struct Drv {
     /// Closure size in bytes (size of output + all runtime dependencies)
     /// None if not yet calculated or build hasn't completed
     pub closure_size: Option<i64>,
+
+    /// Package name (e.g., "hello"), from `meta.pname` or heuristically
+    /// extracted from `name`. None for derivations without parseable names.
+    pub pname: Option<String>,
+
+    /// Package version (e.g., "2.12.1"), from `meta.version` or heuristically
+    /// extracted from `name`. None when no version segment can be identified.
+    pub version: Option<String>,
+
+    /// Normalized JSON list of license entries:
+    /// `[{"spdxId"?, "shortName"?, "fullName"?, "free"?}]`.
+    /// None when meta is unavailable.
+    pub license_json: Option<String>,
+
+    /// Normalized JSON list of maintainer entries:
+    /// `[{"github"?, "name"?, "email"?}]`. None when meta is unavailable.
+    pub maintainers_json: Option<String>,
+
+    /// "file:line" reference to the meta declaration site, from `meta.position`.
+    pub meta_position: Option<String>,
+
+    /// Marked broken by upstream `meta.broken`.
+    pub broken: Option<bool>,
+
+    /// Marked insecure by upstream `meta.insecure`.
+    pub insecure: Option<bool>,
 }
 
 impl Drv {
@@ -63,6 +89,17 @@ impl Drv {
             build_state: DrvBuildState::Queued,
             output_size: None,  // Will be calculated after successful build
             closure_size: None, // Will be calculated after successful build
+            // Package metadata is populated later when an evaluation provides
+            // it via NixEvalDrv. `nix derivation show` does not surface meta,
+            // so we leave these as None for now (insert_drv keeps existing
+            // values via COALESCE on conflict).
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         })
     }
 }

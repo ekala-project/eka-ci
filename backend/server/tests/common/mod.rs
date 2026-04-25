@@ -121,6 +121,13 @@ pub fn test_drv(name: &str, system: &str) -> Drv {
         build_state: DrvBuildState::Queued,
         output_size: None,
         closure_size: None,
+        pname: None,
+        version: None,
+        license_json: None,
+        maintainers_json: None,
+        meta_position: None,
+        broken: None,
+        insecure: None,
     }
 }
 

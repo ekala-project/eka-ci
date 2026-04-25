@@ -214,7 +214,7 @@ pub async fn check_runs_for_commit(
 pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
     let drvs = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size, d.pname, d.version, d.license_json, d.maintainers_json, d.meta_position, d.broken, d.insecure
         FROM Drv d
         INNER JOIN Job j ON d.ROWID = j.drv_id
         WHERE j.jobset = ?
@@ -236,7 +236,7 @@ pub async fn new_jobs(
     // Query for drvs only present in the head jobset
     let new_drvs: Vec<Drv> = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size, d.pname, d.version, d.license_json, d.maintainers_json, d.meta_position, d.broken, d.insecure
         FROM Drv d
         INNER JOIN
         (SELECT drv_id
@@ -323,7 +323,7 @@ pub async fn job_difference(
     // Query for drvs which differ in drv_id but share the same job name
     let changed_drvs = sqlx::query_as(
         r#"
-        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size
+        SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size, d.pname, d.version, d.license_json, d.maintainers_json, d.meta_position, d.broken, d.insecure
         FROM Drv d
         INNER JOIN
         (
@@ -1607,6 +1607,13 @@ mod tests {
             build_state: DrvBuildState::Queued,
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         };
         insert_drv(&pool, &drv).await?;
         let jobs = [eval_drv];
@@ -1639,6 +1646,13 @@ mod tests {
             build_state: DrvBuildState::Queued,
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         };
         insert_drv(&pool, &drv2).await?;
         let jobs = [eval_drv2];
@@ -1711,6 +1725,13 @@ mod tests {
                 build_state: DrvBuildState::Queued,
                 output_size: None,
                 closure_size: None,
+                pname: None,
+                version: None,
+                license_json: None,
+                maintainers_json: None,
+                meta_position: None,
+                broken: None,
+                insecure: None,
             };
             insert_drv(&pool, &drv).await?;
         }
@@ -1727,6 +1748,7 @@ mod tests {
                 name: format!("{}-1.0.0", attr),
                 system: "x86_64-linux".to_string(),
                 outputs: std::collections::HashMap::new(),
+                meta: None,
             })
             .collect();
 
@@ -1775,6 +1797,13 @@ mod tests {
             build_state: DrvBuildState::Queued,
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         };
         insert_drv(&pool, &drv).await?;
 
@@ -1787,6 +1816,7 @@ mod tests {
             name: "test-package-1.0.0".to_string(),
             system: "x86_64-linux".to_string(),
             outputs: std::collections::HashMap::new(),
+            meta: None,
         };
 
         // Create a jobset and insert the job
@@ -1872,6 +1902,13 @@ mod tests {
                 build_state: DrvBuildState::Queued,
                 output_size: None,
                 closure_size: None,
+                pname: None,
+                version: None,
+                license_json: None,
+                maintainers_json: None,
+                meta_position: None,
+                broken: None,
+                insecure: None,
             };
             insert_drv(&pool, &drv).await?;
         }
@@ -1888,6 +1925,7 @@ mod tests {
                 name: format!("{}-1.0.0", attr),
                 system: "x86_64-linux".to_string(),
                 outputs: std::collections::HashMap::new(),
+                meta: None,
             })
             .collect();
 
@@ -1939,6 +1977,13 @@ mod tests {
             build_state: DrvBuildState::Queued,
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         };
         insert_drv(pool, &drv).await?;
 
@@ -1960,6 +2005,7 @@ mod tests {
             name: format!("{}-1.0.0", attr),
             system: "x86_64-linux".to_string(),
             outputs: std::collections::HashMap::new(),
+            meta: None,
         }
     }
 

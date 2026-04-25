@@ -100,9 +100,33 @@ impl DbService {
         jobs: &[NixEvalDrv],
         config_json: Option<&str>,
     ) -> anyhow::Result<i64> {
+        use std::str::FromStr;
+
         let jobset_id =
             github::create_jobset(sha, name, owner, repo_name, config_json, &self.pool).await?;
         github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await?;
+
+        // Persist package metadata derived from `nix-eval-jobs --meta` onto
+        // the `Drv` rows that were created earlier in the eval pipeline.
+        // The Job FK to Drv has already passed at this point, so we know
+        // the rows exist. We tolerate per-drv DrvId parse failures by
+        // logging and dropping (consistent with the existing eval path).
+        let metadata_items: Vec<(DrvId, _)> = jobs
+            .iter()
+            .filter_map(|job| match DrvId::from_str(&job.drv_path) {
+                Ok(drv_id) => Some((drv_id, job.to_drv_metadata())),
+                Err(e) => {
+                    debug!(
+                        "Skipping metadata persist for un-parseable drv_path {}: {:?}",
+                        job.drv_path, e
+                    );
+                    None
+                },
+            })
+            .collect();
+
+        drv::update_drv_package_metadata(&self.pool, &metadata_items).await?;
+
         Ok(jobset_id)
     }
 

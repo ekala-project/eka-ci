@@ -51,6 +51,13 @@ impl CachedNode {
             build_state: self.build_state.clone(),
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         }
     }
 }

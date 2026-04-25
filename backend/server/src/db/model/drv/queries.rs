@@ -8,7 +8,8 @@ use crate::db::model::{DrvId, Reference, Referrer, drv_id};
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
         r#"
-SELECT drv_path, system, required_system_features, is_fod, build_state, output_size, closure_size
+SELECT drv_path, system, required_system_features, is_fod, build_state, output_size, closure_size,
+       pname, version, license_json, maintainers_json, meta_position, broken, insecure
 FROM Drv
 WHERE drv_path = ?
         "#,
@@ -41,13 +42,14 @@ pub async fn insert_drvs_and_references(
     use sqlx::{QueryBuilder, Sqlite};
 
     if !drvs.is_empty() {
-        // Ensure we do not exceed SQLite's 32k limit for query variables
-        // 32766 / 6 ~= 5460
-        for drvs_chunk in drvs.chunks(5460) {
+        // Ensure we do not exceed SQLite's 32k limit for query variables.
+        // We bind 14 columns per drv now (was 7); 32766 / 14 ~= 2340.
+        for drvs_chunk in drvs.chunks(2340) {
             let mut tx = pool.begin().await?;
             let mut query_builder = QueryBuilder::new(
                 "INSERT INTO Drv (drv_path, system, required_system_features, is_fod, \
-                 build_state, output_size, closure_size) ",
+                 build_state, output_size, closure_size, pname, version, license_json, \
+                 maintainers_json, meta_position, broken, insecure) ",
             );
 
             query_builder.push_values(drvs_chunk, |mut row, drv| {
@@ -57,8 +59,28 @@ pub async fn insert_drvs_and_references(
                     .push_bind(drv.is_fod)
                     .push_bind(&drv.build_state)
                     .push_bind(drv.output_size)
-                    .push_bind(drv.closure_size);
+                    .push_bind(drv.closure_size)
+                    .push_bind(&drv.pname)
+                    .push_bind(&drv.version)
+                    .push_bind(&drv.license_json)
+                    .push_bind(&drv.maintainers_json)
+                    .push_bind(&drv.meta_position)
+                    .push_bind(drv.broken)
+                    .push_bind(drv.insecure);
             });
+
+            // Override the table-level `UNIQUE (drv_path) ON CONFLICT IGNORE`
+            // so that re-evaluations enrich existing rows with metadata
+            // without overwriting fields that were previously populated.
+            query_builder.push(
+                " ON CONFLICT(drv_path) DO UPDATE SET pname = COALESCE(excluded.pname, \
+                 Drv.pname), version = COALESCE(excluded.version, Drv.version), license_json = \
+                 COALESCE(excluded.license_json, Drv.license_json), maintainers_json = \
+                 COALESCE(excluded.maintainers_json, Drv.maintainers_json), meta_position = \
+                 COALESCE(excluded.meta_position, Drv.meta_position), broken = \
+                 COALESCE(excluded.broken, Drv.broken), insecure = COALESCE(excluded.insecure, \
+                 Drv.insecure)",
+            );
 
             query_builder
                 .build()
@@ -123,11 +145,24 @@ VALUES (?1, ?2)
 }
 
 pub async fn insert_drv(pool: &Pool<Sqlite>, drv: &Drv) -> anyhow::Result<()> {
+    // ON CONFLICT(drv_path) DO UPDATE enriches the existing row with any
+    // newly-supplied metadata (COALESCE keeps previously-populated values).
+    // The table-level `UNIQUE (drv_path) ON CONFLICT IGNORE` policy is
+    // overridden by the explicit ON CONFLICT clause here.
     sqlx::query(
         r#"
 INSERT INTO Drv
-    (drv_path, system, required_system_features, is_fod, build_state)
-VALUES (?1, ?2, ?3, ?4, ?5)
+    (drv_path, system, required_system_features, is_fod, build_state,
+     pname, version, license_json, maintainers_json, meta_position, broken, insecure)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+ON CONFLICT(drv_path) DO UPDATE SET
+    pname = COALESCE(excluded.pname, Drv.pname),
+    version = COALESCE(excluded.version, Drv.version),
+    license_json = COALESCE(excluded.license_json, Drv.license_json),
+    maintainers_json = COALESCE(excluded.maintainers_json, Drv.maintainers_json),
+    meta_position = COALESCE(excluded.meta_position, Drv.meta_position),
+    broken = COALESCE(excluded.broken, Drv.broken),
+    insecure = COALESCE(excluded.insecure, Drv.insecure)
     "#,
     )
     .bind(&drv.drv_path)
@@ -135,9 +170,77 @@ VALUES (?1, ?2, ?3, ?4, ?5)
     .bind(&drv.required_system_features)
     .bind(drv.is_fod)
     .bind(DrvBuildState::Queued)
+    .bind(&drv.pname)
+    .bind(&drv.version)
+    .bind(&drv.license_json)
+    .bind(&drv.maintainers_json)
+    .bind(&drv.meta_position)
+    .bind(drv.broken)
+    .bind(drv.insecure)
     .execute(pool)
     .await?;
 
+    Ok(())
+}
+
+/// Persist package metadata extracted from `nix-eval-jobs --meta` onto
+/// pre-existing `Drv` rows. Uses `COALESCE` so a `None` field never blanks
+/// out a previously populated value, and silently skips drvs whose row does
+/// not (yet) exist in `Drv` — those will be enriched on a future evaluation.
+///
+/// This is intentionally an UPDATE rather than an UPSERT: at the call site,
+/// the FK constraint on `Job.drv_id` already requires the `Drv` row to
+/// exist before we can persist a `Job`, so we can rely on it being present.
+pub async fn update_drv_package_metadata(
+    pool: &Pool<Sqlite>,
+    items: &[(DrvId, crate::nix::nix_eval_jobs::DrvPackageMetadata)],
+) -> anyhow::Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+
+    for (drv_id, meta) in items {
+        // Skip rows where there is genuinely nothing to write — avoids
+        // unnecessary DB churn when meta was unavailable.
+        if meta.pname.is_none()
+            && meta.version.is_none()
+            && meta.license_json.is_none()
+            && meta.maintainers_json.is_none()
+            && meta.meta_position.is_none()
+            && meta.broken.is_none()
+            && meta.insecure.is_none()
+        {
+            continue;
+        }
+
+        sqlx::query(
+            r#"
+UPDATE Drv SET
+    pname = COALESCE(?1, pname),
+    version = COALESCE(?2, version),
+    license_json = COALESCE(?3, license_json),
+    maintainers_json = COALESCE(?4, maintainers_json),
+    meta_position = COALESCE(?5, meta_position),
+    broken = COALESCE(?6, broken),
+    insecure = COALESCE(?7, insecure)
+WHERE drv_path = ?8
+            "#,
+        )
+        .bind(&meta.pname)
+        .bind(&meta.version)
+        .bind(&meta.license_json)
+        .bind(&meta.maintainers_json)
+        .bind(&meta.meta_position)
+        .bind(meta.broken)
+        .bind(meta.insecure)
+        .bind(drv_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
     Ok(())
 }
 
@@ -166,7 +269,9 @@ WHERE drv_path = ?2
 pub async fn drv_references(pool: &Pool<Sqlite>, drv: &DrvId) -> anyhow::Result<Vec<Drv>> {
     let result = sqlx::query_as(
         r#"
-SELECT drv_path, system, required_system_features, is_fod, build_state
+SELECT drv_path, system, required_system_features, is_fod, build_state,
+       output_size, closure_size,
+       pname, version, license_json, maintainers_json, meta_position, broken, insecure
 FROM Drv
 JOIN DrvRefs ON Drv.drv_path = DrvRefs.reference
 WHERE referrer = ?1
@@ -421,6 +526,13 @@ mod tests {
             build_state: DrvBuildState::Queued,
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         };
         insert_drv(&pool, &drv).await?;
         update_drv_status(&pool, &drv_id, &DrvBuildState::Buildable).await?;
@@ -446,6 +558,13 @@ mod tests {
             build_state: DrvBuildState::Queued,
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         };
         let drv2 = Drv {
             drv_path: DrvId::from_str(
@@ -458,6 +577,13 @@ mod tests {
             build_state: DrvBuildState::Queued,
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         };
         let drv3 = Drv {
             drv_path: DrvId::from_str(
@@ -470,6 +596,13 @@ mod tests {
             build_state: DrvBuildState::Buildable,
             output_size: None,
             closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
         };
 
         let drvs = vec![drv1, drv2, drv3];
@@ -485,6 +618,177 @@ mod tests {
         // TODO: make less ugly
         let length = result.len();
         assert_eq!(length, 2);
+        Ok(())
+    }
+
+    /// End-to-end: an `insert_drv` followed by a metadata-bearing
+    /// `update_drv_package_metadata` should populate the new columns and
+    /// be readable via `get_drv`.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn metadata_round_trip(pool: SqlitePool) -> anyhow::Result<()> {
+        use crate::nix::nix_eval_jobs::DrvPackageMetadata;
+
+        let drv_id =
+            DrvId::from_str("/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv")?;
+        let drv = Drv {
+            drv_path: drv_id.clone(),
+            system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
+            required_system_features: None,
+            is_fod: false,
+            build_state: DrvBuildState::Queued,
+            output_size: None,
+            closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
+        };
+        insert_drv(&pool, &drv).await?;
+
+        let meta = DrvPackageMetadata {
+            pname: Some("hello".to_string()),
+            version: Some("2.12.1".to_string()),
+            license_json: Some(r#"[{"shortName":"gpl3Plus"}]"#.to_string()),
+            maintainers_json: Some(r#"[{"github":"edolstra"}]"#.to_string()),
+            meta_position: Some("pkgs/applications/misc/hello/default.nix:34".to_string()),
+            broken: Some(false),
+            insecure: Some(false),
+        };
+        update_drv_package_metadata(&pool, &[(drv_id.clone(), meta)]).await?;
+
+        let result = get_drv(&drv_id, &pool).await?.expect("row present");
+        assert_eq!(result.pname.as_deref(), Some("hello"));
+        assert_eq!(result.version.as_deref(), Some("2.12.1"));
+        assert_eq!(
+            result.license_json.as_deref(),
+            Some(r#"[{"shortName":"gpl3Plus"}]"#)
+        );
+        assert_eq!(
+            result.maintainers_json.as_deref(),
+            Some(r#"[{"github":"edolstra"}]"#)
+        );
+        assert_eq!(
+            result.meta_position.as_deref(),
+            Some("pkgs/applications/misc/hello/default.nix:34")
+        );
+        assert_eq!(result.broken, Some(false));
+        assert_eq!(result.insecure, Some(false));
+        Ok(())
+    }
+
+    /// COALESCE behavior: passing `None` for previously-populated columns
+    /// must NOT clear them. We populate metadata once, then call update
+    /// again with all-None to confirm the original values survive.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn metadata_coalesce_preserves_previous_values(pool: SqlitePool) -> anyhow::Result<()> {
+        use crate::nix::nix_eval_jobs::DrvPackageMetadata;
+
+        let drv_id =
+            DrvId::from_str("/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv")?;
+        let drv = Drv {
+            drv_path: drv_id.clone(),
+            system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
+            required_system_features: None,
+            is_fod: false,
+            build_state: DrvBuildState::Queued,
+            output_size: None,
+            closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
+        };
+        insert_drv(&pool, &drv).await?;
+
+        // First update populates pname, version, license.
+        update_drv_package_metadata(
+            &pool,
+            &[(
+                drv_id.clone(),
+                DrvPackageMetadata {
+                    pname: Some("hello".to_string()),
+                    version: Some("2.12.1".to_string()),
+                    license_json: Some(r#"[{"shortName":"gpl3Plus"}]"#.to_string()),
+                    maintainers_json: None,
+                    meta_position: None,
+                    broken: None,
+                    insecure: None,
+                },
+            )],
+        )
+        .await?;
+
+        // Second update: all fields None except a new maintainers_json. Must
+        // preserve pname/version/license_json from the previous write while
+        // adding maintainers_json.
+        update_drv_package_metadata(
+            &pool,
+            &[(
+                drv_id.clone(),
+                DrvPackageMetadata {
+                    pname: None,
+                    version: None,
+                    license_json: None,
+                    maintainers_json: Some(r#"[{"github":"edolstra"}]"#.to_string()),
+                    meta_position: None,
+                    broken: None,
+                    insecure: None,
+                },
+            )],
+        )
+        .await?;
+
+        let result = get_drv(&drv_id, &pool).await?.expect("row present");
+        assert_eq!(result.pname.as_deref(), Some("hello"));
+        assert_eq!(result.version.as_deref(), Some("2.12.1"));
+        assert_eq!(
+            result.license_json.as_deref(),
+            Some(r#"[{"shortName":"gpl3Plus"}]"#)
+        );
+        assert_eq!(
+            result.maintainers_json.as_deref(),
+            Some(r#"[{"github":"edolstra"}]"#)
+        );
+        Ok(())
+    }
+
+    /// `update_drv_package_metadata` on a non-existent drv_path must not
+    /// error — the UPDATE simply matches zero rows. This is intentional so
+    /// the eval-time enrichment is resilient to ordering.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn metadata_update_on_missing_drv_is_noop(pool: SqlitePool) -> anyhow::Result<()> {
+        use crate::nix::nix_eval_jobs::DrvPackageMetadata;
+
+        let drv_id =
+            DrvId::from_str("/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv")?;
+        let res = update_drv_package_metadata(
+            &pool,
+            &[(
+                drv_id.clone(),
+                DrvPackageMetadata {
+                    pname: Some("hello".to_string()),
+                    version: Some("2.12.1".to_string()),
+                    ..Default::default()
+                },
+            )],
+        )
+        .await;
+        assert!(
+            res.is_ok(),
+            "missing-drv update should be a no-op: {:?}",
+            res
+        );
+
+        // Confirm no row was created (UPDATE doesn't insert).
+        assert!(get_drv(&drv_id, &pool).await?.is_none());
         Ok(())
     }
 }
