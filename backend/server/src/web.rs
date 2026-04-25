@@ -413,6 +413,10 @@ fn api_routes() -> Router<AppState> {
         .route("/merge-queue/{owner}/{repo}/{sha}", get(get_merge_queue_build_handler))
         // Job and build status routes
         .route("/commits/{sha}/jobs", get(get_commit_jobs_handler))
+        .route(
+            "/commits/{sha}/package-changes",
+            get(get_package_changes_handler),
+        )
         .route("/jobs/{jobset_id}", get(get_jobset_details_handler))
         .route("/jobs/{jobset_id}/drvs", get(get_jobset_drvs_handler))
         .route("/builds/active", get(get_active_builds_handler))
@@ -1140,6 +1144,75 @@ async fn get_jobset_drvs_handler(
             Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to get jobset drvs: {}", e),
+            ))
+        },
+    }
+}
+
+/// Query parameters for `/v1/commits/{sha}/package-changes`.
+///
+/// `base_sha` and `job` are mandatory because P1 surfaces the raw
+/// classifier without any "auto-detect base" or "aggregate across jobs"
+/// logic — those land in P5.
+#[derive(Deserialize)]
+struct PackageChangesQuery {
+    base_sha: String,
+    job: String,
+    /// Optional override for `max_packages_listed`; clamped to a sane
+    /// upper bound to prevent unbounded JSON payloads.
+    #[serde(default)]
+    max_packages_listed: Option<usize>,
+}
+
+/// `GET /v1/commits/{sha}/package-changes?base_sha=<sha>&job=<job>`
+///
+/// Returns the structured package-change list for the given (head, base,
+/// job) triple. Authenticated (per design §10.1 + findings.md H4).
+async fn get_package_changes_handler(
+    // H4: classifier output correlates internal commit SHAs with package
+    // identities — same sensitivity tier as `check_runs`.
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(sha): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<PackageChangesQuery>,
+) -> Result<
+    Json<crate::change_summary::PackageChangesResponse>,
+    (axum::http::StatusCode, String),
+> {
+    use crate::change_summary::{
+        DEFAULT_MAX_PACKAGES_LISTED, build_package_changes_response,
+    };
+
+    // Clamp to the design default cap (×10 ceiling). A request can ask for
+    // a smaller list, but never for an unbounded one.
+    let max_listed = query
+        .max_packages_listed
+        .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
+        .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
+        .max(1);
+
+    match build_package_changes_response(
+        &state.db_service.pool,
+        &sha,
+        &query.base_sha,
+        &query.job,
+        max_listed,
+    )
+    .await
+    {
+        Ok(Some(resp)) => Ok(Json(resp)),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("No jobset found for sha={sha} job={}", query.job),
+        )),
+        Err(e) => {
+            error!(
+                "Failed to compute package changes for sha={} job={}: {}",
+                sha, query.job, e
+            );
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to compute package changes: {e}"),
             ))
         },
     }
