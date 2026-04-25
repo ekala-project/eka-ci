@@ -56,6 +56,57 @@ fn extract_pname(store_path: &str) -> String {
     }
 }
 
+/// Extract pname from a bare derivation name (no `/nix/store/<hash>-` prefix).
+///
+/// The `name` field of `nix-eval-jobs` output is normally `${pname}-${version}`
+/// (e.g., `"hello-2.12.1"` or `"python3.12-setuptools-69.0.0"`). This is a
+/// sibling of [`extract_pname`] that operates on bare names rather than store
+/// paths, sharing the same trailing-version-stripping logic.
+///
+/// Returns the input unchanged if no version-looking suffix is found.
+pub(crate) fn pname_from_name(name: &str) -> String {
+    let parts: Vec<&str> = name.split('-').collect();
+    if parts.len() == 1 {
+        return name.to_string();
+    }
+    let mut keep_parts = parts.len();
+    for (i, part) in parts.iter().enumerate().rev() {
+        if looks_like_version(part) {
+            keep_parts = i;
+        } else {
+            break;
+        }
+    }
+    if keep_parts == 0 {
+        // All parts look like versions — keep everything (defensive).
+        name.to_string()
+    } else {
+        parts[..keep_parts].join("-")
+    }
+}
+
+/// Extract version from a bare derivation name. Returns `None` if there's no
+/// trailing version-looking suffix, or if the entire name is version-like.
+pub(crate) fn version_from_name(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.split('-').collect();
+    if parts.len() == 1 {
+        return None;
+    }
+    let mut first_version_idx = parts.len();
+    for (i, part) in parts.iter().enumerate().rev() {
+        if looks_like_version(part) {
+            first_version_idx = i;
+        } else {
+            break;
+        }
+    }
+    if first_version_idx == 0 || first_version_idx == parts.len() {
+        None
+    } else {
+        Some(parts[first_version_idx..].join("-"))
+    }
+}
+
 /// Check if a string segment looks like a version identifier
 fn looks_like_version(s: &str) -> bool {
     // Empty or very short strings are not versions
@@ -365,6 +416,53 @@ mod tests {
             extract_pname("/nix/store/abc123def456abc123def456abc123de-rust-analyzer-v0.3.1234"),
             "rust-analyzer"
         );
+    }
+
+    #[test]
+    fn test_pname_from_name() {
+        assert_eq!(pname_from_name("hello-2.12.1"), "hello");
+        assert_eq!(
+            pname_from_name("python3.12-setuptools-69.0.0"),
+            "python3.12-setuptools"
+        );
+        assert_eq!(pname_from_name("source"), "source");
+        assert_eq!(pname_from_name("rust-analyzer-v0.3.1234"), "rust-analyzer");
+        assert_eq!(
+            pname_from_name("nixpkgs-unstable-2024.01.01"),
+            "nixpkgs-unstable"
+        );
+        // No trailing version - returned as-is
+        assert_eq!(pname_from_name("just-a-name"), "just-a-name");
+        // Empty
+        assert_eq!(pname_from_name(""), "");
+    }
+
+    #[test]
+    fn test_version_from_name() {
+        assert_eq!(
+            version_from_name("hello-2.12.1"),
+            Some("2.12.1".to_string())
+        );
+        assert_eq!(
+            version_from_name("python3.12-setuptools-69.0.0"),
+            Some("69.0.0".to_string())
+        );
+        assert_eq!(version_from_name("source"), None);
+        assert_eq!(
+            version_from_name("rust-analyzer-v0.3.1234"),
+            Some("v0.3.1234".to_string())
+        );
+        assert_eq!(
+            version_from_name("nixpkgs-unstable-2024.01.01"),
+            Some("2024.01.01".to_string())
+        );
+        // Multi-segment trailing version
+        assert_eq!(
+            version_from_name("foo-1.2.3-r1"),
+            Some("1.2.3-r1".to_string())
+        );
+        // No version-looking suffix
+        assert_eq!(version_from_name("just-a-name"), None);
     }
 
     #[test]

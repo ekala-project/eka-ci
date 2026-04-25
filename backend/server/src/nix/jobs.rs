@@ -198,6 +198,7 @@ impl super::EvalService {
     ) -> anyhow::Result<(Vec<NixEvalDrv>, Vec<NixEvalError>)> {
         let mut cmd = Command::new("nix-eval-jobs")
             .arg("--show-input-drvs")
+            .arg("--meta")
             .arg(file_path)
             .stdout(Stdio::piped())
             .spawn()
