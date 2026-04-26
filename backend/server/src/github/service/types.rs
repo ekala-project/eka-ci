@@ -268,6 +268,11 @@ pub enum GitHubTask {
         jobset_id: i64,
         base_jobset_id: i64,
     },
+    /// Idempotently post (or patch) the aggregated change-summary check for a PR head.
+    CreateChangeSummaryCheck {
+        ci_check_info: Arc<CICheckInfo>,
+        job: String,
+    },
     /// Handle an `@eka-ci merge …` comment on a PR: verify authorization,
     /// pin the current head SHA, record a pending comment-merge.
     ProcessMergeCommand {
