@@ -22,7 +22,7 @@ use crate::auth::{AdminUser, AuthUser, JwtService, OAuthConfig};
 use crate::db::github::CheckRun;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
-use crate::metrics::WebhookMetrics;
+use crate::metrics::{ChangeSummaryMetrics, WebhookMetrics};
 use crate::scheduler::IngressTask;
 use crate::webhook_security::verify_webhook_signature;
 
@@ -58,6 +58,8 @@ struct AppState {
     /// (scheme + host + optional port). Exact-match; no wildcards. An
     /// empty list means no cross-origin requests are allowed.
     allowed_origins: Vec<String>,
+    /// Optional metrics for change-summary endpoint observability.
+    change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState
@@ -201,6 +203,7 @@ impl WebService {
         github_client: Arc<crate::auth::GitHubApiClient>,
         default_merge_method: String,
         allowed_origins: Vec<String>,
+        change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
     ) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(socket)
             .await
@@ -255,6 +258,7 @@ impl WebService {
                 github_client,
                 default_merge_method,
                 allowed_origins,
+                change_summary_metrics,
             },
         })
     }
@@ -1272,6 +1276,7 @@ async fn get_rebuild_impact_handler(
         &query.base_sha,
         &query.job,
         top_k,
+        state.change_summary_metrics.as_deref(),
     )
     .await
     {
@@ -1344,6 +1349,7 @@ async fn get_change_summary_handler(
         &query.job,
         max_packages_listed,
         max_top_blast_radius,
+        state.change_summary_metrics.as_deref(),
     )
     .await
     {
@@ -1400,6 +1406,7 @@ async fn get_change_summary_markdown_handler(
         &query.job,
         max_packages_listed,
         max_top_blast_radius,
+        state.change_summary_metrics.as_deref(),
     )
     .await
     {

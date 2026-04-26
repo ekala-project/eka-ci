@@ -37,6 +37,8 @@ pub use types::{
     PerSystemImpact, RebuildImpactResponse, TopBlastRadiusEntry,
 };
 
+use crate::metrics::ChangeSummaryMetrics;
+
 /// Build a [`PackageChangesResponse`] for a `(head_sha, base_sha, job)`
 /// triple by:
 ///
@@ -131,16 +133,32 @@ pub async fn build_change_summary(
     job: &str,
     max_packages_listed: usize,
     max_top_blast_radius: usize,
+    metrics: Option<&ChangeSummaryMetrics>,
 ) -> anyhow::Result<Option<ChangeSummary>> {
+    let end_to_end_start = std::time::Instant::now();
+
+    let classify_start = std::time::Instant::now();
     let pkg_resp =
         build_package_changes_response(pool, head_sha, base_sha, job, max_packages_listed).await?;
+    if let Some(m) = metrics {
+        m.total_duration_seconds
+            .with_label_values(&["classify"])
+            .observe(classify_start.elapsed().as_secs_f64());
+    }
     let Some(pkg_resp) = pkg_resp else {
         return Ok(None);
     };
 
+    if !pkg_resp.metadata_available {
+        if let Some(m) = metrics {
+            m.metadata_unavailable_total.inc();
+        }
+    }
+
     // Impact may legitimately return None if the head jobset disappears
     // between the two queries (race vs. a delete). Treat as "no impact"
     // rather than failing — the package-change view is still useful.
+    let impact_start = std::time::Instant::now();
     let impact_resp = impact::build_rebuild_impact_response_cached(
         pool,
         graph,
@@ -148,8 +166,14 @@ pub async fn build_change_summary(
         base_sha,
         job,
         max_top_blast_radius,
+        metrics,
     )
     .await?;
+    if let Some(m) = metrics {
+        m.total_duration_seconds
+            .with_label_values(&["impact"])
+            .observe(impact_start.elapsed().as_secs_f64());
+    }
 
     let (per_system, total_unique_drvs, impact_computed_at) = match impact_resp {
         Some(r) => (r.per_system, r.total_unique_drvs, Some(r.computed_at)),
@@ -176,10 +200,31 @@ pub async fn build_change_summary(
         markdown: String::new(),
     };
 
+    let render_start = std::time::Instant::now();
     let (markdown, render_truncation) = render::render(&summary);
+    if let Some(m) = metrics {
+        m.total_duration_seconds
+            .with_label_values(&["render"])
+            .observe(render_start.elapsed().as_secs_f64());
+    }
     summary.markdown = markdown;
     if render_truncation.any() {
         summary.truncated = true;
+    }
+
+    if let Some(m) = metrics {
+        if render_truncation.dropped_maintainers
+            || render_truncation.dropped_license
+            || render_truncation.dropped_rebuild_only
+        {
+            m.truncated_total.with_label_values(&["columns"]).inc();
+        }
+        if render_truncation.collapsed_to_counts {
+            m.truncated_total.with_label_values(&["summary"]).inc();
+        }
+        m.total_duration_seconds
+            .with_label_values(&["end_to_end"])
+            .observe(end_to_end_start.elapsed().as_secs_f64());
     }
 
     Ok(Some(summary))
@@ -398,7 +443,8 @@ mod tests {
     ) -> anyhow::Result<()> {
         let graph = spawn_graph(&pool).await;
         let summary =
-            build_change_summary(&pool, &graph, "missing-sha", "base-sha", "ci", 100, 5).await?;
+            build_change_summary(&pool, &graph, "missing-sha", "base-sha", "ci", 100, 5, None)
+                .await?;
         assert!(summary.is_none());
         Ok(())
     }
@@ -414,9 +460,18 @@ mod tests {
         make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
 
         let graph = spawn_graph(&pool).await;
-        let summary = build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", 100, 5)
-            .await?
-            .expect("expected Some summary");
+        let summary = build_change_summary(
+            &pool,
+            &graph,
+            "head-sha",
+            "missing-base",
+            "ci",
+            100,
+            5,
+            None,
+        )
+        .await?
+        .expect("expected Some summary");
 
         assert_eq!(summary.package_changes.len(), 1);
         assert!(matches!(
@@ -453,9 +508,10 @@ mod tests {
         make_jobset(&pool, "head-sha", "ci", &rows).await;
 
         let graph = spawn_graph(&pool).await;
-        let summary = build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", 2, 5)
-            .await?
-            .expect("expected Some summary");
+        let summary =
+            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", 2, 5, None)
+                .await?
+                .expect("expected Some summary");
 
         assert_eq!(summary.package_changes.len(), 2);
         // classify::truncated → orchestrator surfaces it.

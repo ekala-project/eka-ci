@@ -15,6 +15,7 @@ use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::dependency_comparison;
 use crate::graph::GraphServiceHandle;
+use crate::metrics::ChangeSummaryMetrics;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
 /// Debounce window before the aggregated change-summary check is posted.
@@ -43,6 +44,8 @@ pub struct GitHubService {
     change_summary_pending: HashSet<Commit>,
     /// Graph handle used to compute rebuild-impact for change summaries.
     graph_handle: GraphServiceHandle,
+    /// Optional metrics for change-summary pipeline observability.
+    change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
 }
 
 impl GitHubService {
@@ -50,6 +53,7 @@ impl GitHubService {
         db_service: DbService,
         octocrab: Octocrab,
         graph_handle: GraphServiceHandle,
+        change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
     ) -> anyhow::Result<Self> {
         use futures::stream::TryStreamExt;
         use tokio::pin;
@@ -177,6 +181,7 @@ impl GitHubService {
             change_summary_checks: HashMap::new(),
             change_summary_pending: HashSet::new(),
             graph_handle,
+            change_summary_metrics,
         })
     }
 
@@ -805,6 +810,7 @@ impl GitHubService {
             job,
             crate::change_summary::DEFAULT_MAX_PACKAGES_LISTED,
             crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS,
+            self.change_summary_metrics.as_deref(),
         )
         .await
         {
