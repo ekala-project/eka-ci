@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use prometheus::{CounterVec, GaugeVec, IntCounterVec, Opts, Registry};
+use prometheus::{
+    CounterVec, GaugeVec, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts,
+    Registry,
+};
 
 /// Metrics for webhook ingress (H1: observe signature-verification
 /// failures so operators can alert on forgery attempts or secret
@@ -314,6 +317,115 @@ impl NixEvalMetrics {
             truncated_total,
             output_entries,
             output_bytes,
+        }))
+    }
+}
+
+/// Metrics for the package-change / rebuild-impact pipeline.
+#[derive(Clone)]
+pub struct ChangeSummaryMetrics {
+    /// Wall-clock duration broken out by pipeline phase.
+    pub total_duration_seconds: HistogramVec,
+    /// Cache hits in `RebuildImpactCache` lookups.
+    pub cache_hits_total: IntCounter,
+    /// Cache misses (cold compute path) in `RebuildImpactCache` lookups.
+    pub cache_misses_total: IntCounter,
+    /// Calls where head-side metadata was missing for every drv.
+    pub metadata_unavailable_total: IntCounter,
+    /// Truncation events, labelled by level (`columns` / `summary`).
+    pub truncated_total: IntCounterVec,
+    /// Per-system rebuild-impact traversal duration.
+    pub rebuild_impact_traversal_duration_seconds: HistogramVec,
+    /// Per-call distribution of seeds fed into the impact BFS.
+    pub rebuild_impact_seeds: Histogram,
+}
+
+impl ChangeSummaryMetrics {
+    pub fn new(registry: &Registry) -> anyhow::Result<Arc<Self>> {
+        let total_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "change_summary_total_duration_seconds",
+                "Wall-clock duration of change-summary pipeline phases",
+            )
+            .namespace("eka_ci")
+            .buckets(vec![
+                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+            ]),
+            &["phase"],
+        )?;
+
+        let cache_hits_total = IntCounter::with_opts(
+            Opts::new(
+                "change_summary_cache_hits_total",
+                "RebuildImpactCache lookups that returned a cached row",
+            )
+            .namespace("eka_ci"),
+        )?;
+
+        let cache_misses_total = IntCounter::with_opts(
+            Opts::new(
+                "change_summary_cache_misses_total",
+                "RebuildImpactCache lookups that fell through to a cold compute",
+            )
+            .namespace("eka_ci"),
+        )?;
+
+        let metadata_unavailable_total = IntCounter::with_opts(
+            Opts::new(
+                "change_summary_metadata_unavailable_total",
+                "Change-summary builds where head-side package metadata was absent",
+            )
+            .namespace("eka_ci"),
+        )?;
+
+        let truncated_total = IntCounterVec::new(
+            Opts::new(
+                "change_summary_truncated_total",
+                "Change-summary outputs trimmed to fit a downstream cap",
+            )
+            .namespace("eka_ci"),
+            &["level"],
+        )?;
+
+        let rebuild_impact_traversal_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "rebuild_impact_traversal_duration_seconds",
+                "Per-system rebuild-impact graph traversal duration",
+            )
+            .namespace("eka_ci")
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
+            &["system"],
+        )?;
+
+        let rebuild_impact_seeds = Histogram::with_opts(
+            HistogramOpts::new(
+                "rebuild_impact_seeds_total",
+                "Number of changed-drv seeds fed into rebuild-impact traversal per call",
+            )
+            .namespace("eka_ci")
+            .buckets(vec![
+                1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1_000.0, 5_000.0, 10_000.0,
+            ]),
+        )?;
+
+        registry.register(Box::new(total_duration_seconds.clone()))?;
+        registry.register(Box::new(cache_hits_total.clone()))?;
+        registry.register(Box::new(cache_misses_total.clone()))?;
+        registry.register(Box::new(metadata_unavailable_total.clone()))?;
+        registry.register(Box::new(truncated_total.clone()))?;
+        registry.register(Box::new(rebuild_impact_traversal_duration_seconds.clone()))?;
+        registry.register(Box::new(rebuild_impact_seeds.clone()))?;
+
+        Ok(Arc::new(Self {
+            total_duration_seconds,
+            cache_hits_total,
+            cache_misses_total,
+            metadata_unavailable_total,
+            truncated_total,
+            rebuild_impact_traversal_duration_seconds,
+            rebuild_impact_seeds,
         }))
     }
 }

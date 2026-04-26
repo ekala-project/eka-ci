@@ -23,6 +23,7 @@ use super::cache;
 use super::types::{PerSystemImpact, RebuildImpactResponse, TopBlastRadiusEntry};
 use crate::db::model::DrvId;
 use crate::graph::GraphServiceHandle;
+use crate::metrics::ChangeSummaryMetrics;
 
 /// Default top-N cap for `top_blast_radius` per system, per design §11.1
 /// (`max_top_blast_radius`).
@@ -66,6 +67,7 @@ pub async fn build_rebuild_impact_response(
     base_sha: &str,
     job: &str,
     max_top_blast_radius: usize,
+    metrics: Option<&ChangeSummaryMetrics>,
 ) -> anyhow::Result<Option<RebuildImpactResponse>> {
     let head_jobset_id: Option<i64> =
         sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
@@ -83,6 +85,10 @@ pub async fn build_rebuild_impact_response(
     // contributes to a rebuild. We deliberately **exclude** difference=2
     // (Removed) because those don't rebuild on the head side.
     let rows = load_changed_impact_rows(pool, head_jobset_id).await?;
+
+    if let Some(m) = metrics {
+        m.rebuild_impact_seeds.observe(rows.len() as f64);
+    }
 
     // Group seeds by system for per-system top-K reporting.
     let mut seeds_by_system: HashMap<String, Vec<ImpactRow>> = HashMap::new();
@@ -112,6 +118,8 @@ pub async fn build_rebuild_impact_response(
         let rows_for_system = seeds_by_system.remove(&system).unwrap_or_default();
         let rebuild_count = rows_for_system.len();
 
+        let traversal_start = std::time::Instant::now();
+
         // Per-seed blast radius for ranking. Cheap relative to BFS — cost
         // dominated by the BFS itself.
         let seed_ids: Vec<DrvId> = rows_for_system.iter().map(|r| r.drv_path.clone()).collect();
@@ -119,6 +127,12 @@ pub async fn build_rebuild_impact_response(
             .blast_radius_per_seed(seed_ids)
             .await
             .with_context(|| format!("Failed to compute blast radii for system {system}"))?;
+
+        if let Some(m) = metrics {
+            m.rebuild_impact_traversal_duration_seconds
+                .with_label_values(&[&system])
+                .observe(traversal_start.elapsed().as_secs_f64());
+        }
 
         // Pair rows with their radius so we can sort and label.
         let mut entries: Vec<TopBlastRadiusEntry> = rows_for_system
@@ -175,14 +189,29 @@ pub async fn build_rebuild_impact_response_cached(
     base_sha: &str,
     job: &str,
     max_top_blast_radius: usize,
+    metrics: Option<&ChangeSummaryMetrics>,
 ) -> anyhow::Result<Option<RebuildImpactResponse>> {
     if let Some(hit) = cache::lookup(pool, head_sha, base_sha, job).await? {
+        if let Some(m) = metrics {
+            m.cache_hits_total.inc();
+        }
         return Ok(Some(hit));
     }
 
-    let computed =
-        build_rebuild_impact_response(pool, graph, head_sha, base_sha, job, max_top_blast_radius)
-            .await?;
+    if let Some(m) = metrics {
+        m.cache_misses_total.inc();
+    }
+
+    let computed = build_rebuild_impact_response(
+        pool,
+        graph,
+        head_sha,
+        base_sha,
+        job,
+        max_top_blast_radius,
+        metrics,
+    )
+    .await?;
 
     let Some(response) = computed else {
         return Ok(None);
@@ -353,8 +382,9 @@ mod tests {
         pool: SqlitePool,
     ) -> anyhow::Result<()> {
         let graph = spawn_graph(&pool).await;
-        let resp = build_rebuild_impact_response(&pool, &graph, "missing-sha", "base-sha", "ci", 5)
-            .await?;
+        let resp =
+            build_rebuild_impact_response(&pool, &graph, "missing-sha", "base-sha", "ci", 5, None)
+                .await?;
         assert!(resp.is_none());
         Ok(())
     }
@@ -388,9 +418,10 @@ mod tests {
         let _ = job_difference("head-sha", "base-sha", "ci", &pool).await?;
 
         let graph = spawn_graph(&pool).await;
-        let resp = build_rebuild_impact_response(&pool, &graph, "head-sha", "base-sha", "ci", 5)
-            .await?
-            .expect("expected Some response");
+        let resp =
+            build_rebuild_impact_response(&pool, &graph, "head-sha", "base-sha", "ci", 5, None)
+                .await?
+                .expect("expected Some response");
 
         assert_eq!(resp.head_sha, "head-sha");
         assert_eq!(resp.base_sha, "base-sha");
@@ -426,7 +457,7 @@ mod tests {
 
         let graph = spawn_graph(&pool).await;
         let resp =
-            build_rebuild_impact_response(&pool, &graph, "head-sha", "missing-base", "ci", 5)
+            build_rebuild_impact_response(&pool, &graph, "head-sha", "missing-base", "ci", 5, None)
                 .await?
                 .expect("expected Some response");
 
@@ -457,7 +488,7 @@ mod tests {
 
         let graph = spawn_graph(&pool).await;
         let resp =
-            build_rebuild_impact_response(&pool, &graph, "head-sha", "missing-base", "ci", 2)
+            build_rebuild_impact_response(&pool, &graph, "head-sha", "missing-base", "ci", 2, None)
                 .await?
                 .expect("expected Some response");
 
@@ -490,6 +521,7 @@ mod tests {
             "missing-base",
             "ci",
             5,
+            None,
         )
         .await?
         .expect("expected Some on first call");
@@ -509,6 +541,7 @@ mod tests {
             "missing-base",
             "ci",
             5,
+            None,
         )
         .await?
         .expect("expected Some on second call");
@@ -540,6 +573,7 @@ mod tests {
             "missing-base",
             "ci",
             5,
+            None,
         )
         .await?;
         assert!(result.is_none());
@@ -582,6 +616,7 @@ mod tests {
             "missing-base",
             "ci",
             5,
+            None,
         )
         .await?
         .expect("expected Some response");

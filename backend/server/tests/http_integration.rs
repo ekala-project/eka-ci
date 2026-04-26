@@ -146,6 +146,7 @@ async fn create_test_server_with_options(
         github_client,
         "squash".to_string(), // default merge method for tests
         allowed_origins,
+        None, // change_summary_metrics: tests don't observe metrics
     )
     .await
     .expect("Failed to create web service");

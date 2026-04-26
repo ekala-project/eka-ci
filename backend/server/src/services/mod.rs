@@ -16,7 +16,7 @@ use crate::db::DbService;
 use crate::git::GitService;
 use crate::github::{self, GitHubService};
 use crate::graph::{GraphCommand, GraphService, GraphServiceHandle};
-use crate::metrics::{GraphMetrics, NixEvalMetrics, WebhookMetrics};
+use crate::metrics::{ChangeSummaryMetrics, GraphMetrics, NixEvalMetrics, WebhookMetrics};
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::services::checks::ChecksExecutor;
@@ -109,9 +109,22 @@ pub async fn start_services(config: Config) -> Result<()> {
     .context("failed to initialize GraphService")?;
     let graph_handle = graph_service.handle(graph_command_sender.clone());
 
+    // Register ChangeSummaryMetrics on the shared registry so the
+    // change-summary endpoints + GitHub posting handler can observe.
+    let change_summary_metrics = ChangeSummaryMetrics::new(&metrics_registry)
+        .context("failed to register change-summary metrics")?;
+
     // Create GitHubService
     let maybe_github_service = if let Some(ref octocrab) = maybe_octocrab {
-        Some(GitHubService::new(db_service.clone(), octocrab.clone(), graph_handle.clone()).await?)
+        Some(
+            GitHubService::new(
+                db_service.clone(),
+                octocrab.clone(),
+                graph_handle.clone(),
+                Some(change_summary_metrics.clone()),
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -222,6 +235,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         github_client,
         config.default_merge_method.clone(),
         config.web.allowed_origins.clone(),
+        Some(change_summary_metrics.clone()),
     )
     .await
     .context("failed to start web service")?;
