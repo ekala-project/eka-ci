@@ -1,9 +1,7 @@
-//! Package-change classification (A1).
+//! Package-change classification.
 //!
-//! Given two jobsets (base + head), this module produces a list of
-//! [`PackageChange`] entries by joining `Job.name` (= attr_path) and
-//! comparing the corresponding `Drv` rows. The algorithm is documented in
-//! `docs/design-package-change-rebuild-impact.md` §7.2.
+//! Given two jobsets (base + head), produces [`PackageChange`] entries by
+//! joining `Job.name` (= attr_path) and comparing the matching `Drv` rows.
 //!
 //! ## Layering
 //!

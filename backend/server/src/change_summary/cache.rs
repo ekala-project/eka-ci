@@ -1,8 +1,5 @@
 //! Read-through cache for [`RebuildImpactResponse`] computations.
 //!
-//! Implements the `RebuildImpactCache` table from
-//! `docs/design-package-change-rebuild-impact.md` §5.2 + §10.
-//!
 //! Cache key: `(head_sha, base_sha, jobset)`. The cached value is the
 //! full serialised response in `summary_json`, plus a denormalised
 //! "headline" (rebuild_count, critical_path_drv, blast_radius) for cheap
@@ -151,11 +148,7 @@ pub async fn upsert(pool: &Pool<Sqlite>, response: &RebuildImpactResponse) -> an
 }
 
 /// Delete cache rows older than `threshold_days`. Returns the number of
-/// rows deleted.
-///
-/// Called from server startup to prevent unbounded growth. Per design
-/// §5.2, a 7-day window is the default; operators with bursty workloads
-/// can tune this.
+/// rows deleted. Called from server startup to bound table growth.
 pub async fn cleanup_old_entries(pool: &Pool<Sqlite>, threshold_days: i64) -> anyhow::Result<u64> {
     // SQLite's datetime modifier wants a string like '-7 days'.
     let modifier = format!("-{threshold_days} days");

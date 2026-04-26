@@ -261,8 +261,7 @@ impl BuildGraph {
     /// contribute nothing to the BFS). This matches the semantics of
     /// [`Self::get_all_transitive_dependents`].
     ///
-    /// Used by [`crate::change_summary`] (A2 rebuild impact) for the
-    /// "blast radius" computation described in design §8.2.
+    /// Used by [`crate::change_summary`] for the "blast radius" computation.
     pub fn reverse_reachable_from_set(&self, seeds: &[DrvId]) -> HashSet<DrvId> {
         let mut visited: HashSet<DrvId> = HashSet::new();
         let mut queue: VecDeque<DrvId> = VecDeque::new();

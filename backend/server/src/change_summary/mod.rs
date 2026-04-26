@@ -81,6 +81,38 @@ pub async fn build_package_changes_response(
 /// Default cap on package-change rows surfaced to the renderer.
 pub const DEFAULT_MAX_PACKAGES_LISTED: usize = 100;
 
+/// Resolved per-call knobs for [`build_change_summary`]. Construct from a
+/// [`crate::ci::config::CIConfig`] via `From`, or use [`Default`] for engine defaults.
+#[derive(Debug, Clone)]
+pub struct ChangeSummaryOptions {
+    /// Cap on `package_changes` rows surfaced to the renderer.
+    pub max_packages_listed: usize,
+    /// Cap on `top_blast_radius` rows reported per system.
+    pub max_top_blast_radius: usize,
+}
+
+impl Default for ChangeSummaryOptions {
+    fn default() -> Self {
+        Self {
+            max_packages_listed: DEFAULT_MAX_PACKAGES_LISTED,
+            max_top_blast_radius: impact::DEFAULT_MAX_TOP_BLAST_RADIUS,
+        }
+    }
+}
+
+impl From<&crate::ci::config::CIConfig> for ChangeSummaryOptions {
+    fn from(cfg: &crate::ci::config::CIConfig) -> Self {
+        let mut out = Self::default();
+        if let Some(pcs) = &cfg.package_change_summary {
+            out.max_packages_listed = pcs.max_packages_listed;
+        }
+        if let Some(ri) = &cfg.rebuild_impact {
+            out.max_top_blast_radius = ri.max_top_blast_radius;
+        }
+        out
+    }
+}
+
 /// Compose classify + (cached) impact + render into a full [`ChangeSummary`].
 /// `Ok(None)` when the head jobset is missing. Structured `package_changes`
 /// is never truncated here; markdown truncation is reported on the returned
@@ -91,15 +123,15 @@ pub async fn build_change_summary(
     head_sha: &str,
     base_sha: &str,
     job: &str,
-    max_packages_listed: usize,
-    max_top_blast_radius: usize,
+    options: &ChangeSummaryOptions,
     metrics: Option<&ChangeSummaryMetrics>,
 ) -> anyhow::Result<Option<ChangeSummary>> {
     let end_to_end_start = std::time::Instant::now();
 
     let classify_start = std::time::Instant::now();
     let pkg_resp =
-        build_package_changes_response(pool, head_sha, base_sha, job, max_packages_listed).await?;
+        build_package_changes_response(pool, head_sha, base_sha, job, options.max_packages_listed)
+            .await?;
     if let Some(m) = metrics {
         m.total_duration_seconds
             .with_label_values(&["classify"])
@@ -123,7 +155,7 @@ pub async fn build_change_summary(
         head_sha,
         base_sha,
         job,
-        max_top_blast_radius,
+        options.max_top_blast_radius,
         metrics,
     )
     .await?;
@@ -393,8 +425,9 @@ mod tests {
         pool: SqlitePool,
     ) -> anyhow::Result<()> {
         let graph = spawn_graph(&pool).await;
+        let opts = ChangeSummaryOptions::default();
         let summary =
-            build_change_summary(&pool, &graph, "missing-sha", "base-sha", "ci", 100, 5, None)
+            build_change_summary(&pool, &graph, "missing-sha", "base-sha", "ci", &opts, None)
                 .await?;
         assert!(summary.is_none());
         Ok(())
@@ -411,18 +444,11 @@ mod tests {
         make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
 
         let graph = spawn_graph(&pool).await;
-        let summary = build_change_summary(
-            &pool,
-            &graph,
-            "head-sha",
-            "missing-base",
-            "ci",
-            100,
-            5,
-            None,
-        )
-        .await?
-        .expect("expected Some summary");
+        let opts = ChangeSummaryOptions::default();
+        let summary =
+            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", &opts, None)
+                .await?
+                .expect("expected Some summary");
 
         assert_eq!(summary.package_changes.len(), 1);
         assert!(matches!(
@@ -459,8 +485,12 @@ mod tests {
         make_jobset(&pool, "head-sha", "ci", &rows).await;
 
         let graph = spawn_graph(&pool).await;
+        let opts = ChangeSummaryOptions {
+            max_packages_listed: 2,
+            ..ChangeSummaryOptions::default()
+        };
         let summary =
-            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", 2, 5, None)
+            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", &opts, None)
                 .await?
                 .expect("expected Some summary");
 
