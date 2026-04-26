@@ -1273,6 +1273,7 @@ async fn get_rebuild_impact_handler(
         &query.base_sha,
         &query.job,
         top_k,
+        false,
         state.change_summary_metrics.as_deref(),
     )
     .await
@@ -1337,6 +1338,7 @@ async fn get_change_summary_handler(
             .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
             .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
             .max(1),
+        ..ChangeSummaryOptions::default()
     };
 
     match build_change_summary(
@@ -1397,6 +1399,7 @@ async fn get_change_summary_markdown_handler(
             .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
             .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
             .max(1),
+        ..ChangeSummaryOptions::default()
     };
 
     match build_change_summary(

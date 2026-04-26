@@ -81,10 +81,17 @@ pub async fn build_package_changes_response(
 /// Default cap on package-change rows surfaced to the renderer.
 pub const DEFAULT_MAX_PACKAGES_LISTED: usize = 100;
 
-/// Resolved per-call knobs for [`build_change_summary`]. Construct from a
-/// [`crate::ci::config::CIConfig`] via `From`, or use [`Default`] for engine defaults.
+/// Resolved per-call knobs for [`build_change_summary`].
 #[derive(Debug, Clone)]
 pub struct ChangeSummaryOptions {
+    /// Render the package-changes section.
+    pub summary_enabled: bool,
+    /// Render the rebuild-impact section.
+    pub impact_enabled: bool,
+    /// Walk the full transitive dependent set instead of seeds-only.
+    pub compute_full_blast_radius: bool,
+    /// Surface the "_N packages will rebuild without source changes._" line in markdown.
+    pub include_rebuild_only: bool,
     /// Cap on `package_changes` rows surfaced to the renderer.
     pub max_packages_listed: usize,
     /// Cap on `top_blast_radius` rows reported per system.
@@ -94,6 +101,10 @@ pub struct ChangeSummaryOptions {
 impl Default for ChangeSummaryOptions {
     fn default() -> Self {
         Self {
+            summary_enabled: true,
+            impact_enabled: true,
+            compute_full_blast_radius: false,
+            include_rebuild_only: true,
             max_packages_listed: DEFAULT_MAX_PACKAGES_LISTED,
             max_top_blast_radius: impact::DEFAULT_MAX_TOP_BLAST_RADIUS,
         }
@@ -104,10 +115,14 @@ impl From<&crate::ci::config::CIConfig> for ChangeSummaryOptions {
     fn from(cfg: &crate::ci::config::CIConfig) -> Self {
         let mut out = Self::default();
         if let Some(pcs) = &cfg.package_change_summary {
+            out.summary_enabled = pcs.enabled;
             out.max_packages_listed = pcs.max_packages_listed;
+            out.include_rebuild_only = pcs.include_rebuild_only;
         }
         if let Some(ri) = &cfg.rebuild_impact {
+            out.impact_enabled = ri.enabled;
             out.max_top_blast_radius = ri.max_top_blast_radius;
+            out.compute_full_blast_radius = ri.compute_full_blast_radius;
         }
         out
     }
@@ -128,10 +143,33 @@ pub async fn build_change_summary(
 ) -> anyhow::Result<Option<ChangeSummary>> {
     let end_to_end_start = std::time::Instant::now();
 
+    // Head jobset must exist either way — drives the 404.
+    let head_jobset_id: Option<i64> =
+        sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
+            .bind(head_sha)
+            .bind(job)
+            .fetch_optional(pool)
+            .await
+            .context("Failed to resolve head jobset id")?;
+    if head_jobset_id.is_none() {
+        return Ok(None);
+    }
+
     let classify_start = std::time::Instant::now();
-    let pkg_resp =
+    let pkg_resp = if options.summary_enabled {
         build_package_changes_response(pool, head_sha, base_sha, job, options.max_packages_listed)
-            .await?;
+            .await?
+    } else {
+        Some(PackageChangesResponse {
+            head_sha: head_sha.to_string(),
+            base_sha: base_sha.to_string(),
+            job: job.to_string(),
+            computed_at: chrono::Utc::now().to_rfc3339(),
+            metadata_available: true,
+            package_changes: Vec::new(),
+            truncated: false,
+        })
+    };
     if let Some(m) = metrics {
         m.total_duration_seconds
             .with_label_values(&["classify"])
@@ -149,16 +187,21 @@ pub async fn build_change_summary(
 
     // None on a race with a jobset delete; treat as "no impact" so the package-change view stays.
     let impact_start = std::time::Instant::now();
-    let impact_resp = impact::build_rebuild_impact_response_cached(
-        pool,
-        graph,
-        head_sha,
-        base_sha,
-        job,
-        options.max_top_blast_radius,
-        metrics,
-    )
-    .await?;
+    let impact_resp = if options.impact_enabled {
+        impact::build_rebuild_impact_response_cached(
+            pool,
+            graph,
+            head_sha,
+            base_sha,
+            job,
+            options.max_top_blast_radius,
+            options.compute_full_blast_radius,
+            metrics,
+        )
+        .await?
+    } else {
+        None
+    };
     if let Some(m) = metrics {
         m.total_duration_seconds
             .with_label_values(&["impact"])
@@ -189,7 +232,10 @@ pub async fn build_change_summary(
     };
 
     let render_start = std::time::Instant::now();
-    let (markdown, render_truncation) = render::render(&summary);
+    let render_opts = render::RenderOptions {
+        include_rebuild_only: options.include_rebuild_only,
+    };
+    let (markdown, render_truncation) = render::render(&summary, &render_opts);
     if let Some(m) = metrics {
         m.total_duration_seconds
             .with_label_values(&["render"])
@@ -497,6 +543,178 @@ mod tests {
         assert_eq!(summary.package_changes.len(), 2);
         // classify::truncated → orchestrator surfaces it.
         assert!(summary.truncated);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn build_summary_skips_classify_when_summary_disabled(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+
+        let graph = spawn_graph(&pool).await;
+        let opts = ChangeSummaryOptions {
+            summary_enabled: false,
+            ..ChangeSummaryOptions::default()
+        };
+        let summary =
+            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", &opts, None)
+                .await?
+                .expect("expected Some summary");
+
+        assert!(summary.package_changes.is_empty());
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn build_summary_skips_impact_when_impact_disabled(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+
+        let graph = spawn_graph(&pool).await;
+        let opts = ChangeSummaryOptions {
+            impact_enabled: false,
+            ..ChangeSummaryOptions::default()
+        };
+        let summary =
+            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", &opts, None)
+                .await?
+                .expect("expected Some summary");
+
+        // Package changes still computed; impact section empty.
+        assert_eq!(summary.package_changes.len(), 1);
+        assert!(summary.rebuild_impact.per_system.is_empty());
+        assert_eq!(summary.rebuild_impact.total_unique_drvs, 0);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn build_summary_returns_none_when_head_missing_even_if_disabled(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        let graph = spawn_graph(&pool).await;
+        let opts = ChangeSummaryOptions {
+            summary_enabled: false,
+            impact_enabled: false,
+            ..ChangeSummaryOptions::default()
+        };
+        let summary = build_change_summary(
+            &pool,
+            &graph,
+            "missing-sha",
+            "missing-base",
+            "ci",
+            &opts,
+            None,
+        )
+        .await?;
+        assert!(summary.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn options_from_ci_config_copies_all_knobs() {
+        use crate::ci::config::{CIConfig, PackageChangeSummaryConfig, RebuildImpactConfig};
+
+        let cfg = CIConfig {
+            jobs: Default::default(),
+            checks: Default::default(),
+            flake: None,
+            package_change_summary: Some(PackageChangeSummaryConfig {
+                enabled: false,
+                max_packages_listed: 7,
+                include_rebuild_only: true,
+            }),
+            rebuild_impact: Some(RebuildImpactConfig {
+                enabled: false,
+                max_top_blast_radius: 11,
+                compute_full_blast_radius: true,
+            }),
+        };
+
+        let opts = ChangeSummaryOptions::from(&cfg);
+        assert!(!opts.summary_enabled);
+        assert!(!opts.impact_enabled);
+        assert!(opts.compute_full_blast_radius);
+        assert!(opts.include_rebuild_only);
+        assert_eq!(opts.max_packages_listed, 7);
+        assert_eq!(opts.max_top_blast_radius, 11);
+    }
+
+    #[test]
+    fn options_default_matches_engine_constants() {
+        let opts = ChangeSummaryOptions::default();
+        assert!(opts.summary_enabled);
+        assert!(opts.impact_enabled);
+        assert!(!opts.compute_full_blast_radius);
+        assert!(opts.include_rebuild_only);
+        assert_eq!(opts.max_packages_listed, DEFAULT_MAX_PACKAGES_LISTED);
+        assert_eq!(
+            opts.max_top_blast_radius,
+            impact::DEFAULT_MAX_TOP_BLAST_RADIUS
+        );
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn build_summary_suppresses_rebuild_only_line_when_configured(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        // Same pname+version, different drv hash on each side → classified as RebuildOnly.
+        let base_path = drv_path(H_BASE, "hello-2.13");
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let base_eval = make_eval("hello", &base_path, "hello-2.13");
+        let base_db = make_db_drv(&base_path, Some("hello"), Some("2.13"), None, None);
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        make_jobset(&pool, "base-sha", "ci", &[(base_eval, base_db)]).await;
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+
+        let graph = spawn_graph(&pool).await;
+
+        // Default opts (include_rebuild_only=true): line is present.
+        let summary_default = build_change_summary(
+            &pool,
+            &graph,
+            "head-sha",
+            "base-sha",
+            "ci",
+            &ChangeSummaryOptions::default(),
+            None,
+        )
+        .await?
+        .expect("expected Some summary");
+        assert!(matches!(
+            summary_default.package_changes[0],
+            PackageChange::RebuildOnly { .. }
+        ));
+        assert!(
+            summary_default
+                .markdown
+                .contains("rebuild without source changes")
+        );
+
+        // include_rebuild_only=false: line suppressed, footer not lying about a drop.
+        let opts = ChangeSummaryOptions {
+            include_rebuild_only: false,
+            ..ChangeSummaryOptions::default()
+        };
+        let summary_off =
+            build_change_summary(&pool, &graph, "head-sha", "base-sha", "ci", &opts, None)
+                .await?
+                .expect("expected Some summary");
+        assert!(
+            !summary_off
+                .markdown
+                .contains("rebuild without source changes")
+        );
+        assert!(!summary_off.truncated);
         Ok(())
     }
 }
