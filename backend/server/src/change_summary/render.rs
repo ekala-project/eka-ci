@@ -40,6 +40,22 @@ impl RenderTruncation {
     }
 }
 
+/// Caller-supplied renderer knobs.
+#[derive(Debug, Clone)]
+pub struct RenderOptions {
+    /// Include the "_N packages will rebuild without source changes._" line.
+    /// Truncation may still drop it if the rendered output is too large.
+    pub include_rebuild_only: bool,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            include_rebuild_only: true,
+        }
+    }
+}
+
 /// Render a [`ChangeSummary`] to GitHub-flavoured Markdown, applying
 /// truncation as needed to stay within
 /// [`GITHUB_CHECK_SUMMARY_SOFT_LIMIT`].
@@ -51,7 +67,7 @@ impl RenderTruncation {
 /// The full-fidelity API path (`GET /v1/commits/{sha}/change-summary`)
 /// is always returned untruncated by the orchestrator — this function
 /// only governs what fits into a single GitHub check posting.
-pub fn render(summary: &ChangeSummary) -> (String, RenderTruncation) {
+pub fn render(summary: &ChangeSummary, options: &RenderOptions) -> (String, RenderTruncation) {
     // Strategy: render the most ambitious version first; if it overflows,
     // drop columns in priority order until it fits, then collapse if
     // still too large. We cap at four passes (drop maintainers, drop
@@ -61,6 +77,8 @@ pub fn render(summary: &ChangeSummary) -> (String, RenderTruncation) {
     let mut truncation = RenderTruncation::default();
 
     let mut config = RenderConfig::default();
+    // Caller asked us to suppress the rebuild-only count line up-front.
+    config.include_rebuild_only_line = options.include_rebuild_only;
     let initial = render_with_config(summary, &config, &truncation);
     if initial.len() <= GITHUB_CHECK_SUMMARY_SOFT_LIMIT {
         return (initial, truncation);
@@ -82,9 +100,12 @@ pub fn render(summary: &ChangeSummary) -> (String, RenderTruncation) {
         return (pass2, truncation);
     }
 
-    // Pass 3: also drop rebuild-only line
-    config.include_rebuild_only_line = false;
-    truncation.dropped_rebuild_only = true;
+    // Pass 3: also drop rebuild-only line. Only mark as a truncation drop
+    // if the line was actually on — otherwise the footer would lie.
+    if config.include_rebuild_only_line {
+        config.include_rebuild_only_line = false;
+        truncation.dropped_rebuild_only = true;
+    }
     let pass3 = render_with_config(summary, &config, &truncation);
     if pass3.len() <= GITHUB_CHECK_SUMMARY_SOFT_LIMIT {
         return (pass3, truncation);
@@ -527,7 +548,7 @@ mod tests {
     #[test]
     fn render_empty_summary_includes_headers() {
         let summary = empty_summary();
-        let (md, trunc) = render(&summary);
+        let (md, trunc) = render(&summary, &RenderOptions::default());
         assert!(md.contains("## Change summary for `abc123abc123` ← `def456def456`"));
         assert!(md.contains("### Packages changed (0)"));
         assert!(md.contains("### Rebuild impact"));
@@ -539,7 +560,7 @@ mod tests {
     fn render_includes_metadata_unavailable_banner() {
         let mut summary = empty_summary();
         summary.metadata_available = false;
-        let (md, _) = render(&summary);
+        let (md, _) = render(&summary, &RenderOptions::default());
         assert!(md.contains("⚠ Package metadata unavailable"));
     }
 
@@ -553,7 +574,7 @@ mod tests {
             new: "2.13".to_string(),
             drv_path: drv("aaa1", "hello-2.13"),
         });
-        let (md, _) = render(&summary);
+        let (md, _) = render(&summary, &RenderOptions::default());
         assert!(md.contains("| Bump | `hello` | 2.12 → 2.13 |"));
         assert!(md.contains("### Packages changed (1)"));
     }
@@ -581,7 +602,7 @@ mod tests {
                 drv_path: drv("bbb1", "tool-new-2.0"),
             },
         ];
-        let (md, _) = render(&summary);
+        let (md, _) = render(&summary, &RenderOptions::default());
         assert!(md.contains("| Added | `new-pkg` | 1.0 |"));
         assert!(md.contains("| Removed | `old-pkg` | (was 0.9) |"));
         assert!(md.contains("| Renamed | `tool-old → tool-new` | 2.0 |"));
@@ -606,7 +627,7 @@ mod tests {
                 drv_path: drv("ddd1", "tool-y-2.0"),
             },
         ];
-        let (md, _) = render(&summary);
+        let (md, _) = render(&summary, &RenderOptions::default());
         assert!(md.contains("| License | `lib-x` | MIT → BSD-3-Clause |"));
         assert!(md.contains("| Maintainers | `tool-y` | +alice, -bob |"));
     }
@@ -628,7 +649,7 @@ mod tests {
                 drv_path: drv("eee2", "b-1.0"),
             },
         ];
-        let (md, _) = render(&summary);
+        let (md, _) = render(&summary, &RenderOptions::default());
         assert!(md.contains("**Plus 2 packages will rebuild without source changes.**"));
         // RebuildOnly entries must NOT appear as table rows.
         assert!(!md.contains("| RebuildOnly |"));
@@ -647,7 +668,7 @@ mod tests {
             }],
         }];
         summary.rebuild_impact.total_unique_drvs = 10_842;
-        let (md, _) = render(&summary);
+        let (md, _) = render(&summary, &RenderOptions::default());
         assert!(md.contains("| `x86_64-linux` | 4312 | `openssl` (3871) |"));
         assert!(md.contains("**Total unique drvs that would rebuild somewhere:** 10842"));
     }
@@ -668,7 +689,7 @@ mod tests {
                     drv_path: drv(&format!("aa{i}"), &format!("pkg{i}-1.0")),
                 });
         }
-        let (md, trunc) = render(&summary);
+        let (md, trunc) = render(&summary, &RenderOptions::default());
         assert!(
             md.len() <= GITHUB_CHECK_SUMMARY_HARD_LIMIT,
             "rendered {} bytes",
@@ -693,6 +714,29 @@ mod tests {
     }
 
     #[test]
+    fn render_suppresses_rebuild_only_line_when_option_disabled() {
+        let mut summary = empty_summary();
+        summary.package_changes = vec![PackageChange::RebuildOnly {
+            attr_path: "a".to_string(),
+            pname: Some("a".to_string()),
+            version: Some("1.0".to_string()),
+            drv_path: drv("eee1", "a-1.0"),
+        }];
+        let opts = RenderOptions {
+            include_rebuild_only: false,
+        };
+        let (md, trunc) = render(&summary, &opts);
+        assert!(!md.contains("rebuild without source changes"));
+        // The line was off by request, not dropped by truncation — footer must not lie.
+        assert!(!trunc.dropped_rebuild_only);
+    }
+
+    #[test]
+    fn render_options_default_includes_rebuild_only() {
+        assert!(RenderOptions::default().include_rebuild_only);
+    }
+
+    #[test]
     fn render_truncation_collapses_table_when_oversize_persists() {
         // Force every drop to fire by stuffing the *primary* changes
         // (Added) — these survive maintainers/license drops, so we
@@ -706,7 +750,7 @@ mod tests {
                 drv_path: drv(&format!("a{i}"), &format!("pkg{i}-1.0")),
             });
         }
-        let (md, trunc) = render(&summary);
+        let (md, trunc) = render(&summary, &RenderOptions::default());
         assert!(md.len() <= GITHUB_CHECK_SUMMARY_HARD_LIMIT);
         assert!(trunc.collapsed_to_counts, "expected collapse to fire");
         assert!(md.contains("**Summary:**"));
