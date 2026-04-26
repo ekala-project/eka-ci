@@ -1,22 +1,8 @@
-//! Markdown rendering for the package-change + rebuild-impact summary.
-//!
-//! This module implements §9.4 + §9.5 of the design doc:
-//!   - Render a [`ChangeSummary`] to GitHub-flavored Markdown matching the layout in
-//!     `docs/design-package-change-rebuild-impact.md`.
-//!   - Apply truncation logic to fit GitHub's 65,535-char `output.summary` ceiling. We use a
-//!     60,000-char working budget (per design §9.5) to leave headroom for the truncation footer
-//!     GitHub will append on re-render.
-//!
-//! The renderer is **pure**: it takes a structured summary and produces
-//! a `String`. No DB or network calls. P5 (aggregation) is what feeds
-//! the renderer; this module only depends on the wire types.
-//!
-//! # Output stability
-//!
-//! Rendered output is stable across calls for the same input — every
-//! ordering pass uses a deterministic key (alphabetic system order,
-//! lexicographic drv_path tie-break, declaration order for change
-//! kinds). Snapshot tests in this module rely on that.
+//! Pure markdown rendering for the package-change + rebuild-impact summary.
+//! Drops content in priority order to fit a 60,000-byte working budget below
+//! GitHub's 65,535-char `output.summary` ceiling. Output is deterministic
+//! (alphabetic system order, lexicographic drv_path tie-break, declaration
+//! order for change kinds) — snapshot tests rely on that.
 
 use std::fmt::Write;
 
@@ -24,21 +10,14 @@ use super::types::{
     ChangeSummary, ChangeSummaryRebuildImpact, PackageChange, PerSystemImpact, TopBlastRadiusEntry,
 };
 
-/// GitHub's `output.summary` field has a hard 65,535-char ceiling. We
-/// reserve a 5,535-byte cushion below it so a re-render that picks up a
-/// few new entries doesn't suddenly cross the limit and 422 the check
-/// API. Per design §9.5.
+/// Working budget below GitHub's hard ceiling, with a 5,535-byte cushion for re-render drift.
 pub const GITHUB_CHECK_SUMMARY_SOFT_LIMIT: usize = 60_000;
 
-/// The hard ceiling enforced by the GitHub Checks API.
+/// Hard ceiling enforced by the GitHub Checks API on `output.summary`.
 pub const GITHUB_CHECK_SUMMARY_HARD_LIMIT: usize = 65_535;
 
-/// What the renderer left out, in priority order. Reported back to the
-/// caller so it can log / surface this on the JSON endpoint.
-///
-/// Ordering matches the drop-priority in design §9.5: maintainers go
-/// first (lowest signal), then license, then rebuild-only, then we
-/// collapse the entire change table to a counts-only summary.
+/// What the renderer dropped, reported back so callers can log/surface it.
+/// Drop priority: maintainers → license → rebuild-only → collapse-to-counts.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RenderTruncation {
     /// Maintainer-change rows omitted from the package table.

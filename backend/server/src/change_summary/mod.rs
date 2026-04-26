@@ -1,24 +1,8 @@
 //! Package change summary and rebuild impact analysis.
 //!
-//! This module implements features A1 (package change summary) and A2
-//! (rebuild impact analysis) described in
-//! `docs/design-package-change-rebuild-impact.md`.
-//!
-//! ## Phases
-//!
-//! - **P1 (this commit)**: [`classify`] — derives a list of [`PackageChange`] entries for a
-//!   `(head_sha, base_sha, job)` triple by joining `Job` and `Drv` rows and matching by `Job.name`
-//!   (attr_path).
-//! - **P2**: `impact` — rebuild count + multi-source BFS for blast radius.
-//! - **P4**: `render` — markdown rendering for GitHub check posting.
-//!
-//! ## Public API surface (P1)
-//!
-//! - [`classify::compute_package_changes`] — pure-logic classification driven off two
-//!   `Vec<JobDrvRow>` inputs (head + base).
-//! - [`classify::load_job_drv_rows`] — DB loader that produces `JobDrvRow`s for a given jobset id.
-//! - [`PackageChange`], [`PackageChangesResponse`] — wire types for the new
-//!   `/v1/commits/{sha}/package-changes` endpoint.
+//! Composes a per-PR view from the structured package diff ([`classify`]),
+//! per-system rebuild + blast-radius numbers ([`impact`]), and a markdown
+//! rendering ([`render`]) suitable for posting as a GitHub check.
 
 pub mod cache;
 pub mod classify;
@@ -26,9 +10,6 @@ pub mod impact;
 pub mod render;
 pub mod types;
 
-// `PackageChange` is part of the public API surface for downstream phases
-// (P2 impact + P4 render); the bin target doesn't reach for it directly
-// yet, hence the explicit allow.
 use anyhow::Context;
 use sqlx::{Pool, Sqlite};
 #[allow(unused_imports)]
@@ -39,17 +20,10 @@ pub use types::{
 
 use crate::metrics::ChangeSummaryMetrics;
 
-/// Build a [`PackageChangesResponse`] for a `(head_sha, base_sha, job)`
-/// triple by:
-///
-/// 1. Resolving both SHAs to jobset ids in `GitHubJobSets`.
-/// 2. Loading `Job ⋈ Drv` rows for each side via [`classify::load_job_drv_rows`].
-/// 3. Calling [`classify::compute_package_changes`] for the structured diff.
-///
-/// Returns `Ok(None)` when the **head** jobset is missing — the caller
-/// should map this to a 404. A missing **base** jobset is treated as
-/// "everything is new" (every head row classifies as `Added`), matching
-/// the semantics of [`crate::db::github::job_difference`].
+/// Resolve `(head_sha, base_sha, job)` to two `Job ⋈ Drv` row sets and
+/// classify them into a [`PackageChangesResponse`]. `Ok(None)` when the
+/// head jobset is missing (caller maps to 404); a missing base jobset
+/// classifies every head row as `Added`.
 pub async fn build_package_changes_response(
     pool: &Pool<Sqlite>,
     head_sha: &str,
@@ -104,27 +78,13 @@ pub async fn build_package_changes_response(
     }))
 }
 
-/// Default truncation limit per design §11.1 (`max_packages_listed`).
+/// Default cap on package-change rows surfaced to the renderer.
 pub const DEFAULT_MAX_PACKAGES_LISTED: usize = 100;
 
-/// Build a complete [`ChangeSummary`] for a `(head_sha, base_sha, job)`
-/// triple by composing:
-///
-///  1. [`build_package_changes_response`] — A1 classification.
-///  2. [`impact::build_rebuild_impact_response_cached`] — A2 rebuild impact (read-through cached).
-///  3. [`render::render`] — markdown rendering with truncation.
-///
-/// Returns `Ok(None)` when the head jobset is missing (mirroring the
-/// component endpoints, so the caller maps to a 404). When the head
-/// jobset *exists* but has no `Drv ⋈ Job` rows, both component calls
-/// return non-empty envelopes with empty data — the renderer handles
-/// the empty-table case gracefully.
-///
-/// `package_changes` is **never** truncated by this orchestrator; the
-/// JSON endpoint always returns the full structured set. Markdown
-/// truncation happens inside [`render::render`] and is reported in the
-/// rendered string's footer (and reflected in `ChangeSummary.truncated`
-/// when *any* drop step fired).
+/// Compose classify + (cached) impact + render into a full [`ChangeSummary`].
+/// `Ok(None)` when the head jobset is missing. Structured `package_changes`
+/// is never truncated here; markdown truncation is reported on the returned
+/// summary and reflected in the rendered footer.
 pub async fn build_change_summary(
     pool: &Pool<Sqlite>,
     graph: &crate::graph::GraphServiceHandle,
@@ -155,9 +115,7 @@ pub async fn build_change_summary(
         }
     }
 
-    // Impact may legitimately return None if the head jobset disappears
-    // between the two queries (race vs. a delete). Treat as "no impact"
-    // rather than failing — the package-change view is still useful.
+    // None on a race with a jobset delete; treat as "no impact" so the package-change view stays.
     let impact_start = std::time::Instant::now();
     let impact_resp = impact::build_rebuild_impact_response_cached(
         pool,
@@ -180,9 +138,7 @@ pub async fn build_change_summary(
         None => (Vec::new(), 0, None),
     };
 
-    // Use the impact's `computed_at` when available — that's the timestamp
-    // the cache will key future re-renders off. Falls back to the
-    // package-change response's value otherwise.
+    // Prefer impact's `computed_at` (cache key); fall back to the package-change timestamp.
     let computed_at = impact_computed_at.unwrap_or(pkg_resp.computed_at);
 
     let mut summary = ChangeSummary {
@@ -411,12 +367,7 @@ mod tests {
         Ok(())
     }
 
-    // ---- build_change_summary orchestrator tests --------------------
-    //
-    // These exercise the classify + impact + render integration end-to-end.
-    // They reuse the helpers above plus a `spawn_graph` helper for the
-    // impact pass, mirroring the pattern in `change_summary::impact::tests`.
-
+    // End-to-end orchestrator tests: classify + impact + render.
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 

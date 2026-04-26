@@ -1,18 +1,7 @@
-//! Rebuild impact analysis (A2).
-//!
-//! Computes per-system rebuild counts and per-package "blast radius"
-//! (transitive-dependent count) for a `(head_sha, base_sha, job)` triple.
-//!
-//! Boundaries:
-//! - Per-system **counts** (`rebuild_count`) come from the `Job` table — `difference IN (0 New, 1
-//!   Changed)` — and are computed entirely in SQL. See design §8.1.
-//! - **Blast radius** is computed off the in-memory `BuildGraph` via
-//!   [`crate::graph::GraphServiceHandle::blast_radius_per_seed`] and
-//!   [`crate::graph::GraphServiceHandle::reverse_reachable_from_set`]. See design §8.2.
-//!
-//! The wire types (P2 surface) live alongside [`super::types`] so the P4
-//! markdown renderer and an upstream aggregated `change-summary` endpoint
-//! can pull them in without depending on this implementation module.
+//! Rebuild impact analysis: per-system rebuild counts and per-package
+//! blast radius (transitive-dependent count) for a `(head_sha, base_sha,
+//! job)` triple. Counts come from `Job` SQL; blast radius rides the
+//! in-memory `BuildGraph`. Wire types live in [`super::types`].
 
 use std::collections::HashMap;
 
@@ -25,16 +14,10 @@ use crate::db::model::DrvId;
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
 
-/// Default top-N cap for `top_blast_radius` per system, per design §11.1
-/// (`max_top_blast_radius`).
+/// Default cap on `top_blast_radius` rows per system.
 pub const DEFAULT_MAX_TOP_BLAST_RADIUS: usize = 5;
 
-/// One row from the impact-side `Job ⋈ Drv` join: just the columns this
-/// module needs to seed BFS and report human labels.
-///
-/// Distinct from `change_summary::classify::JobDrvRow` because impact does
-/// not care about license/maintainer JSON or the Job.name<->attr_path tie:
-/// the seed identity is the **drv_path**, and pname is purely a label.
+/// Seed row for the impact pass: drv_path identifies the seed, pname is a label, system partitions.
 #[derive(Debug, Clone)]
 struct ImpactRow {
     drv_path: DrvId,
@@ -42,24 +25,11 @@ struct ImpactRow {
     system: String,
 }
 
-/// Public entry point: build the rebuild-impact response for a triple.
-///
-/// Behaviour:
-/// 1. Resolve `(head_sha, job)` → `head_jobset_id`. Returns `Ok(None)` when missing (caller maps to
-///    404).
-/// 2. Per-system rebuild counts come from `COUNT(*) FROM Job WHERE jobset = ? AND difference IN
-///    (0,1)` partitioned by `Drv.system`. Removed rows (difference = 2) are excluded — they don't
-///    trigger a rebuild on the head side.
-/// 3. Per-system seeds = drvs with `difference IN (0,1)` (i.e., New or Changed). For each system,
-///    we ask the graph for `blast_radius_per_seed`, sort descending, take top-N.
-/// 4. `total_unique_drvs` = `|reverse_reachable_from_set(all_seeds)|`. This is the number of drvs
-///    that would have to rebuild somewhere across all systems if the changed seeds rebuild.
-///
-/// `base_sha` is currently informational only; the `Job.difference` column
-/// is already populated against the head jobset's evaluation so we don't
-/// need to re-diff. We accept it in the signature to match the
-/// package-changes endpoint shape and to make a future caching layer
-/// (`RebuildImpactCache`, P3) trivial to slot in.
+/// Build the rebuild-impact response for a `(head_sha, base_sha, job)` triple.
+/// Per-system counts come from `Job WHERE difference IN (0,1)`; per-system top-N
+/// blast radius comes from BFS seeded on the same set; `total_unique_drvs` is the
+/// reverse-reachable closure across all seeds. `Ok(None)` when the head jobset
+/// is missing. `base_sha` is informational (caching key) — diff already lives in `Job.difference`.
 pub async fn build_rebuild_impact_response(
     pool: &Pool<Sqlite>,
     graph: &GraphServiceHandle,
@@ -81,9 +51,7 @@ pub async fn build_rebuild_impact_response(
         return Ok(None);
     };
 
-    // Load all (drv_path, pname, system) for this jobset where the job
-    // contributes to a rebuild. We deliberately **exclude** difference=2
-    // (Removed) because those don't rebuild on the head side.
+    // Seeds for the impact pass: jobs with difference IN (0,1). Removed (=2) doesn't rebuild here.
     let rows = load_changed_impact_rows(pool, head_jobset_id).await?;
 
     if let Some(m) = metrics {
@@ -99,8 +67,7 @@ pub async fn build_rebuild_impact_response(
             .push(row.clone());
     }
 
-    // Compute the union BFS once across all seeds. This is the
-    // total_unique_drvs (= every drv that would rebuild somewhere).
+    // Union BFS across all seeds → `total_unique_drvs`.
     let all_seeds: Vec<DrvId> = rows.iter().map(|r| r.drv_path.clone()).collect();
     let union_reachable = graph
         .reverse_reachable_from_set(all_seeds.clone())
@@ -108,9 +75,8 @@ pub async fn build_rebuild_impact_response(
         .context("Failed to compute union reverse-reachable set")?;
     let total_unique_drvs = union_reachable.len();
 
-    // Per-system rebuild counts + top-K blast radius.
+    // Per-system rebuild counts + top-K blast radius (sorted for deterministic output).
     let mut per_system: Vec<PerSystemImpact> = Vec::with_capacity(seeds_by_system.len());
-    // Sort systems for deterministic output.
     let mut system_keys: Vec<String> = seeds_by_system.keys().cloned().collect();
     system_keys.sort();
 
@@ -120,8 +86,7 @@ pub async fn build_rebuild_impact_response(
 
         let traversal_start = std::time::Instant::now();
 
-        // Per-seed blast radius for ranking. Cheap relative to BFS — cost
-        // dominated by the BFS itself.
+        // Per-seed blast radius for ranking; cost is dominated by the BFS.
         let seed_ids: Vec<DrvId> = rows_for_system.iter().map(|r| r.drv_path.clone()).collect();
         let radii = graph
             .blast_radius_per_seed(seed_ids)
@@ -134,7 +99,6 @@ pub async fn build_rebuild_impact_response(
                 .observe(traversal_start.elapsed().as_secs_f64());
         }
 
-        // Pair rows with their radius so we can sort and label.
         let mut entries: Vec<TopBlastRadiusEntry> = rows_for_system
             .iter()
             .map(|row| TopBlastRadiusEntry {
@@ -144,8 +108,7 @@ pub async fn build_rebuild_impact_response(
             })
             .collect();
 
-        // Largest radius first; tie-break by drv_path for determinism.
-        // `DrvId` derefs to `str`, giving us a stable lexicographic order.
+        // Largest radius first; tie-break by drv_path for stable ordering.
         entries.sort_by(|a, b| {
             b.blast_radius
                 .cmp(&a.blast_radius)
@@ -172,16 +135,9 @@ pub async fn build_rebuild_impact_response(
     }))
 }
 
-/// Cached wrapper around [`build_rebuild_impact_response`].
-///
-/// Behaviour:
-///   1. Look up the cache by `(head_sha, base_sha, job)`. On hit, return.
-///   2. On miss, compute fresh via [`build_rebuild_impact_response`]. If the head jobset is missing
-///      (`Ok(None)`), do **not** cache — propagate the 404.
-///   3. On a successful compute, upsert into the cache and return.
-///
-/// Cache write failures are logged at WARN but don't fail the request:
-/// the freshly-computed answer is still correct, just unmemoised.
+/// Read-through cached wrapper around [`build_rebuild_impact_response`].
+/// `Ok(None)` (head jobset missing) is not cached. Cache write failures
+/// log at WARN; the computed response is still returned.
 pub async fn build_rebuild_impact_response_cached(
     pool: &Pool<Sqlite>,
     graph: &GraphServiceHandle,

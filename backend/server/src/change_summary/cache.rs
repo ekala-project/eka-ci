@@ -31,7 +31,7 @@ use sqlx::{Pool, Sqlite};
 
 use super::types::RebuildImpactResponse;
 
-/// Default retention window for cache entries, per design §5.2.
+/// Default retention window for cache entries.
 pub const DEFAULT_CACHE_TTL_DAYS: i64 = 7;
 
 /// Look up a cached rebuild-impact response by `(head_sha, base_sha,
