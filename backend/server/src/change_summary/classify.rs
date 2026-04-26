@@ -138,14 +138,9 @@ fn drv_name_from_path(drv_path: &str) -> String {
     }
 }
 
-/// Pure-logic classification.
-///
-/// Returns the list of [`PackageChange`] entries comparing `head` to `base`,
-/// in deterministic order (sorted by `attr_path`). A single drv may emit
-/// multiple entries — see design §7.2.
-///
-/// `metadata_available` is `true` iff at least one row on either side has a
-/// non-empty `pname` or `version` column populated.
+/// Pure-logic classification: deterministic [`PackageChange`] list (sorted by
+/// `attr_path`); a single drv may emit multiple entries. `metadata_available`
+/// is true iff at least one row has `pname` or `version` populated.
 pub fn compute_package_changes(
     head: &[JobDrvRow],
     base: &[JobDrvRow],

@@ -1,22 +1,11 @@
-//! Wire types for package change summary (A1).
-//!
-//! These are serialised both to the HTTP response body and (in P4) consumed
-//! by the markdown renderer. The shape mirrors the JSON schema documented
-//! in `docs/design-package-change-rebuild-impact.md` §10.2.
+//! Wire types for the package change summary; serialised to HTTP and consumed by the renderer.
 
 use serde::Serialize;
 
 use crate::db::model::DrvId;
 
-/// A single classified package change between a base and head jobset.
-///
-/// A given drv may produce **multiple** entries — e.g. a version bump that
-/// also changed maintainers emits both [`PackageChange::VersionBump`] and
-/// [`PackageChange::MaintainerChange`]. See design §7.2.
-///
-/// `attr_path` is the `Job.name` from the eka-ci job graph and is the
-/// stable identity used for cross-rev matching. `drv_path` (when present)
-/// references the head-side derivation.
+/// A classified package change. A drv may produce multiple entries (e.g. version bump +
+/// maintainer change). `attr_path` (= `Job.name`) is the stable cross-rev identity.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum PackageChange {
@@ -83,8 +72,7 @@ pub enum PackageChange {
     },
 }
 
-// The `kind` and `attr_path` accessors are P4-renderer / P2-impact
-// utilities; P1 doesn't call them but we want them on the public API.
+// Accessors used by the renderer and impact pass; kept on the public API.
 #[allow(dead_code)]
 impl PackageChange {
     /// Stable discriminant string used in metrics, logs, and renderer code
@@ -155,9 +143,8 @@ pub struct TopBlastRadiusEntry {
 /// the number of drvs that would have to build (or rebuild) on this
 /// system if the PR landed.
 ///
-/// `top_blast_radius` is the largest-impact subset, ordered by descending
-/// blast radius (with `drv_path` as a deterministic tie-breaker), capped
-/// at `max_top_blast_radius` per design §11.1.
+/// `top_blast_radius` is the largest-impact subset, descending by radius
+/// with `drv_path` as a deterministic tie-breaker, capped at `max_top_blast_radius`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PerSystemImpact {
     pub system: String,
@@ -166,11 +153,6 @@ pub struct PerSystemImpact {
 }
 
 /// HTTP response body for `/v1/commits/{sha}/rebuild-impact`.
-///
-/// Mirrors the `rebuild_impact` slice of the aggregated `change-summary`
-/// JSON shape from design §10.2, plus the `(head_sha, base_sha, job,
-/// computed_at)` envelope so the response is self-describing for
-/// individual consumers (the renderer + cache).
 #[derive(Debug, Clone, Serialize)]
 pub struct RebuildImpactResponse {
     pub head_sha: String,
@@ -187,15 +169,8 @@ pub struct RebuildImpactResponse {
     pub total_unique_drvs: usize,
 }
 
-/// Aggregate response for `/v1/commits/{sha}/change-summary`.
-///
-/// Combines the package-change list (A1) with the rebuild-impact data
-/// (A2) plus a pre-rendered markdown view that the GitHub check
-/// publisher (P5) will paste into the check-run summary.
-///
-/// The shape matches §10.2 of the design doc, with `markdown` exposing
-/// exactly what the markdown endpoint (`.../change-summary.md`) returns
-/// so the JSON consumer never has to re-render client-side.
+/// Aggregate response for `/v1/commits/{sha}/change-summary`: package-change list +
+/// rebuild-impact + pre-rendered markdown matching the `.md` endpoint output.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChangeSummary {
     pub head_sha: String,

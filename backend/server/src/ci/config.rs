@@ -88,6 +88,62 @@ pub struct FlakeConfig {
     pub packages: FlakePackagesConfig,
 }
 
+/// Per-repo overrides for the package-change summary renderer.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PackageChangeSummaryConfig {
+    /// Render the package-changes section in the GitHub check.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Soft cap on table rows before collapsing to a counts-only summary.
+    #[serde(default = "default_max_packages_listed")]
+    pub max_packages_listed: usize,
+    /// Show `RebuildOnly` rows alongside Added/Removed/Bumped.
+    #[serde(default = "default_false")]
+    pub include_rebuild_only: bool,
+}
+
+fn default_max_packages_listed() -> usize {
+    100
+}
+
+impl Default for PackageChangeSummaryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_packages_listed: default_max_packages_listed(),
+            include_rebuild_only: false,
+        }
+    }
+}
+
+/// Per-repo overrides for the rebuild-impact analyzer.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RebuildImpactConfig {
+    /// Render the rebuild-impact section in the GitHub check.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Number of top-blast-radius packages reported.
+    #[serde(default = "default_max_top_blast_radius")]
+    pub max_top_blast_radius: usize,
+    /// Walk the full transitive dependent set instead of seeds-only.
+    #[serde(default = "default_false")]
+    pub compute_full_blast_radius: bool,
+}
+
+fn default_max_top_blast_radius() -> usize {
+    5
+}
+
+impl Default for RebuildImpactConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_top_blast_radius: default_max_top_blast_radius(),
+            compute_full_blast_radius: false,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CIConfig {
     #[serde(default)]
@@ -96,6 +152,12 @@ pub struct CIConfig {
     pub checks: HashMap<String, Check>,
     #[serde(default)]
     pub flake: Option<FlakeConfig>,
+    /// Overrides for the package-changes section; absent ⇒ engine defaults.
+    #[serde(default)]
+    pub package_change_summary: Option<PackageChangeSummaryConfig>,
+    /// Overrides for the rebuild-impact section; absent ⇒ engine defaults.
+    #[serde(default)]
+    pub rebuild_impact: Option<RebuildImpactConfig>,
 }
 
 impl CIConfig {
@@ -254,5 +316,88 @@ mod tests {
             .expect("Failed to deserialize config without flake");
 
         assert!(config.flake.is_none());
+    }
+
+    #[test]
+    fn test_deserialization_with_package_change_summary() {
+        let example_config = r#"{
+  "jobs": {
+    "stdenv": { "file": "../stdenv.nix" }
+  },
+  "package_change_summary": {
+    "enabled": true,
+    "max_packages_listed": 250,
+    "include_rebuild_only": true
+  },
+  "rebuild_impact": {
+    "enabled": false,
+    "max_top_blast_radius": 10,
+    "compute_full_blast_radius": true
+  }
+}"#;
+        let config = serde_json::from_str::<CIConfig>(example_config)
+            .expect("Failed to deserialize config with change-summary block");
+
+        let pcs = config
+            .package_change_summary
+            .as_ref()
+            .expect("package_change_summary should be present");
+        assert_eq!(pcs.enabled, true);
+        assert_eq!(pcs.max_packages_listed, 250);
+        assert_eq!(pcs.include_rebuild_only, true);
+
+        let ri = config
+            .rebuild_impact
+            .as_ref()
+            .expect("rebuild_impact should be present");
+        assert_eq!(ri.enabled, false);
+        assert_eq!(ri.max_top_blast_radius, 10);
+        assert_eq!(ri.compute_full_blast_radius, true);
+    }
+
+    #[test]
+    fn test_deserialization_change_summary_blocks_absent() {
+        let example_config = r#"{
+  "jobs": { "stdenv": { "file": "../stdenv.nix" } }
+}"#;
+        let config = serde_json::from_str::<CIConfig>(example_config)
+            .expect("Failed to deserialize minimal config");
+
+        assert!(config.package_change_summary.is_none());
+        assert!(config.rebuild_impact.is_none());
+    }
+
+    #[test]
+    fn test_deserialization_change_summary_partial_uses_defaults() {
+        // Only `enabled` set; other fields fall back to defaults.
+        let example_config = r#"{
+  "package_change_summary": { "enabled": false },
+  "rebuild_impact": { "enabled": false }
+}"#;
+        let config = serde_json::from_str::<CIConfig>(example_config)
+            .expect("Failed to deserialize partial change-summary block");
+
+        let pcs = config.package_change_summary.as_ref().unwrap();
+        assert_eq!(pcs.enabled, false);
+        assert_eq!(pcs.max_packages_listed, 100);
+        assert_eq!(pcs.include_rebuild_only, false);
+
+        let ri = config.rebuild_impact.as_ref().unwrap();
+        assert_eq!(ri.enabled, false);
+        assert_eq!(ri.max_top_blast_radius, 5);
+        assert_eq!(ri.compute_full_blast_radius, false);
+    }
+
+    #[test]
+    fn test_default_impls_match_engine_defaults() {
+        let pcs = PackageChangeSummaryConfig::default();
+        assert_eq!(pcs.enabled, true);
+        assert_eq!(pcs.max_packages_listed, 100);
+        assert_eq!(pcs.include_rebuild_only, false);
+
+        let ri = RebuildImpactConfig::default();
+        assert_eq!(ri.enabled, true);
+        assert_eq!(ri.max_top_blast_radius, 5);
+        assert_eq!(ri.compute_full_blast_radius, false);
     }
 }
