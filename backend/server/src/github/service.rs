@@ -808,8 +808,7 @@ impl GitHubService {
             &ci_check_info.commit,
             base_sha,
             job,
-            crate::change_summary::DEFAULT_MAX_PACKAGES_LISTED,
-            crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS,
+            &crate::change_summary::ChangeSummaryOptions::default(),
             self.change_summary_metrics.as_deref(),
         )
         .await

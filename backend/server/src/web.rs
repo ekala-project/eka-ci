@@ -1183,7 +1183,7 @@ struct PackageChangesQuery {
 /// `GET /v1/commits/{sha}/package-changes?base_sha=<sha>&job=<job>`
 ///
 /// Returns the structured package-change list for the given (head, base,
-/// job) triple. Authenticated (per design §10.1 + findings.md H4).
+/// job) triple. Authenticated — see findings.md H4.
 async fn get_package_changes_handler(
     // H4: classifier output correlates internal commit SHAs with package
     // identities — same sensitivity tier as `check_runs`.
@@ -1247,9 +1247,8 @@ struct RebuildImpactQuery {
 /// `GET /v1/commits/{sha}/rebuild-impact?base_sha=<sha>&job=<job>`
 ///
 /// Returns the per-system rebuild count + per-package blast-radius
-/// ranking for the given `(head, base, job)` triple. Authenticated
-/// (per design §10.1 + findings.md H4) — the response correlates
-/// internal SHAs with reverse-reachability data.
+/// ranking for the given `(head, base, job)` triple. Authenticated —
+/// the response correlates internal SHAs with reverse-reachability data.
 async fn get_rebuild_impact_handler(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -1260,9 +1259,7 @@ async fn get_rebuild_impact_handler(
         DEFAULT_MAX_TOP_BLAST_RADIUS, build_rebuild_impact_response_cached,
     };
 
-    // Clamp top-K. Floor at 1 (asking for "0 entries" would still need a
-    // pass through the ranking and is more confusing than a 1-entry
-    // response). Ceiling matches §11.1's rebuild-impact knob × 10.
+    // Clamp top-K to [1, default × 10] to keep response size predictable.
     let top_k = query
         .max_top_blast_radius
         .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
@@ -1300,10 +1297,8 @@ async fn get_rebuild_impact_handler(
 
 /// Query parameters for the change-summary endpoints.
 ///
-/// Same `(base_sha, job)` triple as the component endpoints. The
-/// `max_packages_listed` and `max_top_blast_radius` knobs match the
-/// per-repo config defaults from design §11.1 and are clamped to sane
-/// upper bounds to keep the JSON payload size predictable.
+/// Same `(base_sha, job)` triple as the component endpoints; the cap knobs
+/// mirror per-repo config defaults and are clamped to bound payload size.
 #[derive(Deserialize)]
 struct ChangeSummaryQuery {
     base_sha: String,
@@ -1318,7 +1313,7 @@ struct ChangeSummaryQuery {
 ///
 /// Returns the full structured change summary (package changes +
 /// rebuild impact + pre-rendered markdown) for a `(head, base, job)`
-/// triple. Authenticated per design §10.1.
+/// triple. Authenticated.
 async fn get_change_summary_handler(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -1326,20 +1321,23 @@ async fn get_change_summary_handler(
     axum::extract::Query(query): axum::extract::Query<ChangeSummaryQuery>,
 ) -> Result<Json<crate::change_summary::ChangeSummary>, (axum::http::StatusCode, String)> {
     use crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
-    use crate::change_summary::{DEFAULT_MAX_PACKAGES_LISTED, build_change_summary};
+    use crate::change_summary::{
+        ChangeSummaryOptions, DEFAULT_MAX_PACKAGES_LISTED, build_change_summary,
+    };
 
-    // Clamp both knobs to ×10 their defaults (§11.1) to keep payload
-    // sizes predictable and the BFS work bounded.
-    let max_packages_listed = query
-        .max_packages_listed
-        .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
-        .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
-        .max(1);
-    let max_top_blast_radius = query
-        .max_top_blast_radius
-        .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
-        .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
-        .max(1);
+    // Clamp both knobs to ×10 the engine defaults to bound payload + BFS work.
+    let opts = ChangeSummaryOptions {
+        max_packages_listed: query
+            .max_packages_listed
+            .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
+            .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
+            .max(1),
+        max_top_blast_radius: query
+            .max_top_blast_radius
+            .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
+            .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
+            .max(1),
+    };
 
     match build_change_summary(
         &state.db_service.pool,
@@ -1347,8 +1345,7 @@ async fn get_change_summary_handler(
         &sha,
         &query.base_sha,
         &query.job,
-        max_packages_listed,
-        max_top_blast_radius,
+        &opts,
         state.change_summary_metrics.as_deref(),
     )
     .await
@@ -1374,8 +1371,8 @@ async fn get_change_summary_handler(
 /// `GET /v1/commits/{sha}/change-summary.md?base_sha=<sha>&job=<job>`
 ///
 /// Returns the pre-rendered Markdown view (matching what the GitHub
-/// check posting will display). Per design §10.1 this endpoint is
-/// **public** — the same data is visible on the PR's check tab.
+/// check posting will display). **Public** — the same data is visible
+/// on the PR's check tab.
 async fn get_change_summary_markdown_handler(
     State(state): State<AppState>,
     Path(sha): Path<String>,
@@ -1385,18 +1382,22 @@ async fn get_change_summary_markdown_handler(
     use axum::response::IntoResponse;
 
     use crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
-    use crate::change_summary::{DEFAULT_MAX_PACKAGES_LISTED, build_change_summary};
+    use crate::change_summary::{
+        ChangeSummaryOptions, DEFAULT_MAX_PACKAGES_LISTED, build_change_summary,
+    };
 
-    let max_packages_listed = query
-        .max_packages_listed
-        .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
-        .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
-        .max(1);
-    let max_top_blast_radius = query
-        .max_top_blast_radius
-        .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
-        .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
-        .max(1);
+    let opts = ChangeSummaryOptions {
+        max_packages_listed: query
+            .max_packages_listed
+            .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
+            .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
+            .max(1),
+        max_top_blast_radius: query
+            .max_top_blast_radius
+            .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
+            .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
+            .max(1),
+    };
 
     match build_change_summary(
         &state.db_service.pool,
@@ -1404,8 +1405,7 @@ async fn get_change_summary_markdown_handler(
         &sha,
         &query.base_sha,
         &query.job,
-        max_packages_listed,
-        max_top_blast_radius,
+        &opts,
         state.change_summary_metrics.as_deref(),
     )
     .await
