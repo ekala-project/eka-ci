@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use octocrab::Octocrab;
@@ -12,7 +14,11 @@ use crate::db::DbService;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::dependency_comparison;
+use crate::graph::GraphServiceHandle;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
+
+/// Debounce window before the aggregated change-summary check is posted.
+pub(crate) const CHANGE_SUMMARY_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
 
 pub mod actions;
 mod types;
@@ -31,10 +37,20 @@ pub struct GitHubService {
     github_sender: mpsc::Sender<GitHubTask>,
     github_configure_checks: HashMap<Commit, CheckRunId>,
     github_eval_checks: HashMap<(Commit, String), CheckRunId>,
+    /// Tracks the change-summary check id per head SHA for idempotent updates.
+    change_summary_checks: HashMap<Commit, CheckRunId>,
+    /// Dedup guard so a single debounce timer fires per head SHA.
+    change_summary_pending: HashSet<Commit>,
+    /// Graph handle used to compute rebuild-impact for change summaries.
+    graph_handle: GraphServiceHandle,
 }
 
 impl GitHubService {
-    pub async fn new(db_service: DbService, octocrab: Octocrab) -> anyhow::Result<Self> {
+    pub async fn new(
+        db_service: DbService,
+        octocrab: Octocrab,
+        graph_handle: GraphServiceHandle,
+    ) -> anyhow::Result<Self> {
         use futures::stream::TryStreamExt;
         use tokio::pin;
 
@@ -158,6 +174,9 @@ impl GitHubService {
             github_sender,
             github_configure_checks: HashMap::new(),
             github_eval_checks: HashMap::new(),
+            change_summary_checks: HashMap::new(),
+            change_summary_pending: HashSet::new(),
+            graph_handle,
         })
     }
 
@@ -254,8 +273,33 @@ impl GitHubService {
                     })
                     .await?;
             }
+
+            // Schedule the aggregated change-summary check, deduped per head SHA.
+            if self
+                .change_summary_pending
+                .insert(ci_check_info.commit.clone())
+            {
+                self.spawn_change_summary_debounce(Arc::clone(ci_check_info), name.to_string());
+            }
         }
         Ok(())
+    }
+
+    /// Spawn the debounce timer that enqueues a `CreateChangeSummaryCheck`.
+    fn spawn_change_summary_debounce(&self, ci_check_info: Arc<CICheckInfo>, job: String) {
+        let sender = self.github_sender.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(CHANGE_SUMMARY_DEBOUNCE).await;
+            if let Err(e) = sender
+                .send(GitHubTask::CreateChangeSummaryCheck { ci_check_info, job })
+                .await
+            {
+                warn!(
+                    "Failed to enqueue CreateChangeSummaryCheck after debounce: {:?}",
+                    e
+                );
+            }
+        });
     }
 
     async fn handle_github_task(&mut self, task: &GitHubTask) -> Result<()> {
@@ -440,6 +484,10 @@ impl GitHubService {
                     *base_jobset_id,
                 )
                 .await?;
+            },
+            GitHubTask::CreateChangeSummaryCheck { ci_check_info, job } => {
+                self.handle_create_change_summary_check(ci_check_info, job)
+                    .await?;
             },
             GitHubTask::ProcessMergeCommand {
                 owner,
@@ -728,6 +776,87 @@ impl GitHubService {
             "Successfully created dependency changes gate with {} packages affected",
             comparisons.len()
         );
+        Ok(())
+    }
+
+    /// Idempotently post (or patch) the aggregated change-summary check for a head SHA.
+    async fn handle_create_change_summary_check(
+        &mut self,
+        ci_check_info: &Arc<CICheckInfo>,
+        job: &str,
+    ) -> Result<()> {
+        self.change_summary_pending.remove(&ci_check_info.commit);
+
+        let Some(base_sha) = ci_check_info.base_commit.as_deref() else {
+            debug!(
+                "Skipping change-summary check for {}: no base commit (not a PR head)",
+                &ci_check_info.commit
+            );
+            return Ok(());
+        };
+
+        let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+
+        let summary = match crate::change_summary::build_change_summary(
+            &self.db_service.pool,
+            &self.graph_handle,
+            &ci_check_info.commit,
+            base_sha,
+            job,
+            crate::change_summary::DEFAULT_MAX_PACKAGES_LISTED,
+            crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS,
+        )
+        .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                debug!(
+                    "No change-summary built for {} (head/base jobset missing); skipping check \
+                     post",
+                    &ci_check_info.commit
+                );
+                return Ok(());
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to build change-summary for commit {}: {:?}",
+                    &ci_check_info.commit, e
+                );
+                return Ok(());
+            },
+        };
+
+        let markdown = summary.markdown;
+
+        if let Some(existing) = self
+            .change_summary_checks
+            .get(&ci_check_info.commit)
+            .copied()
+        {
+            if let Err(e) =
+                actions::update_change_summary_check(&octocrab, ci_check_info, existing, markdown)
+                    .await
+            {
+                warn!(
+                    "Failed to update change-summary check {} for {}: {:?}",
+                    existing, &ci_check_info.commit, e
+                );
+            }
+        } else {
+            match actions::create_change_summary_check(&octocrab, ci_check_info, markdown).await {
+                Ok(check_run) => {
+                    self.change_summary_checks
+                        .insert(ci_check_info.commit.clone(), check_run.id);
+                },
+                Err(e) => {
+                    warn!(
+                        "Failed to create change-summary check for {}: {:?}",
+                        &ci_check_info.commit, e
+                    );
+                },
+            }
+        }
+
         Ok(())
     }
 

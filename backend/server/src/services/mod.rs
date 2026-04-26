@@ -111,7 +111,7 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     // Create GitHubService
     let maybe_github_service = if let Some(ref octocrab) = maybe_octocrab {
-        Some(GitHubService::new(db_service.clone(), octocrab.clone()).await?)
+        Some(GitHubService::new(db_service.clone(), octocrab.clone(), graph_handle.clone()).await?)
     } else {
         None
     };

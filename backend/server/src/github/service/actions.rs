@@ -708,6 +708,141 @@ pub async fn create_dependency_changes_gate(
     Ok(check_run)
 }
 
+/// Title for the per-commit aggregated change-summary check run.
+pub(crate) const CHANGE_SUMMARY_CHECK_TITLE: &str = "EkaCI: Change Summary";
+
+/// Defense-in-depth byte ceiling against GitHub's 65,535 summary cap.
+const CHANGE_SUMMARY_HARD_CAP: usize = 65_500;
+
+/// UTF-8-safe truncate to `CHANGE_SUMMARY_HARD_CAP` with a footer marker.
+fn cap_summary_bytes(mut summary: String) -> String {
+    if summary.len() <= CHANGE_SUMMARY_HARD_CAP {
+        return summary;
+    }
+    let mut cut = CHANGE_SUMMARY_HARD_CAP;
+    while cut > 0 && !summary.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    summary.truncate(cut);
+    summary.push_str("\n\n_…truncated by sender safety net_\n");
+    summary
+}
+
+/// Create the informational change-summary check run for a head SHA.
+pub async fn create_change_summary_check(
+    octocrab: &Octocrab,
+    ci_check_info: &CICheckInfo,
+    markdown_summary: String,
+) -> Result<CheckRun> {
+    use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+    debug!(
+        "Creating change-summary check run for commit {}",
+        &ci_check_info.commit
+    );
+
+    let summary = cap_summary_bytes(markdown_summary);
+
+    let output = octocrab::params::checks::CheckRunOutput {
+        title: CHANGE_SUMMARY_CHECK_TITLE.to_string(),
+        summary,
+        text: None,
+        annotations: vec![],
+        images: vec![],
+    };
+
+    let check_run = octocrab
+        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+        .create_check_run(CHANGE_SUMMARY_CHECK_TITLE, &ci_check_info.commit)
+        .status(CheckRunStatus::Completed)
+        .conclusion(CheckRunConclusion::Neutral)
+        .output(output)
+        .send()
+        .await?;
+
+    debug!(
+        "Created change-summary check run #{} for commit {}",
+        check_run.id, &ci_check_info.commit
+    );
+
+    Ok(check_run)
+}
+
+#[cfg(test)]
+mod change_summary_tests {
+    use super::{CHANGE_SUMMARY_HARD_CAP, cap_summary_bytes};
+
+    #[test]
+    fn cap_summary_bytes_short_input_is_unchanged() {
+        let input = "# small markdown\n\nbody".to_string();
+        let original = input.clone();
+        assert_eq!(cap_summary_bytes(input), original);
+    }
+
+    #[test]
+    fn cap_summary_bytes_truncates_oversized_input() {
+        let big = "a".repeat(CHANGE_SUMMARY_HARD_CAP + 5_000);
+        let out = cap_summary_bytes(big);
+        assert!(
+            out.len() <= CHANGE_SUMMARY_HARD_CAP + 64,
+            "output should be near the cap (got {})",
+            out.len()
+        );
+        assert!(
+            out.contains("truncated by sender safety net"),
+            "footer should be appended"
+        );
+    }
+
+    #[test]
+    fn cap_summary_bytes_preserves_utf8_boundary() {
+        // Multibyte codepoint straddling the cut point must not panic.
+        let prefix = "x".repeat(CHANGE_SUMMARY_HARD_CAP - 2);
+        let mut s = prefix.clone();
+        s.push('🦀');
+        s.push_str(&"y".repeat(100));
+        let out = cap_summary_bytes(s);
+        assert!(out.starts_with(&prefix));
+        assert!(out.contains("truncated by sender safety net"));
+    }
+}
+
+/// Patch an existing change-summary check run in place.
+pub async fn update_change_summary_check(
+    octocrab: &Octocrab,
+    ci_check_info: &CICheckInfo,
+    check_run_id: CheckRunId,
+    markdown_summary: String,
+) -> Result<()> {
+    use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+    debug!(
+        "Updating change-summary check run #{} for commit {}",
+        check_run_id, &ci_check_info.commit
+    );
+
+    let summary = cap_summary_bytes(markdown_summary);
+
+    let output = octocrab::params::checks::CheckRunOutput {
+        title: CHANGE_SUMMARY_CHECK_TITLE.to_string(),
+        summary,
+        text: None,
+        annotations: vec![],
+        images: vec![],
+    };
+
+    octocrab
+        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+        .update_check_run(check_run_id)
+        .status(CheckRunStatus::Completed)
+        .conclusion(CheckRunConclusion::Neutral)
+        .output(output)
+        .send()
+        .await?;
+
+    Ok(())
+}
+
 // ---- Issue comments, reactions, and permission checks ----
 //
 // Helpers for the `@eka-ci merge` comment command. All require an
