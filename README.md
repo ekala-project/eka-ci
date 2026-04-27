@@ -126,7 +126,9 @@ This doesn't scale well, and is error prone.
 
 See the [design document](./DESIGN.md) for details about a high-level overview of EkaCI.
 
-See the [architecture document](./docs/ARCHITECTURE.md) for details about EkaCI's current implementation.
+See the [architecture document](./docs/architecture.md) for details about EkaCI's current implementation.
+
+Full user documentation is published at <https://ekala-project.github.io/eka-ci/>.
 
 ## Quick Start
 
@@ -327,9 +329,9 @@ When size checks are configured, EkaCI will:
 
 - **[GitHub App Setup Guide](docs/github-app-setup.md)** - Complete guide for creating and configuring GitHub Apps with 8 credential sources
 - **[Cache Configuration Guide](docs/configure-caches.md)** - Detailed cache setup and credential management
-- **[LRU Cache Operations](docs/lru-cache-operational-runbook.md)** - LRU cache tuning and monitoring
+- **[LRU Cache Operations](docs/lru-cache-tuning.md)** - LRU cache tuning and monitoring
 - **[Post-Build Hooks](docs/post-build-hooks.md)** - Hook system implementation details
-- **[Architecture](docs/ARCHITECTURE.md)** - Detailed implementation architecture
+- **[Architecture](docs/architecture.md)** - Detailed implementation architecture
 - **[Design](DESIGN.md)** - High-level design philosophy
 
 ## Deployment
@@ -347,7 +349,7 @@ When size checks are configured, EkaCI will:
    - Medium repos (1k-10k packages): 100,000 nodes (default)
    - Large repos (>10k packages): 500,000+ nodes
 
-See [docs/lru-cache-operational-runbook.md](docs/lru-cache-operational-runbook.md) for tuning guidance.
+See [docs/lru-cache-tuning.md](docs/lru-cache-tuning.md) for tuning guidance.
 
 ### Security Best Practices
 
