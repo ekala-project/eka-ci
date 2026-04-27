@@ -30,6 +30,8 @@ use crate::webhook_security::verify_webhook_signature;
 struct AppState {
     git_sender: mpsc::Sender<GitTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    gitlab_sender: Option<mpsc::Sender<crate::gitlab::GitLabTask>>,
+    gitea_sender: Option<mpsc::Sender<crate::gitea::GiteaTask>>,
     ingress_sender: Option<mpsc::Sender<IngressTask>>,
     octocrab: Option<octocrab::Octocrab>,
     metrics_registry: Arc<Registry>,
@@ -185,6 +187,8 @@ impl WebService {
         socket: &SocketAddrV4,
         git_sender: mpsc::Sender<GitTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        gitlab_sender: Option<mpsc::Sender<crate::gitlab::GitLabTask>>,
+        gitea_sender: Option<mpsc::Sender<crate::gitea::GiteaTask>>,
         ingress_sender: Option<mpsc::Sender<IngressTask>>,
         octocrab: Option<octocrab::Octocrab>,
         metrics_registry: Arc<Registry>,
@@ -240,6 +244,8 @@ impl WebService {
             state: AppState {
                 git_sender,
                 github_sender,
+                gitlab_sender,
+                gitea_sender,
                 ingress_sender,
                 octocrab,
                 metrics_registry,
@@ -304,6 +310,8 @@ impl WebService {
         let app = Router::new()
             .nest("/v1", api_routes())
             .nest("/github", github_routes())
+            .nest("/gitlab", gitlab_routes())
+            .nest("/gitea", gitea_routes())
             .fallback_service(serve_dir)
             .layer(cors)
             .with_state(self.state);
@@ -385,6 +393,48 @@ fn github_routes() -> Router<AppState> {
         .route("/auth/login", get(auth_login_handler))
         .route("/auth/callback", get(auth_callback_handler))
         .route("/auth/me", get(auth_me_handler))
+}
+
+/// Build the `/gitlab/webhook` subrouter with rate limiting
+fn gitlab_webhook_router() -> Router<AppState> {
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(WEBHOOK_RATE_PER_SECOND)
+            .burst_size(WEBHOOK_RATE_BURST)
+            .finish()
+            .expect("webhook governor config must be valid with non-zero burst"),
+    );
+
+    Router::new()
+        .route("/webhook", post(handle_gitlab_webhook))
+        .layer(DefaultBodyLimit::max(WEBHOOK_MAX_BODY_BYTES))
+        .layer(GovernorLayer::new(governor_conf))
+}
+
+/// Prefixed with /gitlab/ path
+fn gitlab_routes() -> Router<AppState> {
+    Router::new().merge(gitlab_webhook_router())
+}
+
+/// Build the `/gitea/webhook` subrouter with rate limiting
+fn gitea_webhook_router() -> Router<AppState> {
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(WEBHOOK_RATE_PER_SECOND)
+            .burst_size(WEBHOOK_RATE_BURST)
+            .finish()
+            .expect("webhook governor config must be valid with non-zero burst"),
+    );
+
+    Router::new()
+        .route("/webhook", post(handle_gitea_webhook))
+        .layer(DefaultBodyLimit::max(WEBHOOK_MAX_BODY_BYTES))
+        .layer(GovernorLayer::new(governor_conf))
+}
+
+/// Prefixed with /gitea/ path
+fn gitea_routes() -> Router<AppState> {
+    Router::new().merge(gitea_webhook_router())
 }
 
 /// Prefixed with /v1 path
@@ -639,6 +689,157 @@ async fn handle_github_webhook(
         state.github_app_configs,
     )
     .await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn handle_gitlab_webhook(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+
+    // GitLab uses X-Gitlab-Token header for webhook authentication
+    let token_header = headers.get("x-gitlab-token");
+
+    // Verify webhook secret if configured
+    match (&state.webhook_secret, state.allow_insecure_webhooks) {
+        (Some(secret), _) => {
+            let token = match token_header.and_then(|t| t.to_str().ok()) {
+                Some(t) => t,
+                None => {
+                    warn!("Missing or invalid X-Gitlab-Token header");
+                    return (StatusCode::UNAUTHORIZED, "").into_response();
+                },
+            };
+
+            if token != secret.expose() {
+                warn!("GitLab webhook token verification failed");
+                return (StatusCode::UNAUTHORIZED, "").into_response();
+            }
+        },
+        (None, true) => {
+            warn!("Accepting GitLab webhook without verification (insecure mode)");
+        },
+        (None, false) => {
+            warn!("Refusing GitLab webhook: no secret configured");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Webhook endpoint not configured",
+            )
+                .into_response();
+        },
+    }
+
+    // Get event type from X-Gitlab-Event header
+    let event_type = match headers.get("x-gitlab-event").and_then(|h| h.to_str().ok()) {
+        Some(et) => et,
+        None => {
+            warn!("Missing X-Gitlab-Event header");
+            return (StatusCode::BAD_REQUEST, "Missing event type header").into_response();
+        },
+    };
+
+    // Parse JSON payload
+    let payload: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(json) => json,
+        Err(e) => {
+            warn!("Failed to parse GitLab webhook JSON: {:?}", e);
+            return (StatusCode::BAD_REQUEST, "Invalid JSON payload").into_response();
+        },
+    };
+
+    // Forward to GitLab webhook handler
+    if let Some(gitlab_sender) = &state.gitlab_sender {
+        crate::gitlab::handle_webhook_payload(
+            event_type,
+            payload,
+            state.git_sender,
+            gitlab_sender.clone(),
+            state.db_service,
+        )
+        .await;
+    } else {
+        warn!("GitLab webhook received but GitLabService not configured");
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn handle_gitea_webhook(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+
+    // Gitea uses X-Gitea-Signature for HMAC verification (similar to GitHub)
+    // For simplicity in this skeleton, we'll use token-based auth like GitLab
+    // TODO: Implement proper HMAC-SHA256 signature verification
+
+    let token_header = headers.get("x-gitea-token");
+
+    // Verify webhook secret if configured
+    match (&state.webhook_secret, state.allow_insecure_webhooks) {
+        (Some(secret), _) => {
+            let token = match token_header.and_then(|t| t.to_str().ok()) {
+                Some(t) => t,
+                None => {
+                    warn!("Missing or invalid X-Gitea-Token header");
+                    return (StatusCode::UNAUTHORIZED, "").into_response();
+                },
+            };
+
+            if token != secret.expose() {
+                warn!("Gitea webhook token verification failed");
+                return (StatusCode::UNAUTHORIZED, "").into_response();
+            }
+        },
+        (None, true) => {
+            warn!("Accepting Gitea webhook without verification (insecure mode)");
+        },
+        (None, false) => {
+            warn!("Refusing Gitea webhook: no secret configured");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Webhook endpoint not configured",
+            )
+                .into_response();
+        },
+    }
+
+    // Get event type from X-Gitea-Event header
+    let event_type = match headers.get("x-gitea-event").and_then(|h| h.to_str().ok()) {
+        Some(et) => et,
+        None => {
+            warn!("Missing X-Gitea-Event header");
+            return (StatusCode::BAD_REQUEST, "Missing event type header").into_response();
+        },
+    };
+
+    // Parse JSON payload
+    let payload: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(json) => json,
+        Err(e) => {
+            warn!("Failed to parse Gitea webhook JSON: {:?}", e);
+            return (StatusCode::BAD_REQUEST, "Invalid JSON payload").into_response();
+        },
+    };
+
+    // Forward to Gitea webhook handler
+    if let Some(gitea_sender) = &state.gitea_sender {
+        crate::gitea::handle_webhook_payload(
+            event_type,
+            payload,
+            state.git_sender,
+            gitea_sender.clone(),
+            state.db_service,
+        )
+        .await;
+    } else {
+        warn!("Gitea webhook received but GiteaService not configured");
+    }
 
     StatusCode::NO_CONTENT.into_response()
 }

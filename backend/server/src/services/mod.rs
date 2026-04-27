@@ -14,7 +14,9 @@ use crate::client::UnixService;
 use crate::config::Config;
 use crate::db::DbService;
 use crate::git::GitService;
+use crate::gitea::GiteaService;
 use crate::github::{self, GitHubService};
+use crate::gitlab::GitLabService;
 use crate::graph::{GraphCommand, GraphService, GraphServiceHandle};
 use crate::metrics::{ChangeSummaryMetrics, GraphMetrics, NixEvalMetrics, WebhookMetrics};
 use crate::nix::{EvalService, EvalTask};
@@ -128,6 +130,23 @@ pub async fn start_services(config: Config) -> Result<()> {
     } else {
         None
     };
+
+    // Create GitLabService (always created, API integration TODO)
+    let gitlab_service = GitLabService::new(
+        db_service.clone(),
+        graph_handle.clone(),
+        Some(change_summary_metrics.clone()),
+    )
+    .await?;
+
+    // Create GiteaService (always created, API integration TODO)
+    let gitea_service = GiteaService::new(
+        db_service.clone(),
+        graph_handle.clone(),
+        Some(change_summary_metrics.clone()),
+    )
+    .await?;
+
     info!(
         "GraphService initialized with {} drvs",
         graph_handle.node_count()
@@ -138,6 +157,8 @@ pub async fn start_services(config: Config) -> Result<()> {
     let websocket_sender = Some(websocket_service.event_sender());
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
+    let gitlab_sender = Some(gitlab_service.get_sender());
+    let gitea_sender = Some(gitea_service.get_sender());
 
     // Wrap cache configs in Arc for sharing across services
     let cache_configs = Arc::new(config.caches.clone());
@@ -217,6 +238,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         &config.web.address,
         git_service.get_sender(),
         maybe_github_sender.clone(),
+        gitlab_sender,
+        gitea_sender,
         Some(scheduler_service.ingress_request_sender()),
         maybe_octocrab,
         scheduler_service.metrics_registry(),
@@ -276,8 +299,9 @@ pub async fn start_services(config: Config) -> Result<()> {
     let checks_handle = tokio::spawn(checks_service.run(cancellation_token.clone()));
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
     let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
-    let github_handle =
-        maybe_github_service.map(|svc| tokio::spawn(svc.run(cancellation_token.clone())));
+    let github_handle = maybe_github_service.map(|svc| svc.run(cancellation_token.clone()));
+    let gitlab_handle = gitlab_service.run(cancellation_token.clone());
+    let gitea_handle = gitea_service.run(cancellation_token.clone());
 
     let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
@@ -308,7 +332,9 @@ pub async fn start_services(config: Config) -> Result<()> {
         unix_handle,
         web_handle,
         repo_handle,
-        git_handle
+        git_handle,
+        gitlab_handle,
+        gitea_handle
     );
 
     // The GitHub service is only spawned when configured; await it
