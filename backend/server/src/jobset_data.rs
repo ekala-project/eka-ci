@@ -88,14 +88,7 @@ mod tests {
 
     #[test]
     fn full_repo_id_formatting() {
-        let data = JobsetData::new(
-            "owner",
-            "repo",
-            "gitlab.example.com",
-            "sha",
-            "job",
-            None,
-        );
+        let data = JobsetData::new("owner", "repo", "gitlab.example.com", "sha", "job", None);
 
         assert_eq!(data.full_repo_id(), "gitlab.example.com/owner/repo");
         assert_eq!(data.repo_id(), "owner/repo");

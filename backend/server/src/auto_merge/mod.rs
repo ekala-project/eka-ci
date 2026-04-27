@@ -178,10 +178,7 @@ mod tests {
     fn not_enabled_when_no_auto_merge_or_comment() {
         let mut state = base_state();
         state.auto_merge_enabled = false;
-        assert_eq!(
-            state.evaluate_eligibility(),
-            MergeEligibility::NotEnabled
-        );
+        assert_eq!(state.evaluate_eligibility(), MergeEligibility::NotEnabled);
     }
 
     #[test]
