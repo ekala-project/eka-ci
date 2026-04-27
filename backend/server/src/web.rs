@@ -1323,11 +1323,11 @@ async fn get_change_summary_handler(
 ) -> Result<Json<crate::change_summary::ChangeSummary>, (axum::http::StatusCode, String)> {
     use crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
     use crate::change_summary::{
-        ChangeSummaryOptions, DEFAULT_MAX_PACKAGES_LISTED, build_change_summary,
+        DEFAULT_MAX_PACKAGES_LISTED, build_change_summary, resolve_options_for_jobset,
     };
 
-    // Clamp both knobs to ×10 the engine defaults to bound payload + BFS work.
-    let opts = ChangeSummaryOptions {
+    // Resolve per-repo options from .ekaci/config.json; query params still clamp the caps.
+    let opts = crate::change_summary::ChangeSummaryOptions {
         max_packages_listed: query
             .max_packages_listed
             .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
@@ -1338,7 +1338,7 @@ async fn get_change_summary_handler(
             .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
             .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
             .max(1),
-        ..ChangeSummaryOptions::default()
+        ..resolve_options_for_jobset(&state.db_service.pool, &sha, &query.job).await
     };
 
     match build_change_summary(
@@ -1385,10 +1385,10 @@ async fn get_change_summary_markdown_handler(
 
     use crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
     use crate::change_summary::{
-        ChangeSummaryOptions, DEFAULT_MAX_PACKAGES_LISTED, build_change_summary,
+        DEFAULT_MAX_PACKAGES_LISTED, build_change_summary, resolve_options_for_jobset,
     };
 
-    let opts = ChangeSummaryOptions {
+    let opts = crate::change_summary::ChangeSummaryOptions {
         max_packages_listed: query
             .max_packages_listed
             .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
@@ -1399,7 +1399,7 @@ async fn get_change_summary_markdown_handler(
             .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
             .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
             .max(1),
-        ..ChangeSummaryOptions::default()
+        ..resolve_options_for_jobset(&state.db_service.pool, &sha, &query.job).await
     };
 
     match build_change_summary(

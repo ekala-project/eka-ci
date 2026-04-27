@@ -360,6 +360,17 @@ fn read_repo_toplevel(path: &mut PathBuf) -> Result<CIConfig> {
     Ok(config)
 }
 
+/// Best-effort load of `.ekaci/config.json` from the on-disk worktree; `None` on any miss.
+pub fn load_repo_ci_config(domain: &str, owner: &str, repo: &str, sha: &str) -> Option<CIConfig> {
+    let mut path = crate::git::workspace_root().ok()?;
+    path.push(domain);
+    path.push(owner);
+    path.push(repo);
+    path.push("worktrees");
+    path.push(sha);
+    read_repo_toplevel(&mut path).ok()
+}
+
 /// Resolve the file path for a CI job described in `.ekaci/config.json`.
 ///
 /// Only absolute paths (interpreted as repo-root-relative) are
