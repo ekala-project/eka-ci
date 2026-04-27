@@ -729,7 +729,7 @@ fn reaction_from_str(content: &str) -> ReactionContent {
 }
 
 /// Add an emoji reaction to an issue/PR comment. See
-/// `docs/github-pr-comment-support.md` for the reaction legend.
+/// `docs/pr-commands.md` for the reaction legend.
 pub async fn add_comment_reaction(
     octocrab: &Octocrab,
     owner: &str,

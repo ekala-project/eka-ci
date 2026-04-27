@@ -1,0 +1,22 @@
+[book]
+title = "Eka CI"
+description = "Continuous Integration server for Nix projects"
+authors = ["The Ekala project"]
+language = "en"
+multilingual = false
+src = "."
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/ekala-project/eka-ci"
+edit-url-template = "https://github.com/ekala-project/eka-ci/edit/master/docs/{path}"
+site-url = "/eka-ci/"
+
+[output.html.fold]
+enable = true
+level = 1
