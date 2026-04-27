@@ -2074,7 +2074,7 @@ async fn check_merge_eligibility_handler(
 
     // Get PR from database
     let pr = match sqlx::query_as::<_, crate::db::github::PullRequest>(
-        "SELECT * FROM PullRequests WHERE owner = ? AND repo_name = ? AND pr_number = ?",
+        "SELECT * FROM GitHubPullRequests WHERE owner = ? AND repo_name = ? AND pr_number = ?",
     )
     .bind(&owner)
     .bind(&repo)
