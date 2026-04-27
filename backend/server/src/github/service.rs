@@ -5,10 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use octocrab::Octocrab;
 use octocrab::models::{CheckRunId, Installation};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tokio::sync::{Mutex, mpsc};
+use tracing::{debug, error, info, warn};
 
 use crate::db::DbService;
 use crate::db::model::DrvId;
@@ -17,6 +15,7 @@ use crate::dependency_comparison;
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
+use crate::services::AsyncService;
 
 /// Debounce window before the aggregated change-summary check is posted.
 pub(crate) const CHANGE_SUMMARY_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
@@ -34,14 +33,14 @@ pub struct GitHubService {
     db_service: DbService,
     octocrab: Octocrab,
     installations: HashMap<Owner, Installation>,
-    github_receiver: mpsc::Receiver<GitHubTask>,
+    github_receiver: Mutex<Option<mpsc::Receiver<GitHubTask>>>,
     github_sender: mpsc::Sender<GitHubTask>,
-    github_configure_checks: HashMap<Commit, CheckRunId>,
-    github_eval_checks: HashMap<(Commit, String), CheckRunId>,
+    github_configure_checks: Mutex<HashMap<Commit, CheckRunId>>,
+    github_eval_checks: Mutex<HashMap<(Commit, String), CheckRunId>>,
     /// Tracks the change-summary check id per head SHA for idempotent updates.
-    change_summary_checks: HashMap<Commit, CheckRunId>,
+    change_summary_checks: Mutex<HashMap<Commit, CheckRunId>>,
     /// Dedup guard so a single debounce timer fires per head SHA.
-    change_summary_pending: HashSet<Commit>,
+    change_summary_pending: Mutex<HashSet<Commit>>,
     /// Graph handle used to compute rebuild-impact for change summaries.
     graph_handle: GraphServiceHandle,
     /// Optional metrics for change-summary pipeline observability.
@@ -174,12 +173,12 @@ impl GitHubService {
             db_service,
             octocrab,
             installations,
-            github_receiver,
+            github_receiver: Mutex::new(Some(github_receiver)),
             github_sender,
-            github_configure_checks: HashMap::new(),
-            github_eval_checks: HashMap::new(),
-            change_summary_checks: HashMap::new(),
-            change_summary_pending: HashSet::new(),
+            github_configure_checks: Mutex::new(HashMap::new()),
+            github_eval_checks: Mutex::new(HashMap::new()),
+            change_summary_checks: Mutex::new(HashMap::new()),
+            change_summary_pending: Mutex::new(HashSet::new()),
             graph_handle,
             change_summary_metrics,
         })
@@ -189,12 +188,8 @@ impl GitHubService {
         self.github_sender.clone()
     }
 
-    pub fn run(self, cancel_token: CancellationToken) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            cancel_token
-                .run_until_cancelled(self.github_tasks_loop())
-                .await;
-        })
+    pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitHubTask>> {
+        self.github_receiver.blocking_lock().take()
     }
 
     /// Attempt to look up installation by owner
@@ -211,18 +206,8 @@ impl GitHubService {
         Ok(octo)
     }
 
-    async fn github_tasks_loop(mut self) {
-        loop {
-            if let Some(task) = self.github_receiver.recv().await {
-                if let Err(e) = self.handle_github_task(&task).await {
-                    warn!("Failed to handle github request {:?}: {:?}", &task, e);
-                }
-            }
-        }
-    }
-
     async fn create_job_set(
-        &mut self,
+        &self,
         ci_check_info: &std::sync::Arc<CICheckInfo>,
         name: &str,
         jobs: &[NixEvalDrv],
@@ -282,6 +267,8 @@ impl GitHubService {
             // Schedule the aggregated change-summary check, deduped per head SHA.
             if self
                 .change_summary_pending
+                .lock()
+                .await
                 .insert(ci_check_info.commit.clone())
             {
                 self.spawn_change_summary_debounce(Arc::clone(ci_check_info), name.to_string());
@@ -307,7 +294,7 @@ impl GitHubService {
         });
     }
 
-    async fn handle_github_task(&mut self, task: &GitHubTask) -> Result<()> {
+    async fn handle_github_task(&self, task: &GitHubTask) -> Result<()> {
         use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
 
         match task {
@@ -351,12 +338,16 @@ impl GitHubService {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run = actions::create_ci_configure_gate(&octocrab, ci_check_info).await?;
                 self.github_configure_checks
+                    .lock()
+                    .await
                     .insert(ci_check_info.commit.clone(), check_run.id);
             },
             GitHubTask::CompleteCIConfigureGate { ci_check_info } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run_id = self
                     .github_configure_checks
+                    .lock()
+                    .await
                     .remove(&ci_check_info.commit)
                     .context("No configure gate check run found for commit")?;
                 actions::update_ci_configure_gate(
@@ -375,7 +366,7 @@ impl GitHubService {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run =
                     actions::create_ci_eval_job(&octocrab, job_title, ci_check_info).await?;
-                self.github_eval_checks.insert(
+                self.github_eval_checks.lock().await.insert(
                     (ci_check_info.commit.clone(), job_title.clone()),
                     check_run.id,
                 );
@@ -388,6 +379,8 @@ impl GitHubService {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run_id = self
                     .github_eval_checks
+                    .lock()
+                    .await
                     .remove(&(ci_check_info.commit.clone(), job_name.clone()))
                     .context("No eval job check run found for commit")?;
                 actions::update_ci_eval_job(
@@ -602,16 +595,18 @@ impl GitHubService {
         Ok(())
     }
 
-    async fn handle_cancel_check_runs_for_commit(
-        &mut self,
-        ci_check_info: &CICheckInfo,
-    ) -> Result<()> {
+    async fn handle_cancel_check_runs_for_commit(&self, ci_check_info: &CICheckInfo) -> Result<()> {
         use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
 
         let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
 
         // Cancel any in-progress configure gate.
-        if let Some(check_run_id) = self.github_configure_checks.remove(&ci_check_info.commit) {
+        if let Some(check_run_id) = self
+            .github_configure_checks
+            .lock()
+            .await
+            .remove(&ci_check_info.commit)
+        {
             if let Err(e) = actions::update_ci_configure_gate(
                 &octocrab,
                 ci_check_info,
@@ -631,13 +626,15 @@ impl GitHubService {
         // Cancel in-progress eval gates (may be multiple per commit).
         let keys_to_remove: Vec<_> = self
             .github_eval_checks
+            .lock()
+            .await
             .keys()
             .filter(|(commit, _)| commit == &ci_check_info.commit)
             .cloned()
             .collect();
 
         for key in keys_to_remove {
-            if let Some(check_run_id) = self.github_eval_checks.remove(&key) {
+            if let Some(check_run_id) = self.github_eval_checks.lock().await.remove(&key) {
                 if let Err(e) = actions::update_ci_eval_job(
                     &octocrab,
                     ci_check_info,
@@ -786,11 +783,14 @@ impl GitHubService {
 
     /// Idempotently post (or patch) the aggregated change-summary check for a head SHA.
     async fn handle_create_change_summary_check(
-        &mut self,
+        &self,
         ci_check_info: &Arc<CICheckInfo>,
         job: &str,
     ) -> Result<()> {
-        self.change_summary_pending.remove(&ci_check_info.commit);
+        self.change_summary_pending
+            .lock()
+            .await
+            .remove(&ci_check_info.commit);
 
         let Some(base_sha) = ci_check_info.base_commit.as_deref() else {
             debug!(
@@ -844,6 +844,8 @@ impl GitHubService {
 
         if let Some(existing) = self
             .change_summary_checks
+            .lock()
+            .await
             .get(&ci_check_info.commit)
             .copied()
         {
@@ -860,6 +862,8 @@ impl GitHubService {
             match actions::create_change_summary_check(&octocrab, ci_check_info, markdown).await {
                 Ok(check_run) => {
                     self.change_summary_checks
+                        .lock()
+                        .await
                         .insert(ci_check_info.commit.clone(), check_run.id);
                 },
                 Err(e) => {
@@ -1611,4 +1615,30 @@ enum Authorization {
 /// Abbreviate a SHA to 7 chars; shorter inputs are returned unchanged.
 fn short_sha(sha: &str) -> &str {
     if sha.len() >= 7 { &sha[..7] } else { sha }
+}
+
+// ============================================================================
+// AsyncService trait implementation
+// ============================================================================
+
+impl AsyncService<GitHubTask> for GitHubService {
+    fn get_sender(&self) -> mpsc::Sender<GitHubTask> {
+        self.github_sender.clone()
+    }
+
+    fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitHubTask>> {
+        self.github_receiver.blocking_lock().take()
+    }
+
+    async fn handle_task(&self, task: GitHubTask) -> Result<()> {
+        self.handle_github_task(&task).await
+    }
+
+    async fn handle_failure(&mut self, error: anyhow::Error) {
+        error!("GitHubService task failed: {:?}", error);
+    }
+
+    async fn handle_closure(&mut self) {
+        info!("GitHubService shutting down");
+    }
 }
