@@ -3,6 +3,7 @@
 //! This library crate exposes the server modules for testing.
 
 pub mod auth;
+pub mod auto_merge;
 pub mod cache_permissions;
 pub mod change_summary;
 pub mod checks;
@@ -16,6 +17,7 @@ pub mod github;
 pub mod github_permissions;
 pub mod graph;
 pub mod hooks;
+pub mod jobset_data;
 pub mod metrics;
 pub mod nix;
 pub mod path_safety;
