@@ -46,12 +46,16 @@ pub struct RenderOptions {
     /// Include the "_N packages will rebuild without source changes._" line.
     /// Truncation may still drop it if the rendered output is too large.
     pub include_rebuild_only: bool,
+    /// Config parse error message to display in a banner. When `Some`, a warning
+    /// banner is prepended to the rendered output.
+    pub config_load_error: Option<String>,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
         Self {
             include_rebuild_only: true,
+            config_load_error: None,
         }
     }
 }
@@ -79,7 +83,7 @@ pub fn render(summary: &ChangeSummary, options: &RenderOptions) -> (String, Rend
     let mut config = RenderConfig::default();
     // Caller asked us to suppress the rebuild-only count line up-front.
     config.include_rebuild_only_line = options.include_rebuild_only;
-    let initial = render_with_config(summary, &config, &truncation);
+    let initial = render_with_config(summary, &config, &truncation, options);
     if initial.len() <= GITHUB_CHECK_SUMMARY_SOFT_LIMIT {
         return (initial, truncation);
     }
@@ -87,7 +91,7 @@ pub fn render(summary: &ChangeSummary, options: &RenderOptions) -> (String, Rend
     // Pass 1: drop maintainers
     config.include_maintainers = false;
     truncation.dropped_maintainers = true;
-    let pass1 = render_with_config(summary, &config, &truncation);
+    let pass1 = render_with_config(summary, &config, &truncation, options);
     if pass1.len() <= GITHUB_CHECK_SUMMARY_SOFT_LIMIT {
         return (pass1, truncation);
     }
@@ -95,7 +99,7 @@ pub fn render(summary: &ChangeSummary, options: &RenderOptions) -> (String, Rend
     // Pass 2: also drop license
     config.include_license = false;
     truncation.dropped_license = true;
-    let pass2 = render_with_config(summary, &config, &truncation);
+    let pass2 = render_with_config(summary, &config, &truncation, options);
     if pass2.len() <= GITHUB_CHECK_SUMMARY_SOFT_LIMIT {
         return (pass2, truncation);
     }
@@ -106,7 +110,7 @@ pub fn render(summary: &ChangeSummary, options: &RenderOptions) -> (String, Rend
         config.include_rebuild_only_line = false;
         truncation.dropped_rebuild_only = true;
     }
-    let pass3 = render_with_config(summary, &config, &truncation);
+    let pass3 = render_with_config(summary, &config, &truncation, options);
     if pass3.len() <= GITHUB_CHECK_SUMMARY_SOFT_LIMIT {
         return (pass3, truncation);
     }
@@ -114,7 +118,7 @@ pub fn render(summary: &ChangeSummary, options: &RenderOptions) -> (String, Rend
     // Pass 4: collapse table to counts.
     config.collapse_table = true;
     truncation.collapsed_to_counts = true;
-    let pass4 = render_with_config(summary, &config, &truncation);
+    let pass4 = render_with_config(summary, &config, &truncation, options);
 
     // We always return *something* — even pass4 is bounded (a constant
     // "Summary: N bumps, M added, …" header + impact table). If somehow
@@ -170,8 +174,25 @@ fn render_with_config(
     summary: &ChangeSummary,
     config: &RenderConfig,
     truncation: &RenderTruncation,
+    options: &RenderOptions,
 ) -> String {
     let mut out = String::with_capacity(2048);
+
+    // Config parse error banner at the very top (if present)
+    if let Some(ref error) = options.config_load_error {
+        // Truncate to ~200 chars to stay within GitHub check budget
+        const MAX_ERROR_LEN: usize = 200;
+        let truncated_error = if error.len() > MAX_ERROR_LEN {
+            format!("{}…", &error[..MAX_ERROR_LEN])
+        } else {
+            error.clone()
+        };
+        let _ = writeln!(
+            out,
+            "> ⚠ `.ekaci/config.json` failed to parse — using defaults. Error: {}\n",
+            truncated_error
+        );
+    }
 
     let head = short_sha(&summary.head_sha);
     let base = short_sha(&summary.base_sha);
@@ -541,6 +562,7 @@ mod tests {
                 total_unique_drvs: 0,
             },
             truncated: false,
+            config_load_error: None,
             markdown: String::new(),
         }
     }
@@ -724,6 +746,7 @@ mod tests {
         }];
         let opts = RenderOptions {
             include_rebuild_only: false,
+            config_load_error: None,
         };
         let (md, trunc) = render(&summary, &opts);
         assert!(!md.contains("rebuild without source changes"));
@@ -754,5 +777,62 @@ mod tests {
         assert!(md.len() <= GITHUB_CHECK_SUMMARY_HARD_LIMIT);
         assert!(trunc.collapsed_to_counts, "expected collapse to fire");
         assert!(md.contains("**Summary:**"));
+    }
+
+    /// H6: config parse error banner appears in rendered markdown.
+    #[test]
+    fn render_includes_config_error_banner() {
+        let summary = empty_summary();
+        let opts = RenderOptions {
+            include_rebuild_only: true,
+            config_load_error: Some(
+                "/path/to/config.json: expected value at line 1 column 10".to_string(),
+            ),
+        };
+
+        let (md, _trunc) = render(&summary, &opts);
+
+        // Banner should be present
+        assert!(
+            md.contains("`.ekaci/config.json` failed to parse"),
+            "Banner warning not found in output"
+        );
+        assert!(
+            md.contains("using defaults"),
+            "Default fallback message not found"
+        );
+        assert!(
+            md.contains("expected value at line 1"),
+            "Error message not included in banner"
+        );
+
+        // Banner should appear before the ## heading
+        let heading_pos = md
+            .find("## Change summary")
+            .expect("heading should be present");
+        let banner_pos = md
+            .find("`.ekaci/config.json` failed to parse")
+            .expect("banner should be present");
+        assert!(
+            banner_pos < heading_pos,
+            "Banner should appear before heading"
+        );
+    }
+
+    #[test]
+    fn render_omits_banner_when_no_config_error() {
+        let summary = empty_summary();
+        let opts = RenderOptions {
+            include_rebuild_only: true,
+            config_load_error: None,
+        };
+
+        let (md, _trunc) = render(&summary, &opts);
+
+        // Banner should NOT be present
+        assert!(
+            !md.contains("`.ekaci/config.json` failed to parse"),
+            "Banner should not appear when config_load_error is None"
+        );
     }
 }
