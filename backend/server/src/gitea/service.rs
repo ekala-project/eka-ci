@@ -6,6 +6,7 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::db::DbService;
+use crate::gitea::GiteaClient;
 use crate::gitea::types::{GiteaCIInfo, GiteaTask};
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
@@ -30,8 +31,8 @@ pub struct GiteaService {
     graph_handle: GraphServiceHandle,
     /// Optional metrics for observability
     change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
-    // TODO: Add Gitea API client when implementing
-    // gitea_clients: HashMap<String, Arc<GiteaClient>>, // domain -> client
+    /// Gitea API clients per domain (self-hosted instances)
+    gitea_clients: Mutex<HashMap<String, Arc<GiteaClient>>>,
 }
 
 impl GiteaService {
@@ -42,6 +43,26 @@ impl GiteaService {
     ) -> Result<Self> {
         let (gitea_sender, gitea_receiver) = mpsc::channel(100);
 
+        // Try to initialize Gitea client from environment variables
+        // Format: GITEA_TOKEN and GITEA_DOMAIN (or GITEA_<DOMAIN>_TOKEN for multiple instances)
+        let mut gitea_clients = HashMap::new();
+
+        if let (Ok(token), Ok(domain)) =
+            (std::env::var("GITEA_TOKEN"), std::env::var("GITEA_DOMAIN"))
+        {
+            match GiteaClient::new(&domain, token).await {
+                Ok(client) => {
+                    info!("Initialized Gitea client for domain: {}", domain);
+                    gitea_clients.insert(domain.clone(), Arc::new(client));
+                },
+                Err(e) => {
+                    warn!("Failed to initialize Gitea client for {}: {:?}", domain, e);
+                },
+            }
+        } else {
+            info!("Gitea integration disabled (GITEA_TOKEN or GITEA_DOMAIN not set)");
+        }
+
         Ok(Self {
             db_service,
             gitea_sender,
@@ -51,6 +72,7 @@ impl GiteaService {
             change_summary_checks: Mutex::new(HashMap::new()),
             graph_handle,
             change_summary_metrics,
+            gitea_clients: Mutex::new(gitea_clients),
         })
     }
 
@@ -60,6 +82,11 @@ impl GiteaService {
 
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GiteaTask>> {
         self.gitea_receiver.blocking_lock().take()
+    }
+
+    /// Get the Gitea client for a specific domain
+    async fn get_client(&self, domain: &str) -> Option<Arc<GiteaClient>> {
+        self.gitea_clients.lock().await.get(domain).cloned()
     }
 
     async fn handle_gitea_task(&self, task: &GiteaTask) -> Result<()> {
@@ -79,15 +106,10 @@ impl GiteaService {
                     .await
             },
             GiteaTask::CreateCIConfigureGate { ci_info } => {
-                debug!("Gitea CreateCIConfigureGate for {}", ci_info.commit);
-                // TODO: Create check run or commit status via Gitea API
-                Ok(())
+                self.handle_create_ci_configure_gate(ci_info).await
             },
             GiteaTask::CompleteCIConfigureGate { ci_info } => {
-                debug!("Gitea CompleteCIConfigureGate for {}", ci_info.commit);
-                // TODO: Update check run to success via Gitea API
-                self.configure_checks.lock().await.remove(&ci_info.commit);
-                Ok(())
+                self.handle_complete_ci_configure_gate(ci_info).await
             },
             GiteaTask::CreateChangeSummaryCheck { ci_info, job } => {
                 self.handle_create_change_summary_check(ci_info, job).await
@@ -236,6 +258,155 @@ impl GiteaService {
         //     .lock()
         //     .await
         //     .insert(ci_info.commit.clone(), check_run_id);
+
+        Ok(())
+    }
+
+    /// Create the initial CI configure gate check for a commit
+    /// Uses check runs for newer Gitea, commit status for older
+    async fn handle_create_ci_configure_gate(&self, ci_info: &Arc<GiteaCIInfo>) -> Result<()> {
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!(
+                "No Gitea client configured for domain {}, skipping configure gate",
+                ci_info.domain
+            );
+            return Ok(());
+        };
+
+        if client.supports_check_runs() {
+            // Use Check Runs API for newer Gitea
+            let request = crate::gitea::client::CreateCheckRunRequest {
+                name: "EkaCI: Configure".to_string(),
+                head_sha: ci_info.commit.clone(),
+                status: Some(crate::gitea::client::CheckStatus::InProgress),
+                conclusion: None,
+                output: Some(crate::gitea::client::CheckOutput {
+                    title: "Configuring CI".to_string(),
+                    summary: "Reading repository configuration...".to_string(),
+                    text: None,
+                }),
+            };
+
+            match client
+                .create_check_run(&ci_info.owner, &ci_info.repo_name, request)
+                .await
+            {
+                Ok(check_run) => {
+                    info!(
+                        "Created configure gate check run {} for commit {}",
+                        check_run.id, ci_info.commit
+                    );
+                    self.configure_checks
+                        .lock()
+                        .await
+                        .insert(ci_info.commit.clone(), check_run.id);
+                },
+                Err(e) => {
+                    warn!(
+                        "Failed to create configure gate check run for {}: {:?}",
+                        ci_info.commit, e
+                    );
+                },
+            }
+        } else {
+            // Fallback to Commit Status API for older Gitea
+            let request = crate::gitea::client::CreateCommitStatusRequest {
+                state: crate::gitea::client::CommitStatusState::Pending,
+                target_url: None,
+                description: Some("Reading repository configuration...".to_string()),
+                context: "EkaCI: Configure".to_string(),
+            };
+
+            match client
+                .create_commit_status(&ci_info.owner, &ci_info.repo_name, &ci_info.commit, request)
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "Created configure gate commit status for commit {}",
+                        ci_info.commit
+                    );
+                },
+                Err(e) => {
+                    warn!(
+                        "Failed to create configure gate commit status for {}: {:?}",
+                        ci_info.commit, e
+                    );
+                },
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Complete the CI configure gate check
+    async fn handle_complete_ci_configure_gate(&self, ci_info: &Arc<GiteaCIInfo>) -> Result<()> {
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!(
+                "No Gitea client configured for domain {}, skipping configure gate completion",
+                ci_info.domain
+            );
+            return Ok(());
+        };
+
+        if client.supports_check_runs() {
+            // Update check run to success
+            if let Some(check_run_id) = self.configure_checks.lock().await.remove(&ci_info.commit) {
+                let request = crate::gitea::client::UpdateCheckRunRequest {
+                    status: Some(crate::gitea::client::CheckStatus::Completed),
+                    conclusion: Some(crate::gitea::client::CheckConclusion::Success),
+                    output: Some(crate::gitea::client::CheckOutput {
+                        title: "Configuration complete".to_string(),
+                        summary: "CI configuration validated successfully".to_string(),
+                        text: None,
+                    }),
+                };
+
+                match client
+                    .update_check_run(&ci_info.owner, &ci_info.repo_name, check_run_id, request)
+                    .await
+                {
+                    Ok(_) => {
+                        info!(
+                            "Completed configure gate check run {} for commit {}",
+                            check_run_id, ci_info.commit
+                        );
+                    },
+                    Err(e) => {
+                        warn!(
+                            "Failed to complete configure gate check run for {}: {:?}",
+                            ci_info.commit, e
+                        );
+                    },
+                }
+            }
+        } else {
+            // Update commit status to success
+            let request = crate::gitea::client::CreateCommitStatusRequest {
+                state: crate::gitea::client::CommitStatusState::Success,
+                target_url: None,
+                description: Some("CI configuration validated successfully".to_string()),
+                context: "EkaCI: Configure".to_string(),
+            };
+
+            match client
+                .create_commit_status(&ci_info.owner, &ci_info.repo_name, &ci_info.commit, request)
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "Completed configure gate commit status for commit {}",
+                        ci_info.commit
+                    );
+                },
+                Err(e) => {
+                    warn!(
+                        "Failed to complete configure gate commit status for {}: {:?}",
+                        ci_info.commit, e
+                    );
+                },
+            }
+        }
 
         Ok(())
     }
