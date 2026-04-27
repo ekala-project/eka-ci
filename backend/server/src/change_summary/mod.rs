@@ -128,12 +128,28 @@ impl From<&crate::ci::config::CIConfig> for ChangeSummaryOptions {
     }
 }
 
+/// Status result from config loading, carrying parse errors when present.
+#[derive(Debug, Default, Clone)]
+pub struct ConfigLoadStatus {
+    /// Set when `.ekaci/config.json` was present but failed to parse.
+    /// Contains a user-facing error message suitable for display in banners or logs.
+    pub parse_error: Option<String>,
+}
+
 /// Resolve options from the head jobset's on-disk `.ekaci/config.json`; defaults on any miss.
+///
+/// Returns options and a status indicating whether a parse error occurred. Only `Invalid`
+/// configs produce a status with `parse_error` set; absent and unreadable configs return
+/// default status (preserving silent fallback behavior).
+///
+/// Increments the `config_load_total` metric counter (when metrics are provided) to track
+/// config load outcomes for observability and alerting.
 pub async fn resolve_options_for_jobset(
     pool: &Pool<Sqlite>,
     head_sha: &str,
     job: &str,
-) -> ChangeSummaryOptions {
+    metrics: Option<&ChangeSummaryMetrics>,
+) -> (ChangeSummaryOptions, ConfigLoadStatus) {
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT owner, repo_name FROM GitHubJobSets WHERE sha = ? AND job = ?")
             .bind(head_sha)
@@ -149,19 +165,57 @@ pub async fn resolve_options_for_jobset(
             head_sha,
             job
         );
-        return ChangeSummaryOptions::default();
+        return (ChangeSummaryOptions::default(), ConfigLoadStatus::default());
     };
 
-    match crate::ci::load_repo_ci_config("github.com", &owner, &repo, head_sha) {
-        Some(cfg) => ChangeSummaryOptions::from(&cfg),
-        None => {
+    let load_result = crate::ci::load_repo_ci_config("github.com", &owner, &repo, head_sha);
+
+    // Increment metric based on outcome
+    if let Some(m) = metrics {
+        let outcome = match &load_result {
+            crate::ci::CIConfigLoad::Loaded(_) => "loaded",
+            crate::ci::CIConfigLoad::Absent => "absent",
+            crate::ci::CIConfigLoad::Unreadable(_) => "unreadable",
+            crate::ci::CIConfigLoad::Invalid { .. } => "invalid",
+        };
+        m.config_load_total.with_label_values(&[outcome]).inc();
+    }
+
+    match load_result {
+        crate::ci::CIConfigLoad::Loaded(cfg) => (
+            ChangeSummaryOptions::from(&cfg),
+            ConfigLoadStatus::default(),
+        ),
+        crate::ci::CIConfigLoad::Absent => {
             tracing::debug!(
                 "No .ekaci/config.json for {}/{}@{}; using defaults",
                 owner,
                 repo,
                 head_sha
             );
-            ChangeSummaryOptions::default()
+            (ChangeSummaryOptions::default(), ConfigLoadStatus::default())
+        },
+        crate::ci::CIConfigLoad::Unreadable(e) => {
+            tracing::debug!(
+                "Unreadable .ekaci/config.json for {}/{}@{}: {}; using defaults",
+                owner,
+                repo,
+                head_sha,
+                e
+            );
+            (ChangeSummaryOptions::default(), ConfigLoadStatus::default())
+        },
+        crate::ci::CIConfigLoad::Invalid { source, error } => {
+            tracing::warn!(
+                "Invalid .ekaci/config.json at {}: {}; using defaults",
+                source,
+                error
+            );
+            let parse_error = Some(format!("{}: {}", source, error));
+            (
+                ChangeSummaryOptions::default(),
+                ConfigLoadStatus { parse_error },
+            )
         },
     }
 }
@@ -170,6 +224,9 @@ pub async fn resolve_options_for_jobset(
 /// `Ok(None)` when the head jobset is missing. Structured `package_changes`
 /// is never truncated here; markdown truncation is reported on the returned
 /// summary and reflected in the rendered footer.
+///
+/// The `status` parameter carries config parse error information which is
+/// surfaced to users via both the JSON response and the rendered markdown banner.
 pub async fn build_change_summary(
     pool: &Pool<Sqlite>,
     graph: &crate::graph::GraphServiceHandle,
@@ -177,6 +234,7 @@ pub async fn build_change_summary(
     base_sha: &str,
     job: &str,
     options: &ChangeSummaryOptions,
+    status: &ConfigLoadStatus,
     metrics: Option<&ChangeSummaryMetrics>,
 ) -> anyhow::Result<Option<ChangeSummary>> {
     let end_to_end_start = std::time::Instant::now();
@@ -266,12 +324,14 @@ pub async fn build_change_summary(
             total_unique_drvs,
         },
         truncated: pkg_resp.truncated,
+        config_load_error: status.parse_error.clone(),
         markdown: String::new(),
     };
 
     let render_start = std::time::Instant::now();
     let render_opts = render::RenderOptions {
         include_rebuild_only: options.include_rebuild_only,
+        config_load_error: status.parse_error.clone(),
     };
     let (markdown, render_truncation) = render::render(&summary, &render_opts);
     if let Some(m) = metrics {
@@ -510,9 +570,17 @@ mod tests {
     ) -> anyhow::Result<()> {
         let graph = spawn_graph(&pool).await;
         let opts = ChangeSummaryOptions::default();
-        let summary =
-            build_change_summary(&pool, &graph, "missing-sha", "base-sha", "ci", &opts, None)
-                .await?;
+        let summary = build_change_summary(
+            &pool,
+            &graph,
+            "missing-sha",
+            "base-sha",
+            "ci",
+            &opts,
+            &ConfigLoadStatus::default(),
+            None,
+        )
+        .await?;
         assert!(summary.is_none());
         Ok(())
     }
@@ -529,10 +597,18 @@ mod tests {
 
         let graph = spawn_graph(&pool).await;
         let opts = ChangeSummaryOptions::default();
-        let summary =
-            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", &opts, None)
-                .await?
-                .expect("expected Some summary");
+        let summary = build_change_summary(
+            &pool,
+            &graph,
+            "head-sha",
+            "missing-base",
+            "ci",
+            &opts,
+            &ConfigLoadStatus::default(),
+            None,
+        )
+        .await?
+        .expect("expected Some summary");
 
         assert_eq!(summary.package_changes.len(), 1);
         assert!(matches!(
@@ -573,10 +649,18 @@ mod tests {
             max_packages_listed: 2,
             ..ChangeSummaryOptions::default()
         };
-        let summary =
-            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", &opts, None)
-                .await?
-                .expect("expected Some summary");
+        let summary = build_change_summary(
+            &pool,
+            &graph,
+            "head-sha",
+            "missing-base",
+            "ci",
+            &opts,
+            &ConfigLoadStatus::default(),
+            None,
+        )
+        .await?
+        .expect("expected Some summary");
 
         assert_eq!(summary.package_changes.len(), 2);
         // classify::truncated → orchestrator surfaces it.
@@ -598,10 +682,18 @@ mod tests {
             summary_enabled: false,
             ..ChangeSummaryOptions::default()
         };
-        let summary =
-            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", &opts, None)
-                .await?
-                .expect("expected Some summary");
+        let summary = build_change_summary(
+            &pool,
+            &graph,
+            "head-sha",
+            "missing-base",
+            "ci",
+            &opts,
+            &ConfigLoadStatus::default(),
+            None,
+        )
+        .await?
+        .expect("expected Some summary");
 
         assert!(summary.package_changes.is_empty());
         Ok(())
@@ -621,10 +713,18 @@ mod tests {
             impact_enabled: false,
             ..ChangeSummaryOptions::default()
         };
-        let summary =
-            build_change_summary(&pool, &graph, "head-sha", "missing-base", "ci", &opts, None)
-                .await?
-                .expect("expected Some summary");
+        let summary = build_change_summary(
+            &pool,
+            &graph,
+            "head-sha",
+            "missing-base",
+            "ci",
+            &opts,
+            &ConfigLoadStatus::default(),
+            None,
+        )
+        .await?
+        .expect("expected Some summary");
 
         // Package changes still computed; impact section empty.
         assert_eq!(summary.package_changes.len(), 1);
@@ -650,6 +750,7 @@ mod tests {
             "missing-base",
             "ci",
             &opts,
+            &ConfigLoadStatus::default(),
             None,
         )
         .await?;
@@ -724,6 +825,7 @@ mod tests {
             "base-sha",
             "ci",
             &ChangeSummaryOptions::default(),
+            &ConfigLoadStatus::default(),
             None,
         )
         .await?
@@ -743,10 +845,18 @@ mod tests {
             include_rebuild_only: false,
             ..ChangeSummaryOptions::default()
         };
-        let summary_off =
-            build_change_summary(&pool, &graph, "head-sha", "base-sha", "ci", &opts, None)
-                .await?
-                .expect("expected Some summary");
+        let summary_off = build_change_summary(
+            &pool,
+            &graph,
+            "head-sha",
+            "base-sha",
+            "ci",
+            &opts,
+            &ConfigLoadStatus::default(),
+            None,
+        )
+        .await?
+        .expect("expected Some summary");
         assert!(
             !summary_off
                 .markdown
@@ -811,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn load_repo_ci_config_returns_some_when_file_present() {
+    fn load_repo_ci_config_returns_loaded_when_file_present() {
         let tmp = tempfile::tempdir().unwrap();
         let _g = EnvGuard::set(tmp.path());
         write_repo_config(
@@ -821,27 +931,34 @@ mod tests {
             "abc123",
             r#"{"jobs":{},"package_change_summary":{"enabled":false,"max_packages_listed":7}}"#,
         );
-        let cfg = crate::ci::load_repo_ci_config("github.com", "alice", "demo", "abc123")
-            .expect("expected Some(CIConfig)");
-        let pcs = cfg.package_change_summary.expect("pcs block");
-        assert!(!pcs.enabled);
-        assert_eq!(pcs.max_packages_listed, 7);
+        let load_result = crate::ci::load_repo_ci_config("github.com", "alice", "demo", "abc123");
+        match load_result {
+            crate::ci::CIConfigLoad::Loaded(cfg) => {
+                let pcs = cfg.package_change_summary.expect("pcs block");
+                assert!(!pcs.enabled);
+                assert_eq!(pcs.max_packages_listed, 7);
+            },
+            other => panic!("Expected Loaded variant, got {:?}", other),
+        }
     }
 
     #[test]
-    fn load_repo_ci_config_returns_none_when_path_absent() {
+    fn load_repo_ci_config_returns_absent_when_path_absent() {
         let tmp = tempfile::tempdir().unwrap();
         let _g = EnvGuard::set(tmp.path());
-        // No worktree written → loader returns None.
-        let cfg = crate::ci::load_repo_ci_config("github.com", "alice", "demo", "abc123");
-        assert!(cfg.is_none());
+        // No worktree written → loader returns Absent.
+        let load_result = crate::ci::load_repo_ci_config("github.com", "alice", "demo", "abc123");
+        match load_result {
+            crate::ci::CIConfigLoad::Absent => {},
+            other => panic!("Expected Absent variant, got {:?}", other),
+        }
     }
 
     #[sqlx::test(migrations = "./sql/migrations")]
     async fn resolve_options_returns_defaults_when_jobset_missing(
         pool: SqlitePool,
     ) -> anyhow::Result<()> {
-        let opts = resolve_options_for_jobset(&pool, "missing-sha", "ci").await;
+        let (opts, _status) = resolve_options_for_jobset(&pool, "missing-sha", "ci", None).await;
         // Defaults match — no DB row, no env touched.
         assert!(opts.summary_enabled);
         assert!(opts.impact_enabled);
@@ -860,7 +977,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let _g = EnvGuard::set(tmp.path());
-        let opts = resolve_options_for_jobset(&pool, "head-sha", "ci").await;
+        let (opts, _status) = resolve_options_for_jobset(&pool, "head-sha", "ci", None).await;
         assert!(opts.summary_enabled);
         assert_eq!(opts.max_packages_listed, DEFAULT_MAX_PACKAGES_LISTED);
         Ok(())
@@ -896,13 +1013,130 @@ mod tests {
             }"#,
         );
 
-        let opts = resolve_options_for_jobset(&pool, "head-sha", "ci").await;
+        let (opts, _status) = resolve_options_for_jobset(&pool, "head-sha", "ci", None).await;
         assert!(opts.summary_enabled);
         assert!(!opts.impact_enabled);
         assert!(opts.compute_full_blast_radius);
         assert!(!opts.include_rebuild_only);
         assert_eq!(opts.max_packages_listed, 42);
         assert_eq!(opts.max_top_blast_radius, 9);
+        Ok(())
+    }
+
+    /// H6: resolver propagates parse errors from invalid config.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn resolver_returns_parse_error_status_when_invalid(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(tmp.path());
+        // Write malformed JSON
+        write_repo_config(tmp.path(), "owner", "repo", "head-sha", r#"{"broken"#);
+
+        let (opts, status) = resolve_options_for_jobset(&pool, "head-sha", "ci", None).await;
+
+        // Options should be defaults
+        assert!(opts.summary_enabled);
+        assert_eq!(opts.max_packages_listed, DEFAULT_MAX_PACKAGES_LISTED);
+
+        // Status should indicate parse error
+        assert!(
+            status.parse_error.is_some(),
+            "Expected parse_error to be set"
+        );
+        let err_msg = status.parse_error.unwrap();
+        assert!(
+            err_msg.contains("config.json"),
+            "Error message should reference config.json"
+        );
+        Ok(())
+    }
+
+    /// H6: build_change_summary copies config load error onto the response.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn build_summary_propagates_parse_error_to_response(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let base_path = drv_path(H_BASE, "hello-2.12");
+
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let base_eval = make_eval("hello", &base_path, "hello-2.12");
+
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        let base_db = make_db_drv(&base_path, Some("hello"), Some("2.12"), None, None);
+
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+        make_jobset(&pool, "base-sha", "ci", &[(base_eval, base_db)]).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(tmp.path());
+        // Write invalid JSON
+        write_repo_config(tmp.path(), "owner", "repo", "head-sha", r#"{"incomplete""#);
+
+        let (opts, status) = resolve_options_for_jobset(&pool, "head-sha", "ci", None).await;
+
+        // Now build the summary
+        let graph = spawn_graph(&pool).await;
+        let summary = build_change_summary(
+            &pool, &graph, "head-sha", "base-sha", "ci", &opts, &status, None,
+        )
+        .await?
+        .expect("Summary should be built");
+
+        // Verify error is in response
+        assert!(
+            summary.config_load_error.is_some(),
+            "config_load_error should be set on response"
+        );
+        let err = summary.config_load_error.unwrap();
+        assert!(err.contains("config.json"));
+
+        Ok(())
+    }
+
+    /// H6: metric counter increments when config parse fails.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn metric_invalid_increments_on_parse_failure(pool: SqlitePool) -> anyhow::Result<()> {
+        use prometheus::Registry;
+
+        use crate::metrics::ChangeSummaryMetrics;
+
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(tmp.path());
+        // Write invalid JSON
+        write_repo_config(tmp.path(), "owner", "repo", "head-sha", r#"malformed"#);
+
+        let registry = Registry::new();
+        let metrics = ChangeSummaryMetrics::new(&registry)?;
+
+        // Before call: metric should be 0
+        let before = metrics
+            .config_load_total
+            .with_label_values(&["invalid"])
+            .get();
+
+        let (_opts, _status) =
+            resolve_options_for_jobset(&pool, "head-sha", "ci", Some(&metrics)).await;
+
+        // After call: metric should be incremented
+        let after = metrics
+            .config_load_total
+            .with_label_values(&["invalid"])
+            .get();
+
+        assert_eq!(after, before + 1, "invalid counter should increment by 1");
+
         Ok(())
     }
 }

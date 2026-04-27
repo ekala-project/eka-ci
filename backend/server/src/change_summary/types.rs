@@ -183,6 +183,11 @@ pub struct ChangeSummary {
     /// True if either the package-change list or the rebuild-impact
     /// computation hit a configured cap (renderer surface as a footnote).
     pub truncated: bool,
+    /// Set when `.ekaci/config.json` was present but failed to parse.
+    /// Contains a user-facing error message. Omitted from JSON output when `None`
+    /// to preserve backward compatibility with existing API consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_load_error: Option<String>,
     /// Pre-rendered markdown matching the GitHub-check-summary output.
     /// Populated by the renderer; the structured fields above remain
     /// authoritative for programmatic consumers.

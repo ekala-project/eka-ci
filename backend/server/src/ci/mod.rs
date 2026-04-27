@@ -346,6 +346,19 @@ impl AsyncService<RepoTask> for RepoReader {
     }
 }
 
+/// Structured result for loading `.ekaci/config.json` that preserves error details.
+#[derive(Debug)]
+pub enum CIConfigLoad {
+    /// Config successfully loaded.
+    Loaded(CIConfig),
+    /// Config file does not exist (legitimate opt-out).
+    Absent,
+    /// Filesystem error or worktree unreachable.
+    Unreadable(std::io::Error),
+    /// Config exists but failed to parse (JSON syntax or schema mismatch).
+    Invalid { source: String, error: String },
+}
+
 fn read_repo_toplevel(path: &mut PathBuf) -> Result<CIConfig> {
     path.push(".ekaci");
     path.push("config.json");
@@ -360,15 +373,51 @@ fn read_repo_toplevel(path: &mut PathBuf) -> Result<CIConfig> {
     Ok(config)
 }
 
-/// Best-effort load of `.ekaci/config.json` from the on-disk worktree; `None` on any miss.
-pub fn load_repo_ci_config(domain: &str, owner: &str, repo: &str, sha: &str) -> Option<CIConfig> {
-    let mut path = crate::git::workspace_root().ok()?;
+/// Best-effort load of `.ekaci/config.json` from the on-disk worktree.
+///
+/// Returns a structured result that distinguishes between legitimate absence,
+/// I/O errors, and parse failures. Only `Invalid` signals actionable user error.
+pub fn load_repo_ci_config(domain: &str, owner: &str, repo: &str, sha: &str) -> CIConfigLoad {
+    let workspace_root = match crate::git::workspace_root() {
+        Ok(root) => root,
+        Err(e) => {
+            return CIConfigLoad::Unreadable(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("workspace root unavailable: {}", e),
+            ));
+        },
+    };
+
+    let mut path = workspace_root;
     path.push(domain);
     path.push(owner);
     path.push(repo);
     path.push("worktrees");
     path.push(sha);
-    read_repo_toplevel(&mut path).ok()
+    path.push(".ekaci");
+    path.push("config.json");
+
+    let source_path = path.display().to_string();
+
+    // Check if file exists
+    if !path.exists() {
+        return CIConfigLoad::Absent;
+    }
+
+    // Try to read file
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => return CIConfigLoad::Unreadable(e),
+    };
+
+    // Try to parse JSON
+    match CIConfig::from_str(&contents) {
+        Ok(config) => CIConfigLoad::Loaded(config),
+        Err(e) => CIConfigLoad::Invalid {
+            source: source_path,
+            error: e.to_string(),
+        },
+    }
 }
 
 /// Resolve the file path for a CI job described in `.ekaci/config.json`.
@@ -504,5 +553,109 @@ mod tests {
         );
 
         assert!(result.is_err(), "relative paths are not supported today");
+    }
+
+    /// H6: loader distinguishes malformed JSON from absent config.
+    #[test]
+    fn loader_returns_invalid_on_malformed_json() {
+        // Set up workspace structure:
+        // {workspace_root}/test.example/owner/repo/worktrees/sha/.ekaci/config.json
+        let workspace = match crate::git::workspace_root() {
+            Ok(ws) => ws,
+            Err(_) => {
+                eprintln!("Skipping test: workspace root not available");
+                return;
+            },
+        };
+
+        let test_path = workspace
+            .join("test.example")
+            .join("test-owner")
+            .join("test-repo")
+            .join("worktrees")
+            .join("malformed-test-sha")
+            .join(".ekaci");
+
+        std::fs::create_dir_all(&test_path).unwrap();
+        let config_path = test_path.join("config.json");
+        std::fs::write(&config_path, b"{").unwrap();
+
+        let result = load_repo_ci_config(
+            "test.example",
+            "test-owner",
+            "test-repo",
+            "malformed-test-sha",
+        );
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(
+            workspace
+                .join("test.example")
+                .join("test-owner")
+                .join("test-repo")
+                .join("worktrees")
+                .join("malformed-test-sha"),
+        );
+
+        match result {
+            CIConfigLoad::Invalid { source, error } => {
+                assert!(
+                    source.contains("config.json"),
+                    "source path should reference config.json"
+                );
+                assert!(!error.is_empty(), "error message should not be empty");
+            },
+            other => panic!("Expected Invalid variant, got {:?}", other),
+        }
+    }
+
+    /// H6: loader detects schema mismatches (e.g., string where bool expected).
+    #[test]
+    fn loader_returns_invalid_on_schema_mismatch() {
+        let workspace = match crate::git::workspace_root() {
+            Ok(ws) => ws,
+            Err(_) => {
+                eprintln!("Skipping test: workspace root not available");
+                return;
+            },
+        };
+
+        let test_path = workspace
+            .join("test.example")
+            .join("test-owner")
+            .join("test-repo")
+            .join("worktrees")
+            .join("schema-test-sha")
+            .join(".ekaci");
+
+        std::fs::create_dir_all(&test_path).unwrap();
+        let config_path = test_path.join("config.json");
+        // Schema mismatch: enabled should be bool, not string
+        std::fs::write(
+            &config_path,
+            br#"{"package_change_summary": {"enabled": "yes"}}"#,
+        )
+        .unwrap();
+
+        let result =
+            load_repo_ci_config("test.example", "test-owner", "test-repo", "schema-test-sha");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(
+            workspace
+                .join("test.example")
+                .join("test-owner")
+                .join("test-repo")
+                .join("worktrees")
+                .join("schema-test-sha"),
+        );
+
+        match result {
+            CIConfigLoad::Invalid { source, error } => {
+                assert!(source.contains("config.json"));
+                assert!(!error.is_empty());
+            },
+            other => panic!("Expected Invalid variant, got {:?}", other),
+        }
     }
 }

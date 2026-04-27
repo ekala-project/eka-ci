@@ -1327,6 +1327,14 @@ async fn get_change_summary_handler(
     };
 
     // Resolve per-repo options from .ekaci/config.json; query params still clamp the caps.
+    let (base_opts, status) = resolve_options_for_jobset(
+        &state.db_service.pool,
+        &sha,
+        &query.job,
+        state.change_summary_metrics.as_deref(),
+    )
+    .await;
+
     let opts = crate::change_summary::ChangeSummaryOptions {
         max_packages_listed: query
             .max_packages_listed
@@ -1338,7 +1346,7 @@ async fn get_change_summary_handler(
             .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
             .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
             .max(1),
-        ..resolve_options_for_jobset(&state.db_service.pool, &sha, &query.job).await
+        ..base_opts
     };
 
     match build_change_summary(
@@ -1348,6 +1356,7 @@ async fn get_change_summary_handler(
         &query.base_sha,
         &query.job,
         &opts,
+        &status,
         state.change_summary_metrics.as_deref(),
     )
     .await
@@ -1388,6 +1397,14 @@ async fn get_change_summary_markdown_handler(
         DEFAULT_MAX_PACKAGES_LISTED, build_change_summary, resolve_options_for_jobset,
     };
 
+    let (base_opts, status) = resolve_options_for_jobset(
+        &state.db_service.pool,
+        &sha,
+        &query.job,
+        state.change_summary_metrics.as_deref(),
+    )
+    .await;
+
     let opts = crate::change_summary::ChangeSummaryOptions {
         max_packages_listed: query
             .max_packages_listed
@@ -1399,7 +1416,7 @@ async fn get_change_summary_markdown_handler(
             .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
             .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
             .max(1),
-        ..resolve_options_for_jobset(&state.db_service.pool, &sha, &query.job).await
+        ..base_opts
     };
 
     match build_change_summary(
@@ -1409,6 +1426,7 @@ async fn get_change_summary_markdown_handler(
         &query.base_sha,
         &query.job,
         &opts,
+        &status,
         state.change_summary_metrics.as_deref(),
     )
     .await

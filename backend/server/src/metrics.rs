@@ -338,6 +338,8 @@ pub struct ChangeSummaryMetrics {
     pub rebuild_impact_traversal_duration_seconds: HistogramVec,
     /// Per-call distribution of seeds fed into the impact BFS.
     pub rebuild_impact_seeds: Histogram,
+    /// Config load attempts, labelled by outcome (`loaded` / `absent` / `unreadable` / `invalid`).
+    pub config_load_total: IntCounterVec,
 }
 
 impl ChangeSummaryMetrics {
@@ -410,6 +412,15 @@ impl ChangeSummaryMetrics {
             ]),
         )?;
 
+        let config_load_total = IntCounterVec::new(
+            Opts::new(
+                "change_summary_config_load_total",
+                "Config load attempts by outcome (loaded, absent, unreadable, invalid)",
+            )
+            .namespace("eka_ci"),
+            &["outcome"],
+        )?;
+
         registry.register(Box::new(total_duration_seconds.clone()))?;
         registry.register(Box::new(cache_hits_total.clone()))?;
         registry.register(Box::new(cache_misses_total.clone()))?;
@@ -417,6 +428,7 @@ impl ChangeSummaryMetrics {
         registry.register(Box::new(truncated_total.clone()))?;
         registry.register(Box::new(rebuild_impact_traversal_duration_seconds.clone()))?;
         registry.register(Box::new(rebuild_impact_seeds.clone()))?;
+        registry.register(Box::new(config_load_total.clone()))?;
 
         Ok(Arc::new(Self {
             total_duration_seconds,
@@ -426,6 +438,7 @@ impl ChangeSummaryMetrics {
             truncated_total,
             rebuild_impact_traversal_duration_seconds,
             rebuild_impact_seeds,
+            config_load_total,
         }))
     }
 }
