@@ -144,7 +144,7 @@ pub async fn create_jobs_for_jobset(
     Ok(())
 }
 
-/// Insert a new CheckRunInfo record
+/// Insert a new GitHubCheckRuns record
 pub async fn insert_check_run_info(
     check_run_id: i64,
     drv_path: &DrvId,
@@ -154,7 +154,7 @@ pub async fn insert_check_run_info(
 ) -> anyhow::Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO CheckRunInfo (check_run_id, drv_id, repo_name, repo_owner)
+        INSERT INTO GitHubCheckRuns (check_run_id, drv_id, repo_name, repo_owner)
         VALUES (?, (SELECT ROWID FROM Drv WHERE drv_path = ? LIMIT 1), ?, ?)
         "#,
     )
@@ -196,7 +196,7 @@ pub async fn check_runs_for_commit(
     let check_runs = sqlx::query_as(
         r#"
         SELECT DISTINCT c.check_run_id, c.repo_name, c.repo_owner, d.build_state, d.drv_path
-        FROM CheckRunInfo c
+        FROM GitHubCheckRuns c
         INNER JOIN Drv d ON c.drv_id = d.ROWID
         INNER JOIN Job j ON j.drv_id = d.ROWID
         INNER JOIN GitHubJobSets g ON j.jobset = g.ROWID
@@ -902,7 +902,7 @@ pub async fn upsert_pull_request(
 ) -> Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO PullRequests
+        INSERT INTO GitHubPullRequests
             (pr_number, owner, repo_name, head_sha, base_sha, title, author, state, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(owner, repo_name, pr_number) DO UPDATE SET
@@ -946,7 +946,7 @@ pub async fn upsert_merge_queue_build(
 
     sqlx::query(
         r#"
-        INSERT INTO PullRequests
+        INSERT INTO GitHubPullRequests
             (pr_number, owner, repo_name, head_sha, base_sha, title, author, state, created_at, updated_at, is_merge_queue, merge_group_head_sha)
         VALUES (0, ?, ?, ?, ?, ?, 'github-merge-queue', 'open', ?, ?, TRUE, ?)
         ON CONFLICT(owner, repo_name, pr_number) DO UPDATE SET
@@ -994,7 +994,7 @@ pub async fn list_open_pull_requests(pool: &Pool<Sqlite>) -> Result<Vec<PullRequ
             COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
-        FROM PullRequests pr
+        FROM GitHubPullRequests pr
         LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
         LEFT JOIN Job j ON g.ROWID = j.jobset
         LEFT JOIN Drv d ON j.drv_id = d.ROWID
@@ -1061,7 +1061,7 @@ pub async fn get_pull_request(
             COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
-        FROM PullRequests pr
+        FROM GitHubPullRequests pr
         LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
         LEFT JOIN Job j ON g.ROWID = j.jobset
         LEFT JOIN Drv d ON j.drv_id = d.ROWID
@@ -1124,7 +1124,7 @@ pub async fn list_merge_queue_builds(
             COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
-        FROM PullRequests pr
+        FROM GitHubPullRequests pr
         LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
         LEFT JOIN Job j ON g.ROWID = j.jobset
         LEFT JOIN Drv d ON j.drv_id = d.ROWID
@@ -1193,7 +1193,7 @@ pub async fn get_merge_queue_build_by_sha(
             COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
-        FROM PullRequests pr
+        FROM GitHubPullRequests pr
         LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
         LEFT JOIN Job j ON g.ROWID = j.jobset
         LEFT JOIN Drv d ON j.drv_id = d.ROWID
@@ -1243,7 +1243,7 @@ pub async fn enable_auto_merge(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE PullRequests
+        "UPDATE GitHubPullRequests
          SET auto_merge_enabled = TRUE, merge_method = ?
          WHERE owner = ? AND repo_name = ? AND pr_number = ?",
     )
@@ -1264,7 +1264,7 @@ pub async fn disable_auto_merge(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE PullRequests
+        "UPDATE GitHubPullRequests
          SET auto_merge_enabled = FALSE, merge_method = NULL
          WHERE owner = ? AND repo_name = ? AND pr_number = ?",
     )
@@ -1285,7 +1285,7 @@ pub async fn mark_pr_merged(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE PullRequests
+        "UPDATE GitHubPullRequests
          SET state = 'merged',
              merged_by_user_id = ?,
              merged_at = CURRENT_TIMESTAMP,
@@ -1321,7 +1321,7 @@ pub async fn set_comment_merge_request(
     pool: &Pool<Sqlite>,
 ) -> Result<u64> {
     let rows = sqlx::query(
-        "UPDATE PullRequests
+        "UPDATE GitHubPullRequests
          SET comment_merge_sha = ?,
              comment_merge_method = ?,
              comment_merge_requester_id = ?,
@@ -1353,7 +1353,7 @@ pub async fn clear_comment_merge_request(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE PullRequests
+        "UPDATE GitHubPullRequests
          SET comment_merge_sha = NULL,
              comment_merge_method = NULL,
              comment_merge_requester_id = NULL,
@@ -1380,7 +1380,7 @@ pub async fn get_comment_merge_request(
     pool: &Pool<Sqlite>,
 ) -> Result<Option<CommentMergeRequest>> {
     let pr = sqlx::query_as::<_, PullRequest>(
-        "SELECT * FROM PullRequests
+        "SELECT * FROM GitHubPullRequests
          WHERE owner = ? AND repo_name = ? AND pr_number = ?",
     )
     .bind(owner)
@@ -1399,7 +1399,7 @@ pub async fn get_pr_by_head_sha(
     pool: &Pool<Sqlite>,
 ) -> Result<Option<PullRequest>> {
     let pr = sqlx::query_as::<_, PullRequest>(
-        "SELECT * FROM PullRequests
+        "SELECT * FROM GitHubPullRequests
          WHERE head_sha = ? AND owner = ? AND repo_name = ?",
     )
     .bind(sha)
@@ -1420,7 +1420,7 @@ pub async fn get_pull_request_row(
     pool: &Pool<Sqlite>,
 ) -> Result<Option<PullRequest>> {
     let pr = sqlx::query_as::<_, PullRequest>(
-        "SELECT * FROM PullRequests
+        "SELECT * FROM GitHubPullRequests
          WHERE owner = ? AND repo_name = ? AND pr_number = ?",
     )
     .bind(owner)
@@ -1440,7 +1440,7 @@ pub async fn get_pr_changed_packages(
 ) -> Result<Vec<String>> {
     // Get the PR's head_sha jobset
     let jobset_id: Option<i64> = sqlx::query_scalar(
-        "SELECT jobset_id FROM PullRequests pr
+        "SELECT jobset_id FROM GitHubPullRequests pr
          JOIN GitHubJobSets gjs ON pr.head_sha = gjs.sha
          WHERE pr.pr_number = ? AND pr.owner = ? AND pr.repo_name = ?
          AND gjs.owner = ? AND gjs.repo_name = ?
@@ -1488,7 +1488,7 @@ pub async fn pr_head_build_succeeded(
     pool: &Pool<Sqlite>,
 ) -> Result<bool> {
     let jobset_id: Option<i64> = sqlx::query_scalar(
-        "SELECT gjs.ROWID FROM PullRequests pr
+        "SELECT gjs.ROWID FROM GitHubPullRequests pr
          JOIN GitHubJobSets gjs ON pr.head_sha = gjs.sha
          WHERE pr.pr_number = ? AND pr.owner = ? AND pr.repo_name = ?
          AND gjs.owner = ? AND gjs.repo_name = ?
@@ -1517,7 +1517,7 @@ pub async fn pr_head_build_succeeded(
     Ok(true)
 }
 
-// Database row struct — all fields mirror the `PullRequests` schema so
+// Database row struct — all fields mirror the `GitHubPullRequests` schema so
 // SQLx `FromRow` can hydrate them, even when Rust callers only read a subset.
 #[allow(dead_code)]
 #[derive(Debug, Clone, FromRow)]
