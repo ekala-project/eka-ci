@@ -10,6 +10,8 @@
 
 # Configuration
 
+- [NixOS Module](./nixos-module.md)
+  - [Module Reference](./nixos-module-reference.md)
 - [Server Configuration](./server-configuration.md)
 - [Repository Configuration](./repository-configuration.md)
 - [Configuring Caches](./configure-caches.md)
