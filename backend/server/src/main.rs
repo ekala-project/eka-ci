@@ -1,4 +1,5 @@
 mod auth;
+mod auto_merge;
 mod cache_permissions;
 mod change_summary;
 mod checks;
@@ -12,6 +13,7 @@ mod github;
 mod github_permissions;
 mod graph;
 mod hooks;
+mod jobset_data;
 mod metrics;
 mod nix;
 mod path_safety;
