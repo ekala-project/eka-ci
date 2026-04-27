@@ -802,35 +802,63 @@ impl GitHubService {
 
         let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
 
-        let (opts, status) = crate::change_summary::resolve_options_for_jobset(
-            &self.db_service.pool,
+        // Resolve head jobset ID and metadata from GitHubJobSets
+        let head_jobset: Option<(i64, String, String)> = sqlx::query_as(
+            "SELECT ROWID, owner, repo_name FROM GitHubJobSets WHERE sha = ? AND job = ?",
+        )
+        .bind(&ci_check_info.commit)
+        .bind(job)
+        .fetch_optional(&self.db_service.pool)
+        .await?;
+
+        let Some((head_jobset_id, owner, repo_name)) = head_jobset else {
+            debug!(
+                "No head jobset for sha={} job={}; skipping change-summary check",
+                &ci_check_info.commit, job
+            );
+            return Ok(());
+        };
+
+        // Resolve base jobset ID if it exists
+        let base_jobset_id: Option<i64> =
+            sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
+                .bind(base_sha)
+                .bind(job)
+                .fetch_optional(&self.db_service.pool)
+                .await?;
+
+        // Create JobsetData for the head commit
+        let jobset_data = crate::jobset_data::JobsetData::new(
+            owner,
+            repo_name,
+            "github.com",
             &ci_check_info.commit,
             job,
+            None, // config_json not needed for change summary
+        );
+
+        // Resolve options from jobset data
+        let (opts, status) = crate::change_summary::resolve_options_from_jobset_data(
+            &jobset_data,
             self.change_summary_metrics.as_deref(),
         )
         .await;
 
-        let summary = match crate::change_summary::build_change_summary(
+        // Build change summary using the new platform-agnostic function
+        let summary = match crate::change_summary::build_change_summary_from_jobset_ids(
             &self.db_service.pool,
             &self.graph_handle,
-            &ci_check_info.commit,
+            head_jobset_id,
+            base_jobset_id,
+            &jobset_data,
             base_sha,
-            job,
             &opts,
             &status,
             self.change_summary_metrics.as_deref(),
         )
         .await
         {
-            Ok(Some(s)) => s,
-            Ok(None) => {
-                debug!(
-                    "No change-summary built for {} (head/base jobset missing); skipping check \
-                     post",
-                    &ci_check_info.commit
-                );
-                return Ok(());
-            },
+            Ok(s) => s,
             Err(e) => {
                 warn!(
                     "Failed to build change-summary for commit {}: {:?}",
