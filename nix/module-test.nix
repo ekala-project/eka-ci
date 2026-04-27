@@ -13,7 +13,11 @@ in
           { config, pkgs, ... }:
           {
             imports = [ flake.nixosModules.daemon ];
-            services.anduril.eka-ci.enable = true;
+            services.eka-ci = {
+              enable = true;
+              # Test-only: don't require a real webhook secret.
+              settings.security.allow_insecure_webhooks = true;
+            };
           };
       };
       testScript = ''
