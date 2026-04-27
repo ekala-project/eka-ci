@@ -128,6 +128,44 @@ impl From<&crate::ci::config::CIConfig> for ChangeSummaryOptions {
     }
 }
 
+/// Resolve options from the head jobset's on-disk `.ekaci/config.json`; defaults on any miss.
+pub async fn resolve_options_for_jobset(
+    pool: &Pool<Sqlite>,
+    head_sha: &str,
+    job: &str,
+) -> ChangeSummaryOptions {
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT owner, repo_name FROM GitHubJobSets WHERE sha = ? AND job = ?")
+            .bind(head_sha)
+            .bind(job)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+
+    let Some((owner, repo)) = row else {
+        tracing::debug!(
+            "No jobset for sha={} job={}; using default change-summary options",
+            head_sha,
+            job
+        );
+        return ChangeSummaryOptions::default();
+    };
+
+    match crate::ci::load_repo_ci_config("github.com", &owner, &repo, head_sha) {
+        Some(cfg) => ChangeSummaryOptions::from(&cfg),
+        None => {
+            tracing::debug!(
+                "No .ekaci/config.json for {}/{}@{}; using defaults",
+                owner,
+                repo,
+                head_sha
+            );
+            ChangeSummaryOptions::default()
+        },
+    }
+}
+
 /// Compose classify + (cached) impact + render into a full [`ChangeSummary`].
 /// `Ok(None)` when the head jobset is missing. Structured `package_changes`
 /// is never truncated here; markdown truncation is reported on the returned
@@ -715,6 +753,156 @@ mod tests {
                 .contains("rebuild without source changes")
         );
         assert!(!summary_off.truncated);
+        Ok(())
+    }
+
+    // Tests below mutate EKACI_WORKSPACE_ROOT (process-global); serialize them
+    // against each other to keep parallel test threads from clobbering reads.
+    static WORKSPACE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Set EKACI_WORKSPACE_ROOT to `path` and restore the previous value on drop.
+    struct EnvGuard {
+        prev: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn set(path: &std::path::Path) -> Self {
+            // Poisoned mutex still guards env access — recover and proceed.
+            let lock = WORKSPACE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var("EKACI_WORKSPACE_ROOT").ok();
+            unsafe {
+                std::env::set_var("EKACI_WORKSPACE_ROOT", path);
+            }
+            Self { prev, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var("EKACI_WORKSPACE_ROOT", v),
+                    None => std::env::remove_var("EKACI_WORKSPACE_ROOT"),
+                }
+            }
+        }
+    }
+
+    /// Write `<root>/github.com/<owner>/<repo>/worktrees/<sha>/.ekaci/config.json`.
+    fn write_repo_config(
+        root: &std::path::Path,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+        body: &str,
+    ) -> std::path::PathBuf {
+        let mut p = root.to_path_buf();
+        p.push("github.com");
+        p.push(owner);
+        p.push(repo);
+        p.push("worktrees");
+        p.push(sha);
+        p.push(".ekaci");
+        std::fs::create_dir_all(&p).unwrap();
+        p.push("config.json");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn load_repo_ci_config_returns_some_when_file_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(tmp.path());
+        write_repo_config(
+            tmp.path(),
+            "alice",
+            "demo",
+            "abc123",
+            r#"{"jobs":{},"package_change_summary":{"enabled":false,"max_packages_listed":7}}"#,
+        );
+        let cfg = crate::ci::load_repo_ci_config("github.com", "alice", "demo", "abc123")
+            .expect("expected Some(CIConfig)");
+        let pcs = cfg.package_change_summary.expect("pcs block");
+        assert!(!pcs.enabled);
+        assert_eq!(pcs.max_packages_listed, 7);
+    }
+
+    #[test]
+    fn load_repo_ci_config_returns_none_when_path_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(tmp.path());
+        // No worktree written → loader returns None.
+        let cfg = crate::ci::load_repo_ci_config("github.com", "alice", "demo", "abc123");
+        assert!(cfg.is_none());
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn resolve_options_returns_defaults_when_jobset_missing(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        let opts = resolve_options_for_jobset(&pool, "missing-sha", "ci").await;
+        // Defaults match — no DB row, no env touched.
+        assert!(opts.summary_enabled);
+        assert!(opts.impact_enabled);
+        assert!(opts.include_rebuild_only);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn resolve_options_returns_defaults_when_worktree_absent(
+        pool: SqlitePool,
+    ) -> anyhow::Result<()> {
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(tmp.path());
+        let opts = resolve_options_for_jobset(&pool, "head-sha", "ci").await;
+        assert!(opts.summary_enabled);
+        assert_eq!(opts.max_packages_listed, DEFAULT_MAX_PACKAGES_LISTED);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn resolve_options_reads_config_from_worktree(pool: SqlitePool) -> anyhow::Result<()> {
+        let head_path = drv_path(H_HEAD, "hello-2.13");
+        let head_eval = make_eval("hello", &head_path, "hello-2.13");
+        let head_db = make_db_drv(&head_path, Some("hello"), Some("2.13"), None, None);
+        // make_jobset uses owner="owner", repo="repo" — match those in the worktree path.
+        make_jobset(&pool, "head-sha", "ci", &[(head_eval, head_db)]).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(tmp.path());
+        write_repo_config(
+            tmp.path(),
+            "owner",
+            "repo",
+            "head-sha",
+            r#"{
+                "jobs": {},
+                "package_change_summary": {
+                    "enabled": true,
+                    "max_packages_listed": 42,
+                    "include_rebuild_only": false
+                },
+                "rebuild_impact": {
+                    "enabled": false,
+                    "max_top_blast_radius": 9,
+                    "compute_full_blast_radius": true
+                }
+            }"#,
+        );
+
+        let opts = resolve_options_for_jobset(&pool, "head-sha", "ci").await;
+        assert!(opts.summary_enabled);
+        assert!(!opts.impact_enabled);
+        assert!(opts.compute_full_blast_radius);
+        assert!(!opts.include_rebuild_only);
+        assert_eq!(opts.max_packages_listed, 42);
+        assert_eq!(opts.max_top_blast_radius, 9);
         Ok(())
     }
 }

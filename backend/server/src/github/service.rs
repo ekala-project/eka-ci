@@ -802,13 +802,20 @@ impl GitHubService {
 
         let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
 
+        let opts = crate::change_summary::resolve_options_for_jobset(
+            &self.db_service.pool,
+            &ci_check_info.commit,
+            job,
+        )
+        .await;
+
         let summary = match crate::change_summary::build_change_summary(
             &self.db_service.pool,
             &self.graph_handle,
             &ci_check_info.commit,
             base_sha,
             job,
-            &crate::change_summary::ChangeSummaryOptions::default(),
+            &opts,
             self.change_summary_metrics.as_deref(),
         )
         .await
