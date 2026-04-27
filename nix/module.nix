@@ -45,7 +45,10 @@ let
       allowed_branches = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        example = [ "main" "release/*" ];
+        example = [
+          "main"
+          "release/*"
+        ];
         description = ''
           Glob patterns of branch names permitted to use this entry. Ignored
           when {option}`allow_all` is `true`.
@@ -65,7 +68,11 @@ let
         description = "Cache identifier referenced from `.eka-ci/config.json`.";
       };
       cache_type = mkOption {
-        type = types.enum [ "nix-copy" "cachix" "attic" ];
+        type = types.enum [
+          "nix-copy"
+          "cachix"
+          "attic"
+        ];
         example = "nix-copy";
         description = "Backend type for this cache.";
       };
@@ -80,7 +87,12 @@ let
       credentials = mkOption {
         type = settingsFormat.type;
         example = {
-          env = { vars = [ "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" ]; };
+          env = {
+            vars = [
+              "AWS_ACCESS_KEY_ID"
+              "AWS_SECRET_ACCESS_KEY"
+            ];
+          };
         };
         description = ''
           Credential source. One of:
@@ -119,7 +131,11 @@ let
       };
       credentials = mkOption {
         type = settingsFormat.type;
-        example = { file = { path = "/etc/eka-ci/github-app.json"; }; };
+        example = {
+          file = {
+            path = "/etc/eka-ci/github-app.json";
+          };
+        };
         description = ''
           Credential source. Same shape as
           {option}`services.eka-ci.settings.caches.*.credentials`.
@@ -337,7 +353,11 @@ let
         '';
       };
       default_merge_method = mkOption {
-        type = types.enum [ "merge" "squash" "rebase" ];
+        type = types.enum [
+          "merge"
+          "squash"
+          "rebase"
+        ];
         default = "squash";
         description = "Default merge method used by the `@eka-ci merge` PR comment command.";
       };
@@ -437,7 +457,9 @@ in
     extraEnvironment = mkOption {
       type = types.attrsOf types.str;
       default = { };
-      example = { RUST_LOG = "eka_ci_server=debug,info"; };
+      example = {
+        RUST_LOG = "eka_ci_server=debug,info";
+      };
       description = "Additional `Environment=` entries passed to the systemd unit.";
     };
 
@@ -456,8 +478,7 @@ in
     # Make the eka-ci package available via the overlay supplied by this flake.
     nixpkgs.overlays = [ flake.overlays.default ];
 
-    networking.firewall.allowedTCPPorts =
-      lib.optional cfg.openFirewall cfg.settings.web.port;
+    networking.firewall.allowedTCPPorts = lib.optional cfg.openFirewall cfg.settings.web.port;
 
     users.users = optionalAttrs (!cfg.dynamicUser) {
       ${cfg.user} = {
@@ -473,9 +494,11 @@ in
 
     warnings =
       optional
-        (cfg.settings.security.webhook_secret == null
+        (
+          cfg.settings.security.webhook_secret == null
           && !cfg.settings.security.allow_insecure_webhooks
-          && cfg.environmentFile == null)
+          && cfg.environmentFile == null
+        )
         ''
           services.eka-ci: no webhook secret is configured. Set one of:
             - services.eka-ci.settings.security.webhook_secret (not recommended; ends up in the Nix store)
@@ -490,25 +513,29 @@ in
       wantedBy = [ "multi-user.target" ];
 
       serviceConfig = mkMerge [
-        (let
-          conf = settingsFormat.generate "ekaci.toml" cfg.settings;
-        in {
-          ExecStart = "${cfg.package}/bin/eka_ci_server --config-file ${conf}";
+        (
+          let
+            conf = settingsFormat.generate "ekaci.toml" cfg.settings;
+          in
+          {
+            ExecStart = "${cfg.package}/bin/eka_ci_server --config-file ${conf}";
 
-          Restart = "on-failure";
-          RestartSec = 5;
+            Restart = "on-failure";
+            RestartSec = 5;
 
-          WorkingDirectory = "%S/%p";
-          StateDirectory = "%p";
-          RuntimeDirectory = "%p";
-          RuntimeDirectoryMode = "0700";
-          LogsDirectory = "%p";
+            WorkingDirectory = "%S/%p";
+            StateDirectory = "%p";
+            RuntimeDirectory = "%p";
+            RuntimeDirectoryMode = "0700";
+            LogsDirectory = "%p";
 
-          Environment = [
-            "XDG_RUNTIME_DIR=/run/%p"
-            "XDG_DATA_HOME=/var/lib/%p"
-          ] ++ mapAttrsToList (k: v: "${k}=${v}") cfg.extraEnvironment;
-        })
+            Environment = [
+              "XDG_RUNTIME_DIR=/run/%p"
+              "XDG_DATA_HOME=/var/lib/%p"
+            ]
+            ++ mapAttrsToList (k: v: "${k}=${v}") cfg.extraEnvironment;
+          }
+        )
 
         (mkIf (cfg.environmentFile != null) {
           EnvironmentFile = cfg.environmentFile;
@@ -518,12 +545,17 @@ in
           LoadCredential = mapAttrsToList (n: p: "${n}:${p}") cfg.credentials;
         })
 
-        (if cfg.dynamicUser then {
-          DynamicUser = true;
-        } else {
-          User = cfg.user;
-          Group = cfg.group;
-        })
+        (
+          if cfg.dynamicUser then
+            {
+              DynamicUser = true;
+            }
+          else
+            {
+              User = cfg.user;
+              Group = cfg.group;
+            }
+        )
 
         # Hardening
         {
@@ -544,11 +576,19 @@ in
           RestrictNamespaces = true;
           RestrictRealtime = true;
           RestrictSUIDSGID = true;
-          RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+          RestrictAddressFamilies = [
+            "AF_UNIX"
+            "AF_INET"
+            "AF_INET6"
+          ];
           LockPersonality = true;
           MemoryDenyWriteExecute = true;
           SystemCallArchitectures = "native";
-          SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+          SystemCallFilter = [
+            "@system-service"
+            "~@privileged"
+            "~@resources"
+          ];
           CapabilityBoundingSet = [ ];
           AmbientCapabilities = [ ];
           UMask = "0077";

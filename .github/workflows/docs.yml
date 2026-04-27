@@ -28,6 +28,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Generate NixOS module reference docs
+        run: |
+          nix build .#module-docs
+          cp result/nixos-module-reference.md docs/
+
       - name: Setup mdBook
         uses: peaceiris/actions-mdbook@v2
         with:

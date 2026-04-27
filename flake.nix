@@ -34,6 +34,7 @@
       };
 
       packages.default = legacyPackages.eka-ci;
+      packages.module-docs = legacyPackages.callPackage ./nix/option-docs.nix { flake = self; };
       devShells.default = legacyPackages.dev-shell;
       checks.module = import ./nix/module-test.nix self legacyPackages;
       formatter =
