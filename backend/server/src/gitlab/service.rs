@@ -140,6 +140,25 @@ impl GitLabService {
             GitLabTask::CancelStatusesForCommit { ci_info } => {
                 self.handle_cancel_statuses_for_commit(ci_info).await
             },
+            GitLabTask::CreateCIEvalJob { ci_info, job_title } => {
+                self.handle_create_ci_eval_job(ci_info, job_title).await
+            },
+            GitLabTask::CompleteCIEvalJob {
+                ci_info,
+                job_name,
+                success,
+            } => {
+                self.handle_complete_ci_eval_job(ci_info, job_name, *success)
+                    .await
+            },
+            GitLabTask::FailCIEvalJob {
+                ci_info,
+                job_name,
+                errors,
+            } => {
+                self.handle_fail_ci_eval_job(ci_info, job_name, errors)
+                    .await
+            },
             GitLabTask::CreateChangeSummaryComment { ci_info, job } => {
                 self.handle_create_change_summary_comment(ci_info, job)
                     .await
@@ -276,52 +295,87 @@ impl GitLabService {
 
         let markdown = summary.markdown;
 
-        // TODO: Post markdown as MR comment via GitLab API
-        // For now, just log that we would post it
-        info!(
-            "Would post change-summary comment for MR in {}/{} (project {})",
-            ci_info.owner, ci_info.repo_name, ci_info.project_id
-        );
-        debug!("Change summary markdown:\n{}", markdown);
+        // Look up the MR by head SHA to get the MR IID
+        let mr = match crate::db::gitlab::get_mr_by_head_sha(
+            &ci_info.commit,
+            ci_info.project_id,
+            &self.db_service.pool,
+        )
+        .await
+        {
+            Ok(Some(mr)) => mr,
+            Ok(None) => {
+                debug!(
+                    "No MR found for commit {} in project {}; skipping change-summary comment",
+                    &ci_info.commit, ci_info.project_id
+                );
+                return Ok(());
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to look up MR for commit {}: {:?}",
+                    &ci_info.commit, e
+                );
+                return Ok(());
+            },
+        };
+
+        // Get GitLab client for this domain
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!("No GitLab client for domain {}", ci_info.domain);
+            return Ok(());
+        };
+
+        // Post or update the sticky change summary comment
+        let marker = format!("<!-- eka-ci-change-summary-{} -->", job);
+        match client
+            .post_or_update_sticky_comment(ci_info.project_id, mr.mr_iid, &marker, &markdown)
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    "Posted change-summary comment for MR !{} in {}/{} (project {})",
+                    mr.mr_iid, ci_info.owner, ci_info.repo_name, ci_info.project_id
+                );
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to post change-summary comment for MR !{}: {:?}",
+                    mr.mr_iid, e
+                );
+            },
+        }
 
         Ok(())
     }
 
     /// Create the initial CI configure gate commit status
     async fn handle_create_ci_configure_gate(&self, ci_info: &Arc<GitLabCIInfo>) -> Result<()> {
+        debug!(
+            "Creating CI configure gate status for commit {} in project {}",
+            ci_info.commit, ci_info.project_id
+        );
+
         let Some(client) = self.get_client(&ci_info.domain).await else {
-            warn!(
-                "No GitLab client configured for domain {}, skipping configure gate",
-                ci_info.domain
-            );
+            warn!("No GitLab client for domain {}", ci_info.domain);
             return Ok(());
         };
 
-        let request = crate::gitlab::client::CreateCommitStatusRequest {
-            state: crate::gitlab::client::CommitStatusState::Pending,
-            target_url: None,
-            description: Some("Reading repository configuration...".to_string()),
-            name: Some("EkaCI: Configure".to_string()),
-            context: Some("ekaci/configure".to_string()),
-        };
-
-        match client
-            .create_commit_status(ci_info.project_id, &ci_info.commit, request)
-            .await
-        {
-            Ok(status) => {
-                info!(
-                    "Created configure gate commit status {} for commit {}",
-                    status.id, ci_info.commit
-                );
+        match crate::gitlab::actions::create_ci_configure_gate(&client, ci_info).await {
+            Ok(status_id) => {
+                // Store the status ID for later updates
                 self.configure_statuses
                     .lock()
                     .await
-                    .insert(ci_info.commit.clone(), status.id);
+                    .insert(ci_info.commit.clone(), status_id);
+                info!(
+                    "Created CI configure gate status {} for commit {}",
+                    status_id, ci_info.commit
+                );
             },
             Err(e) => {
                 warn!(
-                    "Failed to create configure gate commit status for {}: {:?}",
+                    "Failed to create CI configure gate status for commit {}: {:?}",
                     ci_info.commit, e
                 );
             },
@@ -332,39 +386,29 @@ impl GitLabService {
 
     /// Complete the CI configure gate commit status
     async fn handle_complete_ci_configure_gate(&self, ci_info: &Arc<GitLabCIInfo>) -> Result<()> {
-        let Some(client) = self.get_client(&ci_info.domain).await else {
-            warn!(
-                "No GitLab client configured for domain {}, skipping configure gate completion",
-                ci_info.domain
-            );
-            return Ok(());
-        };
+        debug!(
+            "Completing CI configure gate status for commit {} in project {}",
+            ci_info.commit, ci_info.project_id
+        );
 
         // Remove from tracking map
         self.configure_statuses.lock().await.remove(&ci_info.commit);
 
-        // Post success status
-        let request = crate::gitlab::client::CreateCommitStatusRequest {
-            state: crate::gitlab::client::CommitStatusState::Success,
-            target_url: None,
-            description: Some("CI configuration validated successfully".to_string()),
-            name: Some("EkaCI: Configure".to_string()),
-            context: Some("ekaci/configure".to_string()),
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!("No GitLab client for domain {}", ci_info.domain);
+            return Ok(());
         };
 
-        match client
-            .create_commit_status(ci_info.project_id, &ci_info.commit, request)
-            .await
-        {
-            Ok(_) => {
+        match crate::gitlab::actions::update_ci_configure_gate(&client, ci_info).await {
+            Ok(()) => {
                 info!(
-                    "Completed configure gate commit status for commit {}",
+                    "Successfully completed CI configure gate status for commit {}",
                     ci_info.commit
                 );
             },
             Err(e) => {
                 warn!(
-                    "Failed to complete configure gate commit status for {}: {:?}",
+                    "Failed to complete CI configure gate status for commit {}: {:?}",
                     ci_info.commit, e
                 );
             },
@@ -637,6 +681,133 @@ impl GitLabService {
                     warn!("Failed to update status state in database: {:?}", e);
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Create a CI eval job status
+    async fn handle_create_ci_eval_job(
+        &self,
+        ci_info: &GitLabCIInfo,
+        job_title: &str,
+    ) -> Result<()> {
+        debug!(
+            "Creating CI eval job status for job '{}' on commit {}",
+            job_title, ci_info.commit
+        );
+
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!("No GitLab client for domain {}", ci_info.domain);
+            return Ok(());
+        };
+
+        match crate::gitlab::actions::create_ci_eval_job(&client, ci_info, job_title).await {
+            Ok(status_id) => {
+                debug!(
+                    "Created eval job status {} for job '{}' on commit {}",
+                    status_id, job_title, ci_info.commit
+                );
+
+                // Store in eval_statuses HashMap for later updates
+                self.eval_statuses
+                    .lock()
+                    .await
+                    .insert((ci_info.commit.clone(), job_title.to_string()), status_id);
+
+                info!(
+                    "Created CI eval job status for job '{}' on commit {}",
+                    job_title, ci_info.commit
+                );
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to create CI eval job status for job '{}' on commit {}: {:?}",
+                    job_title, ci_info.commit, e
+                );
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Complete a CI eval job status
+    async fn handle_complete_ci_eval_job(
+        &self,
+        ci_info: &GitLabCIInfo,
+        job_name: &str,
+        success: bool,
+    ) -> Result<()> {
+        debug!(
+            "Completing CI eval job status for job '{}' with success={} on commit {}",
+            job_name, success, ci_info.commit
+        );
+
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!("No GitLab client for domain {}", ci_info.domain);
+            return Ok(());
+        };
+
+        // Remove from tracking map
+        self.eval_statuses
+            .lock()
+            .await
+            .remove(&(ci_info.commit.clone(), job_name.to_string()));
+
+        match crate::gitlab::actions::update_ci_eval_job(&client, ci_info, job_name, success).await
+        {
+            Ok(()) => {
+                info!(
+                    "Completed CI eval job status for job '{}' on commit {} (success={})",
+                    job_name, ci_info.commit, success
+                );
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to complete CI eval job status for job '{}' on commit {}: {:?}",
+                    job_name, ci_info.commit, e
+                );
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Create a failed CI eval job status with error details
+    async fn handle_fail_ci_eval_job(
+        &self,
+        ci_info: &GitLabCIInfo,
+        job_name: &str,
+        errors: &[crate::nix::nix_eval_jobs::NixEvalError],
+    ) -> Result<()> {
+        debug!(
+            "Creating failed CI eval job status for job '{}' on commit {} with {} errors",
+            job_name,
+            ci_info.commit,
+            errors.len()
+        );
+
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!("No GitLab client for domain {}", ci_info.domain);
+            return Ok(());
+        };
+
+        match crate::gitlab::actions::fail_ci_eval_job(&client, ci_info, job_name, errors).await {
+            Ok(status_id) => {
+                info!(
+                    "Created failed CI eval job status {} for job '{}' on commit {} ({} errors)",
+                    status_id,
+                    job_name,
+                    ci_info.commit,
+                    errors.len()
+                );
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to create failed CI eval job status for job '{}' on commit {}: {:?}",
+                    job_name, ci_info.commit, e
+                );
+            },
         }
 
         Ok(())
