@@ -279,23 +279,23 @@ impl RecorderWorker {
                 // Get old state before updating
                 let old_state = self
                     .db_service
-                    .get_drv(&drv)
+                    .get_drv(drv)
                     .await?
                     .map(|d| d.build_state)
                     .unwrap_or(DBS::Queued);
 
-                self.update_and_broadcast(&drv, &old_state, &task.result)
+                self.update_and_broadcast(drv, &old_state, &task.result)
                     .await?;
 
                 // Execute post-build hooks if configured
-                if let Err(e) = self.execute_hooks_for_drv(&drv).await {
+                if let Err(e) = self.execute_hooks_for_drv(drv).await {
                     warn!("Failed to execute hooks for {}: {}", drv.store_path(), e);
                     // Don't fail the build if hooks fail - they run asynchronously
                 }
 
                 // Capture runtime references for dependency tracking first so
                 // that subsequent per-output size updates have rows to land on.
-                if let Err(e) = self.capture_runtime_references(&drv, &job_infos).await {
+                if let Err(e) = self.capture_runtime_references(drv, &job_infos).await {
                     warn!(
                         "Failed to capture runtime references for {}: {}",
                         drv.store_path(),
@@ -305,7 +305,7 @@ impl RecorderWorker {
                 }
 
                 // Calculate and check output size if configured
-                if let Err(e) = self.check_output_size(&drv, &job_infos).await {
+                if let Err(e) = self.check_output_size(drv, &job_infos).await {
                     warn!(
                         "Failed to check output size for {}: {}",
                         drv.store_path(),
@@ -315,7 +315,7 @@ impl RecorderWorker {
                 }
 
                 // Calculate and check closure size if configured
-                if let Err(e) = self.check_closure_size(&drv, &job_infos).await {
+                if let Err(e) = self.check_closure_size(drv, &job_infos).await {
                     warn!(
                         "Failed to check closure size for {}: {}",
                         drv.store_path(),
@@ -325,10 +325,10 @@ impl RecorderWorker {
                 }
 
                 // Clear any transitive failures in graph (fast in-memory operation)
-                let unblocked_drvs = self.clear_graph_failure(&drv).await?;
+                let unblocked_drvs = self.clear_graph_failure(drv).await?;
 
                 // Also clear in database for persistence
-                self.db_service.clear_transitive_failures(&drv).await?;
+                self.db_service.clear_transitive_failures(drv).await?;
 
                 // Re-queue drvs that were unblocked
                 for unblocked_drv in unblocked_drvs {
@@ -337,7 +337,7 @@ impl RecorderWorker {
                 }
 
                 // Check direct referrers for buildability
-                let referrers = self.graph_handle.get_dependents(&drv).await?;
+                let referrers = self.graph_handle.get_dependents(drv).await?;
                 for referrer in referrers {
                     let task = IngressTask::CheckBuildable(std::sync::Arc::new(referrer));
                     self.ingress_sender.send(task).await?;
@@ -352,7 +352,7 @@ impl RecorderWorker {
                 // Check current state to determine if this is first or second failure
                 let current_drv = self
                     .db_service
-                    .get_drv(&drv)
+                    .get_drv(drv)
                     .await?
                     .ok_or_else(|| anyhow::anyhow!("Drv not found: {}", drv.store_path()))?;
 
@@ -364,7 +364,7 @@ impl RecorderWorker {
                             drv.store_path()
                         );
                         let old_state = current_drv.build_state.clone();
-                        self.update_and_broadcast(&drv, &old_state, &DBS::FailedRetry)
+                        self.update_and_broadcast(drv, &old_state, &DBS::FailedRetry)
                             .await?;
 
                         // Re-queue immediately for retry
@@ -378,16 +378,16 @@ impl RecorderWorker {
                             drv.store_path()
                         );
                         let old_state = current_drv.build_state.clone();
-                        self.update_and_broadcast(&drv, &old_state, &task.result)
+                        self.update_and_broadcast(drv, &old_state, &task.result)
                             .await?;
 
                         // Propagate failure in graph (fast in-memory BFS traversal)
-                        let blocked_drvs = self.propagate_graph_failure(&drv).await?;
+                        let blocked_drvs = self.propagate_graph_failure(drv).await?;
 
                         // Also propagate in database for persistence
                         if !blocked_drvs.is_empty() {
                             self.db_service
-                                .insert_transitive_failures(&drv, &blocked_drvs)
+                                .insert_transitive_failures(drv, &blocked_drvs)
                                 .await?;
                         }
                     },
@@ -399,7 +399,7 @@ impl RecorderWorker {
                             drv.store_path()
                         );
                         let old_state = current_drv.build_state.clone();
-                        self.update_and_broadcast(&drv, &old_state, &task.result)
+                        self.update_and_broadcast(drv, &old_state, &task.result)
                             .await?;
                     },
                 }
@@ -411,12 +411,12 @@ impl RecorderWorker {
             // Check if we need to create check_runs for failures
             // Only create check_runs if the build failed and no check_run exists yet
             if task.result.is_failure() {
-                let existing_check_runs = self.db_service.check_runs_for_drv_path(&drv).await?;
+                let existing_check_runs = self.db_service.check_runs_for_drv_path(drv).await?;
 
                 if existing_check_runs.is_empty() {
                     // No check_run exists, we need to create one
                     // Get job info to know which jobsets this drv belongs to
-                    let job_infos = self.db_service.get_job_info_for_drv(&drv).await?;
+                    let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
 
                     for job_info in job_infos {
                         let create_task = GitHubTask::CreateFailureCheckRun {
@@ -452,7 +452,7 @@ impl RecorderWorker {
             // Check if this drv completion concludes any jobsets
             // Only check if we've reached a terminal state
             if task.result.is_terminal() {
-                let job_infos = self.db_service.get_job_info_for_drv(&drv).await?;
+                let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
 
                 for job_info in job_infos {
                     // Check if all jobs in this jobset are concluded
@@ -849,7 +849,7 @@ impl RecorderWorker {
         // Persist per-output sizes into DrvRuntimeRefs (requires capture_runtime_references
         // to have already created rows for each output).
         let drv_rowid: Option<i64> = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
-            .bind(&drv_id.store_path())
+            .bind(drv_id.store_path())
             .fetch_optional(pool)
             .await?;
         if let Some(drv_rowid) = drv_rowid {
@@ -1103,7 +1103,7 @@ impl RecorderWorker {
         // Persist per-output closure sizes into DrvRuntimeRefs (requires
         // capture_runtime_references to have already created rows per output).
         let drv_rowid: Option<i64> = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
-            .bind(&drv_id.store_path())
+            .bind(drv_id.store_path())
             .fetch_optional(pool)
             .await?;
         if let Some(drv_rowid) = drv_rowid {
@@ -1341,7 +1341,7 @@ impl RecorderWorker {
         // Get the drv ROWID from database to use as foreign key
         let pool = &self.db_service.pool;
         let drv_rowid: Option<i64> = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
-            .bind(&drv_id.store_path())
+            .bind(drv_id.store_path())
             .fetch_optional(pool)
             .await?;
 

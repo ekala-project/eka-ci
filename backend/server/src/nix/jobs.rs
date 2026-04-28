@@ -35,7 +35,7 @@ pub const NIX_EVAL_JOBS_MAX_STDOUT_BYTES: u64 = 128 * 1024 * 1024;
 /// Maximum size of any single JSONL line emitted by nix-eval-jobs
 /// (1 MiB — a single `NixEvalDrv` JSON encoding rarely exceeds a few
 /// kilobytes).
-pub const NIX_EVAL_JOBS_MAX_LINE_BYTES: usize = 1 * 1024 * 1024;
+pub const NIX_EVAL_JOBS_MAX_LINE_BYTES: usize = 1024 * 1024;
 
 /// Reason the output consumer stopped early.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -188,6 +188,7 @@ impl GitHubService {
         self.github_sender.clone()
     }
 
+    #[allow(dead_code)] // Called via AsyncService trait dispatch
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitHubTask>> {
         self.github_receiver.blocking_lock().take()
     }

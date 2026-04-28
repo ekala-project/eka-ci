@@ -29,6 +29,7 @@ pub struct JobsetData {
 
     /// Serialized CI config JSON for post-build hooks.
     /// Corresponds to the `config_json` column in platform jobset tables.
+    #[allow(dead_code)] // Used for database serialization, not direct field access
     pub config_json: Option<String>,
 }
 
@@ -53,11 +54,13 @@ impl JobsetData {
     }
 
     /// Returns the full repository identifier in the format "domain/owner/repo".
+    #[cfg(test)]
     pub fn full_repo_id(&self) -> String {
         format!("{}/{}/{}", self.domain, self.owner, self.repo)
     }
 
     /// Returns the repository identifier in the format "owner/repo".
+    #[cfg(test)]
     pub fn repo_id(&self) -> String {
         format!("{}/{}", self.owner, self.repo)
     }

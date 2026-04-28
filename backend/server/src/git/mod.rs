@@ -41,6 +41,7 @@ impl AsyncService<GitTask> for GitService {
         self.git_sender.clone()
     }
 
+    #[allow(dead_code)] // Called via AsyncService trait dispatch
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitTask>> {
         self.git_receiver.take()
     }

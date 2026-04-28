@@ -224,7 +224,7 @@ pub async fn compare_runtime_references_for_jobset(
         }
 
         // Compare each output that exists in both base and head
-        for (output_name, _head_output_path) in &head_outputs {
+        for output_name in head_outputs.keys() {
             // Skip if this output doesn't exist in base
             if !base_outputs.contains_key(output_name) {
                 continue;

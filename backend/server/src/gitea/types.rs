@@ -143,8 +143,6 @@ pub enum GiteaStatusState {
 
 impl From<DrvBuildState> for GiteaCheckStatus {
     fn from(state: DrvBuildState) -> Self {
-        use crate::db::model::build_event::DrvBuildResult;
-
         match state {
             DrvBuildState::Queued | DrvBuildState::Buildable | DrvBuildState::FailedRetry => {
                 Self::Queued

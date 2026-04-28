@@ -290,6 +290,7 @@ impl AsyncService<RepoTask> for RepoReader {
         self.repo_sender.clone()
     }
 
+    #[allow(dead_code)] // Called via AsyncService trait dispatch
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<RepoTask>> {
         self.repo_receiver.take()
     }

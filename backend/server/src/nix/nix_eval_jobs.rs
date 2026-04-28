@@ -216,6 +216,7 @@ pub enum HomepageField {
 
 impl HomepageField {
     /// Flatten to a `Vec<String>` for uniform downstream handling.
+    #[cfg(test)]
     pub fn into_vec(self) -> Vec<String> {
         match self {
             HomepageField::Single(s) => vec![s],
