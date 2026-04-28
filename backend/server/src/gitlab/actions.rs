@@ -556,18 +556,16 @@ pub async fn check_project_permission_for_user(
 
 /// Check if all changed packages have required approvals
 pub async fn check_mr_maintainer_approvals(
-    client: &GitLabClient,
+    _client: &GitLabClient,
     project_id: i64,
     mr_iid: i64,
     _changed_packages: &[String],
-    pool: &sqlx::Pool<sqlx::Sqlite>,
+    _pool: &sqlx::Pool<sqlx::Sqlite>,
 ) -> Result<(bool, Vec<String>)> {
     debug!(
         "Checking maintainer approvals for MR !{} in project {}",
         mr_iid, project_id
     );
-
-    let _ = (client, pool);
 
     // For now, consider all packages approved
     // Real implementation would check package maintainers and MR approvals

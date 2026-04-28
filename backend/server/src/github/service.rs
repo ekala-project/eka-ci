@@ -33,7 +33,7 @@ pub struct GitHubService {
     db_service: DbService,
     octocrab: Octocrab,
     installations: HashMap<Owner, Installation>,
-    github_receiver: Mutex<Option<mpsc::Receiver<GitHubTask>>>,
+    github_receiver: Option<mpsc::Receiver<GitHubTask>>,
     github_sender: mpsc::Sender<GitHubTask>,
     github_configure_checks: Mutex<HashMap<Commit, CheckRunId>>,
     github_eval_checks: Mutex<HashMap<(Commit, String), CheckRunId>>,
@@ -173,7 +173,7 @@ impl GitHubService {
             db_service,
             octocrab,
             installations,
-            github_receiver: Mutex::new(Some(github_receiver)),
+            github_receiver: Some(github_receiver),
             github_sender,
             github_configure_checks: Mutex::new(HashMap::new()),
             github_eval_checks: Mutex::new(HashMap::new()),
@@ -190,7 +190,7 @@ impl GitHubService {
 
     #[allow(dead_code)] // Called via AsyncService trait dispatch
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitHubTask>> {
-        self.github_receiver.blocking_lock().take()
+        self.github_receiver.take()
     }
 
     /// Attempt to look up installation by owner
@@ -1101,8 +1101,8 @@ impl GitHubService {
             pr_number, owner, repo_name, cmr.sha, current_head
         );
 
-        // Best-effort notifications; errors logged downstream.
-        let _ = self
+        // Best-effort notifications
+        if let Err(e) = self
             .github_sender
             .send(GitHubTask::CommentMergeDriftCancelled {
                 owner: owner.to_string(),
@@ -1112,8 +1112,11 @@ impl GitHubService {
                 actual_sha: current_head.to_string(),
                 requester_login: cmr.requester_login.clone(),
             })
-            .await;
-        let _ = self
+            .await
+        {
+            warn!("Failed to send CommentMergeDriftCancelled task: {:?}", e);
+        }
+        if let Err(e) = self
             .github_sender
             .send(GitHubTask::ReactToComment {
                 owner: owner.to_string(),
@@ -1121,7 +1124,10 @@ impl GitHubService {
                 comment_id: cmr.comment_id,
                 content: "confused",
             })
-            .await;
+            .await
+        {
+            warn!("Failed to send ReactToComment task: {:?}", e);
+        }
 
         crate::db::github::clear_comment_merge_request(
             owner,
@@ -1187,7 +1193,7 @@ impl GitHubService {
                 }
 
                 if let Some(comment_id) = pending_comment_id {
-                    let _ = self
+                    if let Err(e) = self
                         .github_sender
                         .send(GitHubTask::ReactToComment {
                             owner: owner.to_string(),
@@ -1195,7 +1201,10 @@ impl GitHubService {
                             comment_id,
                             content: "rocket",
                         })
-                        .await;
+                        .await
+                    {
+                        warn!("Failed to send ReactToComment task: {:?}", e);
+                    }
                 }
             },
             Err(e) => {
@@ -1391,7 +1400,7 @@ impl GitHubService {
             {
                 warn!("Failed to react to denied merge-cancel: {:?}", e);
             }
-            let _ = actions::post_issue_comment(
+            if let Err(e) = actions::post_issue_comment(
                 octocrab,
                 owner,
                 repo_name,
@@ -1403,7 +1412,10 @@ impl GitHubService {
                     requester_login
                 ),
             )
-            .await;
+            .await
+            {
+                warn!("Failed to post denial comment: {:?}", e);
+            }
             return Ok(());
         }
 
@@ -1464,7 +1476,7 @@ impl GitHubService {
                 {
                     warn!("Failed to react to denied merge: {:?}", e);
                 }
-                let _ = actions::post_issue_comment(
+                if let Err(e) = actions::post_issue_comment(
                     octocrab,
                     owner,
                     repo_name,
@@ -1475,7 +1487,10 @@ impl GitHubService {
                         requester_login
                     ),
                 )
-                .await;
+                .await
+                {
+                    warn!("Failed to post denial comment: {:?}", e);
+                }
                 return Ok(());
             },
         }
@@ -1540,14 +1555,17 @@ impl GitHubService {
         }
 
         // Fire the evaluator in case gates are already green.
-        let _ = self
+        if let Err(e) = self
             .github_sender
             .send(GitHubTask::CheckAutoMerge {
                 owner: owner.to_string(),
                 repo_name: repo_name.to_string(),
                 pr_number,
             })
-            .await;
+            .await
+        {
+            warn!("Failed to send CheckAutoMerge task: {:?}", e);
+        }
 
         Ok(())
     }
@@ -1589,7 +1607,7 @@ impl GitHubService {
                 {
                     warn!("Failed to react to refused merge (push drift): {:?}", e);
                 }
-                let _ = actions::post_issue_comment(
+                if let Err(e) = actions::post_issue_comment(
                     octocrab,
                     owner,
                     repo_name,
@@ -1602,7 +1620,10 @@ impl GitHubService {
                         short_sha(head_sha)
                     ),
                 )
-                .await;
+                .await
+                {
+                    warn!("Failed to post push drift comment: {:?}", e);
+                }
                 Ok(false)
             },
             Ok(Some(_)) => Ok(true), // commit predates the comment
@@ -1656,7 +1677,7 @@ impl AsyncService<GitHubTask> for GitHubService {
     }
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitHubTask>> {
-        self.github_receiver.blocking_lock().take()
+        self.github_receiver.take()
     }
 
     async fn handle_task(&self, task: GitHubTask) -> Result<()> {

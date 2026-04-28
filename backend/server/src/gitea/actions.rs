@@ -490,19 +490,17 @@ pub async fn check_repo_permission_for_user(
 
 /// Check if all changed packages have required approvals
 pub async fn check_pr_maintainer_approvals(
-    client: &GiteaClient,
+    _client: &GiteaClient,
     owner: &str,
     repo_name: &str,
     pr_number: i64,
     _changed_packages: &[String],
-    pool: &sqlx::Pool<sqlx::Sqlite>,
+    _pool: &sqlx::Pool<sqlx::Sqlite>,
 ) -> Result<(bool, Vec<String>)> {
     debug!(
         "Checking maintainer approvals for PR #{} in {}/{}",
         pr_number, owner, repo_name
     );
-
-    let _ = (client, pool);
 
     // For now, consider all packages approved
     // Real implementation would check package maintainers and PR approvals

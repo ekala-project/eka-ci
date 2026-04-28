@@ -54,10 +54,13 @@ impl Drop for CleanupGuard {
         if let Some(repo) = self.prune_in.take() {
             // Best-effort: clean up the git-internal worktree admin entry
             // so a later `git worktree add` at the same path succeeds.
-            let _ = std::process::Command::new("git")
+            if let Err(e) = std::process::Command::new("git")
                 .current_dir(&repo)
                 .args(["worktree", "prune"])
-                .output();
+                .output()
+            {
+                warn!(repo = %repo.display(), error = %e, "failed to prune git worktree");
+            }
         }
     }
 }

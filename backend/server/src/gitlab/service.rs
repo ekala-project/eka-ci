@@ -19,7 +19,7 @@ use crate::services::AsyncService;
 pub struct GitLabService {
     db_service: DbService,
     gitlab_sender: mpsc::Sender<GitLabTask>,
-    gitlab_receiver: Mutex<Option<mpsc::Receiver<GitLabTask>>>,
+    gitlab_receiver: Option<mpsc::Receiver<GitLabTask>>,
     /// Tracks configure gate status IDs per commit
     configure_statuses: Mutex<HashMap<String, i64>>,
     /// Tracks eval job status IDs per (commit, job_name)
@@ -68,7 +68,7 @@ impl GitLabService {
         Ok(Self {
             db_service,
             gitlab_sender,
-            gitlab_receiver: Mutex::new(Some(gitlab_receiver)),
+            gitlab_receiver: Some(gitlab_receiver),
             configure_statuses: Mutex::new(HashMap::new()),
             eval_statuses: Mutex::new(HashMap::new()),
             graph_handle,
@@ -83,7 +83,7 @@ impl GitLabService {
 
     #[allow(dead_code)] // Called via AsyncService trait dispatch
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitLabTask>> {
-        self.gitlab_receiver.blocking_lock().take()
+        self.gitlab_receiver.take()
     }
 
     /// Get the GitLab client for a specific domain
@@ -1031,7 +1031,7 @@ impl GitLabService {
         );
 
         // Best-effort notifications
-        let _ = self
+        if let Err(e) = self
             .gitlab_sender
             .send(GitLabTask::CommentMergeDriftCancelled {
                 domain: domain.to_string(),
@@ -1041,7 +1041,10 @@ impl GitLabService {
                 actual_sha: current_head.to_string(),
                 requester_username: cmr.requester_username.clone(),
             })
-            .await;
+            .await
+        {
+            warn!("Failed to send CommentMergeDriftCancelled task: {:?}", e);
+        }
 
         crate::db::gitlab::clear_comment_merge(domain, project_id, mr_iid, &self.db_service.pool)
             .await?;
@@ -1274,7 +1277,7 @@ impl GitLabService {
                  project write, and not a maintainer of all changed packages",
                 requester_username, mr_iid
             );
-            let _ = client
+            if let Err(e) = client
                 .create_merge_request_note(
                     project_id,
                     mr_iid,
@@ -1285,7 +1288,10 @@ impl GitLabService {
                         requester_username
                     ),
                 )
-                .await;
+                .await
+            {
+                warn!("Failed to post denial comment: {:?}", e);
+            }
             return Ok(());
         }
 
@@ -1321,7 +1327,7 @@ impl GitLabService {
                      maintainer of all changed packages",
                     requester_username, mr_iid
                 );
-                let _ = client
+                if let Err(e) = client
                     .create_merge_request_note(
                         project_id,
                         mr_iid,
@@ -1331,7 +1337,10 @@ impl GitLabService {
                             requester_username
                         ),
                     )
-                    .await;
+                    .await
+                {
+                    warn!("Failed to post denial comment: {:?}", e);
+                }
                 return Ok(());
             },
         }
@@ -1388,14 +1397,17 @@ impl GitLabService {
         }
 
         // Fire the evaluator in case gates are already green
-        let _ = self
+        if let Err(e) = self
             .gitlab_sender
             .send(GitLabTask::CheckAutoMerge {
                 domain: domain.to_string(),
                 project_id,
                 mr_iid,
             })
-            .await;
+            .await
+        {
+            warn!("Failed to send CheckAutoMerge task: {:?}", e);
+        }
 
         Ok(())
     }
@@ -1424,7 +1436,7 @@ impl GitLabService {
                     note_created_at,
                     PUSH_GRACE.num_seconds()
                 );
-                let _ = client
+                if let Err(e) = client
                     .create_merge_request_note(
                         project_id,
                         mr_iid,
@@ -1436,7 +1448,10 @@ impl GitLabService {
                             short_sha(head_sha),
                         ),
                     )
-                    .await;
+                    .await
+                {
+                    warn!("Failed to post push drift comment: {:?}", e);
+                }
                 Ok(false)
             },
             Ok(Some(_)) | Ok(None) | Err(_) => Ok(true),
@@ -1545,7 +1560,7 @@ impl AsyncService<GitLabTask> for GitLabService {
     }
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitLabTask>> {
-        self.gitlab_receiver.blocking_lock().take()
+        self.gitlab_receiver.take()
     }
 
     async fn handle_task(&self, task: GitLabTask) -> Result<()> {

@@ -187,16 +187,18 @@ fn render_with_config(
         } else {
             error.clone()
         };
-        let _ = writeln!(
+        writeln!(
             out,
             "> ⚠ `.ekaci/config.json` failed to parse — using defaults. Error: {}\n",
             truncated_error
-        );
+        )
+        .expect("writing to String cannot fail");
     }
 
     let head = short_sha(&summary.head_sha);
     let base = short_sha(&summary.base_sha);
-    let _ = writeln!(out, "## Change summary for `{head}` ← `{base}`");
+    writeln!(out, "## Change summary for `{head}` ← `{base}`")
+        .expect("writing to String cannot fail");
     out.push('\n');
 
     if !summary.metadata_available {
@@ -222,27 +224,29 @@ fn render_packages_section(out: &mut String, summary: &ChangeSummary, config: &R
     let counts = ChangeCounts::from_changes(&summary.package_changes);
 
     let visible_count = counts.total_visible(config);
-    let _ = writeln!(out, "### Packages changed ({visible_count})");
+    writeln!(out, "### Packages changed ({visible_count})").expect("writing to String cannot fail");
     out.push('\n');
 
     if config.collapse_table {
-        let _ = writeln!(
+        writeln!(
             out,
             "**Summary:** {summary_line}",
             summary_line = counts.summary_line()
-        );
+        )
+        .expect("writing to String cannot fail");
         if config.include_rebuild_only_line && counts.rebuild_only > 0 {
-            let _ = writeln!(
+            writeln!(
                 out,
                 "\n_{n} packages will rebuild without source changes._",
                 n = counts.rebuild_only
-            );
+            )
+            .expect("writing to String cannot fail");
         }
         return;
     }
 
-    let _ = writeln!(out, "| Status | Package | Change |");
-    let _ = writeln!(out, "|--------|---------|--------|");
+    writeln!(out, "| Status | Package | Change |").expect("writing to String cannot fail");
+    writeln!(out, "|--------|---------|--------|").expect("writing to String cannot fail");
 
     for change in &summary.package_changes {
         match change {
@@ -261,12 +265,13 @@ fn render_packages_section(out: &mut String, summary: &ChangeSummary, config: &R
 
     if config.include_rebuild_only_line && counts.rebuild_only > 0 {
         out.push('\n');
-        let _ = writeln!(
+        writeln!(
             out,
             "**Plus {n} package{plural} will rebuild without source changes.**",
             n = counts.rebuild_only,
             plural = if counts.rebuild_only == 1 { "" } else { "s" }
-        );
+        )
+        .expect("writing to String cannot fail");
     }
 }
 
@@ -360,24 +365,28 @@ fn render_impact_section(out: &mut String, impact: &ChangeSummaryRebuildImpact) 
         return;
     }
 
-    let _ = writeln!(out, "| System | Rebuilds | Top blast radius |");
-    let _ = writeln!(out, "|--------|----------|------------------|");
+    writeln!(out, "| System | Rebuilds | Top blast radius |")
+        .expect("writing to String cannot fail");
+    writeln!(out, "|--------|----------|------------------|")
+        .expect("writing to String cannot fail");
     for sys in &impact.per_system {
-        let _ = writeln!(
+        writeln!(
             out,
             "| `{system}` | {count} | {top} |",
             system = sys.system,
             count = sys.rebuild_count,
             top = render_top_blast_radius(sys),
-        );
+        )
+        .expect("writing to String cannot fail");
     }
 
     out.push('\n');
-    let _ = writeln!(
+    writeln!(
         out,
         "**Total unique drvs that would rebuild somewhere:** {total}",
         total = impact.total_unique_drvs
-    );
+    )
+    .expect("writing to String cannot fail");
 }
 
 fn render_top_blast_radius(sys: &PerSystemImpact) -> String {
@@ -433,13 +442,14 @@ fn render_truncation_footer(out: &mut String, truncation: &RenderTruncation, hea
         dropped.push("per-package table");
     }
     if !dropped.is_empty() {
-        let _ = write!(out, " Dropped: {}.", dropped.join(", "));
+        write!(out, " Dropped: {}.", dropped.join(", ")).expect("writing to String cannot fail");
     }
-    let _ = writeln!(
+    writeln!(
         out,
         " Full payload: `/v1/commits/{head}/change-summary`.",
         head = head_sha,
-    );
+    )
+    .expect("writing to String cannot fail");
 }
 
 fn short_sha(sha: &str) -> &str {
