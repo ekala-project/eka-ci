@@ -89,6 +89,7 @@ impl GiteaService {
         self.gitea_sender.clone()
     }
 
+    #[allow(dead_code)] // Called via AsyncService trait dispatch
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GiteaTask>> {
         self.gitea_receiver.blocking_lock().take()
     }

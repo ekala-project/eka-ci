@@ -93,7 +93,7 @@ impl BuildGraph {
         // Update state index
         self.by_state
             .entry(state.clone())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(drv_id.clone());
 
         // Track if failed
@@ -161,7 +161,7 @@ impl BuildGraph {
 
         self.by_state
             .entry(new_state.clone())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(drv_id.clone());
 
         // Update failed tracking
@@ -340,7 +340,7 @@ impl BuildGraph {
             // Add to TransitiveFailure state index
             self.by_state
                 .entry(DrvBuildState::TransitiveFailure)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(blocked_id.clone());
         }
 
@@ -379,7 +379,7 @@ impl BuildGraph {
 
                 self.by_state
                     .entry(DrvBuildState::Queued)
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(blocked_id.clone());
 
                 unblocked.push(blocked_id);
@@ -429,7 +429,7 @@ impl BuildGraph {
         }
 
         // by_state index overhead
-        for (_state, set) in &self.by_state {
+        for set in self.by_state.values() {
             total += set.len() * 80;
         }
 
@@ -437,7 +437,7 @@ impl BuildGraph {
         total += self.failed_drvs.len() * 80;
 
         // transitive_failure_map
-        for (_drv, blocked_set) in &self.transitive_failure_map {
+        for blocked_set in self.transitive_failure_map.values() {
             total += 80; // Key
             total += blocked_set.len() * 80; // Value set
         }

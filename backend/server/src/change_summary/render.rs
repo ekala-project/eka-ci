@@ -386,7 +386,7 @@ fn render_top_blast_radius(sys: &PerSystemImpact) -> String {
     }
     sys.top_blast_radius
         .iter()
-        .map(|entry| format_blast_entry(entry))
+        .map(format_blast_entry)
         .collect::<Vec<_>>()
         .join(", ")
 }

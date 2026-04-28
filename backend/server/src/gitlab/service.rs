@@ -81,6 +81,7 @@ impl GitLabService {
         self.gitlab_sender.clone()
     }
 
+    #[allow(dead_code)] // Called via AsyncService trait dispatch
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitLabTask>> {
         self.gitlab_receiver.blocking_lock().take()
     }

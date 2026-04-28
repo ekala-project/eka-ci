@@ -878,7 +878,7 @@ impl GraphServiceHandle {
 
         // Check if all dependencies are successfully completed
         node.dependencies.iter().all(|dep_id| {
-            self.shared_view.get(dep_id).map_or(false, |dep| {
+            self.shared_view.get(dep_id).is_some_and(|dep| {
                 dep.build_state == DrvBuildState::Completed(DrvBuildResult::Success)
             })
         })
