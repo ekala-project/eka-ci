@@ -74,6 +74,143 @@ pub async fn update_ci_configure_gate(client: &GitLabClient, ci_info: &GitLabCII
     Ok(())
 }
 
+/// Create a CI eval job status.
+///
+/// This creates a "running" commit status to indicate that job evaluation is in progress.
+pub async fn create_ci_eval_job(
+    client: &GitLabClient,
+    ci_info: &GitLabCIInfo,
+    job_title: &str,
+) -> Result<i64> {
+    debug!(
+        "Creating CI eval job status for job '{}' on commit {} in project {}",
+        job_title, &ci_info.commit, ci_info.project_id
+    );
+
+    let context = format!("ekaci/eval-{}", job_title);
+    let name = format!("EkaCI: Evaluate Job ({})", job_title);
+
+    let request = CreateCommitStatusRequest {
+        state: CommitStatusState::Running,
+        target_url: None,
+        description: Some("Evaluating Nix expressions".to_string()),
+        name: Some(name),
+        context: Some(context),
+    };
+
+    let status = client
+        .create_commit_status(ci_info.project_id, &ci_info.commit, request)
+        .await
+        .context("Failed to create CI eval job status")?;
+
+    debug!(
+        "Successfully created CI eval job status {} for job '{}'",
+        status.id, job_title
+    );
+
+    Ok(status.id)
+}
+
+/// Update a CI eval job status to completion.
+///
+/// Marks the evaluation as complete with either success or failure.
+pub async fn update_ci_eval_job(
+    client: &GitLabClient,
+    ci_info: &GitLabCIInfo,
+    job_name: &str,
+    success: bool,
+) -> Result<()> {
+    debug!(
+        "Updating CI eval job status for job '{}' to {} on commit {} in project {}",
+        job_name,
+        if success { "success" } else { "failed" },
+        &ci_info.commit,
+        ci_info.project_id
+    );
+
+    let context = format!("ekaci/eval-{}", job_name);
+    let name = format!("EkaCI: Evaluate Job ({})", job_name);
+    let state = if success {
+        CommitStatusState::Success
+    } else {
+        CommitStatusState::Failed
+    };
+    let description = if success {
+        "Evaluation completed successfully"
+    } else {
+        "Evaluation failed"
+    };
+
+    let request = CreateCommitStatusRequest {
+        state,
+        target_url: None,
+        description: Some(description.to_string()),
+        name: Some(name),
+        context: Some(context),
+    };
+
+    client
+        .create_commit_status(ci_info.project_id, &ci_info.commit, request)
+        .await
+        .context("Failed to update CI eval job status")?;
+
+    debug!(
+        "Successfully updated CI eval job status for job '{}'",
+        job_name
+    );
+
+    Ok(())
+}
+
+/// Create a failed CI eval job status with error details.
+///
+/// Creates a "failed" commit status with a summary of evaluation errors.
+/// GitLab commit statuses have limited space, so we keep the description concise.
+pub async fn fail_ci_eval_job(
+    client: &GitLabClient,
+    ci_info: &GitLabCIInfo,
+    job_name: &str,
+    errors: &[crate::nix::nix_eval_jobs::NixEvalError],
+) -> Result<i64> {
+    debug!(
+        "Creating failed CI eval job status for job '{}' on commit {} with {} errors",
+        job_name,
+        &ci_info.commit,
+        errors.len()
+    );
+
+    let context = format!("ekaci/eval-{}", job_name);
+    let name = format!("EkaCI: Evaluate Job ({})", job_name);
+
+    // Create a concise description with error count
+    // Full error details would need to be posted as an MR comment (future work)
+    let description = if errors.len() == 1 {
+        format!("Evaluation failed: {}", &errors[0].attr)
+    } else {
+        format!("Evaluation failed with {} errors", errors.len())
+    };
+
+    let request = CreateCommitStatusRequest {
+        state: CommitStatusState::Failed,
+        target_url: None,
+        description: Some(description),
+        name: Some(name),
+        context: Some(context),
+    };
+
+    let status = client
+        .create_commit_status(ci_info.project_id, &ci_info.commit, request)
+        .await
+        .context("Failed to create failed CI eval job status")?;
+
+    debug!(
+        "Successfully created failed CI eval job status {} for job '{}'",
+        status.id, job_name
+    );
+
+    Ok(status.id)
+}
+
 /// Create a commit status for a build.
 ///
 /// This creates a new commit status with the given name and state.
