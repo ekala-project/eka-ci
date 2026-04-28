@@ -256,6 +256,7 @@ pub async fn get_pr_by_head_sha(
 /// Set comment-merge request for a pull request.
 ///
 /// This is called when a user triggers a merge via PR comment.
+/// Returns the number of rows affected.
 pub async fn set_comment_merge(
     domain: &str,
     owner: &str,
@@ -267,10 +268,10 @@ pub async fn set_comment_merge(
     requester_login: &str,
     comment_id: i64,
     pool: &Pool<Sqlite>,
-) -> Result<()> {
+) -> Result<u64> {
     let now = chrono::Utc::now().to_rfc3339();
 
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE GiteaPullRequests
         SET
@@ -298,7 +299,7 @@ pub async fn set_comment_merge(
     .execute(pool)
     .await?;
 
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Clear comment-merge request for a pull request.
@@ -385,6 +386,204 @@ pub async fn disable_auto_merge(
         WHERE domain = ? AND owner = ? AND repo_name = ? AND pr_number = ?
         "#,
     )
+    .bind(&now)
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Comment-merge request details
+#[derive(Debug, Clone)]
+pub struct CommentMergeRequest {
+    pub sha: String,
+    pub method: Option<String>,
+    pub requester_id: i64,
+    pub requester_login: String,
+}
+
+/// Full pull request row including comment-merge fields
+#[derive(Clone, Debug, FromRow)]
+pub struct PullRequest {
+    pub pr_number: i64,
+    pub owner: String,
+    pub repo_name: String,
+    pub domain: String,
+    pub head_sha: String,
+    pub base_sha: String,
+    pub title: String,
+    pub author: String,
+    pub state: String,
+    pub auto_merge_enabled: bool,
+    pub merge_method: Option<String>,
+    pub comment_merge_sha: Option<String>,
+    pub comment_merge_method: Option<String>,
+    pub comment_merge_requester_id: Option<i64>,
+    pub comment_merge_requester_login: Option<String>,
+}
+
+impl PullRequest {
+    /// Extract pending comment-merge request if present
+    pub fn pending_comment_merge(&self) -> Option<CommentMergeRequest> {
+        if let (Some(sha), Some(login)) = (
+            self.comment_merge_sha.as_ref(),
+            self.comment_merge_requester_login.as_ref(),
+        ) {
+            Some(CommentMergeRequest {
+                sha: sha.clone(),
+                method: self.comment_merge_method.clone(),
+                requester_id: self.comment_merge_requester_id.unwrap_or(0),
+                requester_login: login.clone(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// Get a pull request by its identifiers, returning full row with comment-merge fields
+pub async fn get_pull_request_row(
+    domain: &str,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<PullRequest>> {
+    let pr = sqlx::query_as(
+        r#"
+        SELECT
+            pr_number, owner, repo_name, domain, head_sha, base_sha,
+            title, author, state, auto_merge_enabled, merge_method,
+            comment_merge_sha, comment_merge_method, comment_merge_requester_id,
+            comment_merge_requester_login
+        FROM GiteaPullRequests
+        WHERE domain = ? AND owner = ? AND repo_name = ? AND pr_number = ?
+        "#,
+    )
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(pr)
+}
+
+/// Get all changed package attribute paths for a pull request
+pub async fn get_pr_changed_packages(
+    domain: &str,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<String>> {
+    // Get the PR's head_sha jobset
+    let jobset_id: Option<i64> = sqlx::query_scalar(
+        "SELECT gjs.ROWID FROM GiteaPullRequests pr
+         JOIN GiteaJobSets gjs ON pr.head_sha = gjs.sha
+         WHERE pr.domain = ? AND pr.owner = ? AND pr.repo_name = ? AND pr.pr_number = ?
+         AND gjs.domain = ? AND gjs.owner = ? AND gjs.repo_name = ?
+         LIMIT 1",
+    )
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(jobset_id) = jobset_id else {
+        return Ok(vec![]);
+    };
+
+    // Get all unique attribute paths from job_difference for this jobset
+    let attr_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT attr_path FROM job_difference
+         WHERE jobset = ?
+         ORDER BY attr_path",
+    )
+    .bind(jobset_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(attr_paths)
+}
+
+/// Check if the pull request's head commit has successfully built
+pub async fn pr_head_build_succeeded(
+    domain: &str,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
+    let jobset_id: Option<i64> = sqlx::query_scalar(
+        "SELECT gjs.ROWID FROM GiteaPullRequests pr
+         JOIN GiteaJobSets gjs ON pr.head_sha = gjs.sha
+         WHERE pr.domain = ? AND pr.owner = ? AND pr.repo_name = ? AND pr.pr_number = ?
+         AND gjs.domain = ? AND gjs.owner = ? AND gjs.repo_name = ?
+         LIMIT 1",
+    )
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(jobset_id) = jobset_id else {
+        return Ok(false);
+    };
+
+    if !crate::db::github::all_jobs_concluded(jobset_id, pool).await? {
+        return Ok(false);
+    }
+
+    if crate::db::github::jobset_has_new_or_changed_failures(jobset_id, pool).await? {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+/// Mark a pull request as merged
+pub async fn mark_pr_merged(
+    domain: &str,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    merged_by_user_id: Option<i64>,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        "UPDATE GiteaPullRequests
+         SET state = 'merged',
+             merged_by_user_id = ?,
+             merged_at = ?,
+             comment_merge_sha = NULL,
+             comment_merge_method = NULL,
+             comment_merge_requester_id = NULL,
+             comment_merge_requester_login = NULL,
+             comment_merge_comment_id = NULL,
+             comment_merge_requested_at = NULL,
+             updated_at = ?
+         WHERE domain = ? AND owner = ? AND repo_name = ? AND pr_number = ?",
+    )
+    .bind(merged_by_user_id)
+    .bind(&now)
     .bind(&now)
     .bind(domain)
     .bind(owner)

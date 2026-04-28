@@ -1,9 +1,74 @@
+pub mod comment_command;
+
+use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::db::DbService;
 use crate::git::GitTask;
 use crate::gitea::GiteaTask;
+
+#[derive(Debug, Deserialize)]
+struct PullRequestPayload {
+    action: String,
+    number: i64,
+    pull_request: PullRequestData,
+    repository: Repository,
+    sender: User,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestData {
+    number: i64,
+    title: String,
+    state: String,
+    head: BranchRef,
+    base: BranchRef,
+    user: User,
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchRef {
+    sha: String,
+    #[serde(rename = "ref")]
+    ref_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueCommentPayload {
+    action: String,
+    issue: Issue,
+    comment: Comment,
+    repository: Repository,
+    sender: User,
+}
+
+#[derive(Debug, Deserialize)]
+struct Issue {
+    number: i64,
+    pull_request: Option<serde_json::Value>, // Non-null if this is a PR
+}
+
+#[derive(Debug, Deserialize)]
+struct Comment {
+    id: i64,
+    body: String,
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Repository {
+    owner: User,
+    name: String,
+    #[serde(rename = "html_url")]
+    html_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct User {
+    id: i64,
+    login: String,
+}
 
 /// Handle Gitea webhook payload
 ///
@@ -14,39 +79,163 @@ use crate::gitea::GiteaTask;
 /// - Newer versions support check runs, older versions use commit statuses
 pub async fn handle_webhook_payload(
     event_type: &str,
-    _payload: serde_json::Value,
+    payload: serde_json::Value,
     _git_sender: mpsc::Sender<GitTask>,
-    _gitea_sender: mpsc::Sender<GiteaTask>,
-    _db_service: DbService,
+    gitea_sender: mpsc::Sender<GiteaTask>,
+    db_service: DbService,
 ) {
     debug!("Received Gitea webhook event: {}", event_type);
 
     match event_type {
         "pull_request" => {
-            debug!("Gitea pull request webhook (not yet implemented)");
-            // TODO: Parse PR payload and create GiteaTask::CreateJobSet
+            if let Err(e) = handle_pull_request_event(payload, gitea_sender, db_service).await {
+                warn!("Failed to handle pull request event: {:?}", e);
+            }
         },
         "push" => {
             debug!("Gitea push webhook (not yet implemented)");
             // TODO: Handle push events for main branch builds
         },
-        "issue_comment" | "pull_request_comment" => {
-            debug!("Gitea comment webhook (not yet implemented)");
-            // TODO: Handle comment commands for merge requests
+        "issue_comment" => {
+            if let Err(e) = handle_issue_comment_event(payload, gitea_sender).await {
+                warn!("Failed to handle issue comment event: {:?}", e);
+            }
         },
         "pull_request_review" => {
-            debug!("Gitea PR review webhook (not yet implemented)");
-            // TODO: Handle review approvals for auto-merge
+            debug!("Gitea PR review webhook (ignoring for now)");
+            // Review approvals could trigger auto-merge in the future
         },
         _ => {
             warn!("Unhandled Gitea webhook event type: {}", event_type);
         },
     }
+}
 
-    // TODO: Implement full webhook handling:
-    // 1. Parse event-specific payloads (GitHub-compatible format)
-    // 2. Extract repository/PR/domain metadata
-    // 3. Detect instance version (check runs vs commit statuses)
-    // 4. Send appropriate GiteaTask messages
-    // 5. Handle comment-based merge commands
+async fn handle_pull_request_event(
+    payload: serde_json::Value,
+    gitea_sender: mpsc::Sender<GiteaTask>,
+    db_service: DbService,
+) -> anyhow::Result<()> {
+    let event: PullRequestPayload = serde_json::from_value(payload)?;
+
+    let domain = extract_domain(&event.repository.html_url);
+    let owner = &event.repository.owner.login;
+    let repo_name = &event.repository.name;
+    let pr_number = event.number;
+
+    // Store/update PR in database
+    crate::db::gitea::upsert_pull_request(
+        pr_number,
+        owner,
+        repo_name,
+        &domain,
+        &event.pull_request.head.sha,
+        &event.pull_request.base.sha,
+        &event.pull_request.title,
+        &event.pull_request.user.login,
+        &event.pull_request.state,
+        &db_service.pool,
+    )
+    .await?;
+
+    // Trigger auto-merge check on certain actions
+    match event.action.as_str() {
+        "opened" | "synchronize" | "reopened" => {
+            info!(
+                "Triggering auto-merge check for PR #{} in {}/{}",
+                pr_number, owner, repo_name
+            );
+            gitea_sender
+                .send(GiteaTask::CheckAutoMerge {
+                    domain: domain.to_string(),
+                    owner: owner.to_string(),
+                    repo_name: repo_name.to_string(),
+                    pr_number,
+                })
+                .await?;
+        },
+        "closed" => {
+            if event.pull_request.state == "closed" {
+                debug!("PR #{} was closed, no action needed", pr_number);
+            } else {
+                debug!("PR #{} was merged, no action needed", pr_number);
+            }
+        },
+        _ => {
+            debug!(
+                "PR #{} action '{}' doesn't trigger auto-merge check",
+                pr_number, event.action
+            );
+        },
+    }
+
+    Ok(())
+}
+
+async fn handle_issue_comment_event(
+    payload: serde_json::Value,
+    gitea_sender: mpsc::Sender<GiteaTask>,
+) -> anyhow::Result<()> {
+    let event: IssueCommentPayload = serde_json::from_value(payload)?;
+
+    // Only process PR comments
+    if event.issue.pull_request.is_none() {
+        debug!("Comment is not on a pull request, ignoring");
+        return Ok(());
+    }
+
+    // Only process "created" comments
+    if event.action != "created" {
+        debug!(
+            "Comment action '{}' is not 'created', ignoring",
+            event.action
+        );
+        return Ok(());
+    }
+
+    // Check if this is a merge command
+    if let Some(command) = comment_command::parse_comment_command(&event.comment.body) {
+        let domain = extract_domain(&event.repository.html_url);
+
+        info!(
+            "Detected merge command {:?} from {} on PR #{} in {}/{}",
+            command,
+            event.sender.login,
+            event.issue.number,
+            event.repository.owner.login,
+            event.repository.name
+        );
+
+        // Parse the created_at timestamp
+        let comment_created_at = chrono::DateTime::parse_from_rfc3339(&event.comment.created_at)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now);
+
+        gitea_sender
+            .send(GiteaTask::ProcessMergeCommand {
+                domain: domain.to_string(),
+                owner: event.repository.owner.login,
+                repo_name: event.repository.name,
+                pr_number: event.issue.number,
+                comment_id: event.comment.id,
+                requester_id: event.sender.id,
+                requester_login: event.sender.login,
+                body: event.comment.body,
+                comment_created_at,
+            })
+            .await?;
+    }
+
+    Ok(())
+}
+
+/// Extract domain from Gitea repository HTML URL
+fn extract_domain(html_url: &str) -> String {
+    html_url
+        .strip_prefix("https://")
+        .or_else(|| html_url.strip_prefix("http://"))
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("gitea.local")
+        .to_string()
 }

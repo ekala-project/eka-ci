@@ -254,6 +254,7 @@ pub async fn get_mr_by_head_sha(
 /// Set comment-merge request for a merge request.
 ///
 /// This is called when a user triggers a merge via MR comment.
+/// Returns the number of rows affected.
 pub async fn set_comment_merge(
     domain: &str,
     project_id: i64,
@@ -264,10 +265,10 @@ pub async fn set_comment_merge(
     requester_username: &str,
     note_id: i64,
     pool: &Pool<Sqlite>,
-) -> Result<()> {
+) -> Result<u64> {
     let now = chrono::Utc::now().to_rfc3339();
 
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE GitLabMergeRequests
         SET
@@ -294,7 +295,7 @@ pub async fn set_comment_merge(
     .execute(pool)
     .await?;
 
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Clear comment-merge request for a merge request.
@@ -376,6 +377,195 @@ pub async fn disable_auto_merge(
         WHERE domain = ? AND project_id = ? AND mr_iid = ?
         "#,
     )
+    .bind(&now)
+    .bind(domain)
+    .bind(project_id)
+    .bind(mr_iid)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Comment-merge request details
+#[derive(Debug, Clone)]
+pub struct CommentMergeRequest {
+    pub sha: String,
+    pub method: Option<String>,
+    pub requester_id: i64,
+    pub requester_username: String,
+}
+
+/// Full merge request row including comment-merge fields
+#[derive(Clone, Debug, FromRow)]
+pub struct MergeRequest {
+    pub mr_iid: i64,
+    pub owner: String,
+    pub repo_name: String,
+    pub project_id: i64,
+    pub domain: String,
+    pub head_sha: String,
+    pub base_sha: String,
+    pub title: String,
+    pub author: String,
+    pub state: String,
+    pub auto_merge_enabled: bool,
+    pub merge_method: Option<String>,
+    pub comment_merge_sha: Option<String>,
+    pub comment_merge_method: Option<String>,
+    pub comment_merge_requester_id: Option<i64>,
+    pub comment_merge_requester_username: Option<String>,
+}
+
+impl MergeRequest {
+    /// Extract pending comment-merge request if present
+    pub fn pending_comment_merge(&self) -> Option<CommentMergeRequest> {
+        if let (Some(sha), Some(username)) = (
+            self.comment_merge_sha.as_ref(),
+            self.comment_merge_requester_username.as_ref(),
+        ) {
+            Some(CommentMergeRequest {
+                sha: sha.clone(),
+                method: self.comment_merge_method.clone(),
+                requester_id: self.comment_merge_requester_id.unwrap_or(0),
+                requester_username: username.clone(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// Get a merge request by its identifiers, returning full row with comment-merge fields
+pub async fn get_merge_request_row(
+    domain: &str,
+    project_id: i64,
+    mr_iid: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<MergeRequest>> {
+    let mr = sqlx::query_as(
+        r#"
+        SELECT
+            mr_iid, owner, repo_name, project_id, domain, head_sha, base_sha,
+            title, author, state, auto_merge_enabled, merge_method,
+            comment_merge_sha, comment_merge_method, comment_merge_requester_id,
+            comment_merge_requester_username
+        FROM GitLabMergeRequests
+        WHERE domain = ? AND project_id = ? AND mr_iid = ?
+        "#,
+    )
+    .bind(domain)
+    .bind(project_id)
+    .bind(mr_iid)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(mr)
+}
+
+/// Get all changed package attribute paths for a merge request
+pub async fn get_mr_changed_packages(
+    domain: &str,
+    project_id: i64,
+    mr_iid: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<String>> {
+    // Get the MR's head_sha jobset
+    let jobset_id: Option<i64> = sqlx::query_scalar(
+        "SELECT gjs.ROWID FROM GitLabMergeRequests mr
+         JOIN GitLabJobSets gjs ON mr.head_sha = gjs.sha
+         WHERE mr.domain = ? AND mr.project_id = ? AND mr.mr_iid = ?
+         AND gjs.domain = ? AND gjs.project_id = ?
+         LIMIT 1",
+    )
+    .bind(domain)
+    .bind(project_id)
+    .bind(mr_iid)
+    .bind(domain)
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(jobset_id) = jobset_id else {
+        return Ok(vec![]);
+    };
+
+    // Get all unique attribute paths from job_difference for this jobset
+    let attr_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT attr_path FROM job_difference
+         WHERE jobset = ?
+         ORDER BY attr_path",
+    )
+    .bind(jobset_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(attr_paths)
+}
+
+/// Check if the merge request's head commit has successfully built
+pub async fn mr_head_build_succeeded(
+    domain: &str,
+    project_id: i64,
+    mr_iid: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
+    let jobset_id: Option<i64> = sqlx::query_scalar(
+        "SELECT gjs.ROWID FROM GitLabMergeRequests mr
+         JOIN GitLabJobSets gjs ON mr.head_sha = gjs.sha
+         WHERE mr.domain = ? AND mr.project_id = ? AND mr.mr_iid = ?
+         AND gjs.domain = ? AND gjs.project_id = ?
+         LIMIT 1",
+    )
+    .bind(domain)
+    .bind(project_id)
+    .bind(mr_iid)
+    .bind(domain)
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(jobset_id) = jobset_id else {
+        return Ok(false);
+    };
+
+    if !crate::db::github::all_jobs_concluded(jobset_id, pool).await? {
+        return Ok(false);
+    }
+
+    if crate::db::github::jobset_has_new_or_changed_failures(jobset_id, pool).await? {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+/// Mark a merge request as merged
+pub async fn mark_mr_merged(
+    domain: &str,
+    project_id: i64,
+    mr_iid: i64,
+    merged_by_user_id: Option<i64>,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        "UPDATE GitLabMergeRequests
+         SET state = 'merged',
+             merged_by_user_id = ?,
+             merged_at = ?,
+             comment_merge_sha = NULL,
+             comment_merge_method = NULL,
+             comment_merge_requester_id = NULL,
+             comment_merge_requester_username = NULL,
+             comment_merge_note_id = NULL,
+             comment_merge_requested_at = NULL,
+             updated_at = ?
+         WHERE domain = ? AND project_id = ? AND mr_iid = ?",
+    )
+    .bind(merged_by_user_id)
+    .bind(&now)
     .bind(&now)
     .bind(domain)
     .bind(project_id)

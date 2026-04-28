@@ -8,7 +8,8 @@ use tracing::debug;
 
 use crate::db::model::build_event::DrvBuildState;
 use crate::gitea::client::{
-    CheckConclusion, CheckStatus, CreateCheckRunRequest, GiteaClient, UpdateCheckRunRequest,
+    CheckConclusion, CheckOutput, CheckStatus, CreateCheckRunRequest, GiteaClient,
+    UpdateCheckRunRequest,
 };
 use crate::gitea::types::GiteaCIInfo;
 
@@ -388,4 +389,149 @@ fn status_from_build_state(state: &DrvBuildState) -> (CheckStatus, Option<CheckC
             (CheckStatus::Completed, Some(CheckConclusion::Failure))
         },
     }
+}
+
+// ============================================================================
+// Auto-merge helper functions
+// ============================================================================
+
+/// Result of merge method validation
+#[derive(Debug)]
+pub enum MergeMethodCheck {
+    Ok,
+    NotAllowed { allowed: Vec<String> },
+}
+
+/// Repository permission information
+#[derive(Debug)]
+pub struct RepoPermission {
+    pub can_push: bool,
+    pub is_admin: bool,
+}
+
+/// Validate a merge method against repository settings
+pub async fn validate_merge_method(
+    client: &GiteaClient,
+    owner: &str,
+    repo_name: &str,
+    method: &str,
+) -> Result<MergeMethodCheck> {
+    // For now, accept all merge methods - Gitea repository settings validation
+    // can be added later by fetching repository details
+    debug!(
+        "Validating merge method '{}' for {}/{}",
+        method, owner, repo_name
+    );
+    let _ = (client, method);
+    Ok(MergeMethodCheck::Ok)
+}
+
+/// Check repository permission for a user
+pub async fn check_repo_permission_for_user(
+    client: &GiteaClient,
+    owner: &str,
+    repo_name: &str,
+    username: &str,
+) -> Result<RepoPermission> {
+    // Fetch repository collaborator details for the user
+    debug!(
+        "Checking repo permission for {} in {}/{}",
+        username, owner, repo_name
+    );
+
+    // For now, return default permissions
+    // This should be replaced with actual Gitea API call
+    let _ = client;
+    Ok(RepoPermission {
+        can_push: false,
+        is_admin: false,
+    })
+}
+
+/// Check if all changed packages have required approvals
+pub async fn check_pr_maintainer_approvals(
+    client: &GiteaClient,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    _changed_packages: &[String],
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+) -> Result<(bool, Vec<String>)> {
+    debug!(
+        "Checking maintainer approvals for PR #{} in {}/{}",
+        pr_number, owner, repo_name
+    );
+
+    let _ = (client, pool);
+
+    // For now, consider all packages approved
+    // Real implementation would check package maintainers and PR approvals
+    Ok((true, vec![]))
+}
+
+/// Fetch the commit date for a commit SHA
+pub async fn fetch_head_commit_date(
+    client: &GiteaClient,
+    owner: &str,
+    repo_name: &str,
+    sha: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    debug!(
+        "Fetching commit date for {} in {}/{}",
+        sha, owner, repo_name
+    );
+
+    // For now, return None to skip the push timing check
+    // Real implementation would call Gitea API to get commit details
+    let _ = client;
+    Ok(None)
+}
+
+/// Create a dependency changes gate check run
+pub async fn create_dependency_changes_gate(
+    client: &GiteaClient,
+    ci_info: &crate::gitea::types::GiteaCIInfo,
+    dependency_diff: &str,
+    num_packages: usize,
+) -> Result<()> {
+    debug!(
+        "Creating dependency changes gate for commit {} ({} packages)",
+        &ci_info.commit, num_packages
+    );
+
+    let name = "EkaCI: Dependency Changes";
+
+    let summary = if num_packages == 0 {
+        "No runtime dependency changes detected".to_string()
+    } else {
+        format!(
+            "{} package(s) have changed runtime dependencies",
+            num_packages
+        )
+    };
+
+    let text = if dependency_diff.len() > 1000 {
+        format!("{}\n\n(truncated)", &dependency_diff[..1000])
+    } else {
+        dependency_diff.to_string()
+    };
+
+    let request = CreateCheckRunRequest {
+        name: name.to_string(),
+        head_sha: ci_info.commit.clone(),
+        status: Some(CheckStatus::Completed),
+        conclusion: Some(CheckConclusion::Success),
+        output: Some(CheckOutput {
+            title: "Dependency Changes".to_string(),
+            summary,
+            text: if text.is_empty() { None } else { Some(text) },
+        }),
+    };
+
+    client
+        .create_check_run(&ci_info.owner, &ci_info.repo_name, request)
+        .await
+        .context("Failed to create dependency changes gate")?;
+
+    Ok(())
 }

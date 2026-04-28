@@ -1191,8 +1191,14 @@ impl GiteaService {
             pr_number, owner, repo_name, domain, merge_method
         );
 
+        let merge_request = crate::gitea::client::MergePullRequestRequest {
+            merge_method: merge_method.to_string(),
+            merge_message_field: None,
+            merge_title_field: None,
+        };
+
         match client
-            .merge_pull_request(owner, repo_name, pr_number, merge_method)
+            .merge_pull_request(owner, repo_name, pr_number, merge_request)
             .await
         {
             Ok(_) => {

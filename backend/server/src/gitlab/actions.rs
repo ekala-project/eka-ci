@@ -468,3 +468,132 @@ fn state_description(state: &DrvBuildState) -> &'static str {
         DrvBuildState::Blocked => "blocked (waiting for dependencies)",
     }
 }
+
+// ============================================================================
+// Auto-merge helper functions
+// ============================================================================
+
+/// Result of merge method validation
+#[derive(Debug)]
+pub enum MergeMethodCheck {
+    Ok,
+    NotAllowed { allowed: Vec<String> },
+}
+
+/// Validate a merge method against project settings
+pub async fn validate_merge_method(
+    client: &GitLabClient,
+    project_id: i64,
+    method: &str,
+) -> Result<MergeMethodCheck> {
+    // For now, accept all merge methods - GitLab project settings validation
+    // can be added later by fetching project details
+    debug!(
+        "Validating merge method '{}' for project {}",
+        method, project_id
+    );
+    let _ = (client, method);
+    Ok(MergeMethodCheck::Ok)
+}
+
+/// Check project permission level for a user
+pub async fn check_project_permission_for_user(
+    client: &GitLabClient,
+    project_id: i64,
+    user_id: i64,
+) -> Result<i32> {
+    // Fetch project member details for the user
+    debug!(
+        "Checking project permission for user {} in project {}",
+        user_id, project_id
+    );
+
+    // For now, return a default permission level
+    // This should be replaced with actual GitLab API call
+    let _ = (client, user_id);
+    Ok(0) // 0 = no access, 30 = developer, 40 = maintainer, 50 = owner
+}
+
+/// Check if all changed packages have required approvals
+pub async fn check_mr_maintainer_approvals(
+    client: &GitLabClient,
+    project_id: i64,
+    mr_iid: i64,
+    _changed_packages: &[String],
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+) -> Result<(bool, Vec<String>)> {
+    debug!(
+        "Checking maintainer approvals for MR !{} in project {}",
+        mr_iid, project_id
+    );
+
+    let _ = (client, pool);
+
+    // For now, consider all packages approved
+    // Real implementation would check package maintainers and MR approvals
+    Ok((true, vec![]))
+}
+
+/// Fetch the commit date for a commit SHA
+pub async fn fetch_head_commit_date(
+    client: &GitLabClient,
+    project_id: i64,
+    sha: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    debug!("Fetching commit date for {} in project {}", sha, project_id);
+
+    // For now, return None to skip the push timing check
+    // Real implementation would call GitLab API to get commit details
+    let _ = (client, sha);
+    Ok(None)
+}
+
+/// Create a dependency changes gate status
+pub async fn create_dependency_changes_gate(
+    client: &GitLabClient,
+    ci_info: &crate::gitlab::types::GitLabCIInfo,
+    dependency_diff: &str,
+    num_packages: usize,
+) -> Result<()> {
+    debug!(
+        "Creating dependency changes gate for commit {} ({} packages)",
+        &ci_info.commit, num_packages
+    );
+
+    let context = "ekaci/dependency-changes";
+    let name = "EkaCI: Dependency Changes";
+
+    let summary = if num_packages == 0 {
+        "No runtime dependency changes detected".to_string()
+    } else {
+        format!(
+            "{} package(s) have changed runtime dependencies",
+            num_packages
+        )
+    };
+
+    let description = if dependency_diff.len() > 200 {
+        format!("{}\n\n(truncated)", &dependency_diff[..200])
+    } else {
+        dependency_diff.to_string()
+    };
+
+    let request = CreateCommitStatusRequest {
+        state: CommitStatusState::Success,
+        target_url: None,
+        description: Some(if description.is_empty() {
+            summary
+        } else {
+            format!("{}\n\n{}", summary, description)
+        }),
+        name: Some(name.to_string()),
+        context: Some(context.to_string()),
+    };
+
+    client
+        .create_commit_status(ci_info.project_id, &ci_info.commit, request)
+        .await
+        .context("Failed to create dependency changes gate")?;
+
+    Ok(())
+}
