@@ -20,7 +20,7 @@ use crate::services::AsyncService;
 pub struct GiteaService {
     db_service: DbService,
     gitea_sender: mpsc::Sender<GiteaTask>,
-    gitea_receiver: Mutex<Option<mpsc::Receiver<GiteaTask>>>,
+    gitea_receiver: Option<mpsc::Receiver<GiteaTask>>,
     /// Tracks configure gate check run IDs per commit
     configure_checks: Mutex<HashMap<String, i64>>,
     /// Tracks eval job check run IDs per (commit, job_name)
@@ -76,7 +76,7 @@ impl GiteaService {
         Ok(Self {
             db_service,
             gitea_sender,
-            gitea_receiver: Mutex::new(Some(gitea_receiver)),
+            gitea_receiver: Some(gitea_receiver),
             configure_checks: Mutex::new(HashMap::new()),
             eval_checks: Mutex::new(HashMap::new()),
             change_summary_checks: Mutex::new(HashMap::new()),
@@ -92,7 +92,7 @@ impl GiteaService {
 
     #[allow(dead_code)] // Called via AsyncService trait dispatch
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GiteaTask>> {
-        self.gitea_receiver.blocking_lock().take()
+        self.gitea_receiver.take()
     }
 
     /// Get the Gitea client for a specific domain
@@ -1147,7 +1147,7 @@ impl GiteaService {
         );
 
         // Best-effort notifications
-        let _ = self
+        if let Err(e) = self
             .gitea_sender
             .send(GiteaTask::CommentMergeDriftCancelled {
                 domain: domain.to_string(),
@@ -1158,7 +1158,10 @@ impl GiteaService {
                 actual_sha: current_head.to_string(),
                 requester_login: cmr.requester_login.clone(),
             })
-            .await;
+            .await
+        {
+            warn!("Failed to send CommentMergeDriftCancelled task: {:?}", e);
+        }
 
         crate::db::gitea::clear_comment_merge(
             domain,
@@ -1412,7 +1415,7 @@ impl GiteaService {
                  repo write, and not a maintainer of all changed packages",
                 requester_login, pr_number
             );
-            let _ = client
+            if let Err(e) = client
                 .create_issue_comment(
                     owner,
                     repo_name,
@@ -1424,7 +1427,10 @@ impl GiteaService {
                         requester_login
                     ),
                 )
-                .await;
+                .await
+            {
+                warn!("Failed to post denial comment: {:?}", e);
+            }
             return Ok(());
         }
 
@@ -1474,7 +1480,7 @@ impl GiteaService {
                      of all changed packages",
                     requester_login, pr_number
                 );
-                let _ = client
+                if let Err(e) = client
                     .create_issue_comment(
                         owner,
                         repo_name,
@@ -1485,7 +1491,10 @@ impl GiteaService {
                             requester_login
                         ),
                     )
-                    .await;
+                    .await
+                {
+                    warn!("Failed to post denial comment: {:?}", e);
+                }
                 return Ok(());
             },
         }
@@ -1545,7 +1554,7 @@ impl GiteaService {
         }
 
         // Fire the evaluator in case gates are already green
-        let _ = self
+        if let Err(e) = self
             .gitea_sender
             .send(GiteaTask::CheckAutoMerge {
                 domain: domain.to_string(),
@@ -1553,7 +1562,10 @@ impl GiteaService {
                 repo_name: repo_name.to_string(),
                 pr_number,
             })
-            .await;
+            .await
+        {
+            warn!("Failed to send CheckAutoMerge task: {:?}", e);
+        }
 
         Ok(())
     }
@@ -1586,7 +1598,7 @@ impl GiteaService {
                     comment_created_at,
                     PUSH_GRACE.num_seconds()
                 );
-                let _ = client
+                if let Err(e) = client
                     .create_issue_comment(
                         owner,
                         repo_name,
@@ -1599,7 +1611,10 @@ impl GiteaService {
                             short_sha(head_sha),
                         ),
                     )
-                    .await;
+                    .await
+                {
+                    warn!("Failed to post push drift comment: {:?}", e);
+                }
                 Ok(false)
             },
             Ok(Some(_)) | Ok(None) | Err(_) => Ok(true),
@@ -1770,7 +1785,7 @@ impl AsyncService<GiteaTask> for GiteaService {
     }
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<GiteaTask>> {
-        self.gitea_receiver.blocking_lock().take()
+        self.gitea_receiver.take()
     }
 
     async fn handle_task(&self, task: GiteaTask) -> Result<()> {

@@ -69,13 +69,12 @@ pub async fn request_maintainer(
     user: AuthUser,
     Path(attr_path): Path<String>,
     State(state): State<RequestHandlerState>,
-    body: Option<Json<RequestMaintainerRequest>>,
+    _body: Option<Json<RequestMaintainerRequest>>,
 ) -> Result<Json<serde_json::Value>, Response> {
     // The request DTO currently has no fields, but we accept it (optionally)
     // so callers can start sending a body today and extension fields remain
-    // backwards compatible. Discard the body; only the URL path and auth
+    // backwards compatible. Body is unused; only the URL path and auth
     // identity are used for the request itself.
-    let _ = body;
     let pool = &state.pool;
 
     // Check if user is already a maintainer
