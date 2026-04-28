@@ -333,6 +333,55 @@ impl GiteaClient {
             .await
             .context("Failed to parse commit status response")
     }
+
+    /// Get commit details
+    ///
+    /// Gitea API: GET /repos/:owner/:repo/git/commits/:sha
+    pub async fn get_commit(&self, owner: &str, repo: &str, sha: &str) -> Result<GiteaCommit> {
+        let url = format!(
+            "{}/api/v1/repos/{}/{}/git/commits/{}",
+            self.base_url, owner, repo, sha
+        );
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header(header::AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("Failed to get commit")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("Failed to get commit ({}): {}", status, body);
+        }
+
+        response
+            .json()
+            .await
+            .context("Failed to parse commit response")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GiteaCommit {
+    pub sha: String,
+    pub commit: CommitDetails,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommitDetails {
+    pub message: String,
+    pub author: CommitAuthor,
+    pub committer: CommitAuthor,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
+    pub date: String, // ISO 8601 format
 }
 
 // ==================================================================

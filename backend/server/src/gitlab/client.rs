@@ -123,6 +123,44 @@ impl GitLabClient {
             .await
             .context("Failed to parse commit status response")
     }
+
+    /// Get commit details
+    ///
+    /// GitLab API: GET /projects/:id/repository/commits/:sha
+    pub async fn get_commit(&self, project_id: i64, sha: &str) -> Result<GitCommit> {
+        let url = format!(
+            "{}/api/v4/projects/{}/repository/commits/{}",
+            self.base_url, project_id, sha
+        );
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header(header::AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("Failed to get commit")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("Failed to get commit ({}): {}", status, body);
+        }
+
+        response
+            .json()
+            .await
+            .context("Failed to parse commit response")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GitCommit {
+    pub id: String,
+    pub short_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub committed_date: String,
 }
 
 // ==================================================================
