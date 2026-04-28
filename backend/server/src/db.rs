@@ -1,5 +1,6 @@
 mod approved_users;
 mod checks;
+pub mod gitea;
 pub mod github;
 pub mod gitlab;
 pub mod hooks;
