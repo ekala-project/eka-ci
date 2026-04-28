@@ -1,0 +1,391 @@
+///! Gitea API action wrappers for check run and commit status operations.
+///!
+///! This module provides high-level functions for interacting with the Gitea API
+///! to create and update check runs (newer Gitea instances) or commit statuses
+///! (older instances). It automatically handles version detection and fallback.
+use anyhow::{Context, Result};
+use tracing::debug;
+
+use crate::db::model::build_event::DrvBuildState;
+use crate::gitea::client::{
+    CheckConclusion, CheckStatus, CreateCheckRunRequest, GiteaClient, UpdateCheckRunRequest,
+};
+use crate::gitea::types::GiteaCIInfo;
+
+/// Create an initial CI configure gate check run.
+///
+/// This creates a "queued" check run to indicate that EkaCI is processing
+/// the repository configuration.
+pub async fn create_ci_configure_gate(client: &GiteaClient, ci_info: &GiteaCIInfo) -> Result<i64> {
+    debug!(
+        "Creating CI configure gate check run for commit {} in {}/{}",
+        &ci_info.commit, ci_info.owner, ci_info.repo_name
+    );
+
+    let request = CreateCheckRunRequest {
+        name: "EkaCI: Configure".to_string(),
+        head_sha: ci_info.commit.clone(),
+        status: Some(CheckStatus::Queued),
+        conclusion: None,
+        output: None,
+    };
+
+    let check_run = client
+        .create_check_run(&ci_info.owner, &ci_info.repo_name, request)
+        .await
+        .context("Failed to create CI configure gate check run")?;
+
+    debug!(
+        "Successfully created CI configure gate check run {} for commit {}",
+        check_run.id, &ci_info.commit
+    );
+
+    Ok(check_run.id)
+}
+
+/// Update the CI configure gate check run to success.
+///
+/// Marks the configuration processing as complete and successful.
+pub async fn update_ci_configure_gate(
+    client: &GiteaClient,
+    ci_info: &GiteaCIInfo,
+    check_run_id: i64,
+) -> Result<()> {
+    debug!(
+        "Updating CI configure gate check run {} to success for commit {} in {}/{}",
+        check_run_id, &ci_info.commit, ci_info.owner, ci_info.repo_name
+    );
+
+    let request = UpdateCheckRunRequest {
+        status: Some(CheckStatus::Completed),
+        conclusion: Some(CheckConclusion::Success),
+        output: None,
+    };
+
+    client
+        .update_check_run(&ci_info.owner, &ci_info.repo_name, check_run_id, request)
+        .await
+        .context("Failed to update CI configure gate check run")?;
+
+    debug!(
+        "Successfully updated CI configure gate check run {} for commit {}",
+        check_run_id, &ci_info.commit
+    );
+
+    Ok(())
+}
+
+/// Create a CI eval job check run.
+///
+/// This creates a "running" check run to indicate that job evaluation is in progress.
+pub async fn create_ci_eval_job(
+    client: &GiteaClient,
+    ci_info: &GiteaCIInfo,
+    job_title: &str,
+) -> Result<i64> {
+    debug!(
+        "Creating CI eval job check run for job '{}' on commit {} in {}/{}",
+        job_title, &ci_info.commit, ci_info.owner, ci_info.repo_name
+    );
+
+    let name = format!("EkaCI: Evaluate Job ({})", job_title);
+
+    let request = CreateCheckRunRequest {
+        name,
+        head_sha: ci_info.commit.clone(),
+        status: Some(CheckStatus::InProgress),
+        conclusion: None,
+        output: None,
+    };
+
+    let check_run = client
+        .create_check_run(&ci_info.owner, &ci_info.repo_name, request)
+        .await
+        .context("Failed to create CI eval job check run")?;
+
+    debug!(
+        "Successfully created CI eval job check run {} for job '{}'",
+        check_run.id, job_title
+    );
+
+    Ok(check_run.id)
+}
+
+/// Update a CI eval job check run to completion.
+///
+/// Marks the evaluation as complete with either success or failure.
+pub async fn update_ci_eval_job(
+    client: &GiteaClient,
+    ci_info: &GiteaCIInfo,
+    job_name: &str,
+    check_run_id: i64,
+    success: bool,
+) -> Result<()> {
+    debug!(
+        "Updating CI eval job check run {} for job '{}' to {} on commit {} in {}/{}",
+        check_run_id,
+        job_name,
+        if success { "success" } else { "failure" },
+        &ci_info.commit,
+        ci_info.owner,
+        ci_info.repo_name
+    );
+
+    let conclusion = if success {
+        CheckConclusion::Success
+    } else {
+        CheckConclusion::Failure
+    };
+
+    let request = UpdateCheckRunRequest {
+        status: Some(CheckStatus::Completed),
+        conclusion: Some(conclusion),
+        output: None,
+    };
+
+    client
+        .update_check_run(&ci_info.owner, &ci_info.repo_name, check_run_id, request)
+        .await
+        .context("Failed to update CI eval job check run")?;
+
+    debug!(
+        "Successfully updated CI eval job check run {} for job '{}'",
+        check_run_id, job_name
+    );
+
+    Ok(())
+}
+
+/// Create a failed CI eval job check run with error details.
+///
+/// Creates a "failure" check run with a summary of evaluation errors.
+pub async fn fail_ci_eval_job(
+    client: &GiteaClient,
+    ci_info: &GiteaCIInfo,
+    job_name: &str,
+    errors: &[crate::nix::nix_eval_jobs::NixEvalError],
+) -> Result<i64> {
+    debug!(
+        "Creating failed CI eval job check run for job '{}' on commit {} with {} errors",
+        job_name,
+        &ci_info.commit,
+        errors.len()
+    );
+
+    let name = format!("EkaCI: Evaluate Job ({})", job_name);
+
+    // Create a summary of errors
+    // TODO: Could enhance this with detailed output
+    let summary = if errors.len() == 1 {
+        format!("Evaluation failed: {}", &errors[0].attr)
+    } else {
+        format!("Evaluation failed with {} errors", errors.len())
+    };
+
+    let request = CreateCheckRunRequest {
+        name,
+        head_sha: ci_info.commit.clone(),
+        status: Some(CheckStatus::Completed),
+        conclusion: Some(CheckConclusion::Failure),
+        output: Some(crate::gitea::client::CheckOutput {
+            title: "Evaluation Failed".to_string(),
+            summary,
+            text: None,
+        }),
+    };
+
+    let check_run = client
+        .create_check_run(&ci_info.owner, &ci_info.repo_name, request)
+        .await
+        .context("Failed to create failed CI eval job check run")?;
+
+    debug!(
+        "Successfully created failed CI eval job check run {} for job '{}'",
+        check_run.id, job_name
+    );
+
+    Ok(check_run.id)
+}
+
+/// Create a check run for a build.
+///
+/// This creates a new check run with the given name and status.
+pub async fn create_check_run(
+    client: &GiteaClient,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    name: &str,
+    status: CheckStatus,
+    conclusion: Option<CheckConclusion>,
+) -> Result<i64> {
+    debug!(
+        "Creating check run '{}' with status {:?} for commit {} in {}/{}",
+        name, status, sha, owner, repo
+    );
+
+    let request = CreateCheckRunRequest {
+        name: name.to_string(),
+        head_sha: sha.to_string(),
+        status: Some(status),
+        conclusion,
+        output: None,
+    };
+
+    let check_run = client
+        .create_check_run(owner, repo, request)
+        .await
+        .with_context(|| format!("Failed to create check run '{}'", name))?;
+
+    debug!(
+        "Successfully created check run {} for commit {}",
+        check_run.id, sha
+    );
+
+    Ok(check_run.id)
+}
+
+/// Update a check run to a new status.
+///
+/// Updates an existing check run with new status and optional conclusion.
+pub async fn update_check_run(
+    client: &GiteaClient,
+    owner: &str,
+    repo: &str,
+    check_run_id: i64,
+    status: CheckStatus,
+    conclusion: Option<CheckConclusion>,
+) -> Result<()> {
+    debug!(
+        "Updating check run {} to status {:?} in {}/{}",
+        check_run_id, status, owner, repo
+    );
+
+    let request = UpdateCheckRunRequest {
+        status: Some(status),
+        conclusion,
+        output: None,
+    };
+
+    client
+        .update_check_run(owner, repo, check_run_id, request)
+        .await
+        .with_context(|| format!("Failed to update check run {}", check_run_id))?;
+
+    debug!("Successfully updated check run {} ", check_run_id);
+
+    Ok(())
+}
+
+/// Create a failure check run for a build.
+///
+/// This is used when a build fails - we create a "failure" check run with details.
+pub async fn create_failure_check_run(
+    client: &GiteaClient,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    name: &str,
+    description: &str,
+) -> Result<i64> {
+    debug!(
+        "Creating failure check run '{}' for commit {} in {}/{}",
+        name, sha, owner, repo
+    );
+
+    let request = CreateCheckRunRequest {
+        name: name.to_string(),
+        head_sha: sha.to_string(),
+        status: Some(CheckStatus::Completed),
+        conclusion: Some(CheckConclusion::Failure),
+        output: Some(crate::gitea::client::CheckOutput {
+            title: "Build Failed".to_string(),
+            summary: description.to_string(),
+            text: None,
+        }),
+    };
+
+    let check_run = client
+        .create_check_run(owner, repo, request)
+        .await
+        .with_context(|| format!("Failed to create failure check run '{}'", name))?;
+
+    debug!(
+        "Successfully created failure check run {} for commit {}",
+        check_run.id, sha
+    );
+
+    Ok(check_run.id)
+}
+
+/// Cancel a check run.
+///
+/// Sets the check run to "cancelled" conclusion, indicating the build was interrupted.
+pub async fn cancel_check_run(
+    client: &GiteaClient,
+    owner: &str,
+    repo: &str,
+    check_run_id: i64,
+) -> Result<()> {
+    debug!("Canceling check run {} in {}/{}", check_run_id, owner, repo);
+
+    let request = UpdateCheckRunRequest {
+        status: Some(CheckStatus::Completed),
+        conclusion: Some(CheckConclusion::Cancelled),
+        output: None,
+    };
+
+    client
+        .update_check_run(owner, repo, check_run_id, request)
+        .await
+        .context("Failed to cancel check run")?;
+
+    debug!("Successfully canceled check run {}", check_run_id);
+
+    Ok(())
+}
+
+/// Update a build check run based on DrvBuildState.
+///
+/// This is a convenience function that converts a DrvBuildState to the appropriate
+/// Gitea check run status and conclusion, then updates the check run.
+pub async fn update_build_check_run(
+    client: &GiteaClient,
+    owner: &str,
+    repo: &str,
+    check_run_id: i64,
+    build_state: &DrvBuildState,
+) -> Result<()> {
+    let (status, conclusion) = status_from_build_state(build_state);
+
+    update_check_run(client, owner, repo, check_run_id, status, conclusion).await
+}
+
+/// Convert DrvBuildState to Gitea CheckStatus and CheckConclusion
+fn status_from_build_state(state: &DrvBuildState) -> (CheckStatus, Option<CheckConclusion>) {
+    use crate::db::model::build_event::{DrvBuildInterruptionKind, DrvBuildResult};
+
+    match state {
+        DrvBuildState::Queued | DrvBuildState::Buildable | DrvBuildState::Blocked => {
+            (CheckStatus::Queued, None)
+        },
+        DrvBuildState::FailedRetry => (CheckStatus::Queued, None), // Will retry
+        DrvBuildState::Building => (CheckStatus::InProgress, None),
+        DrvBuildState::Completed(DrvBuildResult::Success) => {
+            (CheckStatus::Completed, Some(CheckConclusion::Success))
+        },
+        DrvBuildState::Completed(DrvBuildResult::Failure) => {
+            (CheckStatus::Completed, Some(CheckConclusion::Failure))
+        },
+        DrvBuildState::TransitiveFailure => {
+            (CheckStatus::Completed, Some(CheckConclusion::Failure))
+        },
+        DrvBuildState::Interrupted(DrvBuildInterruptionKind::Cancelled) => {
+            (CheckStatus::Completed, Some(CheckConclusion::Cancelled))
+        },
+        DrvBuildState::Interrupted(_) => (CheckStatus::Completed, Some(CheckConclusion::Failure)),
+        DrvBuildState::UnsatisfiableRequirements => {
+            (CheckStatus::Completed, Some(CheckConclusion::Failure))
+        },
+    }
+}
