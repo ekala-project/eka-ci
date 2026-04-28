@@ -72,6 +72,30 @@ struct Commit {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PushPayload {
+    #[serde(rename = "ref")]
+    ref_name: String, // e.g., "refs/heads/main"
+    before: String, // SHA before push
+    after: String,  // SHA after push
+    project: Project,
+    user_name: Option<String>,
+    commits: Vec<PushCommit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PushCommit {
+    id: String,
+    message: String,
+    author: CommitAuthor,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitAuthor {
+    name: String,
+    email: String,
+}
+
 /// Handle GitLab webhook payload
 ///
 /// GitLab webhooks use a different event model than GitHub:
@@ -94,8 +118,9 @@ pub async fn handle_webhook_payload(
             }
         },
         "Push Hook" => {
-            debug!("GitLab push webhook (not yet implemented)");
-            // TODO: Handle push events for main branch builds
+            if let Err(e) = handle_push_event(payload).await {
+                warn!("Failed to handle push event: {:?}", e);
+            }
         },
         "Note Hook" => {
             if let Err(e) = handle_note_event(payload, gitlab_sender).await {
@@ -214,6 +239,56 @@ async fn handle_note_event(
             })
             .await?;
     }
+
+    Ok(())
+}
+
+async fn handle_push_event(payload: serde_json::Value) -> anyhow::Result<()> {
+    let event: PushPayload = serde_json::from_value(payload)?;
+
+    // Extract branch name from ref (e.g., "refs/heads/main" -> "main")
+    let branch = event
+        .ref_name
+        .strip_prefix("refs/heads/")
+        .unwrap_or(&event.ref_name);
+
+    let domain = extract_domain(&event.project.web_url);
+    let (owner, repo_name) = parse_path_with_namespace(&event.project.path_with_namespace);
+
+    info!(
+        "Push to {} on branch '{}' in {}/{} (project {}): {} -> {}",
+        domain,
+        branch,
+        owner,
+        repo_name,
+        event.project.id,
+        &event.before[..8],
+        &event.after[..8]
+    );
+
+    if !event.commits.is_empty() {
+        info!(
+            "Push includes {} commit(s), latest: {}",
+            event.commits.len(),
+            event
+                .commits
+                .last()
+                .map(|c| c.message.lines().next().unwrap_or(""))
+                .unwrap_or("")
+        );
+    }
+
+    // NOTE: Full CI triggering for main branch builds requires:
+    // 1. Determining the repository's default branch (might need API call)
+    // 2. Evaluating the CI configuration (e.g., .gitlab-ci.yml or eka-ci.nix)
+    // 3. Creating a CI job set via GitLabTask::CreateJobSet
+    // 4. Managing build state and status updates
+    //
+    // This is currently not implemented as it requires integration with the
+    // CI evaluation and job scheduling system. For now, push events are logged
+    // but do not trigger builds.
+
+    debug!("Push event logged but not triggering CI (main branch builds not yet implemented)");
 
     Ok(())
 }

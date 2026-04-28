@@ -70,6 +70,30 @@ struct User {
     login: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PushPayload {
+    #[serde(rename = "ref")]
+    ref_name: String, // e.g., "refs/heads/main"
+    before: String, // SHA before push
+    after: String,  // SHA after push
+    repository: Repository,
+    pusher: User,
+    commits: Vec<PushCommit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PushCommit {
+    id: String,
+    message: String,
+    author: CommitUser,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitUser {
+    name: String,
+    email: String,
+}
+
 /// Handle Gitea webhook payload
 ///
 /// Gitea uses a GitHub-compatible webhook API, but with some differences:
@@ -93,8 +117,9 @@ pub async fn handle_webhook_payload(
             }
         },
         "push" => {
-            debug!("Gitea push webhook (not yet implemented)");
-            // TODO: Handle push events for main branch builds
+            if let Err(e) = handle_push_event(payload).await {
+                warn!("Failed to handle push event: {:?}", e);
+            }
         },
         "issue_comment" => {
             if let Err(e) = handle_issue_comment_event(payload, gitea_sender).await {
@@ -226,6 +251,57 @@ async fn handle_issue_comment_event(
             })
             .await?;
     }
+
+    Ok(())
+}
+
+async fn handle_push_event(payload: serde_json::Value) -> anyhow::Result<()> {
+    let event: PushPayload = serde_json::from_value(payload)?;
+
+    // Extract branch name from ref (e.g., "refs/heads/main" -> "main")
+    let branch = event
+        .ref_name
+        .strip_prefix("refs/heads/")
+        .unwrap_or(&event.ref_name);
+
+    let domain = extract_domain(&event.repository.html_url);
+    let owner = &event.repository.owner.login;
+    let repo_name = &event.repository.name;
+
+    info!(
+        "Push to {} on branch '{}' in {}/{}: {} -> {} by {}",
+        domain,
+        branch,
+        owner,
+        repo_name,
+        &event.before[..8],
+        &event.after[..8],
+        event.pusher.login
+    );
+
+    if !event.commits.is_empty() {
+        info!(
+            "Push includes {} commit(s), latest: {}",
+            event.commits.len(),
+            event
+                .commits
+                .last()
+                .map(|c| c.message.lines().next().unwrap_or(""))
+                .unwrap_or("")
+        );
+    }
+
+    // NOTE: Full CI triggering for main branch builds requires:
+    // 1. Determining the repository's default branch (might need API call)
+    // 2. Evaluating the CI configuration (e.g., .gitea/workflows/ or eka-ci.nix)
+    // 3. Creating a CI job set via GiteaTask::CreateJobSet
+    // 4. Managing build state and status updates
+    //
+    // This is currently not implemented as it requires integration with the
+    // CI evaluation and job scheduling system. For now, push events are logged
+    // but do not trigger builds.
+
+    debug!("Push event logged but not triggering CI (main branch builds not yet implemented)");
 
     Ok(())
 }
