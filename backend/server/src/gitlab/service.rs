@@ -163,10 +163,61 @@ impl GitLabService {
                 self.handle_create_change_summary_comment(ci_info, job)
                     .await
             },
-            // Other tasks are stubs for now
-            _ => {
-                debug!("GitLab task not yet implemented: {:?}", task);
-                Ok(())
+            GitLabTask::CheckAutoMerge {
+                domain,
+                project_id,
+                mr_iid,
+            } => {
+                self.handle_check_auto_merge(domain, *project_id, *mr_iid)
+                    .await
+            },
+            GitLabTask::ProcessMergeCommand {
+                domain,
+                project_id,
+                mr_iid,
+                note_id,
+                requester_id,
+                requester_username,
+                body,
+                note_created_at,
+            } => {
+                self.handle_process_merge_command(
+                    domain,
+                    *project_id,
+                    *mr_iid,
+                    *note_id,
+                    *requester_id,
+                    requester_username,
+                    body,
+                    note_created_at,
+                )
+                .await
+            },
+            GitLabTask::CommentMergeDriftCancelled {
+                domain,
+                project_id,
+                mr_iid,
+                expected_sha,
+                actual_sha,
+                requester_username,
+            } => {
+                self.handle_comment_merge_drift_cancelled(
+                    domain,
+                    *project_id,
+                    *mr_iid,
+                    expected_sha,
+                    actual_sha,
+                    requester_username,
+                )
+                .await
+            },
+            GitLabTask::CreateDependencyChangesGate {
+                ci_info,
+                jobset_id,
+                base_jobset_id,
+            } => {
+                self.handle_create_dependency_changes_gate(ci_info, *jobset_id, *base_jobset_id)
+                    .await
             },
         }
     }
@@ -812,6 +863,673 @@ impl GitLabService {
 
         Ok(())
     }
+
+    // ---- Auto-merge evaluator ----
+
+    async fn handle_check_auto_merge(
+        &self,
+        domain: &str,
+        project_id: i64,
+        mr_iid: i64,
+    ) -> Result<()> {
+        info!(
+            "Checking auto-merge eligibility for MR !{} in project {} on {}",
+            mr_iid, project_id, domain
+        );
+
+        let Some(client) = self.get_client(domain).await else {
+            warn!("No GitLab client for domain {}", domain);
+            return Ok(());
+        };
+
+        // Defer until head-commit jobset has fully succeeded
+        if !crate::db::gitlab::mr_head_build_succeeded(
+            domain,
+            project_id,
+            mr_iid,
+            &self.db_service.pool,
+        )
+        .await?
+        {
+            info!(
+                "MR !{} head build not yet successful, deferring auto-merge",
+                mr_iid
+            );
+            return Ok(());
+        };
+
+        // Look up MR by (domain, project_id, mr_iid)
+        let Some(mr) = crate::db::gitlab::get_merge_request_row(
+            domain,
+            project_id,
+            mr_iid,
+            &self.db_service.pool,
+        )
+        .await?
+        else {
+            warn!(
+                "MR !{} not found in project {} on {} while evaluating auto-merge",
+                mr_iid, project_id, domain
+            );
+            return Ok(());
+        };
+
+        let pending_cmt_merge = mr.pending_comment_merge();
+
+        // SHA-drift check: comment-merges are pinned to a commit
+        if let Some(cmr) = pending_cmt_merge.as_ref() {
+            if cmr.sha != mr.head_sha {
+                self.cancel_drifted_comment_merge(domain, project_id, mr_iid, cmr, &mr.head_sha)
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        // At least one merge path must be active
+        if !mr.auto_merge_enabled && pending_cmt_merge.is_none() {
+            debug!(
+                "MR !{} in project {} on {} has no active auto-merge or comment-merge request; \
+                 skipping",
+                mr_iid, project_id, domain
+            );
+            return Ok(());
+        }
+
+        let changed_packages = crate::db::gitlab::get_mr_changed_packages(
+            domain,
+            project_id,
+            mr_iid,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        if changed_packages.is_empty() {
+            info!(
+                "MR !{} has no changed packages, skipping auto-merge",
+                mr_iid
+            );
+            return Ok(());
+        }
+
+        // Maintainer-approval gate. Skipped for comment-driven merges
+        if pending_cmt_merge.is_none() {
+            let (eligible, missing_approvals) =
+                crate::gitlab::actions::check_mr_maintainer_approvals(
+                    &client,
+                    project_id,
+                    mr_iid,
+                    &changed_packages,
+                    &self.db_service.pool,
+                )
+                .await?;
+
+            if !eligible {
+                info!(
+                    "MR !{} is not eligible for auto-merge. Missing approvals for packages: {:?}",
+                    mr_iid, missing_approvals
+                );
+                return Ok(());
+            }
+        }
+
+        // Method: comment request → MR-stored preference → "merge"
+        let merge_method = pending_cmt_merge
+            .as_ref()
+            .and_then(|cmr| cmr.method.as_deref())
+            .or(mr.merge_method.as_deref())
+            .unwrap_or("merge");
+
+        // Validate against project settings before trying
+        match crate::gitlab::actions::validate_merge_method(&client, project_id, merge_method).await
+        {
+            Ok(crate::gitlab::actions::MergeMethodCheck::Ok) => {},
+            Ok(crate::gitlab::actions::MergeMethodCheck::NotAllowed { allowed }) => {
+                warn!(
+                    "MR !{} in project {} on {}: configured merge method '{}' is not allowed by \
+                     project settings (allowed: {:?}); skipping auto-merge",
+                    mr_iid, project_id, domain, merge_method, allowed
+                );
+                return Ok(());
+            },
+            Err(e) => {
+                warn!(
+                    "MR !{} in project {} on {}: failed to fetch project merge settings: {:?}; \
+                     skipping auto-merge",
+                    mr_iid, project_id, domain, e
+                );
+                return Ok(());
+            },
+        }
+
+        self.auto_merge_execute(
+            &client,
+            domain,
+            project_id,
+            mr_iid,
+            merge_method,
+            pending_cmt_merge.as_ref(),
+        )
+        .await;
+
+        Ok(())
+    }
+
+    /// Notify requester and clear the pending row when a comment-merge's
+    /// pinned SHA no longer matches the MR head.
+    async fn cancel_drifted_comment_merge(
+        &self,
+        domain: &str,
+        project_id: i64,
+        mr_iid: i64,
+        cmr: &crate::db::gitlab::CommentMergeRequest,
+        current_head: &str,
+    ) -> Result<()> {
+        warn!(
+            "MR !{} in project {} on {}: comment-merge SHA drift (requested {}, now {}); \
+             cancelling",
+            mr_iid, project_id, domain, cmr.sha, current_head
+        );
+
+        // Best-effort notifications
+        let _ = self
+            .gitlab_sender
+            .send(GitLabTask::CommentMergeDriftCancelled {
+                domain: domain.to_string(),
+                project_id,
+                mr_iid,
+                expected_sha: cmr.sha.clone(),
+                actual_sha: current_head.to_string(),
+                requester_username: cmr.requester_username.clone(),
+            })
+            .await;
+
+        crate::db::gitlab::clear_comment_merge(domain, project_id, mr_iid, &self.db_service.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Execute the merge + record post-conditions. Infallible at the
+    /// caller level — a failed merge is logged and swallowed.
+    async fn auto_merge_execute(
+        &self,
+        client: &GitLabClient,
+        domain: &str,
+        project_id: i64,
+        mr_iid: i64,
+        merge_method: &str,
+        pending_cmt_merge: Option<&crate::db::gitlab::CommentMergeRequest>,
+    ) {
+        info!(
+            "Auto-merging MR !{} in project {} on {} using method '{}'",
+            mr_iid, project_id, domain, merge_method
+        );
+
+        let request = crate::gitlab::client::MergeMergeRequestRequest {
+            merge_commit_message: None,
+            squash_commit_message: None,
+            should_remove_source_branch: None,
+            merge_when_pipeline_succeeds: None,
+            sha: None,
+        };
+
+        match client
+            .merge_merge_request(project_id, mr_iid, request)
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    "Successfully auto-merged MR !{} in project {} on {}",
+                    mr_iid, project_id, domain
+                );
+
+                // Mark as merged in database
+                if let Err(e) = crate::db::gitlab::mark_mr_merged(
+                    domain,
+                    project_id,
+                    mr_iid,
+                    pending_cmt_merge.map(|c| c.requester_id),
+                    &self.db_service.pool,
+                )
+                .await
+                {
+                    warn!(
+                        "Failed to mark MR !{} as merged in database: {:?}",
+                        mr_iid, e
+                    );
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to auto-merge MR !{} in project {} on {}: {:?}",
+                    mr_iid, project_id, domain, e
+                );
+            },
+        }
+    }
+
+    // ---- Comment-command handler ----
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_process_merge_command(
+        &self,
+        domain: &str,
+        project_id: i64,
+        mr_iid: i64,
+        note_id: i64,
+        requester_id: i64,
+        requester_username: &str,
+        body: &str,
+        note_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        use crate::gitlab::webhook::comment_command::{CommentCommand, parse_comment_command};
+
+        let Some(client) = self.get_client(domain).await else {
+            warn!("No GitLab client for domain {}", domain);
+            return Ok(());
+        };
+
+        // Re-parse rather than carrying a typed command
+        let Some(cmd) = parse_comment_command(body) else {
+            debug!(
+                "Note {} on MR !{} in project {} no longer parses as a command; dropping",
+                note_id, mr_iid, project_id
+            );
+            return Ok(());
+        };
+
+        match cmd {
+            CommentCommand::MergeCancel => {
+                self.handle_merge_cancel(
+                    &client,
+                    domain,
+                    project_id,
+                    mr_iid,
+                    requester_id,
+                    requester_username,
+                )
+                .await
+            },
+            CommentCommand::Merge { method } => {
+                self.handle_merge_accept(
+                    &client,
+                    domain,
+                    project_id,
+                    mr_iid,
+                    note_id,
+                    requester_id,
+                    requester_username,
+                    method.as_ref().map(|m| m.as_str()),
+                    note_created_at,
+                )
+                .await
+            },
+        }
+    }
+
+    /// Outcome of an authorization check against a commenter.
+    async fn authorize_commenter(
+        &self,
+        client: &GitLabClient,
+        project_id: i64,
+        mr_iid: i64,
+        requester_id: i64,
+        requester_username: &str,
+    ) -> Result<Authorization> {
+        let perm = match crate::gitlab::actions::check_project_permission_for_user(
+            client,
+            project_id,
+            requester_id,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "Failed to check project permission for {} on project {}: {:?}",
+                    requester_username, project_id, e
+                );
+                return Ok(Authorization::Abort);
+            },
+        };
+        let has_write = perm >= 30; // 30 = Developer, 40 = Maintainer, 50 = Owner
+
+        if has_write {
+            return Ok(Authorization::Granted { has_write: true });
+        }
+
+        let domain = client.get_domain();
+        let changed = crate::db::gitlab::get_mr_changed_packages(
+            domain,
+            project_id,
+            mr_iid,
+            &self.db_service.pool,
+        )
+        .await
+        .unwrap_or_default();
+
+        let is_pkg_maintainer = if changed.is_empty() {
+            false
+        } else {
+            crate::db::maintainers::is_maintainer_of_all_packages(
+                requester_id,
+                &changed,
+                &self.db_service.pool,
+            )
+            .await
+            .unwrap_or(false)
+        };
+
+        if is_pkg_maintainer {
+            Ok(Authorization::Granted { has_write: false })
+        } else {
+            Ok(Authorization::Denied)
+        }
+    }
+
+    async fn handle_merge_cancel(
+        &self,
+        client: &GitLabClient,
+        domain: &str,
+        project_id: i64,
+        mr_iid: i64,
+        requester_id: i64,
+        requester_username: &str,
+    ) -> Result<()> {
+        // Silent no-op when nothing is pending
+        let mr_row = crate::db::gitlab::get_merge_request_row(
+            domain,
+            project_id,
+            mr_iid,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        let Some(pending) = mr_row.as_ref().and_then(|m| m.pending_comment_merge()) else {
+            debug!(
+                "No pending comment-merge on MR !{} in project {}; ignoring cancel from {}",
+                mr_iid, project_id, requester_username
+            );
+            return Ok(());
+        };
+
+        let is_self = requester_id == pending.requester_id;
+
+        // Self-cancel fast path: skip API permission lookup
+        let authorized = if is_self {
+            true
+        } else {
+            match self
+                .authorize_commenter(client, project_id, mr_iid, requester_id, requester_username)
+                .await?
+            {
+                Authorization::Granted { .. } => true,
+                Authorization::Denied => false,
+                Authorization::Abort => return Ok(()),
+            }
+        };
+
+        if !authorized {
+            info!(
+                "Denying @eka-ci merge cancel from {} on MR !{}: not the original requester, no \
+                 project write, and not a maintainer of all changed packages",
+                requester_username, mr_iid
+            );
+            let _ = client
+                .create_merge_request_note(
+                    project_id,
+                    mr_iid,
+                    &format!(
+                        "@{} I can't cancel this merge request — you must be the original \
+                         requester, have write access to the project, or be a maintainer of all \
+                         affected packages.",
+                        requester_username
+                    ),
+                )
+                .await;
+            return Ok(());
+        }
+
+        // Authorized: clear the pending request
+        crate::db::gitlab::clear_comment_merge(domain, project_id, mr_iid, &self.db_service.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_merge_accept(
+        &self,
+        client: &GitLabClient,
+        domain: &str,
+        project_id: i64,
+        mr_iid: i64,
+        note_id: i64,
+        requester_id: i64,
+        requester_username: &str,
+        method_str: Option<&str>,
+        note_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        match self
+            .authorize_commenter(client, project_id, mr_iid, requester_id, requester_username)
+            .await?
+        {
+            Authorization::Granted { .. } => {},
+            Authorization::Abort => return Ok(()),
+            Authorization::Denied => {
+                info!(
+                    "Denying @eka-ci merge from {} on MR !{}: no project write and not a \
+                     maintainer of all changed packages",
+                    requester_username, mr_iid
+                );
+                let _ = client
+                    .create_merge_request_note(
+                        project_id,
+                        mr_iid,
+                        &format!(
+                            "@{} I can't merge this MR — you need write access to the project or \
+                             be a maintainer of all affected packages.",
+                            requester_username
+                        ),
+                    )
+                    .await;
+                return Ok(());
+            },
+        }
+
+        // Pin the merge to the current head SHA
+        let Some(mr) = crate::db::gitlab::get_merge_request_row(
+            domain,
+            project_id,
+            mr_iid,
+            &self.db_service.pool,
+        )
+        .await?
+        else {
+            warn!(
+                "MR !{} in project {} not found when processing merge command",
+                mr_iid, project_id
+            );
+            return Ok(());
+        };
+
+        if !self
+            .check_push_timing(
+                client,
+                project_id,
+                mr_iid,
+                requester_username,
+                &mr.head_sha,
+                note_created_at,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
+        let rows = crate::db::gitlab::set_comment_merge(
+            domain,
+            project_id,
+            mr_iid,
+            &mr.head_sha,
+            method_str,
+            requester_id,
+            requester_username,
+            note_id,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        if rows == 0 {
+            warn!(
+                "set_comment_merge affected 0 rows for MR !{} in project {}",
+                mr_iid, project_id
+            );
+            return Ok(());
+        }
+
+        // Fire the evaluator in case gates are already green
+        let _ = self
+            .gitlab_sender
+            .send(GitLabTask::CheckAutoMerge {
+                domain: domain.to_string(),
+                project_id,
+                mr_iid,
+            })
+            .await;
+
+        Ok(())
+    }
+
+    /// Best-effort force-push detection
+    async fn check_push_timing(
+        &self,
+        client: &GitLabClient,
+        project_id: i64,
+        mr_iid: i64,
+        requester_username: &str,
+        head_sha: &str,
+        note_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        const PUSH_GRACE: chrono::Duration = chrono::Duration::seconds(30);
+
+        match crate::gitlab::actions::fetch_head_commit_date(client, project_id, head_sha).await {
+            Ok(Some(commit_date)) if commit_date > *note_created_at + PUSH_GRACE => {
+                info!(
+                    "Refusing @eka-ci merge from {} on MR !{}: head commit {} committed at {} is \
+                     newer than the command comment at {} (grace={}s); likely post-command push",
+                    requester_username,
+                    mr_iid,
+                    head_sha,
+                    commit_date,
+                    note_created_at,
+                    PUSH_GRACE.num_seconds()
+                );
+                let _ = client
+                    .create_merge_request_note(
+                        project_id,
+                        mr_iid,
+                        &format!(
+                            "@{} I can't merge this MR — the head commit (`{}`) appears to have \
+                             been pushed after your `@eka-ci merge` command. Please review the \
+                             latest changes and re-issue the command if you still want to merge.",
+                            requester_username,
+                            short_sha(head_sha),
+                        ),
+                    )
+                    .await;
+                Ok(false)
+            },
+            Ok(Some(_)) | Ok(None) | Err(_) => Ok(true),
+        }
+    }
+
+    async fn handle_comment_merge_drift_cancelled(
+        &self,
+        domain: &str,
+        project_id: i64,
+        mr_iid: i64,
+        expected_sha: &str,
+        actual_sha: &str,
+        requester_username: &str,
+    ) -> Result<()> {
+        let Some(client) = self.get_client(domain).await else {
+            warn!("No GitLab client for domain {}", domain);
+            return Ok(());
+        };
+
+        let body = format!(
+            "@{} your `@eka-ci merge` request was cancelled because new commits landed on this MR \
+             since you issued the command.\n\n- expected head: `{}`\n- current head: `{}`\n\nIf \
+             you still want to merge, re-issue `@eka-ci merge` on the updated MR.",
+            requester_username,
+            short_sha(expected_sha),
+            short_sha(actual_sha),
+        );
+
+        if let Err(e) = client
+            .create_merge_request_note(project_id, mr_iid, &body)
+            .await
+        {
+            warn!(
+                "Failed to post SHA-drift comment on MR !{} in project {}: {:?}",
+                mr_iid, project_id, e
+            );
+        }
+        Ok(())
+    }
+
+    async fn handle_create_dependency_changes_gate(
+        &self,
+        ci_info: &GitLabCIInfo,
+        jobset_id: i64,
+        base_jobset_id: i64,
+    ) -> Result<()> {
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!("No GitLab client for domain {}", ci_info.domain);
+            return Ok(());
+        };
+
+        debug!(
+            "Creating dependency changes gate for commit {} (jobset: {}, base: {})",
+            &ci_info.commit, jobset_id, base_jobset_id
+        );
+
+        let comparisons = crate::dependency_comparison::compare_runtime_references_for_jobset(
+            base_jobset_id,
+            jobset_id,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        let dependency_diff =
+            crate::dependency_comparison::format_dependency_changes_as_diff(&comparisons);
+
+        crate::gitlab::actions::create_dependency_changes_gate(
+            &client,
+            ci_info,
+            &dependency_diff,
+            comparisons.len(),
+        )
+        .await?;
+
+        debug!(
+            "Successfully created dependency changes gate with {} packages affected",
+            comparisons.len()
+        );
+        Ok(())
+    }
+}
+
+/// Authorization outcome
+enum Authorization {
+    Granted { has_write: bool },
+    Denied,
+    Abort,
+}
+
+/// Short SHA for display
+fn short_sha(sha: &str) -> &str {
+    if sha.len() > 7 { &sha[..7] } else { sha }
 }
 
 // ============================================================================

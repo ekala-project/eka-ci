@@ -253,6 +253,149 @@ pub async fn get_pr_by_head_sha(
     Ok(pr)
 }
 
+/// Set comment-merge request for a pull request.
+///
+/// This is called when a user triggers a merge via PR comment.
+pub async fn set_comment_merge(
+    domain: &str,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    sha: &str,
+    method: Option<&str>,
+    requester_id: i64,
+    requester_login: &str,
+    comment_id: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE GiteaPullRequests
+        SET
+            comment_merge_sha = ?,
+            comment_merge_method = ?,
+            comment_merge_requester_id = ?,
+            comment_merge_requester_login = ?,
+            comment_merge_comment_id = ?,
+            comment_merge_requested_at = ?,
+            updated_at = ?
+        WHERE domain = ? AND owner = ? AND repo_name = ? AND pr_number = ?
+        "#,
+    )
+    .bind(sha)
+    .bind(method)
+    .bind(requester_id)
+    .bind(requester_login)
+    .bind(comment_id)
+    .bind(&now)
+    .bind(&now)
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Clear comment-merge request for a pull request.
+///
+/// This is called after merge completes or when cancelled.
+pub async fn clear_comment_merge(
+    domain: &str,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE GiteaPullRequests
+        SET
+            comment_merge_sha = NULL,
+            comment_merge_method = NULL,
+            comment_merge_requester_id = NULL,
+            comment_merge_requester_login = NULL,
+            comment_merge_comment_id = NULL,
+            comment_merge_requested_at = NULL,
+            updated_at = ?
+        WHERE domain = ? AND owner = ? AND repo_name = ? AND pr_number = ?
+        "#,
+    )
+    .bind(&now)
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Enable auto-merge for a pull request.
+pub async fn enable_auto_merge(
+    domain: &str,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    merge_method: Option<&str>,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE GiteaPullRequests
+        SET auto_merge_enabled = TRUE, merge_method = ?, updated_at = ?
+        WHERE domain = ? AND owner = ? AND repo_name = ? AND pr_number = ?
+        "#,
+    )
+    .bind(merge_method)
+    .bind(&now)
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Disable auto-merge for a pull request.
+pub async fn disable_auto_merge(
+    domain: &str,
+    owner: &str,
+    repo_name: &str,
+    pr_number: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE GiteaPullRequests
+        SET auto_merge_enabled = FALSE, merge_method = NULL, updated_at = ?
+        WHERE domain = ? AND owner = ? AND repo_name = ? AND pr_number = ?
+        "#,
+    )
+    .bind(&now)
+    .bind(domain)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(pr_number)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -170,10 +170,66 @@ impl GiteaService {
             GiteaTask::CreateChangeSummaryCheck { ci_info, job } => {
                 self.handle_create_change_summary_check(ci_info, job).await
             },
-            // Other tasks are stubs for now
-            _ => {
-                debug!("Gitea task not yet implemented: {:?}", task);
-                Ok(())
+            GiteaTask::CheckAutoMerge {
+                domain,
+                owner,
+                repo_name,
+                pr_number,
+            } => {
+                self.handle_check_auto_merge(domain, owner, repo_name, *pr_number)
+                    .await
+            },
+            GiteaTask::ProcessMergeCommand {
+                domain,
+                owner,
+                repo_name,
+                pr_number,
+                comment_id,
+                requester_id,
+                requester_login,
+                body,
+                comment_created_at,
+            } => {
+                self.handle_process_merge_command(
+                    domain,
+                    owner,
+                    repo_name,
+                    *pr_number,
+                    *comment_id,
+                    *requester_id,
+                    requester_login,
+                    body,
+                    comment_created_at,
+                )
+                .await
+            },
+            GiteaTask::CommentMergeDriftCancelled {
+                domain,
+                owner,
+                repo_name,
+                pr_number,
+                expected_sha,
+                actual_sha,
+                requester_login,
+            } => {
+                self.handle_comment_merge_drift_cancelled(
+                    domain,
+                    owner,
+                    repo_name,
+                    *pr_number,
+                    expected_sha,
+                    actual_sha,
+                    requester_login,
+                )
+                .await
+            },
+            GiteaTask::CreateDependencyChangesGate {
+                ci_info,
+                jobset_id,
+                base_jobset_id,
+            } => {
+                self.handle_create_dependency_changes_gate(ci_info, *jobset_id, *base_jobset_id)
+                    .await
             },
         }
     }
@@ -913,6 +969,728 @@ impl GiteaService {
 
         Ok(())
     }
+
+    // ---- Auto-merge evaluator ----
+
+    async fn handle_check_auto_merge(
+        &self,
+        domain: &str,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+    ) -> Result<()> {
+        info!(
+            "Checking auto-merge eligibility for PR #{} in {}/{} on {}",
+            pr_number, owner, repo_name, domain
+        );
+
+        let Some(client) = self.get_client(domain).await else {
+            warn!("No Gitea client for domain {}", domain);
+            return Ok(());
+        };
+
+        // Defer until head-commit jobset has fully succeeded
+        if !crate::db::gitea::pr_head_build_succeeded(
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?
+        {
+            info!(
+                "PR #{} head build not yet successful, deferring auto-merge",
+                pr_number
+            );
+            return Ok(());
+        };
+
+        // Look up PR by (domain, owner, repo_name, pr_number)
+        let Some(pr) = crate::db::gitea::get_pull_request_row(
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?
+        else {
+            warn!(
+                "PR #{} not found in {}/{} on {} while evaluating auto-merge",
+                pr_number, owner, repo_name, domain
+            );
+            return Ok(());
+        };
+
+        let pending_cmt_merge = pr.pending_comment_merge();
+
+        // SHA-drift check: comment-merges are pinned to a commit
+        if let Some(cmr) = pending_cmt_merge.as_ref() {
+            if cmr.sha != pr.head_sha {
+                self.cancel_drifted_comment_merge(
+                    domain,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    cmr,
+                    &pr.head_sha,
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+
+        // At least one merge path must be active
+        if !pr.auto_merge_enabled && pending_cmt_merge.is_none() {
+            debug!(
+                "PR #{} in {}/{} on {} has no active auto-merge or comment-merge request; skipping",
+                pr_number, owner, repo_name, domain
+            );
+            return Ok(());
+        }
+
+        let changed_packages = crate::db::gitea::get_pr_changed_packages(
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        if changed_packages.is_empty() {
+            info!(
+                "PR #{} has no changed packages, skipping auto-merge",
+                pr_number
+            );
+            return Ok(());
+        }
+
+        // Maintainer-approval gate. Skipped for comment-driven merges
+        if pending_cmt_merge.is_none() {
+            let (eligible, missing_approvals) =
+                crate::gitea::actions::check_pr_maintainer_approvals(
+                    &client,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    &changed_packages,
+                    &self.db_service.pool,
+                )
+                .await?;
+
+            if !eligible {
+                info!(
+                    "PR #{} is not eligible for auto-merge. Missing approvals for packages: {:?}",
+                    pr_number, missing_approvals
+                );
+                return Ok(());
+            }
+        }
+
+        // Method: comment request → PR-stored preference → "squash"
+        let merge_method = pending_cmt_merge
+            .as_ref()
+            .and_then(|cmr| cmr.method.as_deref())
+            .or(pr.merge_method.as_deref())
+            .unwrap_or("squash");
+
+        // Validate against repository settings before trying
+        match crate::gitea::actions::validate_merge_method(&client, owner, repo_name, merge_method)
+            .await
+        {
+            Ok(crate::gitea::actions::MergeMethodCheck::Ok) => {},
+            Ok(crate::gitea::actions::MergeMethodCheck::NotAllowed { allowed }) => {
+                warn!(
+                    "PR #{} in {}/{} on {}: configured merge method '{}' is not allowed by \
+                     repository settings (allowed: {:?}); skipping auto-merge",
+                    pr_number, owner, repo_name, domain, merge_method, allowed
+                );
+                return Ok(());
+            },
+            Err(e) => {
+                warn!(
+                    "PR #{} in {}/{} on {}: failed to fetch repository merge settings: {:?}; \
+                     skipping auto-merge",
+                    pr_number, owner, repo_name, domain, e
+                );
+                return Ok(());
+            },
+        }
+
+        self.auto_merge_execute(
+            &client,
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            merge_method,
+            pending_cmt_merge.as_ref(),
+        )
+        .await;
+
+        Ok(())
+    }
+
+    /// Notify requester and clear the pending row when a comment-merge's
+    /// pinned SHA no longer matches the PR head.
+    async fn cancel_drifted_comment_merge(
+        &self,
+        domain: &str,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        cmr: &crate::db::gitea::CommentMergeRequest,
+        current_head: &str,
+    ) -> Result<()> {
+        warn!(
+            "PR #{} in {}/{} on {}: comment-merge SHA drift (requested {}, now {}); cancelling",
+            pr_number, owner, repo_name, domain, cmr.sha, current_head
+        );
+
+        // Best-effort notifications
+        let _ = self
+            .gitea_sender
+            .send(GiteaTask::CommentMergeDriftCancelled {
+                domain: domain.to_string(),
+                owner: owner.to_string(),
+                repo_name: repo_name.to_string(),
+                pr_number,
+                expected_sha: cmr.sha.clone(),
+                actual_sha: current_head.to_string(),
+                requester_login: cmr.requester_login.clone(),
+            })
+            .await;
+
+        crate::db::gitea::clear_comment_merge(
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Execute the merge + record post-conditions. Infallible at the
+    /// caller level — a failed merge is logged and swallowed.
+    async fn auto_merge_execute(
+        &self,
+        client: &GiteaClient,
+        domain: &str,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        merge_method: &str,
+        pending_cmt_merge: Option<&crate::db::gitea::CommentMergeRequest>,
+    ) {
+        info!(
+            "Auto-merging PR #{} in {}/{} on {} using method '{}'",
+            pr_number, owner, repo_name, domain, merge_method
+        );
+
+        match client
+            .merge_pull_request(owner, repo_name, pr_number, merge_method)
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    "Successfully auto-merged PR #{} in {}/{} on {}",
+                    pr_number, owner, repo_name, domain
+                );
+
+                // Mark as merged in database
+                if let Err(e) = crate::db::gitea::mark_pr_merged(
+                    domain,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    pending_cmt_merge.map(|c| c.requester_id),
+                    &self.db_service.pool,
+                )
+                .await
+                {
+                    warn!(
+                        "Failed to mark PR #{} as merged in database: {:?}",
+                        pr_number, e
+                    );
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to auto-merge PR #{} in {}/{} on {}: {:?}",
+                    pr_number, owner, repo_name, domain, e
+                );
+            },
+        }
+    }
+
+    // ---- Comment-command handler ----
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_process_merge_command(
+        &self,
+        domain: &str,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        comment_id: i64,
+        requester_id: i64,
+        requester_login: &str,
+        body: &str,
+        comment_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        use crate::gitea::webhook::comment_command::{CommentCommand, parse_comment_command};
+
+        let Some(client) = self.get_client(domain).await else {
+            warn!("No Gitea client for domain {}", domain);
+            return Ok(());
+        };
+
+        // Re-parse rather than carrying a typed command
+        let Some(cmd) = parse_comment_command(body) else {
+            debug!(
+                "Comment {} on PR #{} in {}/{} no longer parses as a command; dropping",
+                comment_id, pr_number, owner, repo_name
+            );
+            return Ok(());
+        };
+
+        match cmd {
+            CommentCommand::MergeCancel => {
+                self.handle_merge_cancel(
+                    &client,
+                    domain,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    requester_id,
+                    requester_login,
+                )
+                .await
+            },
+            CommentCommand::Merge { method } => {
+                self.handle_merge_accept(
+                    &client,
+                    domain,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    comment_id,
+                    requester_id,
+                    requester_login,
+                    method.as_ref().map(|m| m.as_str()),
+                    comment_created_at,
+                )
+                .await
+            },
+        }
+    }
+
+    /// Outcome of an authorization check against a commenter.
+    async fn authorize_commenter(
+        &self,
+        client: &GiteaClient,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        requester_id: i64,
+        requester_login: &str,
+    ) -> Result<Authorization> {
+        let perm = match crate::gitea::actions::check_repo_permission_for_user(
+            client,
+            owner,
+            repo_name,
+            requester_login,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "Failed to check repo permission for {} on {}/{}: {:?}",
+                    requester_login, owner, repo_name, e
+                );
+                return Ok(Authorization::Abort);
+            },
+        };
+        let has_write = perm.can_push || perm.is_admin;
+
+        if has_write {
+            return Ok(Authorization::Granted { has_write: true });
+        }
+
+        let changed = crate::db::gitea::get_pr_changed_packages(
+            client.get_domain(),
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await
+        .unwrap_or_default();
+
+        let is_pkg_maintainer = if changed.is_empty() {
+            false
+        } else {
+            crate::db::maintainers::is_maintainer_of_all_packages(
+                requester_id,
+                &changed,
+                &self.db_service.pool,
+            )
+            .await
+            .unwrap_or(false)
+        };
+
+        if is_pkg_maintainer {
+            Ok(Authorization::Granted { has_write: false })
+        } else {
+            Ok(Authorization::Denied)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_merge_cancel(
+        &self,
+        client: &GiteaClient,
+        domain: &str,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        requester_id: i64,
+        requester_login: &str,
+    ) -> Result<()> {
+        // Silent no-op when nothing is pending
+        let pr_row = crate::db::gitea::get_pull_request_row(
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        let Some(pending) = pr_row.as_ref().and_then(|p| p.pending_comment_merge()) else {
+            debug!(
+                "No pending comment-merge on PR #{} in {}/{}; ignoring cancel from {}",
+                pr_number, owner, repo_name, requester_login
+            );
+            return Ok(());
+        };
+
+        let is_self = requester_id == pending.requester_id;
+
+        // Self-cancel fast path: skip API permission lookup
+        let authorized = if is_self {
+            true
+        } else {
+            match self
+                .authorize_commenter(
+                    client,
+                    owner,
+                    repo_name,
+                    pr_number,
+                    requester_id,
+                    requester_login,
+                )
+                .await?
+            {
+                Authorization::Granted { .. } => true,
+                Authorization::Denied => false,
+                Authorization::Abort => return Ok(()),
+            }
+        };
+
+        if !authorized {
+            info!(
+                "Denying @eka-ci merge cancel from {} on PR #{}: not the original requester, no \
+                 repo write, and not a maintainer of all changed packages",
+                requester_login, pr_number
+            );
+            let _ = client
+                .create_issue_comment(
+                    owner,
+                    repo_name,
+                    pr_number,
+                    &format!(
+                        "@{} I can't cancel this merge request — you must be the original \
+                         requester, have write access to the repository, or be a maintainer of \
+                         all affected packages.",
+                        requester_login
+                    ),
+                )
+                .await;
+            return Ok(());
+        }
+
+        // Authorized: clear the pending request
+        crate::db::gitea::clear_comment_merge(
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_merge_accept(
+        &self,
+        client: &GiteaClient,
+        domain: &str,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        comment_id: i64,
+        requester_id: i64,
+        requester_login: &str,
+        method_str: Option<&str>,
+        comment_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        match self
+            .authorize_commenter(
+                client,
+                owner,
+                repo_name,
+                pr_number,
+                requester_id,
+                requester_login,
+            )
+            .await?
+        {
+            Authorization::Granted { .. } => {},
+            Authorization::Abort => return Ok(()),
+            Authorization::Denied => {
+                info!(
+                    "Denying @eka-ci merge from {} on PR #{}: no repo write and not a maintainer \
+                     of all changed packages",
+                    requester_login, pr_number
+                );
+                let _ = client
+                    .create_issue_comment(
+                        owner,
+                        repo_name,
+                        pr_number,
+                        &format!(
+                            "@{} I can't merge this PR — you need write access to the repository \
+                             or be a maintainer of all affected packages.",
+                            requester_login
+                        ),
+                    )
+                    .await;
+                return Ok(());
+            },
+        }
+
+        // Pin the merge to the current head SHA
+        let Some(pr) = crate::db::gitea::get_pull_request_row(
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            &self.db_service.pool,
+        )
+        .await?
+        else {
+            warn!(
+                "PR #{} in {}/{} not found when processing merge command",
+                pr_number, owner, repo_name
+            );
+            return Ok(());
+        };
+
+        if !self
+            .check_push_timing(
+                client,
+                owner,
+                repo_name,
+                pr_number,
+                requester_login,
+                &pr.head_sha,
+                comment_created_at,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
+        let rows = crate::db::gitea::set_comment_merge(
+            domain,
+            owner,
+            repo_name,
+            pr_number,
+            &pr.head_sha,
+            method_str,
+            requester_id,
+            requester_login,
+            comment_id,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        if rows == 0 {
+            warn!(
+                "set_comment_merge affected 0 rows for PR #{} in {}/{}",
+                pr_number, owner, repo_name
+            );
+            return Ok(());
+        }
+
+        // Fire the evaluator in case gates are already green
+        let _ = self
+            .gitea_sender
+            .send(GiteaTask::CheckAutoMerge {
+                domain: domain.to_string(),
+                owner: owner.to_string(),
+                repo_name: repo_name.to_string(),
+                pr_number,
+            })
+            .await;
+
+        Ok(())
+    }
+
+    /// Best-effort force-push detection
+    #[allow(clippy::too_many_arguments)]
+    async fn check_push_timing(
+        &self,
+        client: &GiteaClient,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        requester_login: &str,
+        head_sha: &str,
+        comment_created_at: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        const PUSH_GRACE: chrono::Duration = chrono::Duration::seconds(30);
+
+        match crate::gitea::actions::fetch_head_commit_date(client, owner, repo_name, head_sha)
+            .await
+        {
+            Ok(Some(commit_date)) if commit_date > *comment_created_at + PUSH_GRACE => {
+                info!(
+                    "Refusing @eka-ci merge from {} on PR #{}: head commit {} committed at {} is \
+                     newer than the command comment at {} (grace={}s); likely post-command push",
+                    requester_login,
+                    pr_number,
+                    head_sha,
+                    commit_date,
+                    comment_created_at,
+                    PUSH_GRACE.num_seconds()
+                );
+                let _ = client
+                    .create_issue_comment(
+                        owner,
+                        repo_name,
+                        pr_number,
+                        &format!(
+                            "@{} I can't merge this PR — the head commit (`{}`) appears to have \
+                             been pushed after your `@eka-ci merge` command. Please review the \
+                             latest changes and re-issue the command if you still want to merge.",
+                            requester_login,
+                            short_sha(head_sha),
+                        ),
+                    )
+                    .await;
+                Ok(false)
+            },
+            Ok(Some(_)) | Ok(None) | Err(_) => Ok(true),
+        }
+    }
+
+    async fn handle_comment_merge_drift_cancelled(
+        &self,
+        domain: &str,
+        owner: &str,
+        repo_name: &str,
+        pr_number: i64,
+        expected_sha: &str,
+        actual_sha: &str,
+        requester_login: &str,
+    ) -> Result<()> {
+        let Some(client) = self.get_client(domain).await else {
+            warn!("No Gitea client for domain {}", domain);
+            return Ok(());
+        };
+
+        let body = format!(
+            "@{} your `@eka-ci merge` request was cancelled because new commits landed on this PR \
+             since you issued the command.\n\n- expected head: `{}`\n- current head: `{}`\n\nIf \
+             you still want to merge, re-issue `@eka-ci merge` on the updated PR.",
+            requester_login,
+            short_sha(expected_sha),
+            short_sha(actual_sha),
+        );
+
+        if let Err(e) = client
+            .create_issue_comment(owner, repo_name, pr_number, &body)
+            .await
+        {
+            warn!(
+                "Failed to post SHA-drift comment on PR #{} in {}/{}: {:?}",
+                pr_number, owner, repo_name, e
+            );
+        }
+        Ok(())
+    }
+
+    async fn handle_create_dependency_changes_gate(
+        &self,
+        ci_info: &GiteaCIInfo,
+        jobset_id: i64,
+        base_jobset_id: i64,
+    ) -> Result<()> {
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!("No Gitea client for domain {}", ci_info.domain);
+            return Ok(());
+        };
+
+        debug!(
+            "Creating dependency changes gate for commit {} (jobset: {}, base: {})",
+            &ci_info.commit, jobset_id, base_jobset_id
+        );
+
+        let comparisons = crate::dependency_comparison::compare_runtime_references_for_jobset(
+            base_jobset_id,
+            jobset_id,
+            &self.db_service.pool,
+        )
+        .await?;
+
+        let dependency_diff =
+            crate::dependency_comparison::format_dependency_changes_as_diff(&comparisons);
+
+        crate::gitea::actions::create_dependency_changes_gate(
+            &client,
+            ci_info,
+            &dependency_diff,
+            comparisons.len(),
+        )
+        .await?;
+
+        debug!(
+            "Successfully created dependency changes gate with {} packages affected",
+            comparisons.len()
+        );
+        Ok(())
+    }
+}
+
+/// Authorization outcome
+enum Authorization {
+    Granted { has_write: bool },
+    Denied,
+    Abort,
+}
+
+/// Short SHA for display
+fn short_sha(sha: &str) -> &str {
+    if sha.len() > 7 { &sha[..7] } else { sha }
 }
 
 /// Convert DrvBuildState to status and conclusion strings for database storage
