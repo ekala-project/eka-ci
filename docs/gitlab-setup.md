@@ -45,35 +45,67 @@ glpat-xxxxxxxxxxxxxxxx
 
 Add your GitLab token to the EkaCI server configuration.
 
-### Option A: Environment Variable
+### Option A: Environment Variable (Single Instance)
 
 ```bash
 export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxx"
 export GITLAB_DOMAIN="gitlab.com"  # Or your self-hosted domain
 ```
 
-### Option B: Configuration File
+### Option B: Configuration File (TOML)
 
-Add to your `config.toml` or `config.json`:
+Add to your `ekaci.toml`:
 
 ```toml
-[gitlab]
-token = "glpat-xxxxxxxxxxxxxxxx"
+[[gitlab_instances]]
 domain = "gitlab.com"  # Or "gitlab.example.com" for self-hosted
+token = "glpat-xxxxxxxxxxxxxxxx"
 ```
+
+### Option C: NixOS Module
+
+If using the NixOS module, configure via `services.eka-ci`:
+
+```nix
+services.eka-ci = {
+  enable = true;
+  environmentFile = "/run/secrets/eka-ci.env";
+
+  settings.gitlab_instances = [{
+    domain = "gitlab.com";
+    token = null;  # Provided via environmentFile
+  }];
+};
+```
+
+Then in `/run/secrets/eka-ci.env`:
+```bash
+GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx
+```
+
+See the [NixOS Module documentation](nixos-module.md#settingsgitlab_instances) for more details.
 
 ### Multiple GitLab Instances
 
-For self-hosted GitLab, you can configure multiple instances:
+You can configure multiple GitLab instances:
 
+**TOML:**
 ```toml
-[[gitlab.instances]]
+[[gitlab_instances]]
 domain = "gitlab.com"
 token = "glpat-aaaaaaaaaaaaaa"
 
-[[gitlab.instances]]
+[[gitlab_instances]]
 domain = "gitlab.example.com"
 token = "glpat-bbbbbbbbbbbbbb"
+```
+
+**NixOS:**
+```nix
+settings.gitlab_instances = [
+  { domain = "gitlab.com"; token = null; }
+  { domain = "gitlab.example.com"; token = null; }
+];
 ```
 
 ## Step 3: Configure Webhook
@@ -240,9 +272,37 @@ Post commands in MR comments to control EkaCI:
 ```
 
 Supported commands:
-- `/ekaci merge` - Merge MR after all checks pass
+- `/ekaci merge [method]` - Merge MR after all checks pass
+  - Optional method: `merge`, `squash`, or `rebase` (defaults to server configuration)
+  - Example: `/ekaci merge squash`
 - `/ekaci retry` - Retry failed builds
 - `/ekaci cancel` - Cancel running builds
+
+### Auto-Merge and Merge Queue
+
+EkaCI supports auto-merging MRs when all checks pass:
+
+**How it works:**
+1. Comment `/ekaci merge` (or `/ekaci merge squash`) on an MR
+2. EkaCI validates permissions and merge method
+3. When all CI checks pass, the MR is automatically merged
+4. Uses the specified merge method (or default from server config)
+
+**Merge methods supported:**
+- `merge` - Creates a merge commit
+- `squash` - Squashes all commits into one
+- `rebase` - Rebases and fast-forwards
+
+**Configuration:**
+```toml
+# In ekaci.toml
+default_merge_method = "squash"  # Default: squash
+```
+
+**NixOS:**
+```nix
+settings.default_merge_method = "squash";  # One of: merge, squash, rebase
+```
 
 ## Troubleshooting
 

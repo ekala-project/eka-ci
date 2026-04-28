@@ -67,37 +67,67 @@ EkaCI automatically detects and uses the appropriate API.
 
 Add your Gitea instance configuration to EkaCI.
 
-### Option A: Environment Variables
+### Option A: Environment Variables (Single Instance)
 
 ```bash
 export GITEA_TOKEN="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
 export GITEA_DOMAIN="gitea.example.com"
 ```
 
-### Option B: Configuration File
+### Option B: Configuration File (TOML)
 
-Add to your `config.toml`:
+Add to your `ekaci.toml`:
 
 ```toml
-[gitea]
-token = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
+[[gitea_instances]]
 domain = "gitea.example.com"
-# Optional: Force use of commit statuses instead of check runs
-force_commit_status = false
+token = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
 ```
+
+### Option C: NixOS Module
+
+If using the NixOS module, configure via `services.eka-ci`:
+
+```nix
+services.eka-ci = {
+  enable = true;
+  environmentFile = "/run/secrets/eka-ci.env";
+
+  settings.gitea_instances = [{
+    domain = "gitea.example.com";
+    token = null;  # Provided via environmentFile
+  }];
+};
+```
+
+Then in `/run/secrets/eka-ci.env`:
+```bash
+GITEA_TOKEN=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0
+```
+
+See the [NixOS Module documentation](nixos-module.md#settingsgitea_instances) for more details.
 
 ### Multiple Gitea Instances
 
 You can configure multiple Gitea instances:
 
+**TOML:**
 ```toml
-[[gitea.instances]]
+[[gitea_instances]]
 domain = "gitea.example.com"
 token = "token-for-gitea-example-com"
 
-[[gitea.instances]]
+[[gitea_instances]]
 domain = "code.company.net"
 token = "token-for-code-company-net"
+```
+
+**NixOS:**
+```nix
+settings.gitea_instances = [
+  { domain = "gitea.example.com"; token = null; }
+  { domain = "code.company.net"; token = null; }
+];
 ```
 
 ## Step 4: Configure Webhook
@@ -290,10 +320,38 @@ Post commands in PR comments to control EkaCI:
 ```
 
 Supported commands:
-- `/ekaci merge` - Merge PR after all checks pass
+- `/ekaci merge [method]` - Merge PR after all checks pass
+  - Optional method: `merge`, `squash`, or `rebase` (defaults to server configuration)
+  - Example: `/ekaci merge squash`
 - `/ekaci retry` - Retry failed builds
 - `/ekaci cancel` - Cancel running builds
 - `/ekaci status` - Show current build status
+
+### Auto-Merge and Merge Queue
+
+EkaCI supports auto-merging PRs when all checks pass:
+
+**How it works:**
+1. Comment `/ekaci merge` (or `/ekaci merge squash`) on a PR
+2. EkaCI validates permissions and merge method
+3. When all CI checks pass, the PR is automatically merged
+4. Uses the specified merge method (or default from server config)
+
+**Merge methods supported:**
+- `merge` - Creates a merge commit
+- `squash` - Squashes all commits into one
+- `rebase` - Rebases and fast-forwards
+
+**Configuration:**
+```toml
+# In ekaci.toml
+default_merge_method = "squash"  # Default: squash
+```
+
+**NixOS:**
+```nix
+settings.default_merge_method = "squash";  # One of: merge, squash, rebase
+```
 
 ## Troubleshooting
 
