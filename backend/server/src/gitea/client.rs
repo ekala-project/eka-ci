@@ -598,6 +598,15 @@ impl GiteaClient {
 
         Ok(())
     }
+
+    /// Get the domain/base URL of this Gitea instance
+    pub fn get_domain(&self) -> &str {
+        // Strip https:// or http:// prefix if present
+        self.base_url
+            .strip_prefix("https://")
+            .or_else(|| self.base_url.strip_prefix("http://"))
+            .unwrap_or(&self.base_url)
+    }
 }
 
 #[cfg(test)]

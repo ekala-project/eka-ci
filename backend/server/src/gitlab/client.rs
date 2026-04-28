@@ -41,6 +41,15 @@ impl GitLabClient {
         header::HeaderValue::from_str(&format!("Bearer {}", self.token))
             .expect("Token should be valid header value")
     }
+
+    /// Get the domain/base URL of this GitLab instance
+    pub fn get_domain(&self) -> &str {
+        // Strip https:// or http:// prefix if present
+        self.base_url
+            .strip_prefix("https://")
+            .or_else(|| self.base_url.strip_prefix("http://"))
+            .unwrap_or(&self.base_url)
+    }
 }
 
 // ==================================================================
