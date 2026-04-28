@@ -82,20 +82,26 @@ Open `settings.web.port` in the system firewall.
 **Default:** `null`
 
 Path to a file passed to systemd as `EnvironmentFile=`. Use this to provide secrets such
-as `GITHUB_WEBHOOK_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `JWT_SECRET`, `VAULT_TOKEN`,
-AWS keys, and any environment variables referenced from
+as `WEBHOOK_SECRET`, `GITHUB_OAUTH_CLIENT_SECRET`, `JWT_SECRET`, `VAULT_TOKEN`,
+`GITEA_TOKEN`, `GITLAB_TOKEN`, AWS keys, and any environment variables referenced from
 `settings.caches.*.credentials.env.vars`.
 
 The file is read by systemd at start time and never enters the Nix store.
 
 **Example (`/run/secrets/eka-ci.env`):**
 ```bash
-GITHUB_WEBHOOK_SECRET=whsec_...
+WEBHOOK_SECRET=your-webhook-secret
 GITHUB_OAUTH_CLIENT_SECRET=...
 JWT_SECRET=...
 VAULT_TOKEN=s.abc123...
 AWS_ACCESS_KEY_ID=AKIA...
 AWS_SECRET_ACCESS_KEY=...
+# For Gitea integration (single instance)
+GITEA_TOKEN=your-gitea-token
+GITEA_DOMAIN=gitea.example.com
+# For GitLab integration (single instance)
+GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx
+GITLAB_DOMAIN=gitlab.com
 ```
 
 ### `services.eka-ci.credentials`
@@ -253,10 +259,10 @@ Security-related settings.
   Maximum wall-clock time, in seconds, that any post-build hook is allowed to run.
 - **`security.audit_hooks`** (`boolean`, default `true`): Emit structured audit log records
   every time a hook runs.
-- **`security.webhook_secret`** (`null or string`, default `null`): GitHub webhook HMAC
-  secret. **Avoid setting this in Nix.** Provide `GITHUB_WEBHOOK_SECRET` via
-  `environmentFile`. The server refuses to start if no webhook secret is available unless
-  `allow_insecure_webhooks` is `true`.
+- **`security.webhook_secret`** (`null or string`, default `null`): Webhook HMAC secret
+  used for all platforms (GitHub, GitLab, and Gitea). **Avoid setting this in Nix.**
+  Provide `WEBHOOK_SECRET` via `environmentFile`. The server refuses to start if no
+  webhook secret is available unless `allow_insecure_webhooks` is `true`.
 - **`security.allow_insecure_webhooks`** (`boolean`, default `false`): Allow the server to
   start without a webhook secret. Intended for local development only; never enable in
   production.
@@ -328,6 +334,80 @@ settings.github_apps = [{
     allowed_repos = [ "myorg/*" ];
   };
 }];
+```
+
+### `settings.gitea_instances`
+
+**Type:** `list of submodule`
+**Default:** `[]`
+
+List of Gitea instances the server integrates with. Each instance requires a domain and
+access token. Supports both Gitea.com and self-hosted instances.
+
+Each Gitea instance entry has the following fields:
+
+- **`domain`** (`string`, **required**): Gitea instance domain (without protocol), e.g.,
+  `"gitea.example.com"`.
+- **`token`** (`null or string`, default `null`): Gitea access token. **Avoid setting this
+  in Nix** — use `environmentFile` to supply `GITEA_TOKEN` instead (for single instance
+  setups).
+
+**Example:**
+```nix
+settings.gitea_instances = [
+  {
+    domain = "gitea.example.com";
+    token = null;  # Provided via environmentFile
+  }
+  {
+    domain = "code.company.net";
+    token = null;  # Provided via environmentFile
+  }
+];
+```
+
+For single-instance setups, you can use environment variables:
+```bash
+# In environmentFile
+GITEA_TOKEN=your-gitea-access-token
+GITEA_DOMAIN=gitea.example.com
+```
+
+### `settings.gitlab_instances`
+
+**Type:** `list of submodule`
+**Default:** `[]`
+
+List of GitLab instances the server integrates with. Each instance requires a domain and
+project access token. Supports both GitLab.com and self-hosted instances.
+
+Each GitLab instance entry has the following fields:
+
+- **`domain`** (`string`, **required**): GitLab instance domain (without protocol), e.g.,
+  `"gitlab.com"` or `"gitlab.example.com"`.
+- **`token`** (`null or string`, default `null`): GitLab project access token (starts with
+  `glpat-`). **Avoid setting this in Nix** — use `environmentFile` to supply
+  `GITLAB_TOKEN` instead (for single instance setups).
+
+**Example:**
+```nix
+settings.gitlab_instances = [
+  {
+    domain = "gitlab.com";
+    token = null;  # Provided via environmentFile
+  }
+  {
+    domain = "gitlab.enterprise.com";
+    token = null;  # Provided via environmentFile
+  }
+];
+```
+
+For single-instance setups, you can use environment variables:
+```bash
+# In environmentFile
+GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx
+GITLAB_DOMAIN=gitlab.com
 ```
 
 ## Credential Sources
@@ -500,6 +580,16 @@ configuration.
           allow_all = false;
           allowed_repos = [ "myorg/*" ];
         };
+      }];
+
+      gitea_instances = [{
+        domain = "gitea.example.com";
+        token = null;  # Provided via environmentFile
+      }];
+
+      gitlab_instances = [{
+        domain = "gitlab.com";
+        token = null;  # Provided via environmentFile
       }];
 
       caches = [

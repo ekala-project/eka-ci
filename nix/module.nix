@@ -149,6 +149,50 @@ let
     };
   };
 
+  giteaInstanceType = types.submodule {
+    freeformType = settingsFormat.type;
+    options = {
+      domain = mkOption {
+        type = types.str;
+        example = "gitea.example.com";
+        description = "Gitea instance domain (without protocol).";
+      };
+      token = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Gitea access token. **Avoid setting this in Nix** — values
+          here end up in the world-readable Nix store. Use
+          {option}`services.eka-ci.environmentFile` to supply
+          `GITEA_TOKEN` instead (for single instance) or configure
+          tokens via systemd credentials.
+        '';
+      };
+    };
+  };
+
+  gitlabInstanceType = types.submodule {
+    freeformType = settingsFormat.type;
+    options = {
+      domain = mkOption {
+        type = types.str;
+        example = "gitlab.com";
+        description = "GitLab instance domain (without protocol).";
+      };
+      token = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          GitLab project access token. **Avoid setting this in Nix** —
+          values here end up in the world-readable Nix store. Use
+          {option}`services.eka-ci.environmentFile` to supply
+          `GITLAB_TOKEN` instead (for single instance) or configure
+          tokens via systemd credentials.
+        '';
+      };
+    };
+  };
+
   webType = types.submodule {
     freeformType = settingsFormat.type;
     options = {
@@ -371,6 +415,24 @@ let
         default = [ ];
         description = "List of GitHub Apps the server authenticates as.";
       };
+      gitea_instances = mkOption {
+        type = types.listOf giteaInstanceType;
+        default = [ ];
+        description = ''
+          List of Gitea instances the server integrates with. Each instance
+          requires a domain and access token. Supports both Gitea.com and
+          self-hosted instances.
+        '';
+      };
+      gitlab_instances = mkOption {
+        type = types.listOf gitlabInstanceType;
+        default = [ ];
+        description = ''
+          List of GitLab instances the server integrates with. Each instance
+          requires a domain and project access token. Supports both GitLab.com
+          and self-hosted instances.
+        '';
+      };
     };
   };
 in
@@ -502,9 +564,10 @@ in
         ''
           services.eka-ci: no webhook secret is configured. Set one of:
             - services.eka-ci.settings.security.webhook_secret (not recommended; ends up in the Nix store)
-            - services.eka-ci.environmentFile (file containing GITHUB_WEBHOOK_SECRET=...)
+            - services.eka-ci.environmentFile (file containing WEBHOOK_SECRET=...)
             - services.eka-ci.settings.security.allow_insecure_webhooks = true (development only)
           The server will refuse to start without one of these.
+          Note: The same webhook secret is used for GitHub, GitLab, and Gitea webhooks.
         '';
 
     systemd.services.eka-ci = {
