@@ -76,6 +76,10 @@ struct ConfigFile {
     caches: Vec<CacheConfig>,
     #[serde(default)]
     github_apps: Vec<GitHubAppConfig>,
+    #[serde(default)]
+    gitea_instances: Vec<GiteaInstanceConfig>,
+    #[serde(default)]
+    gitlab_instances: Vec<GitLabInstanceConfig>,
     security: Option<SecurityConfig>,
 }
 
@@ -568,6 +572,24 @@ pub struct GitHubAppPermissions {
     pub allowed_branches: Vec<String>,
 }
 
+/// Gitea instance configuration - defines available Gitea instances
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GiteaInstanceConfig {
+    /// Domain for this Gitea instance (e.g., "gitea.example.com")
+    pub domain: String,
+    /// Access token for API authentication
+    pub token: Redacted<String>,
+}
+
+/// GitLab instance configuration - defines available GitLab instances
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GitLabInstanceConfig {
+    /// Domain for this GitLab instance (e.g., "gitlab.com" or "gitlab.example.com")
+    pub domain: String,
+    /// Access token for API authentication (PAT with api scope)
+    pub token: Redacted<String>,
+}
+
 /// Security configuration for hook execution
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SecurityConfig {
@@ -912,6 +934,10 @@ pub struct Config {
     pub caches: HashMap<String, CacheConfig>,
     /// GitHub App registry - maps app IDs to configurations
     pub github_apps: HashMap<String, GitHubAppConfig>,
+    /// Gitea instance registry - maps domains to configurations
+    pub gitea_instances: HashMap<String, GiteaInstanceConfig>,
+    /// GitLab instance registry - maps domains to configurations
+    pub gitlab_instances: HashMap<String, GitLabInstanceConfig>,
     /// Security settings for hook execution
     pub security: SecurityConfig,
 }
@@ -1080,6 +1106,47 @@ impl Config {
             .map(|app| (app.id.clone(), app))
             .collect::<HashMap<String, GitHubAppConfig>>();
 
+        // Build Gitea instance registry as a HashMap (keyed by domain)
+        let mut gitea_instances: HashMap<String, GiteaInstanceConfig> = file
+            .gitea_instances
+            .into_iter()
+            .map(|instance| (instance.domain.clone(), instance))
+            .collect();
+
+        // Allow env var override for a single Gitea instance (backwards compat)
+        if let (Ok(token), Ok(domain)) =
+            (std::env::var("GITEA_TOKEN"), std::env::var("GITEA_DOMAIN"))
+        {
+            gitea_instances.insert(
+                domain.clone(),
+                GiteaInstanceConfig {
+                    domain,
+                    token: Redacted::new(token),
+                },
+            );
+        }
+
+        // Build GitLab instance registry as a HashMap (keyed by domain)
+        let mut gitlab_instances: HashMap<String, GitLabInstanceConfig> = file
+            .gitlab_instances
+            .into_iter()
+            .map(|instance| (instance.domain.clone(), instance))
+            .collect();
+
+        // Allow env var override for a single GitLab instance (backwards compat)
+        if let (Ok(token), Ok(domain)) = (
+            std::env::var("GITLAB_TOKEN"),
+            std::env::var("GITLAB_DOMAIN"),
+        ) {
+            gitlab_instances.insert(
+                domain.clone(),
+                GitLabInstanceConfig {
+                    domain,
+                    token: Redacted::new(token),
+                },
+            );
+        }
+
         // Allow webhook_secret to be overridden by environment variable
         if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
             security.webhook_secret = Some(Redacted::new(secret));
@@ -1211,6 +1278,8 @@ impl Config {
                 .unwrap_or_else(|| "squash".to_string()),
             caches,
             github_apps,
+            gitea_instances,
+            gitlab_instances,
             security,
         })
     }

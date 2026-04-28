@@ -37,18 +37,15 @@ impl GitLabService {
         db_service: DbService,
         graph_handle: GraphServiceHandle,
         change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
+        gitlab_configs: &HashMap<String, crate::config::GitLabInstanceConfig>,
     ) -> Result<Self> {
         let (gitlab_sender, gitlab_receiver) = mpsc::channel(100);
 
-        // Try to initialize GitLab client from environment variables
-        // Format: GITLAB_TOKEN and GITLAB_DOMAIN (or GITLAB_<DOMAIN>_TOKEN for multiple instances)
+        // Initialize GitLab clients from configuration
         let mut gitlab_clients = HashMap::new();
 
-        if let (Ok(token), Ok(domain)) = (
-            std::env::var("GITLAB_TOKEN"),
-            std::env::var("GITLAB_DOMAIN"),
-        ) {
-            match GitLabClient::new(&domain, token).await {
+        for (domain, config) in gitlab_configs {
+            match GitLabClient::new(domain, config.token.expose().to_string()).await {
                 Ok(client) => {
                     info!("Initialized GitLab client for domain: {}", domain);
                     gitlab_clients.insert(domain.clone(), Arc::new(client));
@@ -57,8 +54,15 @@ impl GitLabService {
                     warn!("Failed to initialize GitLab client for {}: {:?}", domain, e);
                 },
             }
+        }
+
+        if gitlab_clients.is_empty() {
+            info!("GitLab integration disabled (no instances configured)");
         } else {
-            info!("GitLab integration disabled (GITLAB_TOKEN or GITLAB_DOMAIN not set)");
+            info!(
+                "GitLab integration enabled for {} instance(s)",
+                gitlab_clients.len()
+            );
         }
 
         Ok(Self {

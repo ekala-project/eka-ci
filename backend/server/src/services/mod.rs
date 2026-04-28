@@ -131,19 +131,21 @@ pub async fn start_services(config: Config) -> Result<()> {
         None
     };
 
-    // Create GitLabService (always created, API integration TODO)
+    // Create GitLabService with configuration
     let gitlab_service = GitLabService::new(
         db_service.clone(),
         graph_handle.clone(),
         Some(change_summary_metrics.clone()),
+        &config.gitlab_instances,
     )
     .await?;
 
-    // Create GiteaService (always created, API integration TODO)
+    // Create GiteaService with configuration
     let gitea_service = GiteaService::new(
         db_service.clone(),
         graph_handle.clone(),
         Some(change_summary_metrics.clone()),
+        &config.gitea_instances,
     )
     .await?;
 
