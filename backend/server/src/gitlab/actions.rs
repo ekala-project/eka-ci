@@ -486,32 +486,71 @@ pub async fn validate_merge_method(
     project_id: i64,
     method: &str,
 ) -> Result<MergeMethodCheck> {
-    // For now, accept all merge methods - GitLab project settings validation
-    // can be added later by fetching project details
     debug!(
         "Validating merge method '{}' for project {}",
         method, project_id
     );
-    let _ = (client, method);
-    Ok(MergeMethodCheck::Ok)
+
+    // GitLab supports three merge methods:
+    // - "merge" - creates a merge commit
+    // - "rebase_merge" - rebases then creates a merge commit
+    // - "ff" - fast-forward merge (if possible)
+    //
+    // For now, accept all standard methods since GitLab doesn't have
+    // repository-level restrictions on merge methods like GitHub does.
+    // Individual projects may have preferences, but those are not enforced via API.
+
+    match method {
+        "merge" | "rebase_merge" | "ff" => Ok(MergeMethodCheck::Ok),
+        _ => {
+            // Unknown method - return allowed methods
+            Ok(MergeMethodCheck::NotAllowed {
+                allowed: vec![
+                    "merge".to_string(),
+                    "rebase_merge".to_string(),
+                    "ff".to_string(),
+                ],
+            })
+        },
+    }
 }
 
 /// Check project permission level for a user
+///
+/// Returns the GitLab access level:
+/// - 0: No access
+/// - 10: Guest
+/// - 20: Reporter
+/// - 30: Developer
+/// - 40: Maintainer
+/// - 50: Owner
 pub async fn check_project_permission_for_user(
     client: &GitLabClient,
     project_id: i64,
     user_id: i64,
 ) -> Result<i32> {
-    // Fetch project member details for the user
     debug!(
         "Checking project permission for user {} in project {}",
         user_id, project_id
     );
 
-    // For now, return a default permission level
-    // This should be replaced with actual GitLab API call
-    let _ = (client, user_id);
-    Ok(0) // 0 = no access, 30 = developer, 40 = maintainer, 50 = owner
+    match client.get_project_member(project_id, user_id).await {
+        Ok(member) => {
+            debug!(
+                "User {} has access level {} in project {}",
+                user_id, member.access_level, project_id
+            );
+            Ok(member.access_level)
+        },
+        Err(e) => {
+            debug!(
+                "Failed to get project member for user {} in project {}: {}",
+                user_id, project_id, e
+            );
+            // Return 0 for no access if we can't fetch the member
+            Ok(0)
+        },
+    }
 }
 
 /// Check if all changed packages have required approvals
@@ -542,10 +581,32 @@ pub async fn fetch_head_commit_date(
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
     debug!("Fetching commit date for {} in project {}", sha, project_id);
 
-    // For now, return None to skip the push timing check
-    // Real implementation would call GitLab API to get commit details
-    let _ = (client, sha);
-    Ok(None)
+    match client.get_commit(project_id, sha).await {
+        Ok(commit) => {
+            // Parse the committed_date field (ISO 8601 format)
+            match chrono::DateTime::parse_from_rfc3339(&commit.committed_date) {
+                Ok(dt) => {
+                    let utc_dt = dt.with_timezone(&chrono::Utc);
+                    debug!("Commit {} was committed at {}", sha, utc_dt);
+                    Ok(Some(utc_dt))
+                },
+                Err(e) => {
+                    debug!(
+                        "Failed to parse commit date '{}' for {}: {}",
+                        commit.committed_date, sha, e
+                    );
+                    Ok(None)
+                },
+            }
+        },
+        Err(e) => {
+            debug!(
+                "Failed to fetch commit {} in project {}: {}",
+                sha, project_id, e
+            );
+            Ok(None)
+        },
+    }
 }
 
 /// Create a dependency changes gate status
