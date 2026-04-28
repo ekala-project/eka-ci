@@ -251,6 +251,141 @@ pub async fn get_mr_by_head_sha(
     Ok(mr)
 }
 
+/// Set comment-merge request for a merge request.
+///
+/// This is called when a user triggers a merge via MR comment.
+pub async fn set_comment_merge(
+    domain: &str,
+    project_id: i64,
+    mr_iid: i64,
+    sha: &str,
+    method: Option<&str>,
+    requester_id: i64,
+    requester_username: &str,
+    note_id: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE GitLabMergeRequests
+        SET
+            comment_merge_sha = ?,
+            comment_merge_method = ?,
+            comment_merge_requester_id = ?,
+            comment_merge_requester_username = ?,
+            comment_merge_note_id = ?,
+            comment_merge_requested_at = ?,
+            updated_at = ?
+        WHERE domain = ? AND project_id = ? AND mr_iid = ?
+        "#,
+    )
+    .bind(sha)
+    .bind(method)
+    .bind(requester_id)
+    .bind(requester_username)
+    .bind(note_id)
+    .bind(&now)
+    .bind(&now)
+    .bind(domain)
+    .bind(project_id)
+    .bind(mr_iid)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Clear comment-merge request for a merge request.
+///
+/// This is called after merge completes or when cancelled.
+pub async fn clear_comment_merge(
+    domain: &str,
+    project_id: i64,
+    mr_iid: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE GitLabMergeRequests
+        SET
+            comment_merge_sha = NULL,
+            comment_merge_method = NULL,
+            comment_merge_requester_id = NULL,
+            comment_merge_requester_username = NULL,
+            comment_merge_note_id = NULL,
+            comment_merge_requested_at = NULL,
+            updated_at = ?
+        WHERE domain = ? AND project_id = ? AND mr_iid = ?
+        "#,
+    )
+    .bind(&now)
+    .bind(domain)
+    .bind(project_id)
+    .bind(mr_iid)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Enable auto-merge for a merge request.
+pub async fn enable_auto_merge(
+    domain: &str,
+    project_id: i64,
+    mr_iid: i64,
+    merge_method: Option<&str>,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE GitLabMergeRequests
+        SET auto_merge_enabled = TRUE, merge_method = ?, updated_at = ?
+        WHERE domain = ? AND project_id = ? AND mr_iid = ?
+        "#,
+    )
+    .bind(merge_method)
+    .bind(&now)
+    .bind(domain)
+    .bind(project_id)
+    .bind(mr_iid)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Disable auto-merge for a merge request.
+pub async fn disable_auto_merge(
+    domain: &str,
+    project_id: i64,
+    mr_iid: i64,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE GitLabMergeRequests
+        SET auto_merge_enabled = FALSE, merge_method = NULL, updated_at = ?
+        WHERE domain = ? AND project_id = ? AND mr_iid = ?
+        "#,
+    )
+    .bind(&now)
+    .bind(domain)
+    .bind(project_id)
+    .bind(mr_iid)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
