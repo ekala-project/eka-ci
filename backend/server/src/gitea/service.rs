@@ -40,27 +40,36 @@ impl GiteaService {
         db_service: DbService,
         graph_handle: GraphServiceHandle,
         change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
+        gitea_configs: &HashMap<String, crate::config::GiteaInstanceConfig>,
     ) -> Result<Self> {
         let (gitea_sender, gitea_receiver) = mpsc::channel(100);
 
-        // Try to initialize Gitea client from environment variables
-        // Format: GITEA_TOKEN and GITEA_DOMAIN (or GITEA_<DOMAIN>_TOKEN for multiple instances)
+        // Initialize Gitea clients from configuration
         let mut gitea_clients = HashMap::new();
 
-        if let (Ok(token), Ok(domain)) =
-            (std::env::var("GITEA_TOKEN"), std::env::var("GITEA_DOMAIN"))
-        {
-            match GiteaClient::new(&domain, token).await {
+        for (domain, config) in gitea_configs {
+            match GiteaClient::new(domain, config.token.expose().to_string()).await {
                 Ok(client) => {
-                    info!("Initialized Gitea client for domain: {}", domain);
+                    info!(
+                        "Initialized Gitea client for domain: {} (version: {})",
+                        domain,
+                        client.version()
+                    );
                     gitea_clients.insert(domain.clone(), Arc::new(client));
                 },
                 Err(e) => {
                     warn!("Failed to initialize Gitea client for {}: {:?}", domain, e);
                 },
             }
+        }
+
+        if gitea_clients.is_empty() {
+            info!("Gitea integration disabled (no instances configured)");
         } else {
-            info!("Gitea integration disabled (GITEA_TOKEN or GITEA_DOMAIN not set)");
+            info!(
+                "Gitea integration enabled for {} instance(s)",
+                gitea_clients.len()
+            );
         }
 
         Ok(Self {
