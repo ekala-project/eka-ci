@@ -213,6 +213,7 @@ pub async fn upsert_merge_request(
 /// Get a merge request by its head commit SHA.
 ///
 /// This is used to link commits to their associated MRs.
+#[allow(dead_code)]
 #[derive(Clone, Debug, FromRow)]
 pub struct MergeRequestRow {
     pub mr_iid: i64,
@@ -334,6 +335,7 @@ pub async fn clear_comment_merge(
 }
 
 /// Enable auto-merge for a merge request.
+#[allow(dead_code)]
 pub async fn enable_auto_merge(
     domain: &str,
     project_id: i64,
@@ -362,6 +364,7 @@ pub async fn enable_auto_merge(
 }
 
 /// Disable auto-merge for a merge request.
+#[allow(dead_code)]
 pub async fn disable_auto_merge(
     domain: &str,
     project_id: i64,
@@ -397,6 +400,7 @@ pub struct CommentMergeRequest {
 }
 
 /// Full merge request row including comment-merge fields
+#[allow(dead_code)]
 #[derive(Clone, Debug, FromRow)]
 pub struct MergeRequest {
     pub mr_iid: i64,
@@ -580,7 +584,6 @@ pub async fn mark_mr_merged(
 mod tests {
     use super::*;
     use crate::db::DbService;
-    use crate::db::model::build_event::DrvBuildResult;
 
     #[tokio::test]
     async fn test_commit_status_insertion() {
@@ -634,13 +637,15 @@ mod tests {
         let db = DbService::new_in_memory().await.unwrap();
         let pool = &db.pool;
 
-        // Insert a test derivation
+        // Insert a test derivation (DrvId stores just the filename, not the full path)
+        let test_drv_filename = "00000000000000000000000000000000-test.drv";
         sqlx::query(
             r#"
             INSERT INTO Drv (drv_path, system, required_system_features, is_fod, build_state)
-            VALUES ('/nix/store/test.drv', 'x86_64-linux', '', 0, 7)
+            VALUES (?, 'x86_64-linux', '', 0, 7)
             "#,
         )
+        .bind(test_drv_filename)
         .execute(pool)
         .await
         .unwrap();
@@ -650,7 +655,8 @@ mod tests {
             .await
             .unwrap();
 
-        let drv_path = DrvId::from("/nix/store/test.drv");
+        let drv_path =
+            DrvId::try_from("/nix/store/00000000000000000000000000000000-test.drv").unwrap();
 
         // Insert a commit status
         insert_commit_status_info(

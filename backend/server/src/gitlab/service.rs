@@ -1522,7 +1522,10 @@ impl GitLabService {
 
 /// Authorization outcome
 enum Authorization {
-    Granted { has_write: bool },
+    Granted {
+        #[allow(dead_code)]
+        has_write: bool,
+    },
     Denied,
     Abort,
 }

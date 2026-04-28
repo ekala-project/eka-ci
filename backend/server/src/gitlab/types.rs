@@ -19,6 +19,7 @@ pub struct GitLabCIInfo {
 }
 
 /// Task messages for GitLabService
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum GitLabTask {
     UpdateBuildStatus {

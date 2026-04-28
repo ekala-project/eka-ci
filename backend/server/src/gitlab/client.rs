@@ -82,9 +82,12 @@ pub enum CommitStatusState {
 #[derive(Debug, Deserialize)]
 pub struct CommitStatus {
     pub id: i64,
+    #[allow(dead_code)]
     pub status: String,
+    #[allow(dead_code)]
     pub name: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub description: Option<String>,
 }
 
@@ -156,9 +159,13 @@ impl GitLabClient {
 
 #[derive(Debug, Deserialize)]
 pub struct GitCommit {
+    #[allow(dead_code)]
     pub id: String,
+    #[allow(dead_code)]
     pub short_id: String,
+    #[allow(dead_code)]
     pub title: String,
+    #[allow(dead_code)]
     pub created_at: String,
     pub committed_date: String,
 }
@@ -176,14 +183,18 @@ pub struct CreateMergeRequestNoteRequest {
 pub struct MergeRequestNote {
     pub id: i64,
     pub body: String,
+    #[allow(dead_code)]
     pub author: User,
     #[serde(default)]
+    #[allow(dead_code)]
     pub system: bool,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct User {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     pub username: String,
 }
 
@@ -368,6 +379,7 @@ pub struct MergeMergeRequestRequest {
     pub sha: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct MergeRequest {
     pub id: i64,
@@ -382,6 +394,7 @@ pub struct MergeRequest {
     pub project_id: i64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Project {
     pub id: i64,
@@ -394,7 +407,9 @@ pub struct Project {
 
 #[derive(Debug, Deserialize)]
 pub struct ProjectMember {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     pub username: String,
     pub access_level: i32,
 }
@@ -435,6 +450,7 @@ impl GitLabClient {
     /// Get merge request details
     ///
     /// GitLab API: GET /projects/:id/merge_requests/:merge_request_iid
+    #[allow(dead_code)]
     pub async fn get_merge_request(&self, project_id: i64, mr_iid: i64) -> Result<MergeRequest> {
         let url = format!(
             "{}/api/v4/projects/{}/merge_requests/{}",
@@ -461,6 +477,7 @@ impl GitLabClient {
     /// Get project details
     ///
     /// GitLab API: GET /projects/:id
+    #[allow(dead_code)]
     pub async fn get_project(&self, project_id: i64) -> Result<Project> {
         let url = format!("{}/api/v4/projects/{}", self.base_url, project_id);
 
@@ -523,6 +540,7 @@ impl GitLabClient {
     /// - 30: Developer
     /// - 40: Maintainer
     /// - 50: Owner
+    #[allow(dead_code)]
     pub async fn has_developer_access(&self, project_id: i64, user_id: i64) -> Result<bool> {
         match self.get_project_member(project_id, user_id).await {
             Ok(member) => Ok(member.access_level >= 30),
@@ -535,6 +553,7 @@ impl GitLabClient {
 // Reactions (Awards API)
 // ==================================================================
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct CreateAwardRequest {
     pub name: String,
@@ -544,6 +563,7 @@ impl GitLabClient {
     /// Add an emoji reaction to a merge request note
     ///
     /// GitLab API: POST /projects/:id/merge_requests/:merge_request_iid/notes/:note_id/award_emoji
+    #[allow(dead_code)]
     pub async fn add_note_reaction(
         &self,
         project_id: i64,

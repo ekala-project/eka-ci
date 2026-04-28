@@ -14,11 +14,13 @@ struct PullRequestPayload {
     number: i64,
     pull_request: PullRequestData,
     repository: Repository,
+    #[allow(dead_code)]
     sender: User,
 }
 
 #[derive(Debug, Deserialize)]
 struct PullRequestData {
+    #[allow(dead_code)]
     number: i64,
     title: String,
     state: String,
@@ -31,6 +33,7 @@ struct PullRequestData {
 struct BranchRef {
     sha: String,
     #[serde(rename = "ref")]
+    #[allow(dead_code)]
     ref_name: String,
 }
 
@@ -83,14 +86,18 @@ struct PushPayload {
 
 #[derive(Debug, Deserialize)]
 struct PushCommit {
+    #[allow(dead_code)]
     id: String,
     message: String,
+    #[allow(dead_code)]
     author: CommitUser,
 }
 
 #[derive(Debug, Deserialize)]
 struct CommitUser {
+    #[allow(dead_code)]
     name: String,
+    #[allow(dead_code)]
     email: String,
 }
 

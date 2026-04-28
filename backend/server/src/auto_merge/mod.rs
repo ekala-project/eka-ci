@@ -5,6 +5,7 @@
 ///! functions to evaluate eligibility, then handle platform-specific API calls.
 
 /// Represents the state of a merge request's auto-merge eligibility.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeEligibility {
     /// PR/MR is eligible for auto-merge.
@@ -29,6 +30,7 @@ pub enum MergeEligibility {
 }
 
 /// State of auto-merge for a PR/MR.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AutoMergeState {
     /// Auto-merge enabled via PR/MR settings
@@ -50,6 +52,7 @@ pub struct AutoMergeState {
 }
 
 /// Comment-triggered merge request details.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CommentMergeRequest {
     /// SHA pinned by the comment
@@ -64,6 +67,7 @@ impl AutoMergeState {
     /// This implements the business logic for determining if a PR/MR can be
     /// auto-merged. Platform services call this after gathering all state,
     /// then handle platform-specific merge API calls if eligible.
+    #[allow(dead_code)]
     pub fn evaluate_eligibility(&self) -> MergeEligibility {
         // Check 1: Build must have succeeded
         if !self.build_succeeded {

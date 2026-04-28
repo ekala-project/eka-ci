@@ -214,6 +214,7 @@ pub async fn fail_ci_eval_job(
 /// Create a commit status for a build.
 ///
 /// This creates a new commit status with the given name and state.
+#[allow(dead_code)]
 pub async fn create_commit_status(
     client: &GitLabClient,
     project_id: i64,

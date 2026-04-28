@@ -504,4 +504,22 @@ impl DbService {
     ) -> anyhow::Result<Vec<hooks::HookExecution>> {
         hooks::get_hook_executions_for_drv(&self.pool, drv_path).await
     }
+
+    /// Create an in-memory database for testing purposes.
+    #[cfg(test)]
+    pub async fn new_in_memory() -> anyhow::Result<DbService> {
+        let opts = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .create_if_missing(true)
+            .foreign_keys(true);
+
+        let pool: SqlitePool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await?;
+
+        migrate!("sql/migrations").run(&pool).await?;
+
+        Ok(DbService { pool })
+    }
 }

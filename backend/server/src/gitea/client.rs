@@ -184,9 +184,12 @@ pub struct CheckOutput {
 #[derive(Debug, Deserialize)]
 pub struct CheckRun {
     pub id: i64,
+    #[allow(dead_code)]
     pub name: String,
+    #[allow(dead_code)]
     pub status: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub conclusion: Option<String>,
 }
 
@@ -292,10 +295,14 @@ pub enum CommitStatusState {
 
 #[derive(Debug, Deserialize)]
 pub struct CommitStatus {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     pub status: String,
+    #[allow(dead_code)]
     pub context: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub description: Option<String>,
 }
 
@@ -366,20 +373,25 @@ impl GiteaClient {
 
 #[derive(Debug, Deserialize)]
 pub struct GiteaCommit {
+    #[allow(dead_code)]
     pub sha: String,
     pub commit: CommitDetails,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CommitDetails {
+    #[allow(dead_code)]
     pub message: String,
+    #[allow(dead_code)]
     pub author: CommitAuthor,
     pub committer: CommitAuthor,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CommitAuthor {
+    #[allow(dead_code)]
     pub name: String,
+    #[allow(dead_code)]
     pub email: String,
     pub date: String, // ISO 8601 format
 }
@@ -398,6 +410,7 @@ pub struct MergePullRequestRequest {
     pub merge_title_field: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct PullRequest {
     pub id: i64,
@@ -407,6 +420,7 @@ pub struct PullRequest {
     pub merged: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Review {
     pub id: i64,
@@ -416,10 +430,13 @@ pub struct Review {
 
 #[derive(Debug, Deserialize)]
 pub struct User {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     pub login: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Repository {
     pub id: i64,
@@ -470,6 +487,7 @@ impl GiteaClient {
     }
 
     /// List pull request reviews
+    #[allow(dead_code)]
     pub async fn list_reviews(&self, owner: &str, repo: &str, index: i64) -> Result<Vec<Review>> {
         let url = format!(
             "{}/api/v1/repos/{}/{}/pulls/{}/reviews",
@@ -497,6 +515,7 @@ impl GiteaClient {
     }
 
     /// Get repository settings
+    #[allow(dead_code)]
     pub async fn get_repository(&self, owner: &str, repo: &str) -> Result<Repository> {
         let url = format!("{}/api/v1/repos/{}/{}", self.base_url, owner, repo);
 
@@ -564,8 +583,11 @@ pub struct CreateCommentRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct Comment {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     pub body: String,
+    #[allow(dead_code)]
     pub user: User,
 }
 
@@ -609,6 +631,7 @@ impl GiteaClient {
     }
 
     /// Add a reaction to a comment
+    #[allow(dead_code)]
     pub async fn add_reaction(
         &self,
         owner: &str,

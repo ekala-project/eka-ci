@@ -26,6 +26,7 @@ pub struct GiteaService {
     /// Tracks eval job check run IDs per (commit, job_name)
     eval_checks: Mutex<HashMap<(String, String), i64>>,
     /// Tracks change-summary check run IDs per commit
+    #[allow(dead_code)]
     change_summary_checks: Mutex<HashMap<String, i64>>,
     /// Graph handle for rebuild impact analysis
     graph_handle: GraphServiceHandle,
@@ -584,11 +585,10 @@ impl GiteaService {
             {
                 Ok(()) => {
                     // Update database tracking
-                    let (new_status, conclusion) = status_to_strings(status);
+                    let state = build_state_to_gitea_state(status);
                     if let Err(e) = crate::db::gitea::update_check_run_status(
                         check_run.check_run_id,
-                        &new_status,
-                        conclusion.as_deref(),
+                        &state,
                         &self.db_service.pool,
                     )
                     .await
@@ -774,8 +774,7 @@ impl GiteaService {
                     // Update database tracking
                     if let Err(e) = crate::db::gitea::update_check_run_status(
                         check_run.check_run_id,
-                        "completed",
-                        Some("cancelled"),
+                        "cancelled",
                         &self.db_service.pool,
                     )
                     .await
@@ -850,8 +849,7 @@ impl GiteaService {
                     // Update database tracking
                     if let Err(e) = crate::db::gitea::update_check_run_status(
                         check_run.check_run_id,
-                        "completed",
-                        Some("success"),
+                        "success",
                         &self.db_service.pool,
                     )
                     .await
@@ -949,8 +947,7 @@ impl GiteaService {
                         &owner,
                         &repo_name,
                         drv_rowid,
-                        "completed",
-                        Some("failure"),
+                        "failure",
                         &self.db_service.pool,
                     )
                     .await
@@ -1689,7 +1686,10 @@ impl GiteaService {
 
 /// Authorization outcome
 enum Authorization {
-    Granted { has_write: bool },
+    Granted {
+        #[allow(dead_code)]
+        has_write: bool,
+    },
     Denied,
     Abort,
 }
@@ -1699,7 +1699,35 @@ fn short_sha(sha: &str) -> &str {
     if sha.len() > 7 { &sha[..7] } else { sha }
 }
 
+/// Convert DrvBuildState to Gitea state string for database storage
+fn build_state_to_gitea_state(state: &crate::db::model::build_event::DrvBuildState) -> String {
+    use crate::db::model::build_event::{DrvBuildInterruptionKind, DrvBuildResult};
+
+    match state {
+        crate::db::model::build_event::DrvBuildState::Queued
+        | crate::db::model::build_event::DrvBuildState::Buildable
+        | crate::db::model::build_event::DrvBuildState::Blocked
+        | crate::db::model::build_event::DrvBuildState::FailedRetry => "pending".to_string(),
+        crate::db::model::build_event::DrvBuildState::Building => "running".to_string(),
+        crate::db::model::build_event::DrvBuildState::Completed(DrvBuildResult::Success) => {
+            "success".to_string()
+        },
+        crate::db::model::build_event::DrvBuildState::Completed(DrvBuildResult::Failure) => {
+            "failure".to_string()
+        },
+        crate::db::model::build_event::DrvBuildState::TransitiveFailure => "failure".to_string(),
+        crate::db::model::build_event::DrvBuildState::Interrupted(
+            DrvBuildInterruptionKind::Cancelled,
+        ) => "cancelled".to_string(),
+        crate::db::model::build_event::DrvBuildState::Interrupted(_) => "failure".to_string(),
+        crate::db::model::build_event::DrvBuildState::UnsatisfiableRequirements => {
+            "failure".to_string()
+        },
+    }
+}
+
 /// Convert DrvBuildState to status and conclusion strings for database storage
+#[allow(dead_code)]
 fn status_to_strings(
     state: &crate::db::model::build_event::DrvBuildState,
 ) -> (String, Option<String>) {

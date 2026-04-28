@@ -21,6 +21,7 @@ struct MergeRequestAttributes {
     title: String,
     state: String,
     #[serde(rename = "source_branch")]
+    #[allow(dead_code)]
     source_branch: String,
     #[serde(rename = "target_branch")]
     target_branch: String,
@@ -49,6 +50,7 @@ struct NoteAttributes {
 struct MergeRequestInfo {
     iid: i64,
     #[serde(rename = "last_commit")]
+    #[allow(dead_code)]
     last_commit: Commit,
 }
 
@@ -79,20 +81,25 @@ struct PushPayload {
     before: String, // SHA before push
     after: String,  // SHA after push
     project: Project,
+    #[allow(dead_code)]
     user_name: Option<String>,
     commits: Vec<PushCommit>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PushCommit {
+    #[allow(dead_code)]
     id: String,
     message: String,
+    #[allow(dead_code)]
     author: CommitAuthor,
 }
 
 #[derive(Debug, Deserialize)]
 struct CommitAuthor {
+    #[allow(dead_code)]
     name: String,
+    #[allow(dead_code)]
     email: String,
 }
 
