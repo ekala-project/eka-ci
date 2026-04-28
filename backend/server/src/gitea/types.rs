@@ -20,6 +20,7 @@ pub struct GiteaCIInfo {
 }
 
 /// Task messages for GiteaService
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum GiteaTask {
     UpdateBuildStatus {
@@ -118,11 +119,14 @@ pub enum GiteaCheckConclusion {
     Failure,
     Neutral,
     Cancelled,
+    #[allow(dead_code)]
     TimedOut,
+    #[allow(dead_code)]
     ActionRequired,
 }
 
 /// Gitea check run status (GitHub-compatible)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GiteaCheckStatus {
@@ -132,6 +136,7 @@ pub enum GiteaCheckStatus {
 }
 
 /// Gitea commit status states (fallback for older instances)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GiteaStatusState {

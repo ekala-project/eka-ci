@@ -31,10 +31,8 @@ pub struct CheckRun {
     pub build_state: DrvBuildState,
     /// Derivation path
     pub drv_path: DrvId,
-    /// Check run status: "queued", "in_progress", "completed"
-    pub status: String,
-    /// Check run conclusion (if completed): "success", "failure", "cancelled", etc.
-    pub conclusion: Option<String>,
+    /// Check run state: "pending", "running", "success", "failure", "cancelled"
+    pub state: String,
 }
 
 /// Return all check runs which match a drv_path.
@@ -50,7 +48,7 @@ pub async fn check_runs_for_drv_path(
         SELECT
             cr.check_run_id, cr.sha, cr.name, cr.domain,
             cr.repo_owner, cr.repo_name, d.build_state, d.drv_path,
-            cr.status, cr.conclusion
+            cr.state
         FROM GiteaCheckRuns cr
         INNER JOIN Drv d ON cr.drv_id = d.ROWID
         WHERE d.drv_path = ?
@@ -74,12 +72,12 @@ pub async fn check_runs_for_commit(sha: &str, pool: &Pool<Sqlite>) -> Result<Vec
         SELECT DISTINCT
             cr.check_run_id, cr.sha, cr.name, cr.domain,
             cr.repo_owner, cr.repo_name, d.build_state, d.drv_path,
-            cr.status, cr.conclusion
+            cr.state
         FROM GiteaCheckRuns cr
         INNER JOIN Drv d ON cr.drv_id = d.ROWID
         INNER JOIN GiteaJob j ON j.drv_id = d.ROWID
         INNER JOIN GiteaJobSets g ON j.jobset = g.ROWID
-        WHERE g.sha = ? AND cr.status != 'completed'
+        WHERE g.sha = ? AND cr.state NOT IN ('success', 'failure', 'cancelled')
         "#,
     )
     .bind(sha)
@@ -101,8 +99,7 @@ pub async fn insert_check_run_info(
     repo_owner: &str,
     repo_name: &str,
     drv_id: i64,
-    status: &str,
-    conclusion: Option<&str>,
+    state: &str,
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -110,8 +107,8 @@ pub async fn insert_check_run_info(
     sqlx::query(
         r#"
         INSERT INTO GiteaCheckRuns
-            (check_run_id, sha, name, domain, repo_owner, repo_name, drv_id, status, conclusion, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (check_run_id, sha, name, domain, repo_owner, repo_name, drv_id, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(check_run_id)
@@ -121,8 +118,7 @@ pub async fn insert_check_run_info(
     .bind(repo_owner)
     .bind(repo_name)
     .bind(drv_id)
-    .bind(status)
-    .bind(conclusion)
+    .bind(state)
     .bind(&now)
     .bind(&now)
     .execute(pool)
@@ -131,14 +127,13 @@ pub async fn insert_check_run_info(
     Ok(())
 }
 
-/// Update the status and conclusion of an existing check run in the database.
+/// Update the state of an existing check run in the database.
 ///
 /// Called when we update a check run via the Gitea API to keep our local
 /// tracking in sync.
 pub async fn update_check_run_status(
     check_run_id: i64,
-    status: &str,
-    conclusion: Option<&str>,
+    state: &str,
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -146,12 +141,11 @@ pub async fn update_check_run_status(
     sqlx::query(
         r#"
         UPDATE GiteaCheckRuns
-        SET status = ?, conclusion = ?, updated_at = ?
+        SET state = ?, updated_at = ?
         WHERE check_run_id = ?
         "#,
     )
-    .bind(status)
-    .bind(conclusion)
+    .bind(state)
     .bind(&now)
     .bind(check_run_id)
     .execute(pool)
@@ -212,6 +206,7 @@ pub async fn upsert_pull_request(
 /// Get a pull request by its head commit SHA.
 ///
 /// This is used to link commits to their associated PRs.
+#[allow(dead_code)]
 #[derive(Clone, Debug, FromRow)]
 pub struct PullRequestRow {
     pub pr_number: i64,
@@ -340,6 +335,7 @@ pub async fn clear_comment_merge(
 }
 
 /// Enable auto-merge for a pull request.
+#[allow(dead_code)]
 pub async fn enable_auto_merge(
     domain: &str,
     owner: &str,
@@ -370,6 +366,7 @@ pub async fn enable_auto_merge(
 }
 
 /// Disable auto-merge for a pull request.
+#[allow(dead_code)]
 pub async fn disable_auto_merge(
     domain: &str,
     owner: &str,
@@ -407,6 +404,7 @@ pub struct CommentMergeRequest {
 }
 
 /// Full pull request row including comment-merge fields
+#[allow(dead_code)]
 #[derive(Clone, Debug, FromRow)]
 pub struct PullRequest {
     pub pr_number: i64,
@@ -605,13 +603,15 @@ mod tests {
         let db = DbService::new_in_memory().await.unwrap();
         let pool = &db.pool;
 
-        // Insert a test derivation first
+        // Insert a test derivation first (use a valid drv format: 32-char hash + name.drv)
+        let test_drv = "0000000000000000000000000000test-test.drv";
         sqlx::query(
             r#"
             INSERT INTO Drv (drv_path, system, required_system_features, is_fod, build_state)
-            VALUES ('/nix/store/test.drv', 'x86_64-linux', '', 0, 7)
+            VALUES (?, 'x86_64-linux', '', 0, 7)
             "#,
         )
+        .bind(test_drv)
         .execute(pool)
         .await
         .unwrap();
@@ -630,8 +630,7 @@ mod tests {
             "owner",
             "repo",
             drv_rowid,
-            "in_progress",
-            None,
+            "running",
             pool,
         )
         .await
@@ -652,13 +651,15 @@ mod tests {
         let db = DbService::new_in_memory().await.unwrap();
         let pool = &db.pool;
 
-        // Insert a test derivation
+        // Insert a test derivation (DrvId stores just the filename, not the full path)
+        let test_drv_filename = "00000000000000000000000000000000-test.drv";
         sqlx::query(
             r#"
             INSERT INTO Drv (drv_path, system, required_system_features, is_fod, build_state)
-            VALUES ('/nix/store/test.drv', 'x86_64-linux', '', 0, 7)
+            VALUES (?, 'x86_64-linux', '', 0, 7)
             "#,
         )
+        .bind(test_drv_filename)
         .execute(pool)
         .await
         .unwrap();
@@ -668,7 +669,8 @@ mod tests {
             .await
             .unwrap();
 
-        let drv_path = DrvId::from("/nix/store/test.drv");
+        let drv_path =
+            DrvId::try_from("/nix/store/00000000000000000000000000000000-test.drv").unwrap();
 
         // Insert a check run
         insert_check_run_info(
@@ -679,8 +681,7 @@ mod tests {
             "owner",
             "repo",
             drv_rowid,
-            "in_progress",
-            None,
+            "running",
             pool,
         )
         .await
@@ -763,13 +764,15 @@ mod tests {
         let db = DbService::new_in_memory().await.unwrap();
         let pool = &db.pool;
 
-        // Insert a test derivation
+        // Insert a test derivation (use a valid drv format)
+        let test_drv = "0000000000000000000000000000test-test.drv";
         sqlx::query(
             r#"
             INSERT INTO Drv (drv_path, system, required_system_features, is_fod, build_state)
-            VALUES ('/nix/store/test.drv', 'x86_64-linux', '', 0, 1)
+            VALUES (?, 'x86_64-linux', '', 0, 1)
             "#,
         )
+        .bind(test_drv)
         .execute(pool)
         .await
         .unwrap();
@@ -788,27 +791,24 @@ mod tests {
             "owner",
             "repo",
             drv_rowid,
-            "in_progress",
-            None,
+            "running",
             pool,
         )
         .await
         .unwrap();
 
-        // Update the status
-        update_check_run_status(12345, "completed", Some("success"), pool)
+        // Update the state
+        update_check_run_status(12345, "success", pool)
             .await
             .unwrap();
 
         // Verify it was updated
-        let (status, conclusion): (String, Option<String>) = sqlx::query_as(
-            "SELECT status, conclusion FROM GiteaCheckRuns WHERE check_run_id = 12345",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM GiteaCheckRuns WHERE check_run_id = 12345")
+                .fetch_one(pool)
+                .await
+                .unwrap();
 
-        assert_eq!(status, "completed");
-        assert_eq!(conclusion.as_deref(), Some("success"));
+        assert_eq!(state, "success");
     }
 }

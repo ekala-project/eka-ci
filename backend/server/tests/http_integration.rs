@@ -126,6 +126,8 @@ async fn create_test_server_with_options(
         &socket,
         git_sender,
         None, // no GitHub sender
+        None, // no GitLab sender
+        None, // no Gitea sender
         None, // no ingress sender
         None, // no octocrab
         scheduler.metrics_registry(),

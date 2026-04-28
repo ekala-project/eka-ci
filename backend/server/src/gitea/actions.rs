@@ -211,6 +211,7 @@ pub async fn fail_ci_eval_job(
 /// Create a check run for a build.
 ///
 /// This creates a new check run with the given name and status.
+#[allow(dead_code)]
 pub async fn create_check_run(
     client: &GiteaClient,
     owner: &str,
