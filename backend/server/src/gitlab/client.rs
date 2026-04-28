@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, header};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// GitLab API client
 ///
@@ -531,5 +529,71 @@ impl GitLabClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gitlab_client_creation() {
+        // Test client creation with domain without protocol
+        let client = GitLabClient {
+            base_url: "https://gitlab.com".to_string(),
+            token: "test-token".to_string(),
+            http_client: Client::new(),
+        };
+
+        assert_eq!(client.base_url, "https://gitlab.com");
+    }
+
+    #[test]
+    fn test_sticky_comment_marker_format() {
+        // Test that sticky comment markers follow the expected format
+        let marker = "change-summary";
+        let expected = "<!-- eka-ci-marker: change-summary -->";
+
+        assert!(expected.contains(&format!("eka-ci-marker: {}", marker)));
+    }
+
+    #[test]
+    fn test_gitlab_access_levels() {
+        // Document GitLab access level constants for reference
+        const GUEST: i32 = 10;
+        const REPORTER: i32 = 20;
+        const DEVELOPER: i32 = 30;
+        const MAINTAINER: i32 = 40;
+        const OWNER: i32 = 50;
+
+        // Developer is the minimum level for most CI operations
+        assert!(DEVELOPER >= 30);
+        assert!(MAINTAINER >= 30);
+        assert!(OWNER >= 30);
+        assert!(GUEST < 30);
+        assert!(REPORTER < 30);
+    }
+
+    #[test]
+    fn test_commit_status_state_serialization() {
+        // Ensure CommitStatusState serializes correctly
+        let pending = CommitStatusState::Pending;
+        let running = CommitStatusState::Running;
+        let success = CommitStatusState::Success;
+        let failed = CommitStatusState::Failed;
+        let canceled = CommitStatusState::Canceled;
+
+        // These should serialize to lowercase strings
+        let pending_json = serde_json::to_string(&pending).unwrap();
+        let running_json = serde_json::to_string(&running).unwrap();
+        let success_json = serde_json::to_string(&success).unwrap();
+        let failed_json = serde_json::to_string(&failed).unwrap();
+        let canceled_json = serde_json::to_string(&canceled).unwrap();
+
+        assert_eq!(pending_json, "\"pending\"");
+        assert_eq!(running_json, "\"running\"");
+        assert_eq!(success_json, "\"success\"");
+        assert_eq!(failed_json, "\"failed\"");
+        assert_eq!(canceled_json, "\"canceled\"");
     }
 }

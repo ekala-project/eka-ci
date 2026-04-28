@@ -1376,6 +1376,8 @@ mod redaction_tests {
             default_merge_method: "squash".to_string(),
             caches: HashMap::new(),
             github_apps: HashMap::new(),
+            gitea_instances: HashMap::new(),
+            gitlab_instances: HashMap::new(),
             security: SecurityConfig {
                 max_hook_timeout_seconds: 300,
                 audit_hooks: true,
@@ -1387,6 +1389,129 @@ mod redaction_tests {
         // Both the compact and pretty Debug forms must redact every secret.
         assert_no_secret(&format!("{config:?}"), "Config {:?}");
         assert_no_secret(&format!("{config:#?}"), "Config {:#?}");
+    }
+
+    #[test]
+    fn gitea_instance_config_debug_redacts_token() {
+        let config = GiteaInstanceConfig {
+            domain: "gitea.example.com".to_string(),
+            token: Redacted::new("gitea-token-needle".to_string()),
+        };
+
+        let debug_output = format!("{config:?}");
+        assert!(
+            !debug_output.contains("gitea-token-needle"),
+            "Gitea token leaked in debug output: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "No redaction marker in Gitea config: {debug_output}"
+        );
+    }
+
+    #[test]
+    fn gitlab_instance_config_debug_redacts_token() {
+        let config = GitLabInstanceConfig {
+            domain: "gitlab.example.com".to_string(),
+            token: Redacted::new("gitlab-token-needle".to_string()),
+        };
+
+        let debug_output = format!("{config:?}");
+        assert!(
+            !debug_output.contains("gitlab-token-needle"),
+            "GitLab token leaked in debug output: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "No redaction marker in GitLab config: {debug_output}"
+        );
+    }
+
+    #[test]
+    fn config_with_gitea_gitlab_redacts_all_tokens() {
+        let mut gitea_instances = HashMap::new();
+        gitea_instances.insert(
+            "gitea.example.com".to_string(),
+            GiteaInstanceConfig {
+                domain: "gitea.example.com".to_string(),
+                token: Redacted::new("gitea-token-needle".to_string()),
+            },
+        );
+
+        let mut gitlab_instances = HashMap::new();
+        gitlab_instances.insert(
+            "gitlab.example.com".to_string(),
+            GitLabInstanceConfig {
+                domain: "gitlab.example.com".to_string(),
+                token: Redacted::new("gitlab-token-needle".to_string()),
+            },
+        );
+
+        let config = Config {
+            web: ConfigWeb {
+                address: std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0),
+                allowed_origins: Vec::new(),
+            },
+            unix: ConfigUnix {
+                socket_path: PathBuf::from("/tmp/ekaci-test.sock"),
+            },
+            oauth: ConfigOAuth {
+                client_id: "client-id".to_string(),
+                client_secret: Redacted::new("oauth-client-secret-needle".to_string()),
+                redirect_url: "http://localhost/callback".to_string(),
+                jwt_secret: Redacted::new("jwt-secret-needle".to_string()),
+            },
+            db_path: PathBuf::from("/tmp/ekaci-test.db"),
+            logs_dir: PathBuf::from("/tmp/ekaci-test-logs"),
+            remote_builders: Vec::new(),
+            require_approval: false,
+            merge_queue_require_approval: false,
+            build_no_output_timeout_seconds: 1200,
+            build_max_duration_seconds: 14_400,
+            graph_lru_capacity: 100,
+            default_merge_method: "squash".to_string(),
+            caches: HashMap::new(),
+            github_apps: HashMap::new(),
+            gitea_instances,
+            gitlab_instances,
+            security: SecurityConfig {
+                max_hook_timeout_seconds: 300,
+                audit_hooks: true,
+                webhook_secret: Some(Redacted::new("webhook-secret-needle".to_string())),
+                allow_insecure_webhooks: false,
+                allow_private_cache_hosts: false,
+            },
+        };
+
+        let debug_output = format!("{config:?}");
+
+        // Verify all secrets are redacted
+        assert!(
+            !debug_output.contains("gitea-token-needle"),
+            "Gitea token leaked: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("gitlab-token-needle"),
+            "GitLab token leaked: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("oauth-client-secret-needle"),
+            "OAuth secret leaked: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("jwt-secret-needle"),
+            "JWT secret leaked: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("webhook-secret-needle"),
+            "Webhook secret leaked: {debug_output}"
+        );
+
+        // Verify redaction markers exist
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "No redaction markers in config: {debug_output}"
+        );
     }
 }
 
