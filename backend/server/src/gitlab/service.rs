@@ -6,6 +6,7 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::db::DbService;
+use crate::gitlab::GitLabClient;
 use crate::gitlab::types::{GitLabCIInfo, GitLabTask};
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
@@ -27,8 +28,8 @@ pub struct GitLabService {
     graph_handle: GraphServiceHandle,
     /// Optional metrics for observability
     change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
-    // TODO: Add GitLab API client when implementing
-    // gitlab_client: Arc<GitLabClient>,
+    /// GitLab API clients per domain (self-hosted instances)
+    gitlab_clients: Mutex<HashMap<String, Arc<GitLabClient>>>,
 }
 
 impl GitLabService {
@@ -39,6 +40,27 @@ impl GitLabService {
     ) -> Result<Self> {
         let (gitlab_sender, gitlab_receiver) = mpsc::channel(100);
 
+        // Try to initialize GitLab client from environment variables
+        // Format: GITLAB_TOKEN and GITLAB_DOMAIN (or GITLAB_<DOMAIN>_TOKEN for multiple instances)
+        let mut gitlab_clients = HashMap::new();
+
+        if let (Ok(token), Ok(domain)) = (
+            std::env::var("GITLAB_TOKEN"),
+            std::env::var("GITLAB_DOMAIN"),
+        ) {
+            match GitLabClient::new(&domain, token).await {
+                Ok(client) => {
+                    info!("Initialized GitLab client for domain: {}", domain);
+                    gitlab_clients.insert(domain.clone(), Arc::new(client));
+                },
+                Err(e) => {
+                    warn!("Failed to initialize GitLab client for {}: {:?}", domain, e);
+                },
+            }
+        } else {
+            info!("GitLab integration disabled (GITLAB_TOKEN or GITLAB_DOMAIN not set)");
+        }
+
         Ok(Self {
             db_service,
             gitlab_sender,
@@ -47,6 +69,7 @@ impl GitLabService {
             eval_statuses: Mutex::new(HashMap::new()),
             graph_handle,
             change_summary_metrics,
+            gitlab_clients: Mutex::new(gitlab_clients),
         })
     }
 
@@ -56,6 +79,11 @@ impl GitLabService {
 
     pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitLabTask>> {
         self.gitlab_receiver.blocking_lock().take()
+    }
+
+    /// Get the GitLab client for a specific domain
+    async fn get_client(&self, domain: &str) -> Option<Arc<GitLabClient>> {
+        self.gitlab_clients.lock().await.get(domain).cloned()
     }
 
     async fn handle_gitlab_task(&self, task: &GitLabTask) -> Result<()> {
@@ -75,15 +103,10 @@ impl GitLabService {
                     .await
             },
             GitLabTask::CreateCIConfigureGate { ci_info } => {
-                debug!("GitLab CreateCIConfigureGate for {}", ci_info.commit);
-                // TODO: Post pending commit status via GitLab API
-                Ok(())
+                self.handle_create_ci_configure_gate(ci_info).await
             },
             GitLabTask::CompleteCIConfigureGate { ci_info } => {
-                debug!("GitLab CompleteCIConfigureGate for {}", ci_info.commit);
-                // TODO: Update status to success via GitLab API
-                self.configure_statuses.lock().await.remove(&ci_info.commit);
-                Ok(())
+                self.handle_complete_ci_configure_gate(ci_info).await
             },
             GitLabTask::CreateChangeSummaryComment { ci_info, job } => {
                 self.handle_create_change_summary_comment(ci_info, job)
@@ -228,6 +251,92 @@ impl GitLabService {
             ci_info.owner, ci_info.repo_name, ci_info.project_id
         );
         debug!("Change summary markdown:\n{}", markdown);
+
+        Ok(())
+    }
+
+    /// Create the initial CI configure gate commit status
+    async fn handle_create_ci_configure_gate(&self, ci_info: &Arc<GitLabCIInfo>) -> Result<()> {
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!(
+                "No GitLab client configured for domain {}, skipping configure gate",
+                ci_info.domain
+            );
+            return Ok(());
+        };
+
+        let request = crate::gitlab::client::CreateCommitStatusRequest {
+            state: crate::gitlab::client::CommitStatusState::Pending,
+            target_url: None,
+            description: Some("Reading repository configuration...".to_string()),
+            name: Some("EkaCI: Configure".to_string()),
+            context: Some("ekaci/configure".to_string()),
+        };
+
+        match client
+            .create_commit_status(ci_info.project_id, &ci_info.commit, request)
+            .await
+        {
+            Ok(status) => {
+                info!(
+                    "Created configure gate commit status {} for commit {}",
+                    status.id, ci_info.commit
+                );
+                self.configure_statuses
+                    .lock()
+                    .await
+                    .insert(ci_info.commit.clone(), status.id);
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to create configure gate commit status for {}: {:?}",
+                    ci_info.commit, e
+                );
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Complete the CI configure gate commit status
+    async fn handle_complete_ci_configure_gate(&self, ci_info: &Arc<GitLabCIInfo>) -> Result<()> {
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!(
+                "No GitLab client configured for domain {}, skipping configure gate completion",
+                ci_info.domain
+            );
+            return Ok(());
+        };
+
+        // Remove from tracking map
+        self.configure_statuses.lock().await.remove(&ci_info.commit);
+
+        // Post success status
+        let request = crate::gitlab::client::CreateCommitStatusRequest {
+            state: crate::gitlab::client::CommitStatusState::Success,
+            target_url: None,
+            description: Some("CI configuration validated successfully".to_string()),
+            name: Some("EkaCI: Configure".to_string()),
+            context: Some("ekaci/configure".to_string()),
+        };
+
+        match client
+            .create_commit_status(ci_info.project_id, &ci_info.commit, request)
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    "Completed configure gate commit status for commit {}",
+                    ci_info.commit
+                );
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to complete configure gate commit status for {}: {:?}",
+                    ci_info.commit, e
+                );
+            },
+        }
 
         Ok(())
     }
