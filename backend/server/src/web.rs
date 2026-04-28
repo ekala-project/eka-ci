@@ -774,33 +774,80 @@ async fn handle_gitea_webhook(
 ) -> axum::response::Response {
     use axum::http::StatusCode;
 
-    // Gitea uses X-Gitea-Signature for HMAC verification (similar to GitHub)
-    // For simplicity in this skeleton, we'll use token-based auth like GitLab
-    // TODO: Implement proper HMAC-SHA256 signature verification
-
-    let token_header = headers.get("x-gitea-token");
-
-    // Verify webhook secret if configured
+    // Gitea uses X-Gitea-Signature for HMAC-SHA256 verification (similar to GitHub)
+    // Signature verification is the primary security gate. Three modes:
+    //   (a) secret configured            → require a valid signature
+    //   (b) no secret, insecure allowed  → accept everything (dev only)
+    //   (c) no secret, insecure forbidden → refuse with 503
     match (&state.webhook_secret, state.allow_insecure_webhooks) {
         (Some(secret), _) => {
-            let token = match token_header.and_then(|t| t.to_str().ok()) {
-                Some(t) => t,
+            let signature = match headers.get("x-gitea-signature") {
+                Some(sig) => match sig.to_str() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        state
+                            .webhook_metrics
+                            .signature_failures_total
+                            .with_label_values(&["invalid_header"])
+                            .inc();
+                        warn!(
+                            event = "gitea_webhook_signature_invalid_header",
+                            error = %e,
+                            "Failed to parse X-Gitea-Signature header"
+                        );
+                        return (StatusCode::UNAUTHORIZED, "").into_response();
+                    },
+                },
                 None => {
-                    warn!("Missing or invalid X-Gitea-Token header");
+                    state
+                        .webhook_metrics
+                        .signature_failures_total
+                        .with_label_values(&["missing_header"])
+                        .inc();
+                    warn!(
+                        event = "gitea_webhook_signature_missing",
+                        "Missing X-Gitea-Signature header on webhook request"
+                    );
                     return (StatusCode::UNAUTHORIZED, "").into_response();
                 },
             };
 
-            if token != secret.expose() {
-                warn!("Gitea webhook token verification failed");
+            if let Err(e) = verify_webhook_signature(secret.expose(), signature, &body) {
+                state
+                    .webhook_metrics
+                    .signature_failures_total
+                    .with_label_values(&["bad_signature"])
+                    .inc();
+                warn!(
+                    event = "gitea_webhook_signature_verification_failed",
+                    error = %e,
+                    "Gitea webhook signature verification failed"
+                );
                 return (StatusCode::UNAUTHORIZED, "").into_response();
             }
+
+            state.webhook_metrics.signature_verified_total.inc();
+            info!(
+                event = "gitea_webhook_signature_verified",
+                "Gitea webhook signature verified successfully"
+            );
         },
         (None, true) => {
-            warn!("Accepting Gitea webhook without verification (insecure mode)");
+            state
+                .webhook_metrics
+                .signature_failures_total
+                .with_label_values(&["unsigned_insecure_mode"])
+                .inc();
+            warn!(
+                event = "gitea_webhook_accepted_without_verification",
+                "Accepting Gitea webhook without signature verification (insecure mode)"
+            );
         },
         (None, false) => {
-            warn!("Refusing Gitea webhook: no secret configured");
+            warn!(
+                event = "gitea_webhook_rejected_no_secret",
+                "Refusing Gitea webhook: no secret configured and insecure mode disabled"
+            );
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Webhook endpoint not configured",
