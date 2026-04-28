@@ -411,19 +411,38 @@ pub struct RepoPermission {
 
 /// Validate a merge method against repository settings
 pub async fn validate_merge_method(
-    client: &GiteaClient,
+    _client: &GiteaClient,
     owner: &str,
     repo_name: &str,
     method: &str,
 ) -> Result<MergeMethodCheck> {
-    // For now, accept all merge methods - Gitea repository settings validation
-    // can be added later by fetching repository details
     debug!(
         "Validating merge method '{}' for {}/{}",
         method, owner, repo_name
     );
-    let _ = (client, method);
-    Ok(MergeMethodCheck::Ok)
+
+    // Gitea supports three merge methods (similar to GitHub):
+    // - "merge" - creates a merge commit
+    // - "rebase" - rebases and merges
+    // - "squash" - squashes commits and merges
+    //
+    // For now, accept all standard methods since Gitea doesn't have
+    // strict repository-level restrictions on merge methods.
+    // Individual repos may have preferences, but those are not enforced via API.
+
+    match method {
+        "merge" | "rebase" | "squash" => Ok(MergeMethodCheck::Ok),
+        _ => {
+            // Unknown method - return allowed methods
+            Ok(MergeMethodCheck::NotAllowed {
+                allowed: vec![
+                    "merge".to_string(),
+                    "rebase".to_string(),
+                    "squash".to_string(),
+                ],
+            })
+        },
+    }
 }
 
 /// Check repository permission for a user
@@ -433,19 +452,39 @@ pub async fn check_repo_permission_for_user(
     repo_name: &str,
     username: &str,
 ) -> Result<RepoPermission> {
-    // Fetch repository collaborator details for the user
     debug!(
         "Checking repo permission for {} in {}/{}",
         username, owner, repo_name
     );
 
-    // For now, return default permissions
-    // This should be replaced with actual Gitea API call
-    let _ = client;
-    Ok(RepoPermission {
-        can_push: false,
-        is_admin: false,
-    })
+    // Use the check_user_permission method if available
+    match client
+        .check_user_permission(owner, repo_name, username)
+        .await
+    {
+        Ok(permission) => {
+            // Parse permission string: "admin", "write", "read", "none"
+            let can_push = matches!(permission.permission.as_str(), "admin" | "write");
+            let is_admin = permission.permission == "admin";
+
+            debug!(
+                "User {} has permission '{}' (push={}, admin={}) in {}/{}",
+                username, permission.permission, can_push, is_admin, owner, repo_name
+            );
+            Ok(RepoPermission { can_push, is_admin })
+        },
+        Err(e) => {
+            debug!(
+                "Failed to check repo permission for {} in {}/{}: {}",
+                username, owner, repo_name, e
+            );
+            // Return no permissions if we can't fetch
+            Ok(RepoPermission {
+                can_push: false,
+                is_admin: false,
+            })
+        },
+    }
 }
 
 /// Check if all changed packages have required approvals
@@ -481,10 +520,32 @@ pub async fn fetch_head_commit_date(
         sha, owner, repo_name
     );
 
-    // For now, return None to skip the push timing check
-    // Real implementation would call Gitea API to get commit details
-    let _ = client;
-    Ok(None)
+    match client.get_commit(owner, repo_name, sha).await {
+        Ok(commit) => {
+            // Parse the committer date field (ISO 8601 format)
+            match chrono::DateTime::parse_from_rfc3339(&commit.commit.committer.date) {
+                Ok(dt) => {
+                    let utc_dt = dt.with_timezone(&chrono::Utc);
+                    debug!("Commit {} was committed at {}", sha, utc_dt);
+                    Ok(Some(utc_dt))
+                },
+                Err(e) => {
+                    debug!(
+                        "Failed to parse commit date '{}' for {}: {}",
+                        commit.commit.committer.date, sha, e
+                    );
+                    Ok(None)
+                },
+            }
+        },
+        Err(e) => {
+            debug!(
+                "Failed to fetch commit {} in {}/{}: {}",
+                sha, owner, repo_name, e
+            );
+            Ok(None)
+        },
+    }
 }
 
 /// Create a dependency changes gate check run
