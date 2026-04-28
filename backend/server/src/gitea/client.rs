@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, header};
 use serde::{Deserialize, Serialize};
@@ -599,5 +597,138 @@ impl GiteaClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_supports_check_runs_below_threshold() {
+        let client = GiteaClient {
+            base_url: "https://test.com".to_string(),
+            token: "test".to_string(),
+            http_client: Client::new(),
+            capabilities: GiteaCapabilities {
+                supports_check_runs: false,
+                version: "1.12.0".to_string(),
+            },
+        };
+
+        assert!(!client.version_supports_check_runs("1.12.0"));
+        assert!(!client.version_supports_check_runs("1.12.9"));
+        assert!(!client.version_supports_check_runs("1.0.0"));
+        assert!(!client.version_supports_check_runs("0.9.0"));
+    }
+
+    #[test]
+    fn test_version_supports_check_runs_at_threshold() {
+        let client = GiteaClient {
+            base_url: "https://test.com".to_string(),
+            token: "test".to_string(),
+            http_client: Client::new(),
+            capabilities: GiteaCapabilities {
+                supports_check_runs: false,
+                version: "1.13.0".to_string(),
+            },
+        };
+
+        assert!(client.version_supports_check_runs("1.13.0"));
+    }
+
+    #[test]
+    fn test_version_supports_check_runs_above_threshold() {
+        let client = GiteaClient {
+            base_url: "https://test.com".to_string(),
+            token: "test".to_string(),
+            http_client: Client::new(),
+            capabilities: GiteaCapabilities {
+                supports_check_runs: false,
+                version: "1.21.0".to_string(),
+            },
+        };
+
+        assert!(client.version_supports_check_runs("1.13.0"));
+        assert!(client.version_supports_check_runs("1.14.0"));
+        assert!(client.version_supports_check_runs("1.21.3"));
+        assert!(client.version_supports_check_runs("2.0.0"));
+    }
+
+    #[test]
+    fn test_version_supports_check_runs_with_suffix() {
+        let client = GiteaClient {
+            base_url: "https://test.com".to_string(),
+            token: "test".to_string(),
+            http_client: Client::new(),
+            capabilities: GiteaCapabilities {
+                supports_check_runs: false,
+                version: "1.13.0+dev".to_string(),
+            },
+        };
+
+        // Version parsing should handle suffixes like +dev, -rc1, etc.
+        assert!(client.version_supports_check_runs("1.13.0+dev"));
+        assert!(client.version_supports_check_runs("1.21.0-rc1"));
+        assert!(!client.version_supports_check_runs("1.12.0+dev"));
+    }
+
+    #[test]
+    fn test_version_supports_check_runs_malformed() {
+        let client = GiteaClient {
+            base_url: "https://test.com".to_string(),
+            token: "test".to_string(),
+            http_client: Client::new(),
+            capabilities: GiteaCapabilities {
+                supports_check_runs: false,
+                version: "unknown".to_string(),
+            },
+        };
+
+        // Malformed versions should safely return false
+        assert!(!client.version_supports_check_runs("unknown"));
+        assert!(!client.version_supports_check_runs(""));
+        assert!(!client.version_supports_check_runs("v1.21.0")); // 'v' prefix
+    }
+
+    #[test]
+    fn test_gitea_client_supports_check_runs() {
+        let client_old = GiteaClient {
+            base_url: "https://test.com".to_string(),
+            token: "test".to_string(),
+            http_client: Client::new(),
+            capabilities: GiteaCapabilities {
+                supports_check_runs: false,
+                version: "1.12.0".to_string(),
+            },
+        };
+
+        let client_new = GiteaClient {
+            base_url: "https://test.com".to_string(),
+            token: "test".to_string(),
+            http_client: Client::new(),
+            capabilities: GiteaCapabilities {
+                supports_check_runs: true,
+                version: "1.21.0".to_string(),
+            },
+        };
+
+        assert!(!client_old.supports_check_runs());
+        assert!(client_new.supports_check_runs());
+    }
+
+    #[test]
+    fn test_gitea_client_version() {
+        let client = GiteaClient {
+            base_url: "https://test.com".to_string(),
+            token: "test".to_string(),
+            http_client: Client::new(),
+            capabilities: GiteaCapabilities {
+                supports_check_runs: true,
+                version: "1.21.3".to_string(),
+            },
+        };
+
+        assert_eq!(client.version(), "1.21.3");
     }
 }
