@@ -94,9 +94,24 @@ impl GitLabService {
     async fn handle_gitlab_task(&self, task: &GitLabTask) -> Result<()> {
         match task {
             GitLabTask::UpdateBuildStatus { drv_id, status } => {
-                debug!("GitLab UpdateBuildStatus for {:?}: {:?}", drv_id, status);
-                // TODO: Query GitLabCommitStatuses and update via GitLab API
-                Ok(())
+                self.handle_update_build_status(drv_id, status).await
+            },
+            GitLabTask::UpdateBuildStatusWithSizeWarning {
+                drv_id,
+                status,
+                baseline_size,
+                current_size,
+                increase_percent,
+                threshold_percent: _,
+            } => {
+                self.handle_update_build_status_with_size_warning(
+                    drv_id,
+                    status,
+                    *baseline_size,
+                    *current_size,
+                    *increase_percent,
+                )
+                .await
             },
             GitLabTask::CreateJobSet {
                 ci_info,
@@ -112,6 +127,18 @@ impl GitLabService {
             },
             GitLabTask::CompleteCIConfigureGate { ci_info } => {
                 self.handle_complete_ci_configure_gate(ci_info).await
+            },
+            GitLabTask::CreateFailureStatus {
+                drv_id,
+                jobset_id,
+                job_attr_name,
+                difference,
+            } => {
+                self.handle_create_failure_status(drv_id, *jobset_id, job_attr_name, difference)
+                    .await
+            },
+            GitLabTask::CancelStatusesForCommit { ci_info } => {
+                self.handle_cancel_statuses_for_commit(ci_info).await
             },
             GitLabTask::CreateChangeSummaryComment { ci_info, job } => {
                 self.handle_create_change_summary_comment(ci_info, job)
@@ -341,6 +368,275 @@ impl GitLabService {
                     ci_info.commit, e
                 );
             },
+        }
+
+        Ok(())
+    }
+
+    /// Update the status of a build in GitLab
+    async fn handle_update_build_status(
+        &self,
+        drv_id: &crate::db::model::DrvId,
+        status: &crate::db::model::build_event::DrvBuildState,
+    ) -> Result<()> {
+        debug!(
+            "Updating GitLab build status for {:?}: {:?}",
+            drv_id, status
+        );
+
+        // Query all commit statuses associated with this derivation
+        let statuses =
+            crate::db::gitlab::commit_statuses_for_drv_path(drv_id, &self.db_service.pool).await?;
+
+        if statuses.is_empty() {
+            debug!("No commit statuses found for drv {:?}", drv_id);
+            return Ok(());
+        }
+
+        // Update each status
+        for commit_status in statuses {
+            let Some(client) = self.get_client(&commit_status.domain).await else {
+                warn!("No GitLab client for domain {}", commit_status.domain);
+                continue;
+            };
+
+            // Use the actions module to update the status
+            if let Err(e) = crate::gitlab::actions::update_build_status(
+                &client,
+                commit_status.project_id,
+                &commit_status.sha,
+                &commit_status.name,
+                status,
+            )
+            .await
+            {
+                warn!(
+                    "Failed to update GitLab status {} for drv {:?}: {:?}",
+                    commit_status.status_id, drv_id, e
+                );
+            } else {
+                debug!(
+                    "Successfully updated GitLab status {} for drv {:?}",
+                    commit_status.status_id, drv_id
+                );
+
+                // Update our local database tracking
+                let state: crate::gitlab::types::GitLabStatusState = status.clone().into();
+                let state_str = format!("{:?}", state).to_lowercase();
+                if let Err(e) = crate::db::gitlab::update_commit_status_state(
+                    commit_status.status_id,
+                    &state_str,
+                    &self.db_service.pool,
+                )
+                .await
+                {
+                    warn!("Failed to update commit status state in database: {:?}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update build status with a size warning
+    async fn handle_update_build_status_with_size_warning(
+        &self,
+        drv_id: &crate::db::model::DrvId,
+        status: &crate::db::model::build_event::DrvBuildState,
+        baseline_size: u64,
+        current_size: u64,
+        increase_percent: f64,
+    ) -> Result<()> {
+        debug!(
+            "Updating GitLab build status with size warning for {:?}: {:?}",
+            drv_id, status
+        );
+
+        // Query all commit statuses associated with this derivation
+        let statuses =
+            crate::db::gitlab::commit_statuses_for_drv_path(drv_id, &self.db_service.pool).await?;
+
+        if statuses.is_empty() {
+            debug!("No commit statuses found for drv {:?}", drv_id);
+            return Ok(());
+        }
+
+        // Update each status with size warning
+        for commit_status in statuses {
+            let Some(client) = self.get_client(&commit_status.domain).await else {
+                warn!("No GitLab client for domain {}", commit_status.domain);
+                continue;
+            };
+
+            if let Err(e) = crate::gitlab::actions::update_status_with_size_warning(
+                &client,
+                commit_status.project_id,
+                &commit_status.sha,
+                &commit_status.name,
+                baseline_size,
+                current_size,
+                increase_percent,
+            )
+            .await
+            {
+                warn!(
+                    "Failed to update GitLab status with size warning for {:?}: {:?}",
+                    drv_id, e
+                );
+            } else {
+                debug!(
+                    "Successfully updated GitLab status with size warning for {:?}",
+                    drv_id
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Create a failure status for a build
+    async fn handle_create_failure_status(
+        &self,
+        drv_id: &crate::db::model::DrvId,
+        jobset_id: i64,
+        job_attr_name: &str,
+        _difference: &crate::github::JobDifference,
+    ) -> Result<()> {
+        debug!(
+            "Creating failure status for drv {:?}, jobset {}, job {}",
+            drv_id, jobset_id, job_attr_name
+        );
+
+        // Query the jobset to get CI info
+        let jobset: Option<(String, i64, String, String, String, i64)> = sqlx::query_as(
+            r#"
+            SELECT sha, project_id, owner, repo_name, domain, project_id
+            FROM GitLabJobSets
+            WHERE ROWID = ?
+            "#,
+        )
+        .bind(jobset_id)
+        .fetch_optional(&self.db_service.pool)
+        .await?;
+
+        let Some((sha, project_id, owner, repo_name, domain, _)) = jobset else {
+            warn!("No jobset found with id {}", jobset_id);
+            return Ok(());
+        };
+
+        let Some(client) = self.get_client(&domain).await else {
+            warn!("No GitLab client for domain {}", domain);
+            return Ok(());
+        };
+
+        // Get the drv ROWID for database storage
+        let drv_rowid: Option<i64> = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
+            .bind(drv_id)
+            .fetch_optional(&self.db_service.pool)
+            .await?;
+
+        let Some(drv_rowid) = drv_rowid else {
+            warn!("No drv found for path {:?}", drv_id);
+            return Ok(());
+        };
+
+        let status_name = format!("eka-ci/{}", job_attr_name);
+        let description = "Build failed";
+
+        match crate::gitlab::actions::create_failure_status(
+            &client,
+            project_id,
+            &sha,
+            &status_name,
+            description,
+        )
+        .await
+        {
+            Ok(status_id) => {
+                debug!("Created failure status {} for drv {:?}", status_id, drv_id);
+
+                // Store in database
+                if let Err(e) = crate::db::gitlab::insert_commit_status_info(
+                    status_id,
+                    &sha,
+                    &status_name,
+                    project_id,
+                    &domain,
+                    &owner,
+                    &repo_name,
+                    drv_rowid,
+                    "failed",
+                    &self.db_service.pool,
+                )
+                .await
+                {
+                    warn!("Failed to insert commit status into database: {:?}", e);
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "Failed to create failure status for drv {:?}: {:?}",
+                    drv_id, e
+                );
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Cancel all statuses for a commit
+    async fn handle_cancel_statuses_for_commit(&self, ci_info: &GitLabCIInfo) -> Result<()> {
+        debug!(
+            "Canceling all statuses for commit {} in project {}",
+            ci_info.commit, ci_info.project_id
+        );
+
+        // Query all active statuses for this commit
+        let statuses =
+            crate::db::gitlab::commit_statuses_for_commit(&ci_info.commit, &self.db_service.pool)
+                .await?;
+
+        if statuses.is_empty() {
+            debug!("No active statuses found for commit {}", ci_info.commit);
+            return Ok(());
+        }
+
+        let Some(client) = self.get_client(&ci_info.domain).await else {
+            warn!("No GitLab client for domain {}", ci_info.domain);
+            return Ok(());
+        };
+
+        // Cancel each status
+        for status in statuses {
+            if let Err(e) = crate::gitlab::actions::cancel_commit_status(
+                &client,
+                status.project_id,
+                &status.sha,
+                &status.name,
+            )
+            .await
+            {
+                warn!(
+                    "Failed to cancel status {} for commit {}: {:?}",
+                    status.status_id, ci_info.commit, e
+                );
+            } else {
+                debug!(
+                    "Successfully canceled status {} for commit {}",
+                    status.status_id, ci_info.commit
+                );
+
+                // Update database
+                if let Err(e) = crate::db::gitlab::update_commit_status_state(
+                    status.status_id,
+                    "canceled",
+                    &self.db_service.pool,
+                )
+                .await
+                {
+                    warn!("Failed to update status state in database: {:?}", e);
+                }
+            }
         }
 
         Ok(())

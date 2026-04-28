@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod client;
 pub mod service;
 pub mod types;
