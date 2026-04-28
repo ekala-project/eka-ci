@@ -482,7 +482,7 @@ pub enum MergeMethodCheck {
 
 /// Validate a merge method against project settings
 pub async fn validate_merge_method(
-    client: &GitLabClient,
+    _client: &GitLabClient,
     project_id: i64,
     method: &str,
 ) -> Result<MergeMethodCheck> {
