@@ -249,7 +249,8 @@ impl GitLabService {
 
         // Create jobs for this jobset (platform-agnostic logic)
         // Reuse GitHub's create_jobs_for_jobset implementation
-        crate::db::github::create_jobs_for_jobset(jobset_id, jobs, &self.db_service.pool).await?;
+        crate::db::github::create_jobs_for_jobset(jobset_id, jobs, None, &self.db_service.pool)
+            .await?;
 
         // TODO: If this is a PR head, schedule change summary
         // For now, just log success

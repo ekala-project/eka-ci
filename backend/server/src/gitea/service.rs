@@ -261,7 +261,8 @@ impl GiteaService {
 
         // Create jobs for this jobset (platform-agnostic logic)
         // Reuse the same function as GitHub/GitLab
-        crate::db::github::create_jobs_for_jobset(jobset_id, jobs, &self.db_service.pool).await?;
+        crate::db::github::create_jobs_for_jobset(jobset_id, jobs, None, &self.db_service.pool)
+            .await?;
 
         // TODO: If this is a PR head, schedule change summary
         info!(

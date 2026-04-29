@@ -214,6 +214,10 @@ impl GitHubService {
         jobs: &[NixEvalDrv],
         config_json: Option<&str>,
     ) -> Result<()> {
+        // Pass base commit SHA for incremental eval optimization
+        // This allows job differences to be computed during insertion
+        let base_sha = ci_check_info.base_commit.as_deref();
+
         let jobset_id = self
             .db_service
             .create_github_jobset_with_jobs(
@@ -223,25 +227,15 @@ impl GitHubService {
                 &ci_check_info.repo_name,
                 jobs,
                 config_json,
+                base_sha,
             )
             .await?;
 
         // This is only relevant on PRs, missing a base commit denotes that
         // this jobset creation is done for a base_commit
         if let Some(base_commit) = ci_check_info.base_commit.as_ref() {
-            let (new_jobs, changed_drvs, _removed_jobs) = self
-                .db_service
-                .job_difference(&ci_check_info.commit, base_commit, name)
-                .await?;
-
-            // Update the Job table to mark which jobs are new/changed
-            let new_drv_ids: Vec<DrvId> = new_jobs.iter().map(|d| d.drv_path.clone()).collect();
-            let changed_drv_ids: Vec<DrvId> =
-                changed_drvs.iter().map(|d| d.drv_path.clone()).collect();
-
-            self.db_service
-                .update_job_differences(jobset_id, &new_drv_ids, &changed_drv_ids)
-                .await?;
+            // Job differences are now computed during insertion, so we just need
+            // to query them for downstream tasks (no UPDATE needed)
 
             // Note: We no longer create check_runs eagerly here
             // Check_runs will be created lazily when jobs fail

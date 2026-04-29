@@ -338,7 +338,7 @@ mod tests {
             insert_drv(pool, drv).await.expect("insert_drv failed");
         }
         let evals: Vec<NixEvalDrv> = rows.iter().map(|(e, _)| e.clone()).collect();
-        create_jobs_for_jobset(jobset_id, &evals, pool)
+        create_jobs_for_jobset(jobset_id, &evals, None, pool)
             .await
             .expect("create_jobs_for_jobset failed");
         jobset_id
