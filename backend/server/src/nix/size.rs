@@ -5,17 +5,27 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 /// Information about a Nix store path from `nix path-info`
+///
+/// The JSON output is an object like:
+/// ```json
+/// {
+///   "/nix/store/...": {
+///     "narSize": 123,
+///     "closureSize": 456,  // only with -S flag
+///     ...
+///   }
+/// }
+/// ```
 #[derive(Debug, Deserialize)]
-struct PathInfo {
-    path: String,
+struct PathInfoData {
     #[serde(rename = "narSize")]
     nar_size: u64,
-    #[serde(rename = "closureSize")]
+    #[serde(rename = "closureSize", default)]
     closure_size: u64,
 }
 
 /// Run `nix path-info --json` for the given paths and parse the result.
-fn query_path_infos(output_paths: &[String], include_closure: bool) -> Result<Vec<PathInfo>> {
+fn query_path_infos(output_paths: &[String], include_closure: bool) -> Result<HashMap<String, PathInfoData>> {
     let mut cmd = Command::new("nix");
     cmd.arg("path-info");
     if include_closure {
@@ -49,7 +59,7 @@ pub fn get_output_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>>
     let path_infos = query_path_infos(output_paths, false)?;
     Ok(path_infos
         .into_iter()
-        .map(|info| (info.path, info.nar_size))
+        .map(|(path, info)| (path, info.nar_size))
         .collect())
 }
 
@@ -65,7 +75,7 @@ pub fn get_closure_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>
     let path_infos = query_path_infos(output_paths, true)?;
     Ok(path_infos
         .into_iter()
-        .map(|info| (info.path, info.closure_size))
+        .map(|(path, info)| (path, info.closure_size))
         .collect())
 }
 
