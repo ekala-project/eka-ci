@@ -11,8 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use lru::LruCache;
 use tokio::process::Command;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::db::DbService;
@@ -24,6 +23,7 @@ use crate::graph::GraphCommand;
 use crate::metrics::NixEvalMetrics;
 use crate::scheduler::IngressTask;
 
+#[derive(Debug)]
 pub struct EvalJob {
     pub file_path: String,
     pub name: String,
@@ -32,6 +32,7 @@ pub struct EvalJob {
                                       * TODO: support arguments */
 }
 
+#[derive(Debug)]
 pub enum EvalTask {
     Job(EvalJob),
     GithubJobPR((EvalJob, CICheckInfo)),
@@ -40,12 +41,13 @@ pub enum EvalTask {
 
 pub struct EvalService {
     db_service: DbService,
-    drv_receiver: mpsc::Receiver<EvalTask>,
+    eval_sender: mpsc::Sender<EvalTask>,
+    eval_receiver: Option<mpsc::Receiver<EvalTask>>,
     /// Used to request scheduler to determine if it should build a drv
     scheduler_sender: mpsc::Sender<IngressTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
-    drv_map: LruCache<DrvId, Drv>,
+    drv_map: Mutex<LruCache<DrvId, Drv>>,
     /// M4: metrics for `nix-eval-jobs` output volume and truncation
     /// events. Optional so unit/integration tests that don't care
     /// about observability can pass `None`.
@@ -54,7 +56,8 @@ pub struct EvalService {
 
 impl EvalService {
     pub fn new(
-        rcvr: mpsc::Receiver<EvalTask>,
+        sender: mpsc::Sender<EvalTask>,
+        receiver: mpsc::Receiver<EvalTask>,
         db_service: DbService,
         scheduler_sender: mpsc::Sender<IngressTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
@@ -63,37 +66,17 @@ impl EvalService {
     ) -> EvalService {
         EvalService {
             db_service,
-            drv_receiver: rcvr,
+            eval_sender: sender,
+            eval_receiver: Some(receiver),
             scheduler_sender,
             github_sender,
             graph_command_sender,
-            drv_map: LruCache::new(NonZeroUsize::new(5000).unwrap()),
+            drv_map: Mutex::new(LruCache::new(NonZeroUsize::new(5000).unwrap())),
             nix_eval_metrics,
         }
     }
 
-    pub async fn run(mut self, cancellation_token: CancellationToken) {
-        while let Some(request) = cancellation_token
-            .run_until_cancelled(self.drv_receiver.recv())
-            .await
-        {
-            let task = match request {
-                Some(task) => task,
-                None => {
-                    warn!("Eval receiver channel closed, shutting down");
-                    break;
-                },
-            };
-
-            if let Err(e) = self.handle_eval_task(task).await {
-                error!(error = %e, "Failed to handle eval task")
-            }
-        }
-
-        info!("Eval service shutdown gracefully");
-    }
-
-    async fn handle_eval_task(&mut self, task: EvalTask) -> Result<()> {
+    async fn handle_eval_task(&self, task: EvalTask) -> Result<()> {
         use anyhow::Context;
 
         match &task {
@@ -108,7 +91,7 @@ impl EvalService {
                     let (jobs, errors) = self.run_nix_eval_jobs(&eval_job.file_path).await?;
                     let gh_sender = self
                         .github_sender
-                        .as_mut()
+                        .as_ref()
                         .context("github sender missing")?;
                     // Clone once into Arc so the 2–3 downstream sends share one refcount.
                     let ci_info = std::sync::Arc::new((*ci_info).clone());
@@ -158,16 +141,20 @@ impl EvalService {
 
     /// check the drv_map if it contains the drv_id, then check the database
     /// if it's just not in the LRU cache.
-    async fn already_visited_drv(&mut self, drv_id: &DrvId) -> bool {
-        if self.drv_map.get(drv_id).is_some() {
-            return true;
-        }
+    async fn already_visited_drv(&self, drv_id: &DrvId) -> bool {
+        // First check cache with explicit scoping to ensure lock is released
+        {
+            let mut drv_map = self.drv_map.lock().await;
+            if drv_map.get(drv_id).is_some() {
+                return true;
+            }
+        } // Lock explicitly dropped here
 
-        // If not in cache, check the database
+        // If not in cache, check the database (no lock held)
         match self.db_service.get_drv(drv_id).await {
             Ok(Some(drv)) => {
                 // Found in database, add to cache for future lookups
-                self.drv_map.put(drv_id.clone(), drv);
+                self.drv_map.lock().await.put(drv_id.clone(), drv);
                 true
             },
             _ => false,
@@ -176,7 +163,7 @@ impl EvalService {
 
     /// Given a drv, traverse all direct drv dependencies
     async fn traverse_drvs(
-        &mut self,
+        &self,
         drv_path: &str,
         _references: &Option<HashMap<String, Vec<String>>>,
     ) -> Result<()> {
@@ -218,15 +205,17 @@ impl EvalService {
         // Ok(())
     }
 
-    async fn deep_traverse(&mut self, drv_path: &str) -> Result<()> {
+    async fn deep_traverse(&self, drv_path: &str) -> Result<()> {
         use tokio::task::JoinSet;
 
         debug!("Traversing drv tree for {}", drv_path);
         let drvs: Vec<DrvId> = drv_requisites(drv_path).await?;
+        let mut drv_map = self.drv_map.lock().await;
         let new_drvids: Vec<DrvId> = drvs
             .into_iter()
-            .filter(|x| self.drv_map.get(x).is_none())
+            .filter(|x| drv_map.get(x).is_none())
             .collect();
+        drop(drv_map); // Release the lock before async operations
         debug!("Found {} new drvs", new_drvids.len());
 
         let mut new_drvs = Vec::new();
@@ -272,15 +261,45 @@ impl EvalService {
         self.graph_command_sender.send(cmd).await?;
         rx.await?;
 
-        for drv in new_drvs {
+        // Send all eval requests to scheduler first (no locks held)
+        for drv in &new_drvs {
             let drv_id = std::sync::Arc::new(drv.drv_path.clone());
             self.scheduler_sender
                 .send(IngressTask::EvalRequest(drv_id))
                 .await?;
-            self.drv_map.put(drv.drv_path.clone(), drv);
         }
 
+        // Then acquire lock once and batch update the cache
+        let mut drv_map = self.drv_map.lock().await;
+        for drv in new_drvs {
+            drv_map.put(drv.drv_path.clone(), drv);
+        }
+        drop(drv_map); // Explicit unlock
+
         Ok(())
+    }
+}
+
+impl crate::services::AsyncService<EvalTask> for EvalService {
+    fn get_sender(&self) -> mpsc::Sender<EvalTask> {
+        self.eval_sender.clone()
+    }
+
+    #[allow(dead_code)] // Called via AsyncService trait dispatch
+    fn take_receiver(&mut self) -> Option<mpsc::Receiver<EvalTask>> {
+        self.eval_receiver.take()
+    }
+
+    async fn handle_task(&self, task: EvalTask) -> Result<()> {
+        self.handle_eval_task(task).await
+    }
+
+    async fn handle_failure(&mut self, error: anyhow::Error) {
+        error!("EvalService task failed: {:?}", error);
+    }
+
+    async fn handle_closure(&mut self) {
+        info!("EvalService shutting down");
     }
 }
 
