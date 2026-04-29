@@ -2277,13 +2277,22 @@ async fn manual_merge_pr_handler(
                 pr_number, owner, repo, auth_user.claims.username
             );
 
+            // Look up user's database ID from github_id
+            let user_id = sqlx::query_scalar::<_, i64>(
+                "SELECT ROWID FROM AuthenticatedUsers WHERE github_id = ?",
+            )
+            .bind(auth_user.github_id)
+            .fetch_optional(&state.db_service.pool)
+            .await
+            .ok()
+            .flatten();
+
             // Mark PR as merged in database
-            // TODO: Look up user's database ID from github_id
             if let Err(e) = crate::db::github::mark_pr_merged(
                 &owner,
                 &repo,
                 pr_number,
-                None, // TODO: Pass actual user ID
+                user_id,
                 &state.db_service.pool,
             )
             .await
