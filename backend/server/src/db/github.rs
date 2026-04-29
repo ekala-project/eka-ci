@@ -94,9 +94,44 @@ pub async fn create_jobset(
 }
 
 /// Insert jobs where they reference the job and the drv
+/// Helper structure to represent a job from the base commit
+#[derive(Debug, Clone)]
+pub struct BaseJob {
+    pub name: String,
+    pub drv_path: String,
+}
+
+/// Query jobs from a specific commit's jobset
+/// Returns a mapping of job name -> drv_path for efficient lookup
+pub async fn get_jobset_jobs_by_sha(
+    sha: &str,
+    job_name: &str,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<BaseJob>> {
+    let jobs = sqlx::query_as::<_, (String, String)>(
+        r#"
+        SELECT j.name, d.drv_path
+        FROM Job j
+        INNER JOIN GitHubJobSets js ON j.jobset = js.ROWID
+        INNER JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE js.sha = ? AND js.job = ?
+        "#,
+    )
+    .bind(sha)
+    .bind(job_name)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|(name, drv_path)| BaseJob { name, drv_path })
+    .collect();
+
+    Ok(jobs)
+}
+
 pub async fn create_jobs_for_jobset(
     jobset_id: i64,
     jobs: &[NixEvalDrv],
+    base_jobs: Option<&[BaseJob]>,
     pool: &Pool<Sqlite>,
 ) -> anyhow::Result<()> {
     use std::str::FromStr;
@@ -107,24 +142,41 @@ pub async fn create_jobs_for_jobset(
         return Ok(());
     }
 
+    // Build a lookup map from base jobs for O(1) difference computation
+    let base_map: std::collections::HashMap<&str, &str> = base_jobs
+        .unwrap_or(&[])
+        .iter()
+        .map(|bj| (bj.name.as_str(), bj.drv_path.as_str()))
+        .collect();
+
     // Using a transaction should allow for the pool to batch statements
     // better than individual insertions + pool flush
     let mut tx = pool.begin().await?;
 
     // Convert all drv_paths to DrvIds first, collecting any errors
-    let job_data: Vec<(DrvId, &str)> = jobs
+    let job_data: Vec<(DrvId, &str, i64)> = jobs
         .iter()
         .map(|job| {
             let drv_id = DrvId::from_str(&job.drv_path)?;
-            Ok((drv_id, job.attr.as_str()))
+
+            // Compute difference: New (0), Changed (1), or Unchanged (defaults to New if no base)
+            let difference = match base_map.get(job.attr.as_str()) {
+                Some(base_drv_path) if *base_drv_path == job.drv_path => 0, /* Unchanged (same */
+                // drv) - mark as
+                // New
+                Some(_) => 1, // Changed (different drv for same attr)
+                None => 0,    // New (attr doesn't exist in base)
+            };
+
+            Ok((drv_id, job.attr.as_str(), difference))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     // Use QueryBuilder for batch insert with subqueries
     let mut query_builder =
-        sqlx::QueryBuilder::new("INSERT INTO Job (jobset, drv_id, name) VALUES ");
+        sqlx::QueryBuilder::new("INSERT INTO Job (jobset, drv_id, name, difference) VALUES ");
 
-    for (i, (drv_id, attr)) in job_data.iter().enumerate() {
+    for (i, (drv_id, attr, difference)) in job_data.iter().enumerate() {
         if i > 0 {
             query_builder.push(", ");
         }
@@ -134,6 +186,8 @@ pub async fn create_jobs_for_jobset(
         query_builder.push_bind(drv_id);
         query_builder.push(" LIMIT 1), ");
         query_builder.push_bind(attr);
+        query_builder.push(", ");
+        query_builder.push_bind(difference);
         query_builder.push(")");
     }
 
@@ -1628,7 +1682,7 @@ mod tests {
             &pool,
         )
         .await?;
-        create_jobs_for_jobset(jobset_id, &jobs[..], &pool).await?;
+        create_jobs_for_jobset(jobset_id, &jobs[..], None, &pool).await?;
 
         // These two queries should return the same result if there's no jobset associated with the
         // base commit
@@ -1666,7 +1720,7 @@ mod tests {
             &pool,
         )
         .await?;
-        create_jobs_for_jobset(second_jobset_id, &jobs[..], &pool).await?;
+        create_jobs_for_jobset(second_jobset_id, &jobs[..], None, &pool).await?;
         let (_, changed_jobs, _) = job_difference("abcdef", "g1cdef", "fake-name", &pool).await?;
         assert_eq!(changed_jobs.len(), 1);
         assert_eq!(changed_jobs.into_iter().next(), Some(drv));
@@ -1689,7 +1743,7 @@ mod tests {
 
         // Call with empty jobs list - should not error
         let empty_jobs: Vec<NixEvalDrv> = vec![];
-        create_jobs_for_jobset(jobset_id, &empty_jobs, &pool).await?;
+        create_jobs_for_jobset(jobset_id, &empty_jobs, None, &pool).await?;
 
         // Verify no jobs were created
         let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
@@ -1762,7 +1816,7 @@ mod tests {
             &pool,
         )
         .await?;
-        create_jobs_for_jobset(jobset_id, &eval_drvs, &pool).await?;
+        create_jobs_for_jobset(jobset_id, &eval_drvs, None, &pool).await?;
 
         // Verify all jobs were created
         let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
@@ -1822,7 +1876,7 @@ mod tests {
         // Create a jobset and insert the job
         let jobset_id =
             create_jobset("rel-sha", "rel-job", "rel-owner", "rel-repo", None, &pool).await?;
-        create_jobs_for_jobset(jobset_id, &[eval_drv], &pool).await?;
+        create_jobs_for_jobset(jobset_id, &[eval_drv], None, &pool).await?;
 
         // Query the Job table directly to verify relationships
         #[derive(sqlx::FromRow)]
@@ -1939,7 +1993,7 @@ mod tests {
             &pool,
         )
         .await?;
-        create_jobs_for_jobset(jobset_id, &eval_drvs, &pool).await?;
+        create_jobs_for_jobset(jobset_id, &eval_drvs, None, &pool).await?;
 
         // Verify all jobs were created
         let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
@@ -2068,6 +2122,7 @@ mod tests {
                 eval_drv_for(drv_done, "pkg1"),
                 eval_drv_for(drv_building, "pkg2"),
             ],
+            None,
             &pool,
         )
         .await?;
@@ -2108,6 +2163,7 @@ mod tests {
         create_jobs_for_jobset(
             jobset_id,
             &[eval_drv_for(drv_ok, "pkg1"), eval_drv_for(drv_fail, "pkg2")],
+            None,
             &pool,
         )
         .await?;
@@ -2150,6 +2206,7 @@ mod tests {
         create_jobs_for_jobset(
             jobset_id,
             &[eval_drv_for(drv1, "pkg1"), eval_drv_for(drv2, "pkg2")],
+            None,
             &pool,
         )
         .await?;

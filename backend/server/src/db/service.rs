@@ -99,12 +99,24 @@ impl DbService {
         repo_name: &str,
         jobs: &[NixEvalDrv],
         config_json: Option<&str>,
+        base_sha: Option<&str>,
     ) -> anyhow::Result<i64> {
         use std::str::FromStr;
 
         let jobset_id =
             github::create_jobset(sha, name, owner, repo_name, config_json, &self.pool).await?;
-        github::create_jobs_for_jobset(jobset_id, jobs, &self.pool).await?;
+
+        // If we have a base commit, query its jobset to compute differences during insertion
+        let base_jobset_jobs = if let Some(base) = base_sha {
+            github::get_jobset_jobs_by_sha(base, name, &self.pool)
+                .await
+                .ok()
+        } else {
+            None
+        };
+
+        github::create_jobs_for_jobset(jobset_id, jobs, base_jobset_jobs.as_deref(), &self.pool)
+            .await?;
 
         // Persist package metadata derived from `nix-eval-jobs --meta` onto
         // the `Drv` rows that were created earlier in the eval pipeline.
