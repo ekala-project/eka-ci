@@ -42,6 +42,7 @@ struct AppState {
     jwt_service: JwtService,
     oauth_config: OAuthConfig,
     logs_dir: PathBuf,
+    static_dir: PathBuf,
     websocket_service: crate::services::WebSocketService,
     github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
     // M2: wrap so the secret cannot leak through any future `Debug`
@@ -199,6 +200,7 @@ impl WebService {
         jwt_service: JwtService,
         oauth_config: OAuthConfig,
         logs_dir: PathBuf,
+        static_dir: PathBuf,
         websocket_service: crate::services::WebSocketService,
         github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
         webhook_secret: Option<crate::secret::Redacted<String>>,
@@ -256,6 +258,7 @@ impl WebService {
                 jwt_service,
                 oauth_config,
                 logs_dir,
+                static_dir,
                 websocket_service,
                 github_app_configs,
                 webhook_secret,
@@ -278,12 +281,8 @@ impl WebService {
     }
 
     pub async fn run(self, cancellation_token: CancellationToken) {
-        // Determine the path to the frontend static files
-        // When running from the project root, this should be "frontend/static"
-        let static_dir = std::env::current_dir()
-            .expect("Failed to get current directory")
-            .join("frontend")
-            .join("static");
+        // Use the configured static directory for serving frontend files
+        let static_dir = &self.state.static_dir;
 
         info!("Serving static files from: {:?}", static_dir);
 

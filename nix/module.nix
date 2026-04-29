@@ -206,10 +206,14 @@ let
         default = 3030;
         description = "TCP port the HTTP server binds to.";
       };
-      bundle_path = mkOption {
+      static_dir = mkOption {
         type = types.nullOr types.path;
         default = null;
-        description = "Optional path to a pre-built web UI bundle.";
+        description = ''
+          Directory containing static frontend files (HTML, CSS, JS).
+          If null, defaults to $XDG_DATA_HOME/ekaci/static.
+          Note: bundle_path is a deprecated alias for static_dir.
+        '';
       };
       allowed_origins = mkOption {
         type = types.listOf types.str;

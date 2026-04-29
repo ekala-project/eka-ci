@@ -39,6 +39,10 @@ struct ConfigCli {
     #[arg(short, long)]
     pub logs_dir: Option<PathBuf>,
 
+    /// Directory for static frontend files. Defaults to $XDG_DATA_HOME/ekaci/static
+    #[arg(long)]
+    pub static_dir: Option<PathBuf>,
+
     /// Path for the configuration file. Can also be set using the $EKA_CI_CONFIG_FILE.
     /// If not provided a default path will be attempted, based on the XDG spec.
     #[arg(long)]
@@ -87,7 +91,9 @@ struct ConfigFile {
 struct ConfigFileWeb {
     pub address: Option<Ipv4Addr>,
     pub port: Option<u16>,
-    pub bundle_path: Option<PathBuf>,
+    /// Directory for static frontend files
+    #[serde(alias = "bundle_path")] // Backward compatibility with old config files
+    pub static_dir: Option<PathBuf>,
     /// Explicit list of origins allowed by CORS for the HTTP API.
     ///
     /// Each entry is an exact-match scheme+host+port origin, e.g.
@@ -917,6 +923,7 @@ pub struct Config {
     pub oauth: ConfigOAuth,
     pub db_path: PathBuf,
     pub logs_dir: PathBuf,
+    pub static_dir: PathBuf,
     #[allow(dead_code)]
     pub remote_builders: Vec<RemoteBuilder>,
     pub require_approval: bool,
@@ -1251,6 +1258,10 @@ impl Config {
                 .logs_dir
                 .or(file.logs_dir)
                 .unwrap_or_else(|| dirs.get_data_file("build-logs")),
+            static_dir: args
+                .static_dir
+                .or(file.web.static_dir)
+                .unwrap_or_else(|| dirs.get_data_file("static")),
             remote_builders,
             require_approval: args
                 .require_approval
@@ -1367,6 +1378,7 @@ mod redaction_tests {
             },
             db_path: PathBuf::from("/tmp/ekaci-test.db"),
             logs_dir: PathBuf::from("/tmp/ekaci-test-logs"),
+            static_dir: PathBuf::from("/tmp/ekaci-test-static"),
             remote_builders: Vec::new(),
             require_approval: false,
             merge_queue_require_approval: false,
@@ -1463,6 +1475,7 @@ mod redaction_tests {
             },
             db_path: PathBuf::from("/tmp/ekaci-test.db"),
             logs_dir: PathBuf::from("/tmp/ekaci-test-logs"),
+            static_dir: PathBuf::from("/tmp/ekaci-test-static"),
             remote_builders: Vec::new(),
             require_approval: false,
             merge_queue_require_approval: false,
