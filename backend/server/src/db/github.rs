@@ -4,8 +4,10 @@ use octocrab::models::checks::CheckRun as GHCheckRun;
 use serde::Serialize;
 use sqlx::{FromRow, Pool, Row, Sqlite};
 
+#[cfg(test)]
+use super::model::Drv;
+use super::model::DrvId;
 use super::model::build_event::DrvBuildState;
-use super::model::{Drv, DrvId};
 use crate::github::JobDifference;
 use crate::nix::nix_eval_jobs::NixEvalDrv;
 
@@ -264,7 +266,8 @@ pub async fn check_runs_for_commit(
     Ok(check_runs)
 }
 
-/// Select drvs which are present for a specific job
+/// Select drvs which are present for a specific job (test helper)
+#[cfg(test)]
 pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
     let drvs = sqlx::query_as(
         r#"
@@ -281,7 +284,8 @@ pub async fn jobs_for_jobset_id(job_id: i64, pool: &Pool<Sqlite>) -> anyhow::Res
     Ok(drvs)
 }
 
-/// Select drvs which are only present in the head_sha
+/// Select drvs which are only present in the head_sha (test helper)
+#[cfg(test)]
 pub async fn new_jobs(
     head_jobset_id: i64,
     base_jobset_id: i64,
@@ -314,13 +318,14 @@ pub async fn new_jobs(
     Ok(new_drvs)
 }
 
-/// Select drvs which are only present in the head_sha
+/// Select job names which are only present in the head_sha (test helper)
+#[cfg(test)]
 pub async fn removed_jobs(
     head_jobset_id: i64,
     base_jobset_id: i64,
     pool: &Pool<Sqlite>,
 ) -> anyhow::Result<Vec<String>> {
-    // Query for drvs only present in the head jobset
+    // Query for job names only present in the head jobset
     let removed_drvs: Vec<String> = sqlx::query_scalar(
         r#"
         SELECT name
@@ -342,7 +347,8 @@ pub async fn removed_jobs(
     Ok(removed_drvs)
 }
 
-/// Select drvs which are only present in the head_sha
+/// Compare two jobsets and return (new, changed, removed) drvs (test helper)
+#[cfg(test)]
 pub async fn job_difference(
     head_sha: &str,
     base_sha: &str,
@@ -400,49 +406,6 @@ pub async fn job_difference(
     let removed_jobs = removed_jobs(base_jobset_id, head_jobset_id, pool).await?;
 
     Ok((new_drvs, changed_drvs, removed_jobs))
-}
-
-/// Update job difference types for a specific jobset
-/// This should be called after computing job_difference to mark which jobs are New/Changed/Removed
-pub async fn update_job_differences(
-    jobset_id: i64,
-    new_drv_ids: &[DrvId],
-    changed_drv_ids: &[DrvId],
-    pool: &Pool<Sqlite>,
-) -> anyhow::Result<()> {
-    let mut tx = pool.begin().await?;
-
-    // Mark new jobs (difference = New, which is already the default, so we could skip this)
-    for drv_id in new_drv_ids {
-        sqlx::query(
-            "UPDATE Job SET difference = ? WHERE jobset = ? AND drv_id = (SELECT ROWID FROM Drv \
-             WHERE drv_path = ?)",
-        )
-        .bind(JobDifference::New)
-        .bind(jobset_id)
-        .bind(drv_id)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    // Mark changed jobs (difference = Changed)
-    for drv_id in changed_drv_ids {
-        sqlx::query(
-            "UPDATE Job SET difference = ? WHERE jobset = ? AND drv_id = (SELECT ROWID FROM Drv \
-             WHERE drv_path = ?)",
-        )
-        .bind(JobDifference::Changed)
-        .bind(jobset_id)
-        .bind(drv_id)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    // Note: Removed jobs don't exist in the head commit's jobset, so we don't update them here
-    // They would only exist in the base commit's jobset
-
-    tx.commit().await?;
-    Ok(())
 }
 
 #[derive(Debug, FromRow)]
