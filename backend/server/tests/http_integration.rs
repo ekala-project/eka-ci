@@ -655,10 +655,9 @@ async fn test_ws_builds_rejects_upgrade_without_token() {
     let client = reqwest::Client::new();
     let url = format!("{}/v1/ws/builds", base_url);
 
-    // Unauthenticated upgrade attempt: our handler rejects before
-    // delegating to WebSocketUpgrade, so a plain GET is sufficient to
-    // observe the 401. We still send the upgrade-style headers to
-    // confirm behaviour on the real WS path.
+    // Unauthenticated upgrade attempt: our handler now accepts
+    // unauthenticated connections for public repository access.
+    // The WebSocket upgrade should succeed with status 101.
     let resp = client
         .get(&url)
         .header("Connection", "Upgrade")
@@ -670,11 +669,11 @@ async fn test_ws_builds_rejects_upgrade_without_token() {
         .expect("failed to send WS upgrade request");
     assert_eq!(
         resp.status(),
-        401,
-        "WS upgrade without a token must be rejected with 401"
+        101,
+        "WS upgrade without a token should be accepted with 101 Switching Protocols"
     );
 
-    // A bogus token should also be rejected.
+    // A bogus token should also be accepted (just treated as unauthenticated).
     let resp = client
         .get(&url)
         .bearer_auth("not.a.valid.jwt")
@@ -687,12 +686,12 @@ async fn test_ws_builds_rejects_upgrade_without_token() {
         .expect("failed to send WS upgrade with bogus token");
     assert_eq!(
         resp.status(),
-        401,
-        "WS upgrade with an invalid token must be rejected with 401"
+        101,
+        "WS upgrade with an invalid token should be accepted as unauthenticated"
     );
 
     cancellation_token.cancel();
-    println!("✓ /v1/ws/builds rejects unauthenticated upgrade attempts");
+    println!("✓ /v1/ws/builds accepts unauthenticated upgrade attempts");
 }
 
 // ---------------------------------------------------------------------------

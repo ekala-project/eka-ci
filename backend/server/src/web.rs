@@ -16,7 +16,7 @@ use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::auth::{AdminUser, AuthUser, JwtService, OAuthConfig};
 use crate::db::github::CheckRun;
@@ -1878,30 +1878,39 @@ struct WsAuthQuery {
 
 /// WebSocket handler for real-time build updates.
 ///
-/// H4: gated on a valid JWT. Any authenticated user may subscribe.
-/// Per-subscription filtering (e.g. only jobsets a user can see) is
-/// the responsibility of the subscription manager.
+/// Authentication is optional. Unauthenticated users can subscribe to
+/// public repository events. Authenticated users may have access to
+/// additional private repository events (future feature).
 async fn websocket_handler(
     ws: WebSocketUpgrade,
     axum::extract::Query(query): axum::extract::Query<WsAuthQuery>,
     headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> axum::response::Response {
-    // Delegate token extraction + validation to the shared helper so
-    // that every auth-sensitive handler applies identical parsing
-    // rules. Browsers hit the `?token=` fallback; everyone else uses
-    // the Bearer header.
-    match crate::auth::authenticate_request(&state.jwt_service, &headers, query.token.as_deref()) {
-        Ok(_claims) => ws
-            .on_upgrade(move |socket| async move {
-                state.websocket_service.handle_connection(socket).await
-            })
-            .into_response(),
-        Err(err) => {
-            warn!(event = "ws_upgrade_rejected", reason = ?err);
-            err.into_response()
+    // Attempt authentication but allow unauthenticated connections for
+    // public repository access. The subscription manager can enforce
+    // access control based on authentication status in the future.
+    let is_authenticated = match crate::auth::authenticate_request(&state.jwt_service, &headers, query.token.as_deref()) {
+        Ok(_claims) => {
+            debug!(event = "ws_upgrade_authenticated");
+            true
         },
-    }
+        Err(_) => {
+            debug!(event = "ws_upgrade_unauthenticated");
+            false
+        },
+    };
+
+    // Accept the WebSocket upgrade regardless of authentication status
+    ws.on_upgrade(move |socket| async move {
+        if is_authenticated {
+            debug!("WebSocket connection established (authenticated)");
+        } else {
+            debug!("WebSocket connection established (unauthenticated)");
+        }
+        state.websocket_service.handle_connection(socket).await
+    })
+    .into_response()
 }
 
 // ========== User Profile Handlers ==========
