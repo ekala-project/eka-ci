@@ -1369,6 +1369,8 @@ struct DrvsQuery {
     limit: i64,
     #[serde(default)]
     offset: i64,
+    /// Optional state filter (e.g., "success", "failure", "building", "queued")
+    state: Option<String>,
 }
 
 fn default_drv_limit() -> i64 {
@@ -1380,8 +1382,23 @@ async fn get_jobset_drvs_handler(
     Path(jobset_id): Path<i64>,
     axum::extract::Query(query): axum::extract::Query<DrvsQuery>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    // TODO: Add state filter support when DrvBuildState implements FromStr
-    let state_filter = None;
+    use std::str::FromStr;
+
+    use crate::db::model::build_event::DrvBuildState;
+
+    // Parse state filter if provided
+    let state_filter = match query.state {
+        Some(state_str) => match DrvBuildState::from_str(&state_str) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("Invalid state parameter: {}", e),
+                ));
+            },
+        },
+        None => None,
+    };
 
     match state
         .db_service
