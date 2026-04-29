@@ -295,11 +295,12 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
+    // Note: AsyncService::run() already spawns internally, so we don't wrap in tokio::spawn
     let graph_handle_task = tokio::spawn(graph_service.run(cancellation_token.clone()));
-    let git_handle = tokio::spawn(git_service.run(cancellation_token.clone()));
-    let repo_handle = tokio::spawn(repo_service.run(cancellation_token.clone()));
-    let eval_handle = tokio::spawn(eval_service.run(cancellation_token.clone()));
-    let checks_handle = tokio::spawn(checks_service.run(cancellation_token.clone()));
+    let git_handle = git_service.run(cancellation_token.clone());
+    let repo_handle = repo_service.run(cancellation_token.clone());
+    let eval_handle = eval_service.run(cancellation_token.clone());
+    let checks_handle = checks_service.run(cancellation_token.clone());
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
     let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
     let github_handle = maybe_github_service.map(|svc| svc.run(cancellation_token.clone()));
