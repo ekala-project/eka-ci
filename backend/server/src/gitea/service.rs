@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use tokio::sync::{Mutex, mpsc};
@@ -11,6 +12,11 @@ use crate::gitea::types::{GiteaCIInfo, GiteaTask};
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
 use crate::services::AsyncService;
+
+/// Debounce delay for change summary generation (5 minutes)
+/// This allows multiple jobsets to be created for the same commit
+/// before triggering a single change summary
+pub(crate) const CHANGE_SUMMARY_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
 
 /// GiteaService handles CI integration with Gitea instances
 ///
@@ -28,6 +34,8 @@ pub struct GiteaService {
     /// Tracks change-summary check run IDs per commit
     #[allow(dead_code)]
     change_summary_checks: Mutex<HashMap<String, i64>>,
+    /// Dedups change-summary tasks: only one pending per commit SHA
+    change_summary_pending: Mutex<HashSet<String>>,
     /// Graph handle for rebuild impact analysis
     graph_handle: GraphServiceHandle,
     /// Optional metrics for observability
@@ -80,6 +88,7 @@ impl GiteaService {
             configure_checks: Mutex::new(HashMap::new()),
             eval_checks: Mutex::new(HashMap::new()),
             change_summary_checks: Mutex::new(HashMap::new()),
+            change_summary_pending: Mutex::new(HashSet::new()),
             graph_handle,
             change_summary_metrics,
             gitea_clients: Mutex::new(gitea_clients),
@@ -264,13 +273,42 @@ impl GiteaService {
         crate::db::github::create_jobs_for_jobset(jobset_id, jobs, None, &self.db_service.pool)
             .await?;
 
-        // TODO: If this is a PR head, schedule change summary
         info!(
             "Created Gitea jobset {} for {}/{}/{}@{} (job: {})",
             jobset_id, ci_info.domain, ci_info.owner, ci_info.repo_name, ci_info.commit, name
         );
 
+        // Schedule change summary for PR heads (commits with base_commit set)
+        if ci_info.base_commit.is_some() {
+            // Dedup: only schedule one change-summary per commit SHA
+            if self
+                .change_summary_pending
+                .lock()
+                .await
+                .insert(ci_info.commit.clone())
+            {
+                self.spawn_change_summary_debounce(Arc::clone(ci_info), name.to_string());
+            }
+        }
+
         Ok(())
+    }
+
+    /// Spawn the debounce timer that enqueues a `CreateChangeSummaryCheck`.
+    fn spawn_change_summary_debounce(&self, ci_info: Arc<GiteaCIInfo>, job: String) {
+        let sender = self.gitea_sender.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(CHANGE_SUMMARY_DEBOUNCE).await;
+            if let Err(e) = sender
+                .send(GiteaTask::CreateChangeSummaryCheck { ci_info, job })
+                .await
+            {
+                warn!(
+                    "Failed to enqueue CreateChangeSummaryCheck after debounce: {:?}",
+                    e
+                );
+            }
+        });
     }
 
     /// Post (or update) change summary check for a PR head
