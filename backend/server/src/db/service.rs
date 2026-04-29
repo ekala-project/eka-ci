@@ -153,16 +153,6 @@ impl DbService {
         github::get_jobset_by_id(jobset_id, &self.pool).await
     }
 
-    // Given a head and base sha, determine what has changed
-    pub async fn job_difference(
-        &self,
-        head_sha: &str,
-        base_sha: &str,
-        job_name: &str,
-    ) -> anyhow::Result<(Vec<Drv>, Vec<Drv>, Vec<String>)> {
-        github::job_difference(head_sha, base_sha, job_name, &self.pool).await
-    }
-
     pub async fn check_runs_for_drv_path(
         &self,
         drv_path: &DrvId,
@@ -193,15 +183,6 @@ impl DbService {
         repo_name: &str,
     ) -> anyhow::Result<bool> {
         github::has_jobset(sha, name, owner, repo_name, &self.pool).await
-    }
-
-    pub async fn update_job_differences(
-        &self,
-        jobset_id: i64,
-        new_drv_ids: &[DrvId],
-        changed_drv_ids: &[DrvId],
-    ) -> anyhow::Result<()> {
-        github::update_job_differences(jobset_id, new_drv_ids, changed_drv_ids, &self.pool).await
     }
 
     pub async fn get_job_info_for_drv(
