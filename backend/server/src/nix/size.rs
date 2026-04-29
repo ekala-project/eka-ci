@@ -25,7 +25,10 @@ struct PathInfoData {
 }
 
 /// Run `nix path-info --json` for the given paths and parse the result.
-fn query_path_infos(output_paths: &[String], include_closure: bool) -> Result<HashMap<String, PathInfoData>> {
+fn query_path_infos(
+    output_paths: &[String],
+    include_closure: bool,
+) -> Result<HashMap<String, PathInfoData>> {
     let mut cmd = Command::new("nix");
     cmd.arg("path-info");
     if include_closure {
@@ -121,5 +124,54 @@ mod tests {
         let result = get_closure_sizes(&[]);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_path_info_json() {
+        // Test parsing real-world nix path-info JSON output
+        let json_without_closure = r#"{
+            "/nix/store/test.drv": {
+                "ca": "text:sha256:abc123",
+                "deriver": null,
+                "narHash": "sha256-xyz",
+                "narSize": 3264,
+                "references": [],
+                "registrationTime": 1777484331,
+                "signatures": [],
+                "ultimate": false
+            }
+        }"#;
+
+        let result: Result<std::collections::HashMap<String, PathInfoData>, _> =
+            serde_json::from_str(json_without_closure);
+        assert!(result.is_ok(), "Should parse JSON without closureSize");
+        let map = result.unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("/nix/store/test.drv").unwrap().nar_size, 3264);
+        assert_eq!(map.get("/nix/store/test.drv").unwrap().closure_size, 0); // default value
+
+        let json_with_closure = r#"{
+            "/nix/store/test.drv": {
+                "ca": "text:sha256:abc123",
+                "closureSize": 2294600,
+                "deriver": null,
+                "narHash": "sha256-xyz",
+                "narSize": 3264,
+                "references": [],
+                "registrationTime": 1777484331,
+                "signatures": [],
+                "ultimate": false
+            }
+        }"#;
+
+        let result: Result<std::collections::HashMap<String, PathInfoData>, _> =
+            serde_json::from_str(json_with_closure);
+        assert!(result.is_ok(), "Should parse JSON with closureSize");
+        let map = result.unwrap();
+        assert_eq!(map.get("/nix/store/test.drv").unwrap().nar_size, 3264);
+        assert_eq!(
+            map.get("/nix/store/test.drv").unwrap().closure_size,
+            2294600
+        );
     }
 }

@@ -201,6 +201,7 @@ impl super::EvalService {
             .arg("--meta")
             .arg(file_path)
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped()) // Capture stderr to prevent it from appearing in server logs
             .spawn()
             .context("failed to spawn nix-eval-jobs")?;
 
@@ -229,6 +230,17 @@ impl super::EvalService {
                     e
                 );
             }
+
+            // Read stderr before waiting to capture any diagnostic output
+            if let Some(mut stderr) = cmd.stderr.take() {
+                let mut stderr_output = String::new();
+                if let Err(e) = stderr.read_to_string(&mut stderr_output) {
+                    debug!("Failed to read nix-eval-jobs stderr: {:?}", e);
+                } else if !stderr_output.is_empty() {
+                    debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
+                }
+            }
+
             if let Err(e) = cmd.wait() {
                 warn!("nix-eval-jobs child wait failed: {:?}", e);
             }
@@ -256,6 +268,16 @@ impl super::EvalService {
                 outcome.bytes_read,
             );
         } else {
+            // Read stderr before waiting to capture any diagnostic output
+            if let Some(mut stderr) = cmd.stderr.take() {
+                let mut stderr_output = String::new();
+                if let Err(e) = stderr.read_to_string(&mut stderr_output) {
+                    debug!("Failed to read nix-eval-jobs stderr: {:?}", e);
+                } else if !stderr_output.is_empty() {
+                    debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
+                }
+            }
+
             // Reap the child on the clean path too.
             if let Err(e) = cmd.wait() {
                 warn!("nix-eval-jobs child wait failed on clean path: {:?}", e);
