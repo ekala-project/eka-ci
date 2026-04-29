@@ -263,36 +263,55 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             use crate::db::model::build_event::DrvBuildState;
             use crate::db::model::drv_id;
 
-            if let Ok(drv_id) = drv_id::DrvId::from_str(&drv_status_request.drv_path) {
-                let maybe_drv = dispatch.db_service.get_drv(&drv_id).await.unwrap();
-                let inner = match maybe_drv {
-                    Some(drv) => {
-                        // Query failed dependencies if in TransitiveFailure state
-                        let failed_deps =
-                            if matches!(drv.build_state, DrvBuildState::TransitiveFailure) {
-                                dispatch
-                                    .db_service
-                                    .get_failed_dependencies(&drv_id)
-                                    .await
-                                    .ok()
-                                    .map(|deps| deps.into_iter().map(|d| d.store_path()).collect())
-                            } else {
-                                None
-                            };
+            // Parse the drv_id from the request
+            let drv_id = match drv_id::DrvId::from_str(&drv_status_request.drv_path) {
+                Ok(id) => id,
+                Err(e) => {
+                    return resp::DrvStatus(Err(format!(
+                        "Invalid derivation path '{}': {}",
+                        drv_status_request.drv_path, e
+                    )));
+                },
+            };
 
-                        Some(DrvStatusResponse {
-                            drv_path: drv.drv_path.store_path(),
-                            status: format!("{:?}", drv.build_state),
-                            failed_dependencies: failed_deps,
-                        })
-                    },
-                    None => None,
-                };
-                return resp::DrvStatus(inner);
+            // Query the database for the derivation
+            let maybe_drv = match dispatch.db_service.get_drv(&drv_id).await {
+                Ok(drv) => drv,
+                Err(e) => {
+                    return resp::DrvStatus(Err(format!(
+                        "Database error querying derivation: {}",
+                        e
+                    )));
+                },
+            };
+
+            // Return the derivation status or indicate it hasn't been seen
+            match maybe_drv {
+                Some(drv) => {
+                    // Query failed dependencies if in TransitiveFailure state
+                    let failed_deps = if matches!(drv.build_state, DrvBuildState::TransitiveFailure)
+                    {
+                        dispatch
+                            .db_service
+                            .get_failed_dependencies(&drv_id)
+                            .await
+                            .ok()
+                            .map(|deps| deps.into_iter().map(|d| d.store_path()).collect())
+                    } else {
+                        None
+                    };
+
+                    resp::DrvStatus(Ok(DrvStatusResponse {
+                        drv_path: drv.drv_path.store_path(),
+                        status: format!("{:?}", drv.build_state),
+                        failed_dependencies: failed_deps,
+                    }))
+                },
+                None => resp::DrvStatus(Err(format!(
+                    "Derivation '{}' has not been encountered by the system",
+                    drv_status_request.drv_path
+                ))),
             }
-
-            // TODO: Send actual error
-            resp::DrvStatus(None)
         },
     }
 }
