@@ -31,7 +31,7 @@ pub struct InfoResponse {
 pub enum ClientResponse {
     Info(InfoResponse),
     Ack(bool),
-    DrvStatus(Option<DrvStatusResponse>),
+    DrvStatus(Result<DrvStatusResponse, String>),
 }
 
 #[derive(Serialize, Parser, Deserialize, Debug)]

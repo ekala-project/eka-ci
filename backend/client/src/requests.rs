@@ -63,10 +63,12 @@ fn print_info(info: t::InfoResponse) {
     println!("EkaCI server version: {:?}", &info.version);
 }
 
-fn print_drv_status(maybe_drv: Option<t::DrvStatusResponse>) {
-    match maybe_drv {
-        None => println!("Drv has not been encountered"),
-        Some(drv) => {
+fn print_drv_status(result: Result<t::DrvStatusResponse, String>) {
+    match result {
+        Err(error) => {
+            eprintln!("Error: {}", error);
+        },
+        Ok(drv) => {
             println!("Drv: {:?}", &drv.drv_path);
             println!("Status: {:?}", drv.status);
 
