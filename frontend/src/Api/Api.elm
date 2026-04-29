@@ -13,6 +13,7 @@ module Api.Api exposing
     , getPullRequests
     , getRepositories
     , getRepository
+    , getRepositoryJobsets
     )
 
 {-| HTTP API client for the EkaCI backend.
@@ -27,7 +28,7 @@ import Models.Derivation exposing (DrvDependency, DrvDetails)
 import Models.Job exposing (BuildingDrv, CommitJob, JobSetDetails, JobSetDrv)
 import Models.Maintainer exposing (MaintainerDetail)
 import Models.PullRequest exposing (GitHubMetadata, PullRequest)
-import Models.Repository exposing (Repository)
+import Models.Repository exposing (Repository, RepositoryJobSet)
 import Url.Builder as UB
 
 
@@ -62,6 +63,31 @@ getRepository apiBaseUrl owner repoName toMsg =
     Http.get
         { url = apiBaseUrl ++ "/repositories/" ++ owner ++ "/" ++ repoName
         , expect = Http.expectJson toMsg Decoder.repository
+        }
+
+
+{-| Get jobsets for a repository with build statistics.
+
+    getRepositoryJobsets apiBaseUrl "owner" "repo" 50 True GotJobsets
+
+-}
+getRepositoryJobsets : String -> String -> String -> Int -> Bool -> (Result Http.Error (List RepositoryJobSet) -> msg) -> Cmd msg
+getRepositoryJobsets apiBaseUrl owner repoName limit sortDesc toMsg =
+    let
+        queryParams =
+            [ UB.int "limit" limit
+            , UB.string "sort_desc"
+                (if sortDesc then
+                    "true"
+
+                 else
+                    "false"
+                )
+            ]
+    in
+    Http.get
+        { url = apiBaseUrl ++ "/repositories/" ++ owner ++ "/" ++ repoName ++ "/jobsets" ++ UB.toQuery queryParams
+        , expect = Http.expectJson toMsg Decoder.repositoryJobSetList
         }
 
 

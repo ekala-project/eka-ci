@@ -452,6 +452,7 @@ fn api_routes() -> Router<AppState> {
         .route("/repositories", get(list_repositories_handler))
         .route("/repositories/{owner}/{repo}", get(get_repository_handler))
         .route("/repositories/{owner}/{repo}/commits", get(list_repository_commits_handler))
+        .route("/repositories/{owner}/{repo}/jobsets", get(get_repository_jobsets_handler))
         // Pull Request routes
         .route("/prs", get(list_pull_requests_handler))
         .route("/prs/{owner}/{repo}/{pr_number}", get(get_pull_request_handler))
@@ -1324,6 +1325,50 @@ async fn list_repository_commits_handler(
             Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to list commits: {}", e),
+            ))
+        },
+    }
+}
+
+#[derive(Deserialize)]
+struct JobsetsQuery {
+    #[serde(default = "default_jobsets_limit")]
+    limit: i64,
+    #[serde(default = "default_sort_desc")]
+    sort_desc: bool,
+}
+
+fn default_jobsets_limit() -> i64 {
+    50
+}
+
+fn default_sort_desc() -> bool {
+    true
+}
+
+async fn get_repository_jobsets_handler(
+    State(state): State<AppState>,
+    Path((owner, repo)): Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<JobsetsQuery>,
+) -> Result<Json<Vec<crate::db::github::RepositoryJobSetSummary>>, (axum::http::StatusCode, String)>
+{
+    use crate::db::github::get_repository_jobsets;
+
+    match get_repository_jobsets(
+        &owner,
+        &repo,
+        query.limit,
+        query.sort_desc,
+        &state.db_service.pool,
+    )
+    .await
+    {
+        Ok(jobsets) => Ok(Json(jobsets)),
+        Err(e) => {
+            error!("Failed to get jobsets for {}/{}: {}", owner, repo, e);
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get jobsets: {}", e),
             ))
         },
     }

@@ -19,6 +19,8 @@ module Api.Decoder exposing
     , pullRequest
     , pullRequestList
     , repository
+    , repositoryJobSet
+    , repositoryJobSetList
     , repositoryList
     )
 
@@ -31,7 +33,7 @@ import Models.Derivation exposing (DrvDependency, DrvDetails)
 import Models.Job exposing (CommitJob, JobSetDetails, JobSetDrv)
 import Models.Maintainer exposing (MaintainerDetail, MaintainerRequest, RequestStatus(..))
 import Models.PullRequest exposing (GitHubMetadata, PullRequest)
-import Models.Repository exposing (Repository)
+import Models.Repository exposing (Repository, RepositoryJobSet)
 
 
 {-| Decode a Repository from JSON.
@@ -49,6 +51,36 @@ repository =
 repositoryList : Decoder (List Repository)
 repositoryList =
     D.list repository
+
+
+{-| Decode a RepositoryJobSet from JSON.
+-}
+repositoryJobSet : Decoder RepositoryJobSet
+repositoryJobSet =
+    D.succeed RepositoryJobSet
+        |> andMap (D.field "jobset_id" D.int)
+        |> andMap (D.field "job_name" D.string)
+        |> andMap (D.field "sha" D.string)
+        |> andMap (D.field "total_drvs" D.int)
+        |> andMap (D.field "queued_drvs" D.int)
+        |> andMap (D.field "buildable_drvs" D.int)
+        |> andMap (D.field "building_drvs" D.int)
+        |> andMap (D.field "failed_retry_drvs" D.int)
+        |> andMap (D.field "completed_success_drvs" D.int)
+        |> andMap (D.field "completed_failure_drvs" D.int)
+        |> andMap (D.field "transitive_failure_drvs" D.int)
+        |> andMap (D.field "blocked_drvs" D.int)
+        |> andMap (D.field "interrupted_drvs" D.int)
+        |> andMap (D.field "new_jobs" D.int)
+        |> andMap (D.field "changed_jobs" D.int)
+        |> andMap (D.field "removed_jobs" D.int)
+
+
+{-| Decode a list of repository jobsets.
+-}
+repositoryJobSetList : Decoder (List RepositoryJobSet)
+repositoryJobSetList =
+    D.list repositoryJobSet
 
 
 {-| Decode a CommitJob from JSON.
