@@ -1,5 +1,4 @@
 use std::io::{Read, Write};
-use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 
 use anyhow::Context;
@@ -13,19 +12,16 @@ pub fn send_request(socket: &std::path::Path, request: ClientRequest) -> anyhow:
 
     let mut stream = UnixStream::connect(socket).context("failed to connect to server socket")?;
 
-    // send request
-    let request_message =
+    // send request using newline-delimited JSON protocol
+    // The newline acts as a message boundary, allowing the server to know when
+    // the message is complete without requiring EOF (shutdown)
+    let mut request_message =
         serde_json::to_string(&request).expect("Our types should always be serializable");
+    request_message.push('\n');
     stream
         .write_all(request_message.as_bytes())
         .context("failed to write request data")?;
     stream.flush().context("failed to flush request data")?;
-    // TODO: Figure out why the write side of the stream
-    // needs to be shutdown in order to read without
-    // blocking both streams
-    stream
-        .shutdown(Shutdown::Write)
-        .context("failed to shutdown connection with server socket")?;
 
     debug!("Attempting to read response message");
     let mut response_message = String::new();

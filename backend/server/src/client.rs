@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use octocrab::Octocrab;
 use shared::types::{ClientRequest, ClientResponse, DrvStatusResponse};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::unix::SocketAddr;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::Sender;
@@ -132,18 +132,26 @@ fn prepare_path(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn handle_client(mut stream: UnixStream, dispatch: DispatchChannels) -> Result<()> {
+async fn handle_client(stream: UnixStream, dispatch: DispatchChannels) -> Result<()> {
     use shared::types as t;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
     info!("Got unix socket client: {:?}", stream);
 
-    let mut request_message: String = String::new();
-    stream.read_to_string(&mut request_message).await?;
+    // Use newline-delimited JSON protocol
+    // Wrap stream in BufReader to efficiently read line-by-line
+    let mut reader = BufReader::new(stream);
+    let mut request_message = String::new();
+    reader.read_line(&mut request_message).await?;
+
     let message: t::ClientRequest = serde_json::from_str(&request_message)?;
     debug!("Got message from client: {:?}", &message);
 
     let response = handle_request(message, dispatch).await;
     let response_message = serde_json::to_string(&response)?;
 
+    // Get the underlying stream back to write response
+    let mut stream = reader.into_inner();
     stream.write_all(response_message.as_bytes()).await?;
     stream.flush().await?;
     info!("Shutting down socket");
