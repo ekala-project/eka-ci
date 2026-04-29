@@ -375,7 +375,7 @@ async fn loop_builds(
     let mut permit_timer = tokio::time::interval(std::time::Duration::from_millis(10));
     let mut build_timer = tokio::time::interval(std::time::Duration::from_millis(100));
 
-    // TODO: This should be restructured to avoid starvation if builds cannot be submitted
+    // Anti-starvation: continue receiving new work even while waiting for builder permits
     loop {
         match receiver.try_recv() {
             Ok(work) => {
@@ -427,14 +427,43 @@ async fn loop_builds(
                 })
                 .collect();
 
-            // Do a scan of compatible builders to see if they have capacity
+            // Wait for a compatible builder permit while continuing to receive new work.
+            // This prevents starvation: if the current job can't be processed (e.g., requires
+            // "kvm" but all kvm builders are busy), we still drain new jobs into the buffer
+            // instead of blocking the entire queue.
             let permit = 'outer: loop {
+                // First, try non-blocking permit acquisition
                 for bc in &compatible_builders {
                     if let Ok(permit) = bc.channel.try_reserve() {
                         break 'outer permit;
                     }
                 }
-                permit_timer.tick().await;
+
+                // No permits available; wait for either a permit or new work
+                tokio::select! {
+                    _ = permit_timer.tick() => {
+                        // Timer expired, try checking for permits again
+                        // (loop will continue)
+                    }
+                    work = receiver.recv() => {
+                        match work {
+                            Some(new_work) => {
+                                // New work arrived! Buffer it and continue waiting
+                                build_buffer.push_back(new_work);
+                                metrics
+                                    .queued_builds
+                                    .with_label_values(&[&platform])
+                                    .set(build_buffer.len() as f64);
+                                // Continue waiting for permit
+                            }
+                            None => {
+                                // Channel disconnected
+                                warn!("System queue closing due to disconnected build queue");
+                                return;
+                            }
+                        }
+                    }
+                }
             };
 
             permit.send(build_buffer.pop_front().unwrap());
