@@ -32,16 +32,16 @@
         <!--
         Custom EkaCI styles for status badges, progress bars, and log viewer.
         -->
-        <link rel="stylesheet" href="styles/custom.css" />
+        <link rel="stylesheet" href="/styles/custom.css" />
 
         <!--
         The server is configured to try and serve all files that are in this directory
         first. It will only fall back to serving this index file if it cannot find the
         requested path.
         -->
-        <script src="main.js"></script>
+        <script src="/main.js"></script>
         <script type="module">
-            import { setupPorts } from './ports.js';
+            import { setupPorts } from '/ports.js';
 
             // Calculate API base URL from current location
             // This allows the frontend to work whether served directly or via reverse proxy
