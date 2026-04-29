@@ -249,6 +249,10 @@ pub async fn update_drv_status(
     drv_id: &DrvId,
     build_state: &DrvBuildState,
 ) -> anyhow::Result<()> {
+    // Use a transaction to atomically update both the current state and the event log
+    let mut tx = pool.begin().await?;
+
+    // Update the current build state in the Drv table
     sqlx::query(
         r#"
 UPDATE Drv
@@ -258,10 +262,23 @@ WHERE drv_path = ?2
     )
     .bind(build_state)
     .bind(drv_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
-    // TODO: emit build_event in the same transaction
+    // Insert a build event to maintain an audit log of state changes
+    // Note: build_attempt is hardcoded to 1 until full build attempt tracking is implemented
+    sqlx::query(
+        r#"
+INSERT INTO DrvBuildEvent (derivation, build_attempt, state)
+VALUES (?1, 1, ?2)
+    "#,
+    )
+    .bind(drv_id.store_path())
+    .bind(build_state)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 
