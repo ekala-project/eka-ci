@@ -969,7 +969,7 @@ pub struct ConfigUnix {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let args = ConfigCli::parse();
-        let dirs = xdg::BaseDirectories::with_prefix("ekaci")?;
+        let dirs = shared::dirs::eka_dirs()?;
         let env = envy::from_env::<ConfigEnv>()?;
 
         let config_path = args
