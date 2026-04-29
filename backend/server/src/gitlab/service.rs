@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use tokio::sync::{Mutex, mpsc};
@@ -11,6 +12,11 @@ use crate::gitlab::types::{GitLabCIInfo, GitLabTask};
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
 use crate::services::AsyncService;
+
+/// Debounce delay for change summary generation (5 minutes)
+/// This allows multiple jobsets to be created for the same commit
+/// before triggering a single change summary
+pub(crate) const CHANGE_SUMMARY_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
 
 /// GitLabService handles CI integration with GitLab instances
 ///
@@ -24,6 +30,8 @@ pub struct GitLabService {
     configure_statuses: Mutex<HashMap<String, i64>>,
     /// Tracks eval job status IDs per (commit, job_name)
     eval_statuses: Mutex<HashMap<(String, String), i64>>,
+    /// Dedups change-summary tasks: only one pending per commit SHA
+    change_summary_pending: Mutex<HashSet<String>>,
     /// Graph handle for rebuild impact analysis
     graph_handle: GraphServiceHandle,
     /// Optional metrics for observability
@@ -71,6 +79,7 @@ impl GitLabService {
             gitlab_receiver: Some(gitlab_receiver),
             configure_statuses: Mutex::new(HashMap::new()),
             eval_statuses: Mutex::new(HashMap::new()),
+            change_summary_pending: Mutex::new(HashSet::new()),
             graph_handle,
             change_summary_metrics,
             gitlab_clients: Mutex::new(gitlab_clients),
@@ -252,14 +261,42 @@ impl GitLabService {
         crate::db::github::create_jobs_for_jobset(jobset_id, jobs, None, &self.db_service.pool)
             .await?;
 
-        // TODO: If this is a PR head, schedule change summary
-        // For now, just log success
         info!(
             "Created GitLab jobset {} for {}/{}@{} (job: {})",
             jobset_id, ci_info.owner, ci_info.repo_name, ci_info.commit, name
         );
 
+        // Schedule change summary for MR heads (commits with base_commit set)
+        if ci_info.base_commit.is_some() {
+            // Dedup: only schedule one change-summary per commit SHA
+            if self
+                .change_summary_pending
+                .lock()
+                .await
+                .insert(ci_info.commit.clone())
+            {
+                self.spawn_change_summary_debounce(Arc::clone(ci_info), name.to_string());
+            }
+        }
+
         Ok(())
+    }
+
+    /// Spawn the debounce timer that enqueues a `CreateChangeSummaryComment`.
+    fn spawn_change_summary_debounce(&self, ci_info: Arc<GitLabCIInfo>, job: String) {
+        let sender = self.gitlab_sender.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(CHANGE_SUMMARY_DEBOUNCE).await;
+            if let Err(e) = sender
+                .send(GitLabTask::CreateChangeSummaryComment { ci_info, job })
+                .await
+            {
+                warn!(
+                    "Failed to enqueue CreateChangeSummaryComment after debounce: {:?}",
+                    e
+                );
+            }
+        });
     }
 
     /// Post (or update) change summary as an MR comment
