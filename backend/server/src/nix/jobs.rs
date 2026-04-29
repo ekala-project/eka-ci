@@ -1,5 +1,6 @@
-use std::io::{BufRead, BufReader, Read};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::Command;
 
 use anyhow::{Context, bail};
 use tracing::{debug, warn};
@@ -83,7 +84,7 @@ pub struct ConsumeOutcome {
 /// The function never panics; it stops at the first cap hit and
 /// returns whatever was successfully parsed so callers can log
 /// partial context.
-pub fn process_nix_eval_output<R: BufRead>(
+pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
     mut reader: R,
     max_entries: usize,
     max_bytes: u64,
@@ -103,7 +104,7 @@ pub fn process_nix_eval_output<R: BufRead>(
         buf.clear();
         let n = {
             let mut limited = (&mut reader).take(per_line_take);
-            match limited.read_until(b'\n', &mut buf) {
+            match limited.read_until(b'\n', &mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
                     warn!(error = %e, "Error reading nix-eval-jobs stdout");
@@ -193,7 +194,7 @@ pub fn process_nix_eval_output<R: BufRead>(
 
 impl super::EvalService {
     pub async fn run_nix_eval_jobs(
-        &mut self,
+        &self,
         file_path: &str,
     ) -> anyhow::Result<(Vec<NixEvalDrv>, Vec<NixEvalError>)> {
         let mut cmd = Command::new("nix-eval-jobs")
@@ -217,6 +218,7 @@ impl super::EvalService {
                 NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
                 NIX_EVAL_JOBS_MAX_LINE_BYTES,
             )
+            .await
         };
 
         if outcome.truncation != Truncation::None {
@@ -224,7 +226,7 @@ impl super::EvalService {
             // into a closed pipe. If the child already exited on its
             // own, kill() may return ESRCH — not a correctness issue,
             // but log in case it signals a deeper pipe / signal bug.
-            if let Err(e) = cmd.kill() {
+            if let Err(e) = cmd.kill().await {
                 warn!(
                     "nix-eval-jobs child kill failed (may already be dead): {:?}",
                     e
@@ -234,14 +236,14 @@ impl super::EvalService {
             // Read stderr before waiting to capture any diagnostic output
             if let Some(mut stderr) = cmd.stderr.take() {
                 let mut stderr_output = String::new();
-                if let Err(e) = stderr.read_to_string(&mut stderr_output) {
+                if let Err(e) = stderr.read_to_string(&mut stderr_output).await {
                     debug!("Failed to read nix-eval-jobs stderr: {:?}", e);
                 } else if !stderr_output.is_empty() {
                     debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
                 }
             }
 
-            if let Err(e) = cmd.wait() {
+            if let Err(e) = cmd.wait().await {
                 warn!("nix-eval-jobs child wait failed: {:?}", e);
             }
 
@@ -271,7 +273,7 @@ impl super::EvalService {
             // Read stderr before waiting to capture any diagnostic output
             if let Some(mut stderr) = cmd.stderr.take() {
                 let mut stderr_output = String::new();
-                if let Err(e) = stderr.read_to_string(&mut stderr_output) {
+                if let Err(e) = stderr.read_to_string(&mut stderr_output).await {
                     debug!("Failed to read nix-eval-jobs stderr: {:?}", e);
                 } else if !stderr_output.is_empty() {
                     debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
@@ -279,7 +281,7 @@ impl super::EvalService {
             }
 
             // Reap the child on the clean path too.
-            if let Err(e) = cmd.wait() {
+            if let Err(e) = cmd.wait().await {
                 warn!("nix-eval-jobs child wait failed on clean path: {:?}", e);
             }
         }

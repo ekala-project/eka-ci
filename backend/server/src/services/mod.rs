@@ -190,6 +190,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         .context("failed to register nix-eval-jobs metrics")?;
 
     let eval_service = EvalService::new(
+        eval_sender.clone(),
         eval_receiver,
         db_service.clone(),
         scheduler_service.ingress_request_sender(),
