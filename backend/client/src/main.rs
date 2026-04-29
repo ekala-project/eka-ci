@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
     let socket = args.socket.map_or_else(
         || {
-            eka_dirs().get_runtime_file("ekaci.socket").context(
+            eka_dirs()?.get_runtime_file("ekaci.socket").context(
                 "failed to determine default path for unix socket, consider setting it explicitly",
             )
         },

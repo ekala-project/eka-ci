@@ -83,8 +83,7 @@ pub fn workspace_root() -> Result<PathBuf> {
     if let Ok(override_root) = std::env::var("EKACI_WORKSPACE_ROOT") {
         return Ok(PathBuf::from(override_root));
     }
-    let dirs = xdg::BaseDirectories::with_prefix("ekaci")
-        .context("failed to locate XDG base directories for ekaci")?;
+    let dirs = shared::dirs::eka_dirs()?;
     Ok(dirs.get_data_home().join("repos"))
 }
 
