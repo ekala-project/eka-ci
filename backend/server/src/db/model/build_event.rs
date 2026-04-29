@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 
@@ -100,6 +102,33 @@ pub enum DrvBuildState {
     /// required features is added to the system. All transitive dependants will be marked
     /// as having transitive failure.
     UnsatisfiableRequirements,
+}
+
+impl FromStr for DrvBuildState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "queued" => Ok(DrvBuildState::Queued),
+            "buildable" => Ok(DrvBuildState::Buildable),
+            "failedretry" | "failed_retry" => Ok(DrvBuildState::FailedRetry),
+            "building" => Ok(DrvBuildState::Building),
+            "transitivefailure" | "transitive_failure" => Ok(DrvBuildState::TransitiveFailure),
+            "blocked" => Ok(DrvBuildState::Blocked),
+            "unsatisfiablerequirements" | "unsatisfiable_requirements" => {
+                Ok(DrvBuildState::UnsatisfiableRequirements)
+            },
+            // Common shortcuts for completed states
+            "success" => Ok(DrvBuildState::Completed(DrvBuildResult::Success)),
+            "failure" => Ok(DrvBuildState::Completed(DrvBuildResult::Failure)),
+            _ => Err(format!(
+                "Invalid build state '{}'. Valid states: queued, buildable, failed_retry, \
+                 building, success, failure, transitive_failure, blocked, \
+                 unsatisfiable_requirements",
+                s
+            )),
+        }
+    }
 }
 
 /// The result of building a derivation.
