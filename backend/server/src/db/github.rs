@@ -769,6 +769,77 @@ pub async fn count_jobset_drvs(jobset_id: i64, pool: &Pool<Sqlite>) -> Result<i6
     Ok(count)
 }
 
+/// Summary of a jobset for repository listing, including change statistics
+#[derive(Debug, FromRow, Serialize)]
+pub struct RepositoryJobSetSummary {
+    pub jobset_id: i64,
+    pub job_name: String,
+    pub sha: String,
+    pub total_drvs: i64,
+    pub queued_drvs: i64,
+    pub buildable_drvs: i64,
+    pub building_drvs: i64,
+    pub failed_retry_drvs: i64,
+    pub completed_success_drvs: i64,
+    pub completed_failure_drvs: i64,
+    pub transitive_failure_drvs: i64,
+    pub blocked_drvs: i64,
+    pub interrupted_drvs: i64,
+    // Change summary counts
+    pub new_jobs: i64,
+    pub changed_jobs: i64,
+    pub removed_jobs: i64,
+}
+
+/// Get jobsets for a repository with build statistics and change summary counts
+pub async fn get_repository_jobsets(
+    owner: &str,
+    repo_name: &str,
+    limit: i64,
+    sort_desc: bool,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<RepositoryJobSetSummary>> {
+    let order = if sort_desc { "DESC" } else { "ASC" };
+    let query = format!(
+        r#"
+        SELECT
+            g.ROWID as jobset_id,
+            g.job as job_name,
+            g.sha,
+            COUNT(DISTINCT j.drv_id) as total_drvs,
+            SUM(CASE WHEN d.build_state = 0 THEN 1 ELSE 0 END) as queued_drvs,
+            SUM(CASE WHEN d.build_state = 1 THEN 1 ELSE 0 END) as buildable_drvs,
+            SUM(CASE WHEN d.build_state = 7 THEN 1 ELSE 0 END) as building_drvs,
+            SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END) as failed_retry_drvs,
+            SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END) as completed_success_drvs,
+            SUM(CASE WHEN d.build_state = -1 THEN 1 ELSE 0 END) as completed_failure_drvs,
+            SUM(CASE WHEN d.build_state = -2 THEN 1 ELSE 0 END) as transitive_failure_drvs,
+            SUM(CASE WHEN d.build_state = 100 THEN 1 ELSE 0 END) as blocked_drvs,
+            SUM(CASE WHEN d.build_state < 0 AND d.build_state != -1 AND d.build_state != -2 THEN 1 ELSE 0 END) as interrupted_drvs,
+            SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END) as new_jobs,
+            SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END) as changed_jobs,
+            SUM(CASE WHEN j.difference = 2 THEN 1 ELSE 0 END) as removed_jobs
+        FROM GitHubJobSets g
+        JOIN Job j ON j.jobset = g.ROWID
+        JOIN Drv d ON d.ROWID = j.drv_id
+        WHERE g.owner = ? AND g.repo_name = ?
+        GROUP BY g.ROWID
+        ORDER BY g.ROWID {}
+        LIMIT ?
+        "#,
+        order
+    );
+
+    let jobsets = sqlx::query_as(&query)
+        .bind(owner)
+        .bind(repo_name)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(jobsets)
+}
+
 /// Get all active jobs (jobs with any queued, buildable, or building drvs)
 pub async fn get_active_jobs(pool: &Pool<Sqlite>) -> Result<Vec<JobSetDetails>> {
     let jobs = sqlx::query_as(
