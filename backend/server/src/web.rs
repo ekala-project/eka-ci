@@ -1890,7 +1890,11 @@ async fn websocket_handler(
     // Attempt authentication but allow unauthenticated connections for
     // public repository access. The subscription manager can enforce
     // access control based on authentication status in the future.
-    let is_authenticated = match crate::auth::authenticate_request(&state.jwt_service, &headers, query.token.as_deref()) {
+    let is_authenticated = match crate::auth::authenticate_request(
+        &state.jwt_service,
+        &headers,
+        query.token.as_deref(),
+    ) {
         Ok(_claims) => {
             debug!(event = "ws_upgrade_authenticated");
             true
