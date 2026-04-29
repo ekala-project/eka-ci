@@ -138,6 +138,7 @@ async fn create_test_server_with_options(
         jwt_service,
         oauth_config,
         ctx.logs_dir.clone(),
+        ctx.static_dir.clone(),
         websocket_service,
         github_app_configs,
         // M2: wrap at the test-helper boundary so individual test call

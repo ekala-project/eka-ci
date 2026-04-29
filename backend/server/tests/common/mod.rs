@@ -17,6 +17,7 @@ pub struct TestContext {
     pub temp_dir: TempDir,
     pub db_service: DbService,
     pub logs_dir: PathBuf,
+    pub static_dir: PathBuf,
 }
 
 impl TestContext {
@@ -25,8 +26,10 @@ impl TestContext {
         let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
         let db_path = temp_dir.path().join("test.db");
         let logs_dir = temp_dir.path().join("logs");
+        let static_dir = temp_dir.path().join("static");
 
         std::fs::create_dir_all(&logs_dir)?;
+        std::fs::create_dir_all(&static_dir)?;
 
         let db_service = DbService::new(&db_path)
             .await
@@ -36,6 +39,7 @@ impl TestContext {
             temp_dir,
             db_service,
             logs_dir,
+            static_dir,
         })
     }
 

@@ -252,6 +252,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         jwt_service,
         oauth_config,
         config.logs_dir.clone(),
+        config.static_dir.clone(),
         websocket_service.clone(),
         github_app_configs.clone(),
         config.security.webhook_secret.clone(),
