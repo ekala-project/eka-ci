@@ -6,17 +6,15 @@ use axum::response::IntoResponse;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::webhook_security::verify_webhook_signature;
-
 use super::state::AppState;
+use crate::webhook_security::verify_webhook_signature;
 
 pub(super) async fn handle_github_webhook(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
-    use octocrab::models::webhook_events::EventInstallation;
-    use octocrab::models::webhook_events::WebhookEventPayload as WEP;
+    use octocrab::models::webhook_events::{EventInstallation, WebhookEventPayload as WEP};
 
     // H1: signature verification is the primary gate. Three modes:
     //

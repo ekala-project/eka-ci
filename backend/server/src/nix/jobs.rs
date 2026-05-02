@@ -1,8 +1,8 @@
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Command;
 
 use anyhow::{Context, bail};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::process::Command;
 use tracing::{debug, warn};
 
 use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalError, NixEvalItem};

@@ -152,7 +152,10 @@ impl IngressWorker {
     /// This attempts to update the status of a drv by inspecting the
     /// status of the dependencies.
     async fn handle_eval_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
-        debug!("IngressService handling EvalRequest for: {}", drv_id.store_path());
+        debug!(
+            "IngressService handling EvalRequest for: {}",
+            drv_id.store_path()
+        );
 
         if let Some(build_state) = self.graph_handle.get_build_state(drv_id) {
             if build_state.is_terminal() {
