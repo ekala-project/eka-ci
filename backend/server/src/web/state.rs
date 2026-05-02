@@ -30,7 +30,8 @@ pub(super) struct AppState {
     pub(super) logs_dir: PathBuf,
     pub(super) static_dir: PathBuf,
     pub(super) websocket_service: crate::services::WebSocketService,
-    pub(super) github_app_configs: Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
+    pub(super) github_app_configs:
+        Arc<std::collections::HashMap<String, crate::config::GitHubAppConfig>>,
     // M2: wrap so the secret cannot leak through any future `Debug`
     // formatting of `AppState` or a struct embedding it.
     pub(super) webhook_secret: Option<crate::secret::Redacted<String>>,
