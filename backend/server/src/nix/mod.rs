@@ -79,11 +79,15 @@ impl EvalService {
     async fn handle_eval_task(&self, task: EvalTask) -> Result<()> {
         use anyhow::Context;
 
+        debug!("EvalService received task: {:?}", task);
+
         match &task {
             EvalTask::Job(drv) => {
+                debug!("Processing Job task for: {}", drv.file_path);
                 let (_jobs, _errors) = self.run_nix_eval_jobs(&drv.file_path).await?;
             },
             EvalTask::TraverseDrv(drv) => {
+                debug!("Processing TraverseDrv task for: {}", drv);
                 self.traverse_drvs(drv, &None).await?;
             },
             EvalTask::GithubJobPR((eval_job, ci_info)) => {
