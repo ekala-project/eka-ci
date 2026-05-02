@@ -3,10 +3,9 @@
 use axum::extract::{Json, Path, Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{debug, error};
 
-use super::responses::internal_error;
 use super::security::parse_drv_id;
 use super::state::AppState;
 use crate::auth::AuthUser;

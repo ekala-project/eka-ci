@@ -2,7 +2,7 @@
 
 use axum::extract::{Json, Path, State};
 use axum::response::IntoResponse;
-use prometheus::TextEncoder;
+use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
