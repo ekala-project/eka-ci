@@ -61,7 +61,7 @@ pub(super) async fn get_repository_handler(
 }
 
 #[derive(Deserialize)]
-struct CommitsQuery {
+pub(super) struct CommitsQuery {
     #[serde(default = "default_limit")]
     limit: i64,
 }
@@ -92,7 +92,7 @@ pub(super) async fn list_repository_commits_handler(
 }
 
 #[derive(Deserialize)]
-struct JobsetsQuery {
+pub(super) struct JobsetsQuery {
     #[serde(default = "default_jobsets_limit")]
     limit: i64,
     #[serde(default = "default_sort_desc")]
@@ -168,7 +168,7 @@ pub(super) async fn get_jobset_details_handler(
 }
 
 #[derive(Deserialize)]
-struct DrvsQuery {
+pub(super) struct DrvsQuery {
     #[serde(default = "default_drv_limit")]
     limit: i64,
     #[serde(default)]
@@ -230,7 +230,7 @@ pub(super) async fn get_jobset_drvs_handler(
 }
 
 #[derive(Deserialize)]
-struct PackageChangesQuery {
+pub(super) struct PackageChangesQuery {
     base_sha: String,
     job: String,
     #[serde(default)]
@@ -279,7 +279,7 @@ pub(super) async fn get_package_changes_handler(
 }
 
 #[derive(Deserialize)]
-struct RebuildImpactQuery {
+pub(super) struct RebuildImpactQuery {
     base_sha: String,
     job: String,
     #[serde(default)]
@@ -333,7 +333,7 @@ pub(super) async fn get_rebuild_impact_handler(
 }
 
 #[derive(Deserialize)]
-struct ChangeSummaryQuery {
+pub(super) struct ChangeSummaryQuery {
     base_sha: String,
     job: String,
     #[serde(default)]
@@ -561,7 +561,7 @@ pub(super) async fn get_drv_dependencies_handler(
 }
 
 #[derive(Deserialize, Default)]
-struct WsAuthQuery {
+pub(super) struct WsAuthQuery {
     token: Option<String>,
 }
 

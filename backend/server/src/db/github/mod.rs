@@ -15,87 +15,19 @@ pub use pull_requests::*;
 pub use repositories::*;
 pub use types::*;
 
+// Test helper functions (available for all tests in the crate)
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_helpers {
+    use anyhow::Context;
     use sqlx::SqlitePool;
 
-    use super::*;
     use crate::db::model::Drv;
-    use crate::db::model::build_event::DrvBuildState;
-    use crate::db::model::drv::insert_drv;
-    use crate::db::model::drv_id::DrvId;
-    use crate::github::JobDifference;
-    use crate::nix::nix_eval_jobs::NixEvalDrv;
-
-    /// Test helper: insert a drv with a specific state
-    async fn insert_drv_with_state(
-        pool: &SqlitePool,
-        drv_path: &str,
-        state: DrvBuildState,
-    ) -> anyhow::Result<()> {
-        use std::str::FromStr;
-
-        let drv = Drv {
-            drv_path: DrvId::from_str(drv_path)?,
-            system: "x86_64-linux".to_string(),
-            prefer_local_build: false,
-            required_system_features: None,
-            is_fod: false,
-            build_state: state,
-            output_size: None,
-            closure_size: None,
-            pname: None,
-            version: None,
-            license_json: None,
-            maintainers_json: None,
-            meta_position: None,
-            broken: None,
-            insecure: None,
-        };
-        insert_drv(pool, &drv).await?;
-        Ok(())
-    }
-
-    /// Test helper: create a test NixEvalDrv
-    fn eval_drv_for(attr: &str, drv_path: &str) -> NixEvalDrv {
-        NixEvalDrv {
-            attr: attr.to_string(),
-            attr_path: vec![attr.to_string()],
-            drv_path: drv_path.to_string(),
-            input_drvs: Default::default(),
-            name: attr.to_string(),
-            outputs: Default::default(),
-            system: "x86_64-linux".to_string(),
-        }
-    }
-
-    /// Test helper: insert a test PR
-    async fn insert_test_pr(
-        pool: &SqlitePool,
-        pr_number: i64,
-        owner: &str,
-        repo: &str,
-        head_sha: &str,
-    ) -> anyhow::Result<()> {
-        upsert_pull_request(
-            pr_number,
-            owner,
-            repo,
-            head_sha,
-            "base_sha",
-            "Test PR",
-            "test_author",
-            "open",
-            "2024-01-01T00:00:00Z",
-            "2024-01-01T00:00:00Z",
-            pool,
-        )
-        .await?;
-        Ok(())
-    }
 
     /// Select drvs which are present for a specific job (test helper)
-    async fn jobs_for_jobset_id(job_id: i64, pool: &SqlitePool) -> anyhow::Result<Vec<Drv>> {
+    pub(crate) async fn jobs_for_jobset_id(
+        job_id: i64,
+        pool: &SqlitePool,
+    ) -> anyhow::Result<Vec<Drv>> {
         let drvs = sqlx::query_as(
             r#"
             SELECT d.drv_path, d.system, d.required_system_features, d.is_fod, d.build_state, d.output_size, d.closure_size, d.pname, d.version, d.license_json, d.maintainers_json, d.meta_position, d.broken, d.insecure
@@ -112,7 +44,7 @@ mod tests {
     }
 
     /// Select drvs which are only present in the head_sha (test helper)
-    async fn new_jobs(
+    pub(crate) async fn new_jobs(
         head_jobset_id: i64,
         base_jobset_id: i64,
         pool: &SqlitePool,
@@ -145,7 +77,7 @@ mod tests {
     }
 
     /// Select job names which are only present in the head_sha (test helper)
-    async fn removed_jobs(
+    pub(crate) async fn removed_jobs(
         head_jobset_id: i64,
         base_jobset_id: i64,
         pool: &SqlitePool,
@@ -161,9 +93,10 @@ mod tests {
             FROM Job AS a
             INNER JOIN Job AS b
             ON a.name = b.name
-            WHERE a.jobset = ?
+            WHERE a.jobset = ? AND b.jobset = ?
             "#,
         )
+        .bind(base_jobset_id)
         .bind(head_jobset_id)
         .bind(base_jobset_id)
         .fetch_all(pool)
@@ -173,14 +106,12 @@ mod tests {
     }
 
     /// Compare two jobsets and return (new, changed, removed) drvs (test helper)
-    async fn job_difference(
+    pub(crate) async fn job_difference(
         head_sha: &str,
         base_sha: &str,
         job_name: &str,
         pool: &SqlitePool,
     ) -> anyhow::Result<(Vec<Drv>, Vec<Drv>, Vec<String>)> {
-        use anyhow::Context;
-
         // First, get the jobset IDs for both head and base
         let head_jobset_id =
             sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ?")
@@ -227,9 +158,90 @@ mod tests {
         let new_drvs = new_jobs(head_jobset_id, base_jobset_id, pool).await?;
 
         // Removed jobs are just "new" when you invert direction, however, we just need Job name
-        let removed_jobs = removed_jobs(base_jobset_id, head_jobset_id, pool).await?;
+        // (not full Drv), since removed jobs don't exist in the head jobset.
+        let removed_names = removed_jobs(head_jobset_id, base_jobset_id, pool).await?;
 
-        Ok((new_drvs, changed_drvs, removed_jobs))
+        Ok((new_drvs, changed_drvs, removed_names))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::{Row, SqlitePool};
+
+    use super::*;
+    use crate::db::model::Drv;
+    use crate::db::model::build_event::DrvBuildState;
+    use crate::db::model::drv::insert_drv;
+    use crate::db::model::drv_id::DrvId;
+    use crate::nix::nix_eval_jobs::NixEvalDrv;
+
+    /// Test helper: insert a drv with a specific state
+    async fn insert_drv_with_state(
+        pool: &SqlitePool,
+        drv_path: &str,
+        state: DrvBuildState,
+    ) -> anyhow::Result<()> {
+        use std::str::FromStr;
+
+        let drv = Drv {
+            drv_path: DrvId::from_str(drv_path)?,
+            system: "x86_64-linux".to_string(),
+            prefer_local_build: false,
+            required_system_features: None,
+            is_fod: false,
+            build_state: state,
+            output_size: None,
+            closure_size: None,
+            pname: None,
+            version: None,
+            license_json: None,
+            maintainers_json: None,
+            meta_position: None,
+            broken: None,
+            insecure: None,
+        };
+        insert_drv(pool, &drv).await?;
+        Ok(())
+    }
+
+    /// Test helper: create a test NixEvalDrv
+    fn eval_drv_for(attr: &str, drv_path: &str) -> NixEvalDrv {
+        NixEvalDrv {
+            attr: attr.to_string(),
+            attr_path: vec![attr.to_string()],
+            drv_path: drv_path.to_string(),
+            input_drvs: Default::default(),
+            name: attr.to_string(),
+            outputs: Default::default(),
+            system: "x86_64-linux".to_string(),
+            meta: None,
+        }
+    }
+
+    /// Test helper: insert a test PR
+    async fn insert_test_pr(
+        pool: &SqlitePool,
+        pr_number: i64,
+        owner: &str,
+        repo: &str,
+        head_sha: &str,
+    ) -> anyhow::Result<()> {
+        upsert_pull_request(
+            pr_number,
+            owner,
+            repo,
+            head_sha,
+            "base_sha",
+            "Test PR",
+            "test_author",
+            "open",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z",
+            pool,
+        )
+        .await?;
+        Ok(())
     }
 
     #[sqlx::test(migrations = "./sql/migrations")]
@@ -278,7 +290,7 @@ mod tests {
 
         // These two queries should return the same result if there's no jobset associated with the
         // base commit
-        let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
+        let jobs = test_helpers::jobs_for_jobset_id(jobset_id, &pool).await?;
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs.into_iter().next(), Some(drv.clone()));
 
@@ -313,7 +325,8 @@ mod tests {
         )
         .await?;
         create_jobs_for_jobset(second_jobset_id, &jobs[..], None, &pool).await?;
-        let (_, changed_jobs, _) = job_difference("abcdef", "g1cdef", "fake-name", &pool).await?;
+        let (_, changed_jobs, _) =
+            test_helpers::job_difference("abcdef", "g1cdef", "fake-name", &pool).await?;
         assert_eq!(changed_jobs.len(), 1);
         assert_eq!(changed_jobs.into_iter().next(), Some(drv));
 
@@ -338,7 +351,7 @@ mod tests {
         create_jobs_for_jobset(jobset_id, &empty_jobs, None, &pool).await?;
 
         // Verify no jobs were created
-        let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
+        let jobs = test_helpers::jobs_for_jobset_id(jobset_id, &pool).await?;
         assert_eq!(jobs.len(), 0);
 
         Ok(())
@@ -397,7 +410,7 @@ mod tests {
         create_jobs_for_jobset(jobset_id, &eval_drvs, None, &pool).await?;
 
         // Verify all jobs were created
-        let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
+        let jobs = test_helpers::jobs_for_jobset_id(jobset_id, &pool).await?;
         assert_eq!(jobs.len(), 3);
 
         Ok(())
@@ -464,11 +477,19 @@ mod tests {
         .fetch_all(&pool)
         .await?;
 
+        use crate::db::model::drv_id::strip_store_path;
+
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].get::<String, _>("name"), "package1");
-        assert_eq!(result[0].get::<String, _>("drv_path"), drv1_path);
+        assert_eq!(
+            result[0].get::<String, _>("drv_path"),
+            strip_store_path(drv1_path)
+        );
         assert_eq!(result[1].get::<String, _>("name"), "package2");
-        assert_eq!(result[1].get::<String, _>("drv_path"), drv2_path);
+        assert_eq!(
+            result[1].get::<String, _>("drv_path"),
+            strip_store_path(drv2_path)
+        );
 
         Ok(())
     }
@@ -480,10 +501,9 @@ mod tests {
         // Create 100 test drvs
         let mut eval_drvs = Vec::new();
         for i in 0..100 {
-            let drv_path = format!(
-                "/nix/store/{}fr8b3xlygv2a64ff7fq7564j4sxv4lc-package{}.drv",
-                i, i
-            );
+            // Create a valid 32-character hash by padding i with leading zeros
+            let hash = format!("{:02}r8b3xlygv2a64ff7fq7564j4sxv4lc", i);
+            let drv_path = format!("/nix/store/{}-package{}.drv", hash, i);
             let drv = Drv {
                 drv_path: DrvId::from_str(&drv_path)?,
                 system: "x86_64-linux".to_string(),
@@ -522,7 +542,7 @@ mod tests {
         create_jobs_for_jobset(jobset_id, &eval_drvs, None, &pool).await?;
 
         // Verify all jobs were created
-        let jobs = jobs_for_jobset_id(jobset_id, &pool).await?;
+        let jobs = test_helpers::jobs_for_jobset_id(jobset_id, &pool).await?;
         assert_eq!(jobs.len(), 100);
 
         Ok(())
@@ -553,9 +573,17 @@ mod tests {
         let jobset_id = create_jobset("sha123", "job1", "owner", "repo", None, &pool).await?;
 
         // Create a drv in a non-terminal state (Queued)
-        insert_drv_with_state(&pool, "/nix/store/test1-drv.drv", DrvBuildState::Queued).await?;
+        insert_drv_with_state(
+            &pool,
+            "/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-test1.drv",
+            DrvBuildState::Queued,
+        )
+        .await?;
 
-        let eval_drvs = vec![eval_drv_for("test1", "/nix/store/test1-drv.drv")];
+        let eval_drvs = vec![eval_drv_for(
+            "test1",
+            "/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-test1.drv",
+        )];
         create_jobs_for_jobset(jobset_id, &eval_drvs, None, &pool).await?;
 
         // Should return false since jobs haven't concluded
@@ -578,12 +606,15 @@ mod tests {
         // Create a drv with a failure state
         insert_drv_with_state(
             &pool,
-            "/nix/store/test1-drv.drv",
-            DrvBuildState::CompletedFailure,
+            "/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-test1.drv",
+            DrvBuildState::Completed(crate::db::model::build_event::DrvBuildResult::Failure),
         )
         .await?;
 
-        let eval_drvs = vec![eval_drv_for("test1", "/nix/store/test1-drv.drv")];
+        let eval_drvs = vec![eval_drv_for(
+            "test1",
+            "/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-test1.drv",
+        )];
         create_jobs_for_jobset(jobset_id, &eval_drvs, None, &pool).await?;
 
         // Should return false since there's a failure
@@ -603,16 +634,21 @@ mod tests {
         // Create a jobset for the PR's head SHA
         let jobset_id = create_jobset("sha123", "job1", "owner", "repo", None, &pool).await?;
 
-        // Create a drv with success state
-        insert_drv_with_state(
-            &pool,
-            "/nix/store/test1-drv.drv",
-            DrvBuildState::CompletedSuccess,
-        )
-        .await?;
+        // Create a drv initially in Queued state
+        let drv_path_str = "/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-test1.drv";
+        insert_drv_with_state(&pool, drv_path_str, DrvBuildState::Queued).await?;
 
-        let eval_drvs = vec![eval_drv_for("test1", "/nix/store/test1-drv.drv")];
+        let eval_drvs = vec![eval_drv_for("test1", drv_path_str)];
         create_jobs_for_jobset(jobset_id, &eval_drvs, None, &pool).await?;
+
+        // Update the drv to success state after job creation
+        use std::str::FromStr;
+        let drv_id = DrvId::from_str(drv_path_str)?;
+        sqlx::query("UPDATE Drv SET build_state = ? WHERE drv_path = ?")
+            .bind(42i64) // CompletedSuccess = 42
+            .bind(&drv_id)
+            .execute(&pool)
+            .await?;
 
         // Should return true since all jobs succeeded
         let result = pr_head_build_succeeded(1, "owner", "repo", &pool).await?;

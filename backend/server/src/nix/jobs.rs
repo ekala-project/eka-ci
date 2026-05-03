@@ -334,22 +334,23 @@ mod tests {
         format!(r#"{{"attr":"{attr}","attrPath":["{attr}"],"error":"{msg}"}}"#)
     }
 
-    #[test]
-    fn empty_input_yields_no_entries_and_no_truncation() {
+    #[tokio::test]
+    async fn empty_input_yields_no_entries_and_no_truncation() {
         let outcome = process_nix_eval_output(
             Cursor::new(Vec::<u8>::new()),
             NIX_EVAL_JOBS_MAX_ENTRIES,
             NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
             NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        );
+        )
+        .await;
         assert_eq!(outcome.jobs.len(), 0);
         assert_eq!(outcome.errors.len(), 0);
         assert_eq!(outcome.truncation, Truncation::None);
         assert_eq!(outcome.bytes_read, 0);
     }
 
-    #[test]
-    fn happy_path_parses_drv_and_error_lines() {
+    #[tokio::test]
+    async fn happy_path_parses_drv_and_error_lines() {
         let mut data = String::new();
         data.push_str(&drv_json("a"));
         data.push('\n');
@@ -363,7 +364,8 @@ mod tests {
             NIX_EVAL_JOBS_MAX_ENTRIES,
             NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
             NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        );
+        )
+        .await;
         assert_eq!(outcome.jobs.len(), 2);
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.truncation, Truncation::None);
@@ -373,8 +375,8 @@ mod tests {
         assert_eq!(outcome.errors[0].attr, "b");
     }
 
-    #[test]
-    fn malformed_json_lines_are_skipped_without_truncation() {
+    #[tokio::test]
+    async fn malformed_json_lines_are_skipped_without_truncation() {
         let mut data = String::new();
         data.push_str(&drv_json("good"));
         data.push('\n');
@@ -388,7 +390,8 @@ mod tests {
             NIX_EVAL_JOBS_MAX_ENTRIES,
             NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
             NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        );
+        )
+        .await;
         assert_eq!(
             outcome.jobs.len(),
             2,
@@ -398,8 +401,8 @@ mod tests {
         assert_eq!(outcome.truncation, Truncation::None);
     }
 
-    #[test]
-    fn non_utf8_lines_are_skipped() {
+    #[tokio::test]
+    async fn non_utf8_lines_are_skipped() {
         // A valid line, then a non-UTF-8 line, then another valid
         // line. Non-UTF-8 must be dropped, not terminate parsing.
         let mut data: Vec<u8> = Vec::new();
@@ -415,13 +418,14 @@ mod tests {
             NIX_EVAL_JOBS_MAX_ENTRIES,
             NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
             NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        );
+        )
+        .await;
         assert_eq!(outcome.jobs.len(), 2);
         assert_eq!(outcome.truncation, Truncation::None);
     }
 
-    #[test]
-    fn max_entries_cap_halts_consumption() {
+    #[tokio::test]
+    async fn max_entries_cap_halts_consumption() {
         let mut data = String::new();
         // 5 drv lines — we'll cap at 3.
         for i in 0..5 {
@@ -434,13 +438,14 @@ mod tests {
             3,
             NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
             NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        );
+        )
+        .await;
         assert_eq!(outcome.jobs.len(), 3);
         assert_eq!(outcome.truncation, Truncation::MaxEntries);
     }
 
-    #[test]
-    fn max_bytes_cap_halts_consumption_before_parse_completes() {
+    #[tokio::test]
+    async fn max_bytes_cap_halts_consumption_before_parse_completes() {
         // Build roughly 200 KB of drv lines, cap at 50 KB.
         let mut data = String::new();
         for i in 0..5000u32 {
@@ -457,13 +462,14 @@ mod tests {
             NIX_EVAL_JOBS_MAX_ENTRIES,
             50_000, // 50 KB byte cap
             NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        );
+        )
+        .await;
         assert_eq!(outcome.truncation, Truncation::MaxBytes);
         assert!(outcome.bytes_read > 50_000);
     }
 
-    #[test]
-    fn max_line_bytes_cap_stops_newline_less_flood() {
+    #[tokio::test]
+    async fn max_line_bytes_cap_stops_newline_less_flood() {
         // A single 4 KiB blob with no newline — cap at 1 KiB.
         let data = vec![b'x'; 4 * 1024];
         let outcome = process_nix_eval_output(
@@ -471,14 +477,15 @@ mod tests {
             NIX_EVAL_JOBS_MAX_ENTRIES,
             NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
             1024,
-        );
+        )
+        .await;
         assert_eq!(outcome.truncation, Truncation::MaxLineBytes);
         assert_eq!(outcome.jobs.len(), 0);
         assert_eq!(outcome.errors.len(), 0);
     }
 
-    #[test]
-    fn max_line_bytes_accepts_line_exactly_at_cap() {
+    #[tokio::test]
+    async fn max_line_bytes_accepts_line_exactly_at_cap() {
         // A line of `max_line_bytes` ASCII bytes followed by '\n' must
         // parse (or be a malformed-JSON skip), not trigger
         // MaxLineBytes. We build a valid JSON line padded to close to
@@ -500,13 +507,14 @@ mod tests {
             NIX_EVAL_JOBS_MAX_ENTRIES,
             NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
             line_len, // cap equal to the line body length
-        );
+        )
+        .await;
         // The line fits at the cap, so we must not see MaxLineBytes.
         assert_ne!(outcome.truncation, Truncation::MaxLineBytes);
     }
 
-    #[test]
-    fn truncation_labels_are_stable() {
+    #[tokio::test]
+    async fn truncation_labels_are_stable() {
         assert_eq!(Truncation::None.label(), "none");
         assert_eq!(Truncation::MaxEntries.label(), "max_entries");
         assert_eq!(Truncation::MaxBytes.label(), "max_bytes");

@@ -116,7 +116,7 @@ async fn ensure_pr_maintainer_access(
 }
 
 #[derive(Debug, Deserialize)]
-struct EnableAutoMergeRequest {
+pub(super) struct EnableAutoMergeRequest {
     merge_method: Option<String>,
 }
 
@@ -204,7 +204,7 @@ pub(super) async fn disable_auto_merge_handler(
 }
 
 #[derive(Debug, Deserialize)]
-struct ManualMergeRequest {
+pub(super) struct ManualMergeRequest {
     merge_method: Option<String>,
 }
 
