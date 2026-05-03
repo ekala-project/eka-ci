@@ -58,14 +58,14 @@ pub(super) async fn metrics_handler(
 
 // Approved users handlers
 #[derive(Serialize, Deserialize)]
-struct AddApprovedUserRequest {
+pub(super) struct AddApprovedUserRequest {
     username: String,
     user_id: i64,
     notes: Option<String>,
 }
 
 #[derive(Serialize)]
-struct ApprovedUserResponse {
+pub(super) struct ApprovedUserResponse {
     github_username: String,
     github_id: i64,
     approved_at: String,
@@ -252,7 +252,7 @@ pub(super) async fn admin_list_maintainers_handler(
 
 // Admin cache management handlers
 #[derive(Deserialize)]
-struct InvalidateGitHubApiCacheRequest {
+pub(super) struct InvalidateGitHubApiCacheRequest {
     github_id: i64,
     owner: String,
     repo: String,

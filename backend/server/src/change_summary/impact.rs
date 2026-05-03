@@ -242,7 +242,8 @@ mod tests {
 
     use super::*;
     use crate::db::DbService;
-    use crate::db::github::{create_jobs_for_jobset, create_jobset, job_difference};
+    use crate::db::github::test_helpers::job_difference;
+    use crate::db::github::{create_jobs_for_jobset, create_jobset};
     use crate::db::model::build_event::DrvBuildState;
     use crate::db::model::drv::{Drv, insert_drv};
     use crate::db::model::drv_id::DrvId;
