@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use super::build::{BuildQueue, BuildRequest, Builder};
 use super::ingress::{IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
+use crate::channels::types::ChannelTask;
 use crate::config::RemoteBuilder;
 use crate::db::DbService;
 use crate::github::GitHubTask;
@@ -65,6 +66,7 @@ impl SchedulerService {
         cache_configs: Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
         max_hook_timeout_seconds: u64,
         audit_hooks: bool,
+        channel_sender: Option<mpsc::Sender<ChannelTask>>,
     ) -> anyhow::Result<Self> {
         // Create build metrics using shared registry
         let build_metrics = BuildMetrics::new(&metrics_registry)?;
@@ -91,6 +93,7 @@ impl SchedulerService {
             graph_handle.clone(),
             Some(hook_sender),
             cache_configs,
+            channel_sender,
         );
 
         let mut builders = Builder::local_from_env(

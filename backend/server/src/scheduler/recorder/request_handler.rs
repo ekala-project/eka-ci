@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use super::{RecorderTask, RecorderWorker};
+use crate::channels::types::ChannelTask;
+use crate::config::ChannelForge;
 use crate::db::model::build_event;
 use crate::github::GitHubTask;
 use crate::scheduler::ingress::IngressTask;
@@ -247,6 +249,36 @@ impl RecorderWorker {
                                 "Failed to send CompleteCIEvalJob for jobset {}: {:?}",
                                 job_info.jobset_id, e
                             );
+                        }
+
+                        // Notify ChannelService that this jobset has
+                        // concluded. The recorder cannot know which
+                        // release channels (if any) care about this
+                        // commit, so it always emits; ChannelService
+                        // filters by matching `(forge, owner, repo)`
+                        // against its registry and discards
+                        // jobset_complete events for which no
+                        // in-flight Evaluating row exists.
+                        //
+                        // Today the recorder only sees GitHub-backed
+                        // jobsets (the eval service is the sole
+                        // producer and is GitHub-only), so the forge
+                        // is hard-coded to GitHub. PR 4 will broaden
+                        // this when GitLab/Gitea start producing
+                        // jobsets.
+                        if let Some(channel_sender) = &self.channel_sender {
+                            let channel_task = ChannelTask::JobsetComplete {
+                                forge: ChannelForge::GitHub,
+                                owner: jobset_info.owner.clone(),
+                                repo: jobset_info.repo_name.clone(),
+                                sha: jobset_info.sha.clone(),
+                            };
+                            if let Err(e) = channel_sender.send(channel_task).await {
+                                warn!(
+                                    "Failed to send ChannelTask::JobsetComplete for jobset {}: {:?}",
+                                    job_info.jobset_id, e
+                                );
+                            }
                         }
 
                         // Check if this is a PR that should be auto-merged

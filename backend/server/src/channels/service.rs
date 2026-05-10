@@ -25,7 +25,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::config::ChannelConfig;
+use crate::config::{ChannelConfig, ChannelForge};
 use crate::db::DbService;
 use crate::db::model::build_event::DrvBuildState;
 use crate::services::AsyncService;
@@ -49,16 +49,25 @@ pub struct ChannelService {
     /// in the AsyncService dispatch loop. The lock is held very
     /// briefly: just long enough to read + replace one HashMap entry.
     pending: Arc<Mutex<HashMap<String, String>>>,
+    /// Snapshot of the channels registry indexed by `channel_id()`.
+    ///
+    /// Held as `Arc` so it shares storage with the original
+    /// `RuntimeConfig.channels` map without cloning per task. The
+    /// registry is static for a given process lifetime (PR 1's config
+    /// loader does not currently support hot-reload), so an
+    /// immutable Arc is sufficient.
+    channels: Arc<HashMap<String, ChannelConfig>>,
 }
 
 impl ChannelService {
-    pub fn new(db: DbService) -> Self {
+    pub fn new(db: DbService, channels: Arc<HashMap<String, ChannelConfig>>) -> Self {
         let (task_sender, task_receiver) = mpsc::channel(CHANNEL_TASK_BUFFER);
         Self {
             task_sender,
             task_receiver: Some(task_receiver),
             db,
             pending: Arc::new(Mutex::new(HashMap::new())),
+            channels,
         }
     }
 
@@ -295,6 +304,203 @@ impl ChannelService {
 
         Ok(())
     }
+
+    /// React to a jobset finishing for `(forge, owner, repo)` at `sha`.
+    ///
+    /// The recorder cannot tell which (if any) release channels care
+    /// about a given jobset, so it broadcasts the conclusion and lets
+    /// ChannelService route. For each channel watching the supplied
+    /// `(forge, owner, repo)`:
+    ///   1. If no in-flight Evaluating row exists for the channel,
+    ///      the jobset completion is irrelevant (no promotion is
+    ///      currently in flight that depends on it). Skip silently.
+    ///   2. If the in-flight row's `tracking_sha` differs from `sha`,
+    ///      the jobset belongs to a different attempt (e.g. a stale
+    ///      PR head, or a since-superseded SHA). Skip silently.
+    ///   3. Otherwise, re-run the same evaluation pipeline as
+    ///      `handle_evaluate_push` *without* re-inserting an
+    ///      Evaluating row (one is already open). The pipeline will
+    ///      either transition the row to a terminal state or keep
+    ///      it Waiting until the next jobset completion.
+    async fn handle_jobset_complete(
+        &self,
+        forge: ChannelForge,
+        owner: String,
+        repo: String,
+        sha: String,
+    ) -> Result<()> {
+        // Filter channels watching this `(forge, owner, repo)`.
+        // owner is case-insensitive to match the push matcher; repo
+        // and forge identifier are exact.
+        let matches: Vec<ChannelConfig> = self
+            .channels
+            .values()
+            .filter(|c| {
+                c.forge == forge
+                    && c.owner.eq_ignore_ascii_case(&owner)
+                    && c.repo == repo
+            })
+            .cloned()
+            .collect();
+
+        if matches.is_empty() {
+            debug!(
+                event = "channel_jobset_complete_no_match",
+                owner = %owner,
+                repo = %repo,
+                sha = %sha,
+                "jobset completion has no watching channels"
+            );
+            return Ok(());
+        }
+
+        for channel in matches {
+            let channel_id = channel.channel_id();
+            let in_flight =
+                crate::db::channels::get_in_flight(&channel_id, &self.db.pool).await?;
+            let in_flight_row = match in_flight {
+                Some(r) => r,
+                None => {
+                    debug!(
+                        event = "channel_jobset_complete_no_in_flight",
+                        channel_id = %channel_id,
+                        sha = %sha,
+                        "jobset completed but channel has no in-flight evaluation"
+                    );
+                    continue;
+                },
+            };
+
+            if in_flight_row.tracking_sha != sha {
+                debug!(
+                    event = "channel_jobset_complete_sha_mismatch",
+                    channel_id = %channel_id,
+                    jobset_sha = %sha,
+                    in_flight_sha = %in_flight_row.tracking_sha,
+                    "jobset SHA differs from in-flight evaluation; ignoring"
+                );
+                continue;
+            }
+
+            // Re-snapshot job states and re-evaluate. The Evaluating
+            // row is already open; finalise_evaluation flips it to a
+            // terminal status if the decision is Ready or Blocked,
+            // and otherwise we stay Waiting for the next conclusion.
+            let job_states = self.snapshot_job_states(&channel, &sha).await?;
+            let decision = evaluate_promotion(&channel, &job_states);
+
+            match decision {
+                PromotionDecision::Ready { required_results } => {
+                    let previous_target_sha =
+                        self.perform_promotion(&channel, &sha).await?;
+                    let required_json = serde_json::to_string(&required_results)
+                        .unwrap_or_else(|_| "{}".to_string());
+                    crate::db::channels::finalise_evaluation(
+                        &channel_id,
+                        &sha,
+                        PromotionStatus::Promoted,
+                        None,
+                        Some(&required_json),
+                        previous_target_sha.as_deref(),
+                        &self.db.pool,
+                    )
+                    .await?;
+                    info!(
+                        event = "channel_promoted",
+                        channel_id = %channel_id,
+                        sha = %sha,
+                        trigger = "jobset_complete",
+                        "channel evaluation reached Promoted (PR3 stub: no actual push)"
+                    );
+                    // After a terminal decision, promote the pending
+                    // SHA (if any) to a fresh evaluation.
+                    self.drain_pending(&channel).await?;
+                },
+                PromotionDecision::Blocked {
+                    failed_required,
+                    required_results,
+                } => {
+                    let blocked_json = serde_json::json!({
+                        "failed_required": failed_required,
+                    });
+                    let required_json = serde_json::to_string(&required_results)
+                        .unwrap_or_else(|_| "{}".to_string());
+                    crate::db::channels::finalise_evaluation(
+                        &channel_id,
+                        &sha,
+                        PromotionStatus::Blocked,
+                        Some(&blocked_json.to_string()),
+                        Some(&required_json),
+                        None,
+                        &self.db.pool,
+                    )
+                    .await?;
+                    warn!(
+                        event = "channel_blocked",
+                        channel_id = %channel_id,
+                        sha = %sha,
+                        failed = ?failed_required,
+                        trigger = "jobset_complete",
+                        "channel evaluation blocked by failed required jobs"
+                    );
+                    self.drain_pending(&channel).await?;
+                },
+                PromotionDecision::Waiting {
+                    pending_required,
+                    pending_packages,
+                } => {
+                    debug!(
+                        event = "channel_evaluation_waiting",
+                        channel_id = %channel_id,
+                        sha = %sha,
+                        pending_required = ?pending_required,
+                        pending_packages = ?pending_packages,
+                        trigger = "jobset_complete",
+                        "channel still waiting on additional job states"
+                    );
+                },
+            }
+        }
+
+        Ok(())
+    }
+
+    /// After a terminal decision, kick off evaluation of any queued
+    /// pending SHA. The pending entry is removed and a fresh
+    /// `EvaluatePush` task is dispatched through `self.task_sender`
+    /// so the work flows back through the normal coalescer path,
+    /// including the idempotency guard.
+    async fn drain_pending(&self, channel: &ChannelConfig) -> Result<()> {
+        let channel_id = channel.channel_id();
+        let pending_sha = {
+            let mut pending = self.pending.lock().await;
+            pending.remove(&channel_id)
+        };
+        if let Some(sha) = pending_sha {
+            debug!(
+                event = "channel_drain_pending",
+                channel_id = %channel_id,
+                pending_sha = %sha,
+                "in-flight evaluation finished; promoting pending SHA"
+            );
+            if let Err(e) = self
+                .task_sender
+                .send(ChannelTask::EvaluatePush {
+                    channel: channel.clone(),
+                    sha,
+                })
+                .await
+            {
+                warn!(
+                    event = "channel_drain_pending_send_failed",
+                    channel_id = %channel_id,
+                    error = ?e,
+                    "failed to enqueue pending SHA evaluation"
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 impl AsyncService<ChannelTask> for ChannelService {
@@ -312,6 +518,12 @@ impl AsyncService<ChannelTask> for ChannelService {
             ChannelTask::EvaluatePush { channel, sha } => {
                 self.handle_evaluate_push(channel, sha).await
             },
+            ChannelTask::JobsetComplete {
+                forge,
+                owner,
+                repo,
+                sha,
+            } => self.handle_jobset_complete(forge, owner, repo, sha).await,
         }
     }
 
@@ -358,7 +570,7 @@ mod tests {
         // Ready; the service should record a Promoted row. (PR 3
         // stub: no actual FF push.)
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone());
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
         let ch = channel("stable", &[], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-1".to_string())
             .await
@@ -379,7 +591,7 @@ mod tests {
         // required job is treated as not-yet-terminal => Waiting,
         // which leaves the Evaluating row in place.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone());
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
         let ch = channel("stable", &["coreutils"], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-w".to_string())
             .await
@@ -399,7 +611,7 @@ mod tests {
         // First push reaches Promoted (empty required). A second
         // delivery of the same SHA must NOT open a new Evaluating row.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone());
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
         let ch = channel("stable", &[], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-dup".to_string())
             .await
@@ -423,7 +635,7 @@ mod tests {
         // sha-b arrives -> stored as pending (no prior pending => no Skipped row yet).
         // sha-c arrives -> sha-b is now stale and must be audited as Skipped.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone());
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
         let ch = channel("stable", &["coreutils"], &[]);
 
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
@@ -461,5 +673,193 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(in_flight.unwrap().tracking_sha, "sha-a");
+    }
+
+    #[tokio::test]
+    async fn jobset_complete_for_unknown_repo_is_noop() {
+        // Empty channels registry: a JobsetComplete for any repo
+        // should silently no-op without touching the DB.
+        let db = DbService::new_in_memory().await.unwrap();
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
+        svc.handle_jobset_complete(
+            ChannelForge::GitHub,
+            "no-such-owner".to_string(),
+            "no-such-repo".to_string(),
+            "sha-x".to_string(),
+        )
+        .await
+        .unwrap();
+        // No promotions of any kind should have been written.
+        let n_eval = crate::db::channels::count_by_status(
+            "github:no-such-owner/no-such-repo:none",
+            PromotionStatus::Evaluating,
+            &db.pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(n_eval, 0);
+    }
+
+    #[tokio::test]
+    async fn jobset_complete_with_no_in_flight_is_noop() {
+        // Channel exists in registry but has no in-flight Evaluating
+        // row; the JobsetComplete should not synthesize one.
+        let db = DbService::new_in_memory().await.unwrap();
+        let ch = channel("stable", &["coreutils"], &[]);
+        let mut registry = HashMap::new();
+        registry.insert(ch.channel_id(), ch.clone());
+        let svc = ChannelService::new(db.clone(), Arc::new(registry));
+
+        svc.handle_jobset_complete(
+            ChannelForge::GitHub,
+            ch.owner.clone(),
+            ch.repo.clone(),
+            "sha-without-evaluation".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let n_eval = crate::db::channels::count_by_status(
+            &ch.channel_id(),
+            PromotionStatus::Evaluating,
+            &db.pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(n_eval, 0);
+        let n_promoted = crate::db::channels::count_by_status(
+            &ch.channel_id(),
+            PromotionStatus::Promoted,
+            &db.pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(n_promoted, 0);
+    }
+
+    #[tokio::test]
+    async fn jobset_complete_for_different_sha_is_noop() {
+        // sha-a is Evaluating (Waiting on coreutils); a jobset for
+        // an unrelated sha-b completes. The Evaluating row must not
+        // be touched.
+        let db = DbService::new_in_memory().await.unwrap();
+        let ch = channel("stable", &["coreutils"], &[]);
+        let mut registry = HashMap::new();
+        registry.insert(ch.channel_id(), ch.clone());
+        let svc = ChannelService::new(db.clone(), Arc::new(registry));
+
+        // Open an Evaluating row for sha-a.
+        svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
+            .await
+            .unwrap();
+        // The stub snapshot returns empty, so this stayed Waiting.
+
+        svc.handle_jobset_complete(
+            ChannelForge::GitHub,
+            ch.owner.clone(),
+            ch.repo.clone(),
+            "sha-b".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let in_flight = crate::db::channels::get_in_flight(&ch.channel_id(), &db.pool)
+            .await
+            .unwrap()
+            .expect("Evaluating row for sha-a should still exist");
+        assert_eq!(in_flight.tracking_sha, "sha-a");
+    }
+
+    #[tokio::test]
+    async fn jobset_complete_for_in_flight_sha_keeps_waiting_when_snapshot_empty() {
+        // The stub `snapshot_job_states` returns an empty map, so
+        // even after a JobsetComplete the evaluator still says
+        // Waiting. The Evaluating row must remain in place — this
+        // verifies the dispatch wires through but no spurious
+        // terminal transition occurs in the PR 3 stub configuration.
+        let db = DbService::new_in_memory().await.unwrap();
+        let ch = channel("stable", &["coreutils"], &[]);
+        let mut registry = HashMap::new();
+        registry.insert(ch.channel_id(), ch.clone());
+        let svc = ChannelService::new(db.clone(), Arc::new(registry));
+
+        svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
+            .await
+            .unwrap();
+
+        svc.handle_jobset_complete(
+            ChannelForge::GitHub,
+            ch.owner.clone(),
+            ch.repo.clone(),
+            "sha-a".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let in_flight = crate::db::channels::get_in_flight(&ch.channel_id(), &db.pool)
+            .await
+            .unwrap();
+        assert!(
+            in_flight.is_some(),
+            "Evaluating row should persist while snapshot stub returns empty map"
+        );
+    }
+
+    #[tokio::test]
+    async fn jobset_complete_drives_promotion_when_no_required_jobs() {
+        // A channel with empty required+packages lists already
+        // reaches Ready on the initial EvaluatePush; the Promoted
+        // row is written there. JobsetComplete arriving afterwards
+        // for that same SHA must be idempotent — no in-flight row
+        // remains, so the dispatch silently no-ops.
+        let db = DbService::new_in_memory().await.unwrap();
+        let ch = channel("stable", &[], &[]);
+        let mut registry = HashMap::new();
+        registry.insert(ch.channel_id(), ch.clone());
+        let svc = ChannelService::new(db.clone(), Arc::new(registry));
+
+        svc.handle_evaluate_push(ch.clone(), "sha-x".to_string())
+            .await
+            .unwrap();
+
+        // Verify we are in the expected post-condition: one Promoted
+        // row, no in-flight row.
+        let n_promoted = crate::db::channels::count_by_status(
+            &ch.channel_id(),
+            PromotionStatus::Promoted,
+            &db.pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(n_promoted, 1);
+        assert!(
+            crate::db::channels::get_in_flight(&ch.channel_id(), &db.pool)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Late-arriving JobsetComplete: should not write a second
+        // Promoted row.
+        svc.handle_jobset_complete(
+            ChannelForge::GitHub,
+            ch.owner.clone(),
+            ch.repo.clone(),
+            "sha-x".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let n_promoted_after = crate::db::channels::count_by_status(
+            &ch.channel_id(),
+            PromotionStatus::Promoted,
+            &db.pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            n_promoted_after, 1,
+            "JobsetComplete after terminal decision must be idempotent"
+        );
     }
 }

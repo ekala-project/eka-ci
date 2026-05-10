@@ -6,6 +6,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use crate::channels::types::ChannelTask;
 use crate::db::DbService;
 use crate::db::model::{build_event, drv_id};
 use crate::github::GitHubTask;
@@ -41,6 +42,11 @@ pub struct RecorderService {
     graph_handle: GraphServiceHandle,
     hook_sender: Option<mpsc::Sender<HookTask>>,
     cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
+    /// Producer side of the release-channel mpsc. Optional so test
+    /// rigs and deployments that do not configure channels can still
+    /// build a recorder; `None` simply suppresses all
+    /// `ChannelTask::JobsetComplete` emissions.
+    channel_sender: Option<mpsc::Sender<ChannelTask>>,
 }
 
 /// Encapsulation of the Recorder thread. May want to gracefully recover from
@@ -56,6 +62,7 @@ pub(super) struct RecorderWorker {
     graph_handle: GraphServiceHandle,
     hook_sender: Option<mpsc::Sender<HookTask>>,
     cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
+    channel_sender: Option<mpsc::Sender<ChannelTask>>,
 }
 
 impl RecorderService {
@@ -69,6 +76,7 @@ impl RecorderService {
         cache_configs: std::sync::Arc<
             std::collections::HashMap<String, crate::config::CacheConfig>,
         >,
+        channel_sender: Option<mpsc::Sender<ChannelTask>>,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
         let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
 
@@ -81,6 +89,7 @@ impl RecorderService {
             graph_handle,
             hook_sender,
             cache_configs,
+            channel_sender,
         };
 
         (res, recorder_sender)
@@ -97,6 +106,7 @@ impl RecorderService {
             self.graph_handle,
             self.hook_sender,
             self.cache_configs,
+            self.channel_sender,
         );
 
         tokio::spawn(async move {
@@ -106,6 +116,7 @@ impl RecorderService {
 }
 
 impl RecorderWorker {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         db_service: DbService,
         ingress_sender: mpsc::Sender<IngressTask>,
@@ -118,6 +129,7 @@ impl RecorderWorker {
         cache_configs: std::sync::Arc<
             std::collections::HashMap<String, crate::config::CacheConfig>,
         >,
+        channel_sender: Option<mpsc::Sender<ChannelTask>>,
     ) -> Self {
         Self {
             db_service,
@@ -129,6 +141,7 @@ impl RecorderWorker {
             graph_handle,
             hook_sender,
             cache_configs,
+            channel_sender,
         }
     }
 
