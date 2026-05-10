@@ -84,6 +84,11 @@ struct ConfigFile {
     gitea_instances: Vec<GiteaInstanceConfig>,
     #[serde(default)]
     gitlab_instances: Vec<GitLabInstanceConfig>,
+    /// Release-channel registry. Channels here are the *only* place
+    /// eka-ci is permitted to push to a forge — the server side of the
+    /// gated-release feature. Empty/absent disables the feature.
+    #[serde(default)]
+    channels: Vec<ChannelConfig>,
     security: Option<SecurityConfig>,
 }
 
@@ -596,6 +601,109 @@ pub struct GitLabInstanceConfig {
     pub token: Redacted<String>,
 }
 
+/// Forge identifier used to namespace release-channel IDs across hosts.
+///
+/// Channels are admin-controlled, so the forge is encoded in config rather
+/// than inferred from a webhook event. For self-hosted Gitea the domain is
+/// included so two instances cannot collide.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChannelForge {
+    /// github.com (only one supported instance today).
+    GitHub,
+    /// A configured GitLab instance keyed by domain.
+    GitLab { domain: String },
+    /// A configured Gitea instance keyed by domain.
+    Gitea { domain: String },
+}
+
+impl ChannelForge {
+    /// Stable string used to namespace channel IDs in the database.
+    pub fn as_id_prefix(&self) -> String {
+        match self {
+            ChannelForge::GitHub => "github".to_string(),
+            ChannelForge::GitLab { domain } => format!("gitlab:{domain}"),
+            ChannelForge::Gitea { domain } => format!("gitea:{domain}"),
+        }
+    }
+}
+
+/// Release-channel definition (admin-controlled, server-side only).
+///
+/// A release channel observes pushes to `tracking_branch` on
+/// `(forge, owner, repo)`. When the build at the pushed SHA reaches a
+/// state where every job listed in `required` has succeeded and every
+/// job listed in `packages` has reached *any* terminal `DrvBuildState`,
+/// the channel attempts to fast-forward `target_branch` onto that SHA.
+/// Divergent target branches are treated as a hard error and leave the
+/// channel red until manually reconciled — see `ChannelPromotion` rows
+/// with `status = PushFailed`.
+///
+/// Channels are intentionally *not* defined in `.eka-ci/config.json`:
+/// keeping them in admin-only ekaci.toml means a malicious or
+/// accidentally-merged PR cannot reconfigure which branch eka-ci is
+/// allowed to push.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ChannelConfig {
+    /// Forge hosting the repository.
+    pub forge: ChannelForge,
+    /// Repository owner (user or organization).
+    pub owner: String,
+    /// Repository name.
+    pub repo: String,
+    /// Channel name; appears in the release/<name> GitHub Check Run and
+    /// in the `channel_id` stored in the database. Must be unique within
+    /// `(forge, owner, repo)`.
+    pub name: String,
+    /// Branch eka-ci watches for new commits (e.g. "master").
+    pub tracking_branch: String,
+    /// Branch eka-ci fast-forwards on a successful release
+    /// (e.g. "ekapkgs-unstable"). Must not equal `tracking_branch`.
+    pub target_branch: String,
+    /// Job names from `.eka-ci/config.json` that MUST succeed before the
+    /// channel will advance. A failure (Completed(Failure),
+    /// TransitiveFailure, UnsatisfiableRequirements) blocks promotion.
+    #[serde(default)]
+    pub required: Vec<String>,
+    /// Job names that must reach a terminal state before promotion is
+    /// allowed, but whose individual outcome does not gate promotion.
+    /// Typically a superset of `required`; jobs in `required` are
+    /// implicitly considered "attempted" once they succeed and need not
+    /// be listed here.
+    #[serde(default)]
+    pub packages: Vec<String>,
+    /// When true, all evaluation runs but the final fast-forward push
+    /// is logged instead of executed. Useful for safely rolling out a
+    /// new channel without risk of clobbering its target-branch.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+impl ChannelConfig {
+    /// Stable identifier used as the `channel_id` column in
+    /// `ChannelPromotion`. Format: "<forge-prefix>/<owner>/<repo>/<name>".
+    pub fn channel_id(&self) -> String {
+        format!(
+            "{}/{}/{}/{}",
+            self.forge.as_id_prefix(),
+            self.owner,
+            self.repo,
+            self.name,
+        )
+    }
+
+    /// Lookup key used by the push-webhook handler to route an incoming
+    /// event to the channels watching that repo+branch combination.
+    pub fn tracking_key(&self) -> (ChannelForge, String, String, String) {
+        (
+            self.forge.clone(),
+            self.owner.clone(),
+            self.repo.clone(),
+            self.tracking_branch.clone(),
+        )
+    }
+}
+
 /// Security configuration for hook execution
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SecurityConfig {
@@ -682,6 +790,90 @@ fn clamp_timeout_seconds(field: &'static str, value: u64, min: u64, max: u64) ->
         return max;
     }
     value
+}
+
+/// Validate a vector of release-channel definitions and collect them
+/// into the runtime registry keyed by `channel_id`.
+///
+/// Validation rules (each violation aborts startup so misconfiguration
+/// never silently disables gated releases):
+///
+///   1. Channel name is non-empty and contains no `/` (so the slash
+///      separators inside `channel_id` remain unambiguous).
+///   2. `tracking_branch != target_branch` — self-promotion is almost
+///      certainly a typo and would loop forever.
+///   3. `channel_id` is unique — two channels cannot share the same
+///      `(forge, owner, repo, name)`.
+///   4. `(forge, owner, repo, target_branch)` is unique — two channels
+///      cannot race to push the same branch ref.
+///   5. A channel's `target_branch` may not be another channel's
+///      `tracking_branch` on the same repo. Chained releases are not
+///      supported in v1; we surface this as an error rather than
+///      silently allowing a release on one channel to cascade into
+///      another.
+pub(crate) fn validate_channels(
+    raw: Vec<ChannelConfig>,
+) -> anyhow::Result<HashMap<String, ChannelConfig>> {
+    // First pass: per-channel sanity (rules 1 & 2) and gather the
+    // tracking-branch index used for rule 5.
+    let mut all_tracking: HashSet<(ChannelForge, String, String, String)> = HashSet::new();
+    for channel in &raw {
+        if channel.name.is_empty() || channel.name.contains('/') {
+            bail!(
+                "channel name {:?} (owner={}, repo={}) is invalid: must be non-empty and must \
+                 not contain '/'",
+                channel.name,
+                channel.owner,
+                channel.repo,
+            );
+        }
+        if channel.tracking_branch == channel.target_branch {
+            bail!(
+                "channel {:?}: tracking_branch and target_branch are both {:?}; refusing to \
+                 start because this would self-promote on every push",
+                channel.channel_id(),
+                channel.tracking_branch,
+            );
+        }
+        all_tracking.insert(channel.tracking_key());
+    }
+
+    // Second pass: insert into the registry, enforcing rules 3, 4, 5.
+    let mut channels: HashMap<String, ChannelConfig> = HashMap::with_capacity(raw.len());
+    let mut seen_target: HashMap<(ChannelForge, String, String, String), String> = HashMap::new();
+    for channel in raw {
+        let id = channel.channel_id();
+        let target_key = (
+            channel.forge.clone(),
+            channel.owner.clone(),
+            channel.repo.clone(),
+            channel.target_branch.clone(),
+        );
+        if let Some(other) = seen_target.get(&target_key) {
+            bail!(
+                "channels {:?} and {:?} both target the same branch on the same repo; only one \
+                 channel may push to a given target_branch",
+                other,
+                id,
+            );
+        }
+        if all_tracking.contains(&target_key) {
+            bail!(
+                "channel {:?} target_branch {:?} is also a tracking_branch of another channel \
+                 on the same repo; chained releases are not supported",
+                id,
+                channel.target_branch,
+            );
+        }
+        seen_target.insert(target_key, id.clone());
+        if channels.insert(id.clone(), channel).is_some() {
+            bail!(
+                "duplicate channel id {:?}: every (forge, owner, repo, name) must be unique",
+                id,
+            );
+        }
+    }
+    Ok(channels)
 }
 
 /// Validate a CORS allow-list entry.
@@ -945,6 +1137,9 @@ pub struct Config {
     pub gitea_instances: HashMap<String, GiteaInstanceConfig>,
     /// GitLab instance registry - maps domains to configurations
     pub gitlab_instances: HashMap<String, GitLabInstanceConfig>,
+    /// Release-channel registry - keyed by `ChannelConfig::channel_id()`.
+    /// Empty when no channels are configured (gated-release feature off).
+    pub channels: HashMap<String, ChannelConfig>,
     /// Security settings for hook execution
     pub security: SecurityConfig,
 }
@@ -1154,6 +1349,18 @@ impl Config {
             );
         }
 
+        // Build release-channel registry, keyed by channel_id. Pure
+        // validation lives in `validate_channels` so unit tests can
+        // cover every rejection branch without touching env/disk.
+        let channels = validate_channels(file.channels)?;
+        if !channels.is_empty() {
+            tracing::info!(
+                event = "channels_configured",
+                count = channels.len(),
+                "Release-channel registry loaded; gated promotion enabled"
+            );
+        }
+
         // Allow webhook_secret to be overridden by environment variable
         if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
             security.webhook_secret = Some(Redacted::new(secret));
@@ -1291,6 +1498,7 @@ impl Config {
             github_apps,
             gitea_instances,
             gitlab_instances,
+            channels,
             security,
         })
     }
@@ -1390,6 +1598,7 @@ mod redaction_tests {
             github_apps: HashMap::new(),
             gitea_instances: HashMap::new(),
             gitlab_instances: HashMap::new(),
+            channels: HashMap::new(),
             security: SecurityConfig {
                 max_hook_timeout_seconds: 300,
                 audit_hooks: true,
@@ -1487,6 +1696,7 @@ mod redaction_tests {
             github_apps: HashMap::new(),
             gitea_instances,
             gitlab_instances,
+            channels: HashMap::new(),
             security: SecurityConfig {
                 max_hook_timeout_seconds: 300,
                 audit_hooks: true,
@@ -1849,5 +2059,156 @@ mod m6_tests {
         // that is the operator's call, and argv carries them safely
         // (no shell expansion per H3).
         allowed("ssh://deploy-user@cache.example.com", CacheType::Attic);
+    }
+}
+
+#[cfg(test)]
+mod channel_validation_tests {
+    //! Coverage for [`validate_channels`]. These are pure-data tests:
+    //! every rejection path the validator can produce gets an explicit
+    //! case so silent regressions in the gating rules are caught at
+    //! review time. The happy-path test also documents the canonical
+    //! `channel_id` shape that downstream code persists to the DB.
+    use super::*;
+
+    fn ch(name: &str, tracking: &str, target: &str) -> ChannelConfig {
+        ChannelConfig {
+            forge: ChannelForge::GitHub,
+            owner: "ekacorp".to_string(),
+            repo: "ekapkgs".to_string(),
+            name: name.to_string(),
+            tracking_branch: tracking.to_string(),
+            target_branch: target.to_string(),
+            required: vec!["pkg-a".to_string()],
+            packages: vec!["pkg-a".to_string(), "pkg-b".to_string()],
+            dry_run: false,
+        }
+    }
+
+    #[test]
+    fn happy_path_unique_channel_is_keyed_by_channel_id() {
+        let registry = validate_channels(vec![ch("unstable", "master", "ekapkgs-unstable")])
+            .expect("single valid channel should validate");
+        assert_eq!(registry.len(), 1);
+        let key = "github/ekacorp/ekapkgs/unstable";
+        assert!(registry.contains_key(key), "registry key should be {key:?}");
+        let entry = &registry[key];
+        assert!(!entry.dry_run);
+        assert_eq!(entry.target_branch, "ekapkgs-unstable");
+    }
+
+    #[test]
+    fn empty_input_yields_empty_registry() {
+        assert!(validate_channels(Vec::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_empty_name() {
+        let err = validate_channels(vec![ch("", "master", "rel")]).unwrap_err();
+        assert!(format!("{err:#}").contains("must be non-empty"));
+    }
+
+    #[test]
+    fn rejects_name_with_slash() {
+        let err = validate_channels(vec![ch("a/b", "master", "rel")]).unwrap_err();
+        assert!(format!("{err:#}").contains("must not contain '/'"));
+    }
+
+    #[test]
+    fn rejects_self_promoting_channel() {
+        let err = validate_channels(vec![ch("loop", "master", "master")]).unwrap_err();
+        assert!(format!("{err:#}").contains("self-promote"));
+    }
+
+    #[test]
+    fn rejects_duplicate_channel_id() {
+        // Two ChannelConfigs with identical (forge, owner, repo, name)
+        // but different target_branches must be rejected. The
+        // duplicate-target check (rule 4) fires first lexically here,
+        // so we just assert *some* deterministic rejection — the
+        // important property is that the second insert does not
+        // silently clobber the first.
+        let a = ch("unstable", "master", "rel-a");
+        let b = ch("unstable", "main", "rel-b");
+        let err = validate_channels(vec![a, b]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("duplicate channel id") || msg.contains("target the same branch"),
+            "expected duplicate id or duplicate target rejection, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_two_channels_pushing_same_target_branch() {
+        let a = ch("unstable-a", "master", "ekapkgs-unstable");
+        let b = ch("unstable-b", "develop", "ekapkgs-unstable");
+        let err = validate_channels(vec![a, b]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("target the same branch"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn rejects_chained_release_target_used_as_other_tracking() {
+        // Channel A: master -> staging
+        // Channel B: staging -> production
+        // Rule 5 must reject because B's tracking is A's target.
+        let a = ch("a", "master", "staging");
+        let b = ch("b", "staging", "production");
+        let err = validate_channels(vec![a, b]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("chained releases are not supported"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn distinct_repos_do_not_conflict_on_branch_names() {
+        // Identical branch names on *different* repos must coexist:
+        // every uniqueness key includes (forge, owner, repo).
+        let mut a = ch("unstable", "master", "ekapkgs-unstable");
+        a.repo = "repo-a".to_string();
+        let mut b = ch("unstable", "master", "ekapkgs-unstable");
+        b.repo = "repo-b".to_string();
+        let registry = validate_channels(vec![a, b]).expect("different repos should not collide");
+        assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn distinct_forges_do_not_conflict() {
+        let mut a = ch("unstable", "master", "ekapkgs-unstable");
+        a.forge = ChannelForge::GitHub;
+        let mut b = ch("unstable", "master", "ekapkgs-unstable");
+        b.forge = ChannelForge::Gitea {
+            domain: "gitea.example.com".to_string(),
+        };
+        let registry =
+            validate_channels(vec![a, b]).expect("different forges should not collide on key");
+        assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn channel_id_format_is_stable_across_forges() {
+        let github = ch("unstable", "master", "rel");
+        assert_eq!(github.channel_id(), "github/ekacorp/ekapkgs/unstable");
+
+        let mut gitea = ch("unstable", "master", "rel");
+        gitea.forge = ChannelForge::Gitea {
+            domain: "gitea.example.com".to_string(),
+        };
+        assert_eq!(
+            gitea.channel_id(),
+            "gitea:gitea.example.com/ekacorp/ekapkgs/unstable",
+        );
+
+        let mut gitlab = ch("unstable", "master", "rel");
+        gitlab.forge = ChannelForge::GitLab {
+            domain: "gitlab.example.com".to_string(),
+        };
+        assert_eq!(
+            gitlab.channel_id(),
+            "gitlab:gitlab.example.com/ekacorp/ekapkgs/unstable",
+        );
     }
 }
