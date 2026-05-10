@@ -166,6 +166,16 @@ pub async fn start_services(config: Config) -> Result<()> {
     // Wrap cache configs in Arc for sharing across services
     let cache_configs = Arc::new(config.caches.clone());
 
+    // ChannelService must be constructed before SchedulerService so its
+    // sender can be plumbed into RecorderService. The RecorderService
+    // emits `ChannelTask::JobsetComplete` whenever a jobset reaches a
+    // fully-terminal state, which is how an in-flight channel
+    // evaluation gets the signal to re-snapshot and finalise.
+    let channels_registry = Arc::new(config.channels.clone());
+    let channel_service =
+        ChannelService::new(db_service.clone(), channels_registry.clone());
+    let channel_sender = channel_service.get_sender();
+
     let scheduler_service = SchedulerService::new(
         db_service.clone(),
         config.logs_dir.clone(),
@@ -180,6 +190,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         cache_configs,
         config.security.max_hook_timeout_seconds,
         config.security.audit_hooks,
+        Some(channel_sender.clone()),
     )
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
@@ -218,15 +229,6 @@ pub async fn start_services(config: Config) -> Result<()> {
     let repo_sender = repo_service.get_sender();
 
     let git_service = GitService::new(repo_sender.clone())?;
-
-    // ChannelService skeleton: today the sender is held only by the
-    // service-startup scope (no producer wired yet). PR 3 lands the
-    // service so that the AsyncService machinery, idempotency guard,
-    // coalescer audit and pure evaluator are exercised end-to-end via
-    // unit tests; PR 4 wires the producer side from RecorderService
-    // and (later) the push webhook handlers.
-    let channel_service = ChannelService::new(db_service.clone());
-    let _channel_sender = channel_service.get_sender();
 
     // Create JWT service and OAuth config for authentication.
     // M2: the JWT secret is stored as `Redacted<String>` so that it
@@ -273,7 +275,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.default_merge_method.clone(),
         config.web.allowed_origins.clone(),
         Some(change_summary_metrics.clone()),
-        Arc::new(config.channels.clone()),
+        channels_registry.clone(),
     )
     .await
     .context("failed to start web service")?;

@@ -84,6 +84,7 @@ async fn create_test_server_with_options(
         cache_configs,
         300,  // 5 minute hook timeout
         true, // audit hooks enabled
+        None, // no ChannelService wired in this integration test
     )
     .await
     .expect("Failed to create scheduler");

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::ChannelConfig;
+use crate::config::{ChannelConfig, ChannelForge};
 use crate::db::model::build_event::DrvBuildState;
 
 /// Tasks accepted by the ChannelService over its mpsc channel.
@@ -17,7 +17,7 @@ use crate::db::model::build_event::DrvBuildState;
 /// Today PR 3 only exposes a single variant; later PRs will add
 /// variants for "job set completed" (delivered by the recorder), CLI
 /// triggers, and an admin "force re-evaluate" path.
-#[allow(dead_code)] // EvaluatePush is constructed by producers in PR 4
+#[allow(dead_code)] // variants are constructed by producers in PR 4
 #[derive(Debug, Clone)]
 pub enum ChannelTask {
     /// A push to the channel's tracking-branch was observed at `sha`.
@@ -30,10 +30,27 @@ pub enum ChannelTask {
     ///      and bail; if no in-flight row exists, open an Evaluating
     ///      row for this sha.
     ///   3. Snapshot the current job-states and run the pure
-    ///      evaluator. (Wired in a follow-up PR once a `JobSetComplete`
+    ///      evaluator. (Wired in a follow-up PR once a `JobsetComplete`
     ///      event from the recorder drives re-evaluation.)
     EvaluatePush {
         channel: ChannelConfig,
+        sha: String,
+    },
+
+    /// A jobset run at `sha` for `(forge, owner, repo)` has concluded
+    /// (every Job in the jobset reached a terminal `DrvBuildState`).
+    ///
+    /// Emitted by the RecorderService when it detects the final
+    /// `is_terminal()` transition that flips
+    /// `DbService::all_jobs_concluded` to true. The recorder fires it
+    /// generically: ChannelService is responsible for filtering down
+    /// to channels actually watching that `(forge, owner, repo)` and,
+    /// among those, only the ones with an in-flight Evaluating row
+    /// whose `tracking_sha == sha`. All other arrivals are no-ops.
+    JobsetComplete {
+        forge: ChannelForge,
+        owner: String,
+        repo: String,
         sha: String,
     },
 }
