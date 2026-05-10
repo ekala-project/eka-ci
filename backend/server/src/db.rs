@@ -1,4 +1,5 @@
 mod approved_users;
+pub mod channels;
 mod checks;
 pub mod gitea;
 pub mod github;

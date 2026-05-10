@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::auth::{JwtService, OAuthConfig};
+use crate::channels::ChannelService;
 use crate::checks::types::CheckTask;
 use crate::ci::RepoReader;
 use crate::client::UnixService;
@@ -218,6 +219,15 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let git_service = GitService::new(repo_sender.clone())?;
 
+    // ChannelService skeleton: today the sender is held only by the
+    // service-startup scope (no producer wired yet). PR 3 lands the
+    // service so that the AsyncService machinery, idempotency guard,
+    // coalescer audit and pure evaluator are exercised end-to-end via
+    // unit tests; PR 4 wires the producer side from RecorderService
+    // and (later) the push webhook handlers.
+    let channel_service = ChannelService::new(db_service.clone());
+    let _channel_sender = channel_service.get_sender();
+
     // Create JWT service and OAuth config for authentication.
     // M2: the JWT secret is stored as `Redacted<String>` so that it
     // cannot leak through `Debug` formatting of `Config`; expose the
@@ -308,6 +318,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let github_handle = maybe_github_service.map(|svc| svc.run(cancellation_token.clone()));
     let gitlab_handle = gitlab_service.run(cancellation_token.clone());
     let gitea_handle = gitea_service.run(cancellation_token.clone());
+    let channel_handle = channel_service.run(cancellation_token.clone());
 
     let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
@@ -340,7 +351,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         repo_handle,
         git_handle,
         gitlab_handle,
-        gitea_handle
+        gitea_handle,
+        channel_handle
     );
 
     // The GitHub service is only spawned when configured; await it
