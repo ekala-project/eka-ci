@@ -8,7 +8,7 @@ use octocrab::models::webhook_events::{EventInstallation, WebhookEventPayload as
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use crate::config::GitHubAppConfig;
+use crate::config::{ChannelConfig, GitHubAppConfig};
 use crate::db::DbService;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
@@ -18,6 +18,7 @@ mod comments;
 mod installations;
 mod merge_queue;
 mod pull_requests;
+mod push;
 mod reviews;
 mod workflows;
 
@@ -74,6 +75,7 @@ struct MergeGroupUser {
 
 // Main webhook dispatcher
 
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_webhook_payload(
     webhook_payload: WEP,
     repository_info: Option<(String, String)>, // (owner, repo_name)
@@ -85,6 +87,7 @@ pub async fn handle_webhook_payload(
     merge_queue_require_approval: bool,
     db_service: DbService,
     github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
+    channels: Arc<HashMap<String, ChannelConfig>>,
 ) {
     match webhook_payload {
         WEP::PullRequest(pr) => {
@@ -136,8 +139,9 @@ pub async fn handle_webhook_payload(
             comments::handle_github_issue_comment(*comment_event, repository_info, github_sender)
                 .await
         },
-        // We probably don't want to react to every push
-        // WEP::Push(pr) => handle_github_push(*pr).await,
+        WEP::Push(push_payload) => {
+            push::handle_github_push(*push_payload, repository_info, git_sender, channels).await
+        },
         _ => (),
     }
 }

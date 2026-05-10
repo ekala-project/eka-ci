@@ -1,11 +1,16 @@
 pub mod comment_command;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::channels::match_push_channels;
+use crate::config::{ChannelConfig, ChannelForge};
 use crate::db::DbService;
-use crate::git::GitTask;
+use crate::git::{GitProtocol, GitRepo, GitTask, GitWorkspace};
 use crate::gitlab::GitLabTask;
 
 #[derive(Debug, Deserialize)]
@@ -112,9 +117,10 @@ struct CommitAuthor {
 pub async fn handle_webhook_payload(
     event_type: &str,
     payload: serde_json::Value,
-    _git_sender: mpsc::Sender<GitTask>,
+    git_sender: mpsc::Sender<GitTask>,
     gitlab_sender: mpsc::Sender<GitLabTask>,
     db_service: DbService,
+    channels: Arc<HashMap<String, ChannelConfig>>,
 ) {
     debug!("Received GitLab webhook event: {}", event_type);
 
@@ -125,7 +131,7 @@ pub async fn handle_webhook_payload(
             }
         },
         "Push Hook" => {
-            if let Err(e) = handle_push_event(payload).await {
+            if let Err(e) = handle_push_event(payload, git_sender, channels).await {
                 warn!("Failed to handle push event: {:?}", e);
             }
         },
@@ -250,14 +256,29 @@ async fn handle_note_event(
     Ok(())
 }
 
-async fn handle_push_event(payload: serde_json::Value) -> anyhow::Result<()> {
+async fn handle_push_event(
+    payload: serde_json::Value,
+    git_sender: mpsc::Sender<GitTask>,
+    channels: Arc<HashMap<String, ChannelConfig>>,
+) -> anyhow::Result<()> {
     let event: PushPayload = serde_json::from_value(payload)?;
 
+    // A branch-deletion push delivers `after = "0000…"`; nothing to eval.
+    let after_is_zero = event.after.bytes().all(|b| b == b'0');
+    if after_is_zero {
+        debug!(event = "gitlab_push_branch_deleted", "ignoring branch deletion");
+        return Ok(());
+    }
+
     // Extract branch name from ref (e.g., "refs/heads/main" -> "main")
-    let branch = event
-        .ref_name
-        .strip_prefix("refs/heads/")
-        .unwrap_or(&event.ref_name);
+    let Some(branch) = event.ref_name.strip_prefix("refs/heads/") else {
+        debug!(
+            event = "gitlab_push_non_branch_ref",
+            ref_field = event.ref_name,
+            "ignoring non-branch push"
+        );
+        return Ok(());
+    };
 
     let domain = extract_domain(&event.project.web_url);
     let (owner, repo_name) = parse_path_with_namespace(&event.project.path_with_namespace);
@@ -269,8 +290,8 @@ async fn handle_push_event(payload: serde_json::Value) -> anyhow::Result<()> {
         owner,
         repo_name,
         event.project.id,
-        &event.before[..8],
-        &event.after[..8]
+        &event.before[..8.min(event.before.len())],
+        &event.after[..8.min(event.after.len())]
     );
 
     if !event.commits.is_empty() {
@@ -285,17 +306,49 @@ async fn handle_push_event(payload: serde_json::Value) -> anyhow::Result<()> {
         );
     }
 
-    // NOTE: Full CI triggering for main branch builds requires:
-    // 1. Determining the repository's default branch (might need API call)
-    // 2. Evaluating the CI configuration (e.g., .gitlab-ci.yml or eka-ci.nix)
-    // 3. Creating a CI job set via GitLabTask::CreateJobSet
-    // 4. Managing build state and status updates
-    //
-    // This is currently not implemented as it requires integration with the
-    // CI evaluation and job scheduling system. For now, push events are logged
-    // but do not trigger builds.
+    // Release-channel routing: a push to a tracking-branch that any
+    // channel watches must trigger an evaluation of `.eka-ci/config.json`
+    // at the new SHA. The ChannelService (PR 3) consumes the eventual
+    // JobSetComplete and decides whether to promote target-branch.
+    let forge = ChannelForge::GitLab {
+        domain: domain.clone(),
+    };
+    let matches = match_push_channels(&channels, &forge, &owner, &repo_name, branch);
+    if matches.is_empty() {
+        debug!(
+            event = "gitlab_push_no_channel_match",
+            owner = %owner,
+            repo = %repo_name,
+            branch = %branch,
+            "no release channel matches push"
+        );
+        return Ok(());
+    }
 
-    debug!("Push event logged but not triggering CI (main branch builds not yet implemented)");
+    info!(
+        event = "gitlab_push_channel_match",
+        owner = %owner,
+        repo = %repo_name,
+        branch = %branch,
+        sha = %event.after,
+        channels = matches.len(),
+        "push to tracking-branch matched release channel(s); scheduling eval"
+    );
+
+    let repo = GitRepo {
+        protocol: GitProtocol::Https,
+        domain,
+        owner: owner.clone(),
+        repo: repo_name.clone(),
+    };
+    let workspace = GitWorkspace::from_git_repo(repo, &event.after);
+    if let Err(e) = git_sender.send(GitTask::Checkout(workspace)).await {
+        warn!(
+            event = "gitlab_push_checkout_send_failed",
+            error = %e,
+            "failed to enqueue GitTask::Checkout"
+        );
+    }
 
     Ok(())
 }

@@ -2,6 +2,7 @@ mod auth;
 mod auto_merge;
 mod cache_permissions;
 mod change_summary;
+mod channels;
 mod checks;
 mod ci;
 mod client;

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod auto_merge;
 pub mod cache_permissions;
 pub mod change_summary;
+pub mod channels;
 pub mod checks;
 pub mod ci;
 pub mod client;

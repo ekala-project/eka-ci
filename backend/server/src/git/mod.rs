@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
 use tracing::warn;
-pub use types::{GitRepo, GitWorkspace, workspace_root};
+pub use types::{GitProtocol, GitRepo, GitWorkspace, workspace_root};
 
 use crate::ci::RepoTask;
 use crate::github::CICheckInfo;
