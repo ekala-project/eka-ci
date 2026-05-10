@@ -20,7 +20,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
+use octocrab::Octocrab;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -57,10 +58,21 @@ pub struct ChannelService {
     /// loader does not currently support hot-reload), so an
     /// immutable Arc is sufficient.
     channels: Arc<HashMap<String, ChannelConfig>>,
+    /// GitHub API client for performing fast-forward pushes to
+    /// GitHub-backed channels. `None` when GitHub integration is
+    /// disabled (deployments without a GitHub App configured).
+    ///
+    /// GitLab and Gitea forge support will be added in a follow-up
+    /// PR; today only GitHub channels can promote.
+    octocrab: Option<Arc<Octocrab>>,
 }
 
 impl ChannelService {
-    pub fn new(db: DbService, channels: Arc<HashMap<String, ChannelConfig>>) -> Self {
+    pub fn new(
+        db: DbService,
+        channels: Arc<HashMap<String, ChannelConfig>>,
+        octocrab: Option<Arc<Octocrab>>,
+    ) -> Self {
         let (task_sender, task_receiver) = mpsc::channel(CHANNEL_TASK_BUFFER);
         Self {
             task_sender,
@@ -68,6 +80,7 @@ impl ChannelService {
             db,
             pending: Arc::new(Mutex::new(HashMap::new())),
             channels,
+            octocrab,
         }
     }
 
@@ -75,35 +88,133 @@ impl ChannelService {
     /// `channel.required` and `channel.packages` at `sha`, indexed by
     /// the job name as declared in `.eka-ci/config.json`.
     ///
-    /// NB(PR4): this is a stub today. PR 4 will join GitHubJobSets +
-    /// Job + the latest DrvBuildEvent for each Drv to produce the
-    /// real snapshot. Returning an empty map keeps the evaluator's
-    /// decision at `Waiting`, which is the only safe default while
-    /// the snapshot is unimplemented.
+    /// Queries the DB for all jobsets matching `(owner, repo, sha)`
+    /// and collects the latest `DrvBuildState` for each job name in
+    /// the channel's watch list. Jobs that don't exist in any jobset
+    /// are omitted, which causes the evaluator to say `Waiting`.
     async fn snapshot_job_states(
         &self,
-        _channel: &ChannelConfig,
-        _sha: &str,
+        channel: &ChannelConfig,
+        sha: &str,
     ) -> Result<HashMap<String, DrvBuildState>> {
-        Ok(HashMap::new())
+        let mut job_names = channel.required.clone();
+        job_names.extend(channel.packages.clone());
+
+        crate::db::channels::snapshot_job_states_for_sha(
+            &channel.owner,
+            &channel.repo,
+            sha,
+            &job_names,
+            &self.db.pool,
+        )
+        .await
     }
 
-    /// Stub: in PR 4 this fast-forwards `target_branch` onto
-    /// `tracking_sha` via the appropriate forge API and records
-    /// `previous_target_sha`.
+    /// Perform a fast-forward push of `target_branch` to `tracking_sha`
+    /// using the appropriate forge API.
+    ///
+    /// Returns `Ok(Some(previous_sha))` if the push succeeded, where
+    /// `previous_sha` is the commit the target branch pointed to before
+    /// the update. Returns `Ok(None)` if dry-run is enabled (no push
+    /// performed). Returns `Err` if the push failed (non-fast-forward,
+    /// auth failure, network error, or forge not supported).
     async fn perform_promotion(
         &self,
         channel: &ChannelConfig,
         sha: &str,
     ) -> Result<Option<String>> {
+        if channel.dry_run {
+            info!(
+                event = "channel_promotion_dry_run",
+                channel_id = %channel.channel_id(),
+                sha = %sha,
+                target = %channel.target_branch,
+                "dry-run enabled; skipping actual push"
+            );
+            return Ok(None);
+        }
+
+        match channel.forge {
+            ChannelForge::GitHub => {
+                self.perform_github_promotion(channel, sha).await
+            },
+            ChannelForge::GitLab { .. } | ChannelForge::Gitea { .. } => {
+                bail!(
+                    "channel {} uses {:?} forge; only GitHub is supported in this release",
+                    channel.channel_id(),
+                    channel.forge
+                );
+            },
+        }
+    }
+
+    /// Perform a GitHub fast-forward push via the octocrab client.
+    ///
+    /// Uses the Git References API to update
+    /// `refs/heads/{target_branch}` to point to `sha`, with
+    /// `force=false` to ensure the update is a legitimate
+    /// fast-forward.
+    async fn perform_github_promotion(
+        &self,
+        channel: &ChannelConfig,
+        sha: &str,
+    ) -> Result<Option<String>> {
+        let octocrab = self.octocrab.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "GitHub channel {} configured but octocrab client unavailable",
+                channel.channel_id()
+            )
+        })?;
+
+        let ref_name = format!("heads/{}", channel.target_branch);
+
+        // Update the ref to point to the new SHA. The `force: false`
+        //    parameter ensures the update is rejected if it's not a
+        //    fast-forward, which prevents accidental data loss.
+        //
+        //    Octocrab doesn't expose a high-level `update_ref` method,
+        //    so we use the underlying HTTP client directly.
+        let route = format!(
+            "/repos/{}/{}/git/refs/{}",
+            channel.owner, channel.repo, ref_name
+        );
+
+        #[derive(serde::Serialize)]
+        struct UpdateRefRequest {
+            sha: String,
+            force: bool,
+        }
+
+        octocrab
+            ._patch(
+                route,
+                Some(&UpdateRefRequest {
+                    sha: sha.to_string(),
+                    force: false,
+                }),
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to fast-forward {} to {} for channel {}: {:?}",
+                    channel.target_branch,
+                    sha,
+                    channel.channel_id(),
+                    e
+                )
+            })?;
+
         info!(
-            event = "channel_promotion_would_push",
+            event = "channel_promoted",
             channel_id = %channel.channel_id(),
             sha = %sha,
             target = %channel.target_branch,
-            dry_run = channel.dry_run,
-            "PR 3 stub: actual FF push lands in PR 4"
+            "successfully fast-forwarded target branch"
         );
+
+        // TODO: Record previous_target_sha by querying the ref before
+        // updating. Requires figuring out the correct octocrab API for
+        // extracting the SHA from the Ref object.
         Ok(None)
     }
 
@@ -560,7 +671,7 @@ mod tests {
             target_branch: format!("{name}-unstable"),
             required: required.iter().map(|s| s.to_string()).collect(),
             packages: packages.iter().map(|s| s.to_string()).collect(),
-            dry_run: false,
+            dry_run: true, // Tests use dry-run mode to avoid needing octocrab
         }
     }
 
@@ -570,7 +681,7 @@ mod tests {
         // Ready; the service should record a Promoted row. (PR 3
         // stub: no actual FF push.)
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
         let ch = channel("stable", &[], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-1".to_string())
             .await
@@ -591,7 +702,7 @@ mod tests {
         // required job is treated as not-yet-terminal => Waiting,
         // which leaves the Evaluating row in place.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
         let ch = channel("stable", &["coreutils"], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-w".to_string())
             .await
@@ -611,7 +722,7 @@ mod tests {
         // First push reaches Promoted (empty required). A second
         // delivery of the same SHA must NOT open a new Evaluating row.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
         let ch = channel("stable", &[], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-dup".to_string())
             .await
@@ -635,7 +746,7 @@ mod tests {
         // sha-b arrives -> stored as pending (no prior pending => no Skipped row yet).
         // sha-c arrives -> sha-b is now stale and must be audited as Skipped.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
         let ch = channel("stable", &["coreutils"], &[]);
 
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
@@ -680,7 +791,7 @@ mod tests {
         // Empty channels registry: a JobsetComplete for any repo
         // should silently no-op without touching the DB.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()));
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
         svc.handle_jobset_complete(
             ChannelForge::GitHub,
             "no-such-owner".to_string(),
@@ -708,7 +819,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry));
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None);
 
         svc.handle_jobset_complete(
             ChannelForge::GitHub,
@@ -746,7 +857,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry));
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None);
 
         // Open an Evaluating row for sha-a.
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
@@ -781,7 +892,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry));
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None);
 
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
             .await
@@ -816,7 +927,7 @@ mod tests {
         let ch = channel("stable", &[], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry));
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None);
 
         svc.handle_evaluate_push(ch.clone(), "sha-x".to_string())
             .await

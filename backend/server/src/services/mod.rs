@@ -172,8 +172,11 @@ pub async fn start_services(config: Config) -> Result<()> {
     // fully-terminal state, which is how an in-flight channel
     // evaluation gets the signal to re-snapshot and finalise.
     let channels_registry = Arc::new(config.channels.clone());
-    let channel_service =
-        ChannelService::new(db_service.clone(), channels_registry.clone());
+    let channel_service = ChannelService::new(
+        db_service.clone(),
+        channels_registry.clone(),
+        maybe_octocrab.as_ref().map(|o| Arc::new(o.clone())),
+    );
     let channel_sender = channel_service.get_sender();
 
     let scheduler_service = SchedulerService::new(

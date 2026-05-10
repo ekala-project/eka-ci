@@ -10,9 +10,12 @@
 //   - the index `ChannelPromotionByChannelSha` (fast lookup of any
 //     prior decision for a given (channel, sha) pair).
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use sqlx::{FromRow, Pool, Sqlite};
 
+use super::model::build_event::DrvBuildState;
 use crate::channels::types::PromotionStatus;
 
 /// One row of `ChannelPromotion`. Columns match the schema exactly.
@@ -208,6 +211,62 @@ pub async fn get_latest_for_sha(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// Snapshot the current build state of every job named in `job_names`
+/// for the given `(owner, repo, sha)` tuple.
+///
+/// Queries across all jobsets (all `.eka-ci/config.json` jobs) for
+/// that commit and returns a map of `job_name -> DrvBuildState` for
+/// any Job.name that appears in `job_names`. Jobs that don't exist
+/// in the jobset(s) are omitted from the result.
+///
+/// Used by `ChannelService::snapshot_job_states` to query the latest
+/// state of `channel.required` + `channel.packages` before running
+/// the promotion evaluator.
+pub async fn snapshot_job_states_for_sha(
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    job_names: &[String],
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<String, DrvBuildState>> {
+    if job_names.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Build a dynamic IN clause for the job names. SQLx doesn't
+    // support binding Vec directly to an IN clause, so we use a
+    // workaround: bind each name individually and construct the
+    // query with the right number of placeholders.
+    //
+    // For a small list this is acceptable; if channel configs ever
+    // grow to hundreds of packages we'd switch to a temp table or
+    // JSON array pattern.
+    let placeholders = job_names.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let query_str = format!(
+        r#"
+        SELECT j.name, d.build_state
+        FROM Job j
+        INNER JOIN GitHubJobSets js ON j.jobset = js.ROWID
+        INNER JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE js.owner = ? AND js.repo_name = ? AND js.sha = ?
+          AND j.name IN ({})
+        "#,
+        placeholders
+    );
+
+    let mut query = sqlx::query_as::<_, (String, DrvBuildState)>(&query_str)
+        .bind(owner)
+        .bind(repo)
+        .bind(sha);
+
+    for name in job_names {
+        query = query.bind(name);
+    }
+
+    let rows = query.fetch_all(pool).await?;
+    Ok(rows.into_iter().collect())
 }
 
 /// Test-only: count rows for a channel by status. Used by the
