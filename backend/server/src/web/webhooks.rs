@@ -152,6 +152,7 @@ pub(super) async fn handle_github_webhook(
         state.merge_queue_require_approval,
         state.db_service,
         state.github_app_configs,
+        state.channels,
     )
     .await;
 
@@ -221,6 +222,7 @@ pub(super) async fn handle_gitlab_webhook(
             state.git_sender,
             gitlab_sender.clone(),
             state.db_service,
+            state.channels,
         )
         .await;
     } else {
@@ -343,6 +345,7 @@ pub(super) async fn handle_gitea_webhook(
             state.git_sender,
             gitea_sender.clone(),
             state.db_service,
+            state.channels,
         )
         .await;
     } else {

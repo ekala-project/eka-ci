@@ -263,6 +263,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.default_merge_method.clone(),
         config.web.allowed_origins.clone(),
         Some(change_summary_metrics.clone()),
+        Arc::new(config.channels.clone()),
     )
     .await
     .context("failed to start web service")?;

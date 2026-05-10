@@ -50,6 +50,12 @@ pub(super) struct AppState {
     pub(super) allowed_origins: Vec<String>,
     /// Optional metrics for change-summary endpoint observability.
     pub(super) change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
+    /// Release-channel registry, keyed by `ChannelConfig::channel_id()`.
+    ///
+    /// Wrapped in `Arc` so push-webhook handlers can clone an inexpensive
+    /// reference for each event. Empty when no channels are configured;
+    /// the webhook handlers must tolerate this and short-circuit.
+    pub(super) channels: Arc<std::collections::HashMap<String, crate::config::ChannelConfig>>,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState
