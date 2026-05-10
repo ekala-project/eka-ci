@@ -1,13 +1,24 @@
 // Release-channel support module.
 //
-// PR 2 (this file): Provide a pure helper used by the push-webhook
-// handlers to look up channels watching a particular `(forge, owner,
-// repo, branch)` tuple. The ChannelService and promotion machinery
-// land in subsequent PRs.
+// PR 2: pure helper `match_push_channels` used by the push-webhook
+//        handlers to look up channels watching a particular
+//        `(forge, owner, repo, branch)` tuple.
+//
+// PR 3: ChannelService skeleton + the pure coalescer + the pure
+//        promotion evaluator. The evaluator and coalescer are kept in
+//        sibling modules so they remain unit-testable without the
+//        async runtime / sqlite pool.
 
 use std::collections::HashMap;
 
 use crate::config::{ChannelConfig, ChannelForge};
+
+pub mod coalescer;
+pub mod evaluator;
+pub mod service;
+pub mod types;
+
+pub use service::ChannelService;
 
 /// Return the channels whose `tracking_key()` matches the supplied
 /// `(forge, owner, repo, branch)`. The match is intentionally
