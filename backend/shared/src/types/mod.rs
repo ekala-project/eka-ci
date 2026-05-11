@@ -11,6 +11,7 @@ pub enum ClientRequest {
     Git(GitRequest),
     GitHub { pr: GitHubPrRequest },
     DrvStatus(DrvStatusRequest),
+    ChannelStatus(ChannelStatusRequest),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -32,6 +33,7 @@ pub enum ClientResponse {
     Info(InfoResponse),
     Ack(bool),
     DrvStatus(Result<DrvStatusResponse, String>),
+    ChannelStatus(Result<ChannelStatusResponse, String>),
 }
 
 #[derive(Serialize, Parser, Deserialize, Debug)]
@@ -89,4 +91,26 @@ pub struct JobRequest {
 #[derive(Serialize, Parser, Deserialize, Debug)]
 pub struct RepoRequest {
     pub file_path: String,
+}
+
+#[derive(Serialize, Parser, Deserialize, Debug)]
+pub struct ChannelStatusRequest {
+    /// Channel name to query (e.g., "stable", "unstable")
+    pub channel_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ChannelPromotion {
+    pub tracking_sha: String,
+    pub target_branch: String,
+    pub status: String,
+    pub created_at: String,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ChannelStatusResponse {
+    pub channel_id: String,
+    pub in_flight: Option<ChannelPromotion>,
+    pub recent_promotions: Vec<ChannelPromotion>,
 }

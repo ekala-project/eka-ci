@@ -321,5 +321,78 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 ))),
             }
         },
+        req::ChannelStatus(channel_status_request) => {
+            use shared::types::{ChannelPromotion, ChannelStatusResponse};
+
+            // Query the database for channel promotions
+            let channel_id = format!("github:*/*:{}", channel_status_request.channel_name);
+
+            // Get in-flight evaluation (if any)
+            let in_flight = match crate::db::channels::get_in_flight(&channel_id, &dispatch.db_service.pool).await {
+                Ok(Some(row)) => {
+                    // Convert unix timestamp to human-readable date
+                    use chrono::{TimeZone, Utc};
+                    let dt = Utc.timestamp_opt(row.started_at, 0).unwrap();
+
+                    Some(ChannelPromotion {
+                        tracking_sha: row.tracking_sha,
+                        target_branch: row.target_branch,
+                        status: row.status.to_string(),
+                        created_at: dt.to_rfc3339(),
+                        blocked_reason: row.blocked_reason,
+                    })
+                },
+                Ok(None) => None,
+                Err(e) => {
+                    return resp::ChannelStatus(Err(format!(
+                        "Database error querying in-flight evaluation: {}",
+                        e
+                    )));
+                },
+            };
+
+            // Get recent promotions (last 10)
+            let recent_rows = match sqlx::query_as::<_, (String, String, i64, i64, Option<String>)>(
+                "SELECT tracking_sha, target_branch, status, started_at, blocked_reason
+                 FROM ChannelPromotion
+                 WHERE channel_id LIKE ?
+                 ORDER BY started_at DESC
+                 LIMIT 10"
+            )
+            .bind(format!("github:%:{}", channel_status_request.channel_name))
+            .fetch_all(&dispatch.db_service.pool)
+            .await
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    return resp::ChannelStatus(Err(format!(
+                        "Database error querying recent promotions: {}",
+                        e
+                    )));
+                },
+            };
+
+            let recent_promotions = recent_rows
+                .into_iter()
+                .map(|(sha, branch, status, started, blocked)| {
+                    use chrono::{TimeZone, Utc};
+                    let dt = Utc.timestamp_opt(started, 0).unwrap();
+
+                    ChannelPromotion {
+                        tracking_sha: sha,
+                        target_branch: branch,
+                        status: status.to_string(),
+                        created_at: dt.to_rfc3339(),
+                        blocked_reason: blocked,
+                    }
+                })
+                .collect();
+
+            resp::ChannelStatus(Ok(ChannelStatusResponse {
+                channel_id: channel_id.clone(),
+                in_flight,
+                recent_promotions,
+            }))
+        },
     }
 }
