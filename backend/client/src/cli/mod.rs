@@ -23,6 +23,10 @@ pub(crate) enum Commands {
     /// Inspect or Modify individual drvs
     #[command(subcommand)]
     Drv(DrvCommands),
+
+    /// Query release channel status and promotion history
+    #[command(subcommand)]
+    Channel(ChannelCommands),
 }
 
 #[derive(Debug, Subcommand)]
@@ -30,6 +34,13 @@ pub(crate) enum DrvCommands {
     /// Request status for an individual Drv
     #[command(about)]
     Info(t::DrvStatusRequest),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ChannelCommands {
+    /// Query the current status and recent promotion history for a release channel
+    #[command(about)]
+    Status(t::ChannelStatusRequest),
 }
 
 #[derive(Parser, Debug)]

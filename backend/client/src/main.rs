@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::Parser;
-use cli::{Commands, DrvCommands};
+use cli::{ChannelCommands, Commands, DrvCommands};
 use requests::send_request;
 use shared::dirs::eka_dirs;
 use shared::types as t;
@@ -66,6 +66,10 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Drv(DrvCommands::Info(drv_status_request))) => {
             send_request(&socket, ClientRequest::DrvStatus(drv_status_request))
                 .context("failed to send info request to server")?;
+        },
+        Some(Commands::Channel(ChannelCommands::Status(channel_status_request))) => {
+            send_request(&socket, ClientRequest::ChannelStatus(channel_status_request))
+                .context("failed to send channel status request to server")?;
         },
         Some(Commands::Job(req)) => {
             let abs_file_path = std::fs::canonicalize(req.file_path)?

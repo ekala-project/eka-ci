@@ -51,6 +51,9 @@ fn handle_response(response: ClientResponse) {
         r::DrvStatus(info) => {
             print_drv_status(info);
         },
+        r::ChannelStatus(info) => {
+            print_channel_status(info);
+        },
     }
 }
 
@@ -73,6 +76,50 @@ fn print_drv_status(result: Result<t::DrvStatusResponse, String>) {
                 println!("\nFailed dependencies ({}):", failed_deps.len());
                 for dep in failed_deps {
                     println!("  - {}", dep);
+                }
+            }
+        },
+    }
+}
+
+fn print_channel_status(result: Result<t::ChannelStatusResponse, String>) {
+    match result {
+        Err(error) => {
+            eprintln!("Error: {}", error);
+        },
+        Ok(channel_status) => {
+            println!("Channel: {}", channel_status.channel_id);
+            println!();
+
+            // Display in-flight evaluation if present
+            if let Some(in_flight) = &channel_status.in_flight {
+                println!("In-Flight Evaluation:");
+                println!("  SHA: {}", in_flight.tracking_sha);
+                println!("  Target Branch: {}", in_flight.target_branch);
+                println!("  Status: {}", in_flight.status);
+                println!("  Created: {}", in_flight.created_at);
+                if let Some(reason) = &in_flight.blocked_reason {
+                    println!("  Blocked Reason: {}", reason);
+                }
+                println!();
+            } else {
+                println!("No in-flight evaluation");
+                println!();
+            }
+
+            // Display recent promotions
+            if channel_status.recent_promotions.is_empty() {
+                println!("No recent promotions");
+            } else {
+                println!("Recent Promotions ({}):", channel_status.recent_promotions.len());
+                for promotion in &channel_status.recent_promotions {
+                    println!("  • SHA: {} | Status: {} | Created: {}",
+                        promotion.tracking_sha,
+                        promotion.status,
+                        promotion.created_at);
+                    if let Some(reason) = &promotion.blocked_reason {
+                        println!("    Blocked: {}", reason);
+                    }
                 }
             }
         },
