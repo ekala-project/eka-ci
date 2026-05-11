@@ -158,4 +158,123 @@ impl GitHubService {
             .await?;
         Ok(())
     }
+
+    /// Create or update a GitHub check run for a release channel promotion.
+    ///
+    /// The check run name is `release/{channel_name}` and displays the
+    /// current promotion status (Evaluating → in_progress, Promoted →
+    /// success, Blocked → failure, Skipped → neutral).
+    pub(super) async fn handle_create_channel_promotion_check(
+        &self,
+        owner: &str,
+        repo_name: &str,
+        sha: &str,
+        channel_name: &str,
+        promotion_status: crate::channels::types::PromotionStatus,
+        blocked_reason: Option<&str>,
+    ) -> Result<()> {
+        use crate::channels::types::PromotionStatus;
+
+        let octocrab = self.octocrab_for_owner(owner)?;
+        let check_name = format!("release/{}", channel_name);
+
+        // Map promotion status to GitHub check run status + conclusion
+        let (status, conclusion, summary) = match promotion_status {
+            PromotionStatus::Evaluating => (
+                "in_progress",
+                None,
+                format!(
+                    "Channel `{}` is evaluating commit for promotion to target branch.",
+                    channel_name
+                ),
+            ),
+            PromotionStatus::Promoted => (
+                "completed",
+                Some("success"),
+                format!(
+                    "Channel `{}` successfully promoted this commit to the target branch.",
+                    channel_name
+                ),
+            ),
+            PromotionStatus::Blocked => {
+                let reason = blocked_reason.unwrap_or("unknown reason");
+                (
+                    "completed",
+                    Some("failure"),
+                    format!(
+                        "Channel `{}` promotion blocked: {}",
+                        channel_name, reason
+                    ),
+                )
+            },
+            PromotionStatus::Skipped => (
+                "completed",
+                Some("neutral"),
+                format!(
+                    "Channel `{}` skipped this commit (superseded by a newer SHA).",
+                    channel_name
+                ),
+            ),
+            PromotionStatus::PushFailed => (
+                "completed",
+                Some("failure"),
+                format!(
+                    "Channel `{}` promotion failed during git push (likely non-fast-forward).",
+                    channel_name
+                ),
+            ),
+        };
+
+        // Use octocrab's check run builder. We create a new check run
+        // each time rather than updating; GitHub deduplicates by
+        // (name, sha) automatically.
+        let route = format!("/repos/{}/{}/check-runs", owner, repo_name);
+
+        #[derive(serde::Serialize)]
+        struct CreateCheckRunRequest<'a> {
+            name: &'a str,
+            head_sha: &'a str,
+            status: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            conclusion: Option<&'a str>,
+            output: Output<'a>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct Output<'a> {
+            title: &'a str,
+            summary: &'a str,
+        }
+
+        let request = CreateCheckRunRequest {
+            name: &check_name,
+            head_sha: sha,
+            status,
+            conclusion,
+            output: Output {
+                title: &check_name,
+                summary: &summary,
+            },
+        };
+
+        octocrab._post(route, Some(&request)).await.map_err(|e| {
+            anyhow::anyhow!(
+                "failed to create channel promotion check run for {}: {:?}",
+                check_name,
+                e
+            )
+        })?;
+
+        debug!(
+            event = "channel_check_run_created",
+            owner = %owner,
+            repo = %repo_name,
+            sha = %sha,
+            channel = %channel_name,
+            status = ?promotion_status,
+            "created GitHub check run for channel promotion"
+        );
+
+        Ok(())
+    }
 }

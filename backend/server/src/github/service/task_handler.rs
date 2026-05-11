@@ -200,6 +200,24 @@ impl GitHubService {
                 self.handle_create_change_summary_check(ci_check_info, job)
                     .await?;
             },
+            GitHubTask::CreateChannelPromotionCheck {
+                owner,
+                repo_name,
+                sha,
+                channel_name,
+                promotion_status,
+                blocked_reason,
+            } => {
+                self.handle_create_channel_promotion_check(
+                    owner,
+                    repo_name,
+                    sha,
+                    channel_name,
+                    *promotion_status,
+                    blocked_reason.as_deref(),
+                )
+                .await?;
+            },
             GitHubTask::ProcessMergeCommand {
                 owner,
                 repo_name,
