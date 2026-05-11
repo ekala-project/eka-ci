@@ -273,6 +273,19 @@ pub enum GitHubTask {
         ci_check_info: Arc<CICheckInfo>,
         job: String,
     },
+    /// Create or update a GitHub check run for a release channel promotion.
+    /// The check run name is `release/{channel_name}` and reflects the
+    /// promotion status (Promoted, Blocked, or in-progress Evaluating).
+    CreateChannelPromotionCheck {
+        owner: String,
+        repo_name: String,
+        sha: String,
+        channel_name: String,
+        /// Current promotion status for this channel+SHA.
+        promotion_status: crate::channels::types::PromotionStatus,
+        /// JSON-encoded blocked reason if status is Blocked.
+        blocked_reason: Option<String>,
+    },
     /// Handle an `@eka-ci merge …` comment on a PR: verify authorization,
     /// pin the current head SHA, record a pending comment-merge.
     ProcessMergeCommand {

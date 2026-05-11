@@ -29,6 +29,7 @@ use tracing::{debug, info, warn};
 use crate::config::{ChannelConfig, ChannelForge};
 use crate::db::DbService;
 use crate::db::model::build_event::DrvBuildState;
+use crate::github::GitHubTask;
 use crate::services::AsyncService;
 
 use super::coalescer::{CoalesceAction, coalesce};
@@ -65,6 +66,10 @@ pub struct ChannelService {
     /// GitLab and Gitea forge support will be added in a follow-up
     /// PR; today only GitHub channels can promote.
     octocrab: Option<Arc<Octocrab>>,
+    /// Optional GitHub task sender for creating check runs that
+    /// display promotion status in the GitHub UI. `None` when GitHub
+    /// integration is disabled.
+    github_sender: Option<mpsc::Sender<GitHubTask>>,
 }
 
 impl ChannelService {
@@ -72,6 +77,7 @@ impl ChannelService {
         db: DbService,
         channels: Arc<HashMap<String, ChannelConfig>>,
         octocrab: Option<Arc<Octocrab>>,
+        github_sender: Option<mpsc::Sender<GitHubTask>>,
     ) -> Self {
         let (task_sender, task_receiver) = mpsc::channel(CHANNEL_TASK_BUFFER);
         Self {
@@ -81,7 +87,49 @@ impl ChannelService {
             pending: Arc::new(Mutex::new(HashMap::new())),
             channels,
             octocrab,
+            github_sender,
         }
+    }
+
+    /// Fire a GitHub check run update for this channel's promotion status.
+    ///
+    /// Creates a check run named `release/{channel_name}` that displays
+    /// the promotion state in the GitHub UI. Only fires for GitHub-backed
+    /// channels when GitHub integration is enabled. Silently no-ops for
+    /// other forges or when GitHub is disabled.
+    fn fire_github_check_run(
+        &self,
+        channel: &ChannelConfig,
+        sha: &str,
+        status: PromotionStatus,
+        blocked_reason: Option<&str>,
+    ) {
+        let Some(github_sender) = &self.github_sender else {
+            return;
+        };
+
+        if !matches!(channel.forge, ChannelForge::GitHub) {
+            return;
+        }
+
+        let task = GitHubTask::CreateChannelPromotionCheck {
+            owner: channel.owner.clone(),
+            repo_name: channel.repo.clone(),
+            sha: sha.to_string(),
+            channel_name: channel.name.clone(),
+            promotion_status: status,
+            blocked_reason: blocked_reason.map(String::from),
+        };
+
+        let sender = github_sender.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sender.send(task).await {
+                warn!(
+                    "Failed to send CreateChannelPromotionCheck task: {:?}",
+                    e
+                );
+            }
+        });
     }
 
     /// Snapshot the current state of every job named in
@@ -328,6 +376,10 @@ impl ChannelService {
             &self.db.pool,
         )
         .await?;
+
+        // Create GitHub check run showing evaluation in progress
+        self.fire_github_check_run(&channel, &sha, PromotionStatus::Evaluating, None);
+
         info!(
             event = "channel_evaluation_started",
             channel_id = %channel_id,
