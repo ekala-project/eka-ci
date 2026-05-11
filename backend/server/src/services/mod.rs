@@ -176,6 +176,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         db_service.clone(),
         channels_registry.clone(),
         maybe_octocrab.as_ref().map(|o| Arc::new(o.clone())),
+        maybe_github_sender.clone(),
     );
     let channel_sender = channel_service.get_sender();
 
