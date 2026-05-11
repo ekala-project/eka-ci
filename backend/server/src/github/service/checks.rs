@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::GitHubService;
 use crate::db::model::DrvId;

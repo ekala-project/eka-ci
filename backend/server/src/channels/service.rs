@@ -24,7 +24,7 @@ use anyhow::{bail, Result};
 use octocrab::Octocrab;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::config::{ChannelConfig, ChannelForge};
 use crate::db::DbService;
@@ -140,6 +140,14 @@ impl ChannelService {
     /// and collects the latest `DrvBuildState` for each job name in
     /// the channel's watch list. Jobs that don't exist in any jobset
     /// are omitted, which causes the evaluator to say `Waiting`.
+    #[instrument(
+        skip(self),
+        fields(
+            channel_id = %channel.channel_id(),
+            sha = %sha,
+            job_count = channel.required.len() + channel.packages.len()
+        )
+    )]
     async fn snapshot_job_states(
         &self,
         channel: &ChannelConfig,
@@ -166,6 +174,15 @@ impl ChannelService {
     /// the update. Returns `Ok(None)` if dry-run is enabled (no push
     /// performed). Returns `Err` if the push failed (non-fast-forward,
     /// auth failure, network error, or forge not supported).
+    #[instrument(
+        skip(self),
+        fields(
+            channel_id = %channel.channel_id(),
+            sha = %sha,
+            target = %channel.target_branch,
+            dry_run = channel.dry_run
+        )
+    )]
     async fn perform_promotion(
         &self,
         channel: &ChannelConfig,
@@ -289,6 +306,14 @@ impl ChannelService {
         })
     }
 
+    #[instrument(
+        skip(self),
+        fields(
+            channel_id = %channel.channel_id(),
+            sha = %sha,
+            target = %channel.target_branch
+        )
+    )]
     async fn handle_evaluate_push(
         &self,
         channel: ChannelConfig,
@@ -342,6 +367,10 @@ impl ChannelService {
                         &self.db.pool,
                     )
                     .await?;
+
+                    // Update GitHub check run to neutral (skipped)
+                    self.fire_github_check_run(&channel, &prev, PromotionStatus::Skipped, None);
+
                     info!(
                         event = "channel_coalesce_skipped_pending",
                         channel_id = %channel_id,
@@ -412,6 +441,10 @@ impl ChannelService {
                     &self.db.pool,
                 )
                 .await?;
+
+                // Update GitHub check run to success
+                self.fire_github_check_run(&channel, &sha, PromotionStatus::Promoted, None);
+
                 info!(
                     event = "channel_promoted",
                     channel_id = %channel_id,
@@ -438,6 +471,15 @@ impl ChannelService {
                     &self.db.pool,
                 )
                 .await?;
+
+                // Update GitHub check run to failure with blocked reason
+                self.fire_github_check_run(
+                    &channel,
+                    &sha,
+                    PromotionStatus::Blocked,
+                    Some(&blocked_json.to_string()),
+                );
+
                 warn!(
                     event = "channel_blocked",
                     channel_id = %channel_id,
@@ -485,6 +527,15 @@ impl ChannelService {
     ///      Evaluating row (one is already open). The pipeline will
     ///      either transition the row to a terminal state or keep
     ///      it Waiting until the next jobset completion.
+    #[instrument(
+        skip(self),
+        fields(
+            forge = ?forge,
+            owner = %owner,
+            repo = %repo,
+            sha = %sha
+        )
+    )]
     async fn handle_jobset_complete(
         &self,
         forge: ChannelForge,
@@ -568,6 +619,10 @@ impl ChannelService {
                         &self.db.pool,
                     )
                     .await?;
+
+                    // Update GitHub check run to success
+                    self.fire_github_check_run(&channel, &sha, PromotionStatus::Promoted, None);
+
                     info!(
                         event = "channel_promoted",
                         channel_id = %channel_id,
@@ -598,6 +653,15 @@ impl ChannelService {
                         &self.db.pool,
                     )
                     .await?;
+
+                    // Update GitHub check run to failure with blocked reason
+                    self.fire_github_check_run(
+                        &channel,
+                        &sha,
+                        PromotionStatus::Blocked,
+                        Some(&blocked_json.to_string()),
+                    );
+
                     warn!(
                         event = "channel_blocked",
                         channel_id = %channel_id,
@@ -633,6 +697,10 @@ impl ChannelService {
     /// `EvaluatePush` task is dispatched through `self.task_sender`
     /// so the work flows back through the normal coalescer path,
     /// including the idempotency guard.
+    #[instrument(
+        skip(self),
+        fields(channel_id = %channel.channel_id())
+    )]
     async fn drain_pending(&self, channel: &ChannelConfig) -> Result<()> {
         let channel_id = channel.channel_id();
         let pending_sha = {
@@ -733,7 +801,7 @@ mod tests {
         // Ready; the service should record a Promoted row. (PR 3
         // stub: no actual FF push.)
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
         let ch = channel("stable", &[], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-1".to_string())
             .await
@@ -754,7 +822,7 @@ mod tests {
         // required job is treated as not-yet-terminal => Waiting,
         // which leaves the Evaluating row in place.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
         let ch = channel("stable", &["coreutils"], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-w".to_string())
             .await
@@ -774,7 +842,7 @@ mod tests {
         // First push reaches Promoted (empty required). A second
         // delivery of the same SHA must NOT open a new Evaluating row.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
         let ch = channel("stable", &[], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-dup".to_string())
             .await
@@ -798,7 +866,7 @@ mod tests {
         // sha-b arrives -> stored as pending (no prior pending => no Skipped row yet).
         // sha-c arrives -> sha-b is now stale and must be audited as Skipped.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
         let ch = channel("stable", &["coreutils"], &[]);
 
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
@@ -843,7 +911,7 @@ mod tests {
         // Empty channels registry: a JobsetComplete for any repo
         // should silently no-op without touching the DB.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
         svc.handle_jobset_complete(
             ChannelForge::GitHub,
             "no-such-owner".to_string(),
@@ -871,7 +939,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None);
 
         svc.handle_jobset_complete(
             ChannelForge::GitHub,
@@ -909,7 +977,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None);
 
         // Open an Evaluating row for sha-a.
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
@@ -944,7 +1012,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None);
 
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
             .await
@@ -979,7 +1047,7 @@ mod tests {
         let ch = channel("stable", &[], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry), None);
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None);
 
         svc.handle_evaluate_push(ch.clone(), "sha-x".to_string())
             .await
