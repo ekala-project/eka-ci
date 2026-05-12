@@ -331,6 +331,89 @@ let
     };
   };
 
+  channelType = types.submodule {
+    freeformType = settingsFormat.type;
+    options = {
+      forge = mkOption {
+        type = types.enum [
+          "github"
+          "gitlab"
+          "gitea"
+        ];
+        example = "github";
+        description = "Git forge type for this release channel.";
+      };
+      owner = mkOption {
+        type = types.str;
+        example = "myorg";
+        description = "Repository owner/organization.";
+      };
+      repo = mkOption {
+        type = types.str;
+        example = "myrepo";
+        description = "Repository name.";
+      };
+      name = mkOption {
+        type = types.str;
+        example = "stable";
+        description = ''
+          Channel name. Used in GitHub check run titles (`release/{name}`)
+          and CLI status queries.
+        '';
+      };
+      tracking_branch = mkOption {
+        type = types.str;
+        example = "master";
+        description = "Branch to monitor for new commits to promote.";
+      };
+      target_branch = mkOption {
+        type = types.str;
+        example = "ekapkgs-stable";
+        description = ''
+          Branch to fast-forward when promotion criteria are met. The GitHub
+          App/GitLab token/Gitea token must have write access to this branch.
+        '';
+      };
+      required = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [
+          "coreutils"
+          "bash"
+          "gcc"
+        ];
+        description = ''
+          Job attribute names that MUST succeed for promotion. Job names must
+          match `.eka-ci/config.json` exactly. If any required job fails or is
+          interrupted, the channel enters Blocked status and will not promote.
+        '';
+      };
+      packages = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [
+          "firefox"
+          "chromium"
+        ];
+        description = ''
+          Job attribute names that must reach a terminal state (success,
+          failure, or interrupted) before promotion. Unlike `required`, these
+          jobs are allowed to fail without blocking promotion. Useful for
+          tracking optional packages that should be built but aren't critical.
+        '';
+      };
+      dry_run = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          When `true`, the channel performs all evaluation logic but skips the
+          actual git push to `target_branch`. Useful for testing channel
+          configuration without affecting production branches.
+        '';
+      };
+    };
+  };
+
   settingsType = types.submodule {
     freeformType = settingsFormat.type;
     options = {
@@ -435,6 +518,17 @@ let
           List of GitLab instances the server integrates with. Each instance
           requires a domain and project access token. Supports both GitLab.com
           and self-hosted instances.
+        '';
+      };
+      channels = mkOption {
+        type = types.listOf channelType;
+        default = [ ];
+        description = ''
+          List of release channels for automated continuous delivery. Each
+          channel monitors a tracking branch and fast-forwards a target branch
+          when specified jobs succeed.
+
+          See `docs/channels.md` for detailed configuration and operational guidance.
         '';
       };
     };
