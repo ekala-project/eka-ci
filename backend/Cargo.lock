@@ -1583,6 +1583,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "graph"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dashmap",
+ "lru",
+ "serde",
+ "shared",
+ "sqlx",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "h2"
 version = "0.3.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3606,6 +3623,7 @@ dependencies = [
  "anyhow",
  "clap",
  "serde",
+ "thiserror 2.0.17",
  "xdg",
 ]
 

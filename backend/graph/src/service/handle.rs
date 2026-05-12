@@ -6,10 +6,9 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
-use crate::db::model::drv_id::DrvId;
-use crate::graph::service::cached_node::CachedNode;
-use crate::graph::service::commands::GraphCommand;
+use shared::types::{DrvBuildResult, DrvBuildState, DrvId};
+
+use super::{CachedNode, GraphCommand};
 
 /// Handle for interacting with the GraphService from other services
 #[derive(Clone)]

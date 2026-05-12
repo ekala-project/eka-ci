@@ -18,12 +18,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::db::DbService;
-use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
-use crate::db::model::drv_id::DrvId;
-use crate::graph::eviction::EvictionCandidateSelector;
-use crate::graph::graph::BuildGraph;
-use crate::metrics::GraphMetrics;
+use shared::types::{DrvBuildResult, DrvBuildState, DrvId};
+
+use crate::eviction::EvictionCandidateSelector;
+use crate::graph::BuildGraph;
+use crate::traits::{GraphDatabase, GraphMetricsCollector};
 
 /// The graph service that owns the mutable graph state
 pub struct GraphService {

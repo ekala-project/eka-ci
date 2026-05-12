@@ -19,8 +19,21 @@ pub trait GraphDatabase: Send + Sync {
     /// Get all derivations (for initial graph load)
     async fn get_all_drvs(&self) -> anyhow::Result<Vec<Drv>>;
 
+    /// Get all references (referrer, reference) pairs - for efficient bulk loading
+    async fn get_all_refs(&self) -> anyhow::Result<Vec<(DrvId, DrvId)>>;
+
     /// Get references for a derivation
     async fn get_drv_refs(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>>;
+
+    /// Insert transitive failures for dependents of a failed derivation
+    async fn insert_transitive_failures(
+        &self,
+        failed_drv: &DrvId,
+        transitive_referrers: &[DrvId],
+    ) -> anyhow::Result<()>;
+
+    /// Clear transitive failures for a derivation, returns unblocked drvs
+    async fn clear_transitive_failures(&self, drv: &DrvId) -> anyhow::Result<Vec<DrvId>>;
 }
 
 /// Metrics collection interface
@@ -34,6 +47,15 @@ pub trait GraphMetricsCollector: Send + Sync {
     fn increment_cache_hits(&self);
     fn increment_cache_misses(&self);
     fn increment_evictions(&self);
+
+    // Additional metrics for detailed observability
+    fn set_memory_bytes(&self, bytes: usize);
+    fn observe_ref_count(&self, count: usize, has_dependents: bool);
+    fn increment_cache_reloads(&self);
+    fn observe_cache_reload_duration(&self, seconds: f64);
+    fn set_pinned_nodes(&self, count: usize);
+    fn set_cache_capacity(&self, capacity: usize);
+    fn set_cache_utilization(&self, utilization: f64);
 }
 
 /// Null implementation for when metrics are disabled
@@ -49,4 +71,11 @@ impl GraphMetricsCollector for NullMetrics {
     fn increment_cache_hits(&self) {}
     fn increment_cache_misses(&self) {}
     fn increment_evictions(&self) {}
+    fn set_memory_bytes(&self, _bytes: usize) {}
+    fn observe_ref_count(&self, _count: usize, _has_dependents: bool) {}
+    fn increment_cache_reloads(&self) {}
+    fn observe_cache_reload_duration(&self, _seconds: f64) {}
+    fn set_pinned_nodes(&self, _count: usize) {}
+    fn set_cache_capacity(&self, _capacity: usize) {}
+    fn set_cache_utilization(&self, _utilization: f64) {}
 }

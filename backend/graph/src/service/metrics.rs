@@ -6,11 +6,11 @@ use std::time::Instant;
 
 use tracing::{debug, error, info};
 
-use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
-use crate::db::model::drv_id::DrvId;
-use crate::graph::eviction::EvictionCandidateSelector;
-use crate::graph::graph::BuildGraph;
-use crate::metrics::GraphMetrics;
+use shared::types::{DrvBuildResult, DrvBuildState, DrvId};
+
+use crate::eviction::EvictionCandidateSelector;
+use crate::graph::BuildGraph;
+use crate::traits::GraphMetricsCollector;
 
 /// Update Prometheus metrics based on current graph state
 pub(super) fn update_metrics(

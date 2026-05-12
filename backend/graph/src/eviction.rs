@@ -8,9 +8,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
-use crate::db::model::drv_id::DrvId;
-use crate::graph::graph::BuildGraph;
+use shared::types::{DrvBuildResult, DrvBuildState, DrvId};
+
+use crate::graph::BuildGraph;
 
 /// Eviction tier levels, ordered from safest to least safe
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -245,8 +245,9 @@ impl EvictionCandidateSelector {
 mod tests {
     use std::str::FromStr;
 
+    use shared::types::Drv;
+
     use super::*;
-    use crate::db::model::drv::Drv;
 
     fn make_test_drv(hash: &str, state: DrvBuildState) -> Drv {
         // DrvId::try_from enforces a 32-char nix-base32 hash prefix. Pad the
