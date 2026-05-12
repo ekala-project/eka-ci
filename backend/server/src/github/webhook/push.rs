@@ -70,8 +70,7 @@ pub(super) async fn handle_github_push(
         return;
     };
 
-    let matches =
-        match_push_channels(&channels, &ChannelForge::GitHub, &owner, &repo_name, branch);
+    let matches = match_push_channels(&channels, &ChannelForge::GitHub, &owner, &repo_name, branch);
     if matches.is_empty() {
         // Hot path for the typical case of "push to a branch no channel
         // is watching" — log at debug, not info.

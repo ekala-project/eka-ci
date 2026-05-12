@@ -201,10 +201,7 @@ impl GitHubService {
                 (
                     "completed",
                     Some("failure"),
-                    format!(
-                        "Channel `{}` promotion blocked: {}",
-                        channel_name, reason
-                    ),
+                    format!("Channel `{}` promotion blocked: {}", channel_name, reason),
                 )
             },
             PromotionStatus::Skipped => (

@@ -68,8 +68,11 @@ fn main() -> anyhow::Result<()> {
                 .context("failed to send info request to server")?;
         },
         Some(Commands::Channel(ChannelCommands::Status(channel_status_request))) => {
-            send_request(&socket, ClientRequest::ChannelStatus(channel_status_request))
-                .context("failed to send channel status request to server")?;
+            send_request(
+                &socket,
+                ClientRequest::ChannelStatus(channel_status_request),
+            )
+            .context("failed to send channel status request to server")?;
         },
         Some(Commands::Job(req)) => {
             let abs_file_path = std::fs::canonicalize(req.file_path)?

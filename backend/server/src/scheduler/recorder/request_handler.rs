@@ -275,7 +275,8 @@ impl RecorderWorker {
                             };
                             if let Err(e) = channel_sender.send(channel_task).await {
                                 warn!(
-                                    "Failed to send ChannelTask::JobsetComplete for jobset {}: {:?}",
+                                    "Failed to send ChannelTask::JobsetComplete for jobset {}: \
+                                     {:?}",
                                     job_info.jobset_id, e
                                 );
                             }

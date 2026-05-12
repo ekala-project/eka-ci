@@ -111,12 +111,15 @@ fn print_channel_status(result: Result<t::ChannelStatusResponse, String>) {
             if channel_status.recent_promotions.is_empty() {
                 println!("No recent promotions");
             } else {
-                println!("Recent Promotions ({}):", channel_status.recent_promotions.len());
+                println!(
+                    "Recent Promotions ({}):",
+                    channel_status.recent_promotions.len()
+                );
                 for promotion in &channel_status.recent_promotions {
-                    println!("  • SHA: {} | Status: {} | Created: {}",
-                        promotion.tracking_sha,
-                        promotion.status,
-                        promotion.created_at);
+                    println!(
+                        "  • SHA: {} | Status: {} | Created: {}",
+                        promotion.tracking_sha, promotion.status, promotion.created_at
+                    );
                     if let Some(reason) = &promotion.blocked_reason {
                         println!("    Blocked: {}", reason);
                     }

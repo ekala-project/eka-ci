@@ -78,6 +78,7 @@ async fn test_build_simple_drv_success() {
         cache_configs,
         300,  // 5 minute hook timeout
         true, // audit hooks enabled
+        None, // no channel task sender
     )
     .await
     .expect("Failed to create scheduler");
@@ -180,6 +181,7 @@ async fn test_build_failure_retry_logic() {
         cache_configs,
         300,  // 5 minute hook timeout
         true, // audit hooks enabled
+        None, // no channel task sender
     )
     .await
     .expect("Failed to create scheduler");

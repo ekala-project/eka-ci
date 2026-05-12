@@ -2,8 +2,7 @@
 //
 // Decides whether a release-channel may advance, given:
 //   - the channel's `required` and `packages` job-name lists, and
-//   - a snapshot of `{job_name -> latest DrvBuildState}` collected at
-//     the channel's tracking-sha.
+//   - a snapshot of `{job_name -> latest DrvBuildState}` collected at the channel's tracking-sha.
 //
 // This module is intentionally side-effect-free so unit tests can
 // drive every interesting state combination without touching the
@@ -11,26 +10,23 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use super::types::PromotionDecision;
 use crate::config::ChannelConfig;
 use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
-
-use super::types::PromotionDecision;
 
 /// Pure evaluator: derive a [`PromotionDecision`] from the channel's
 /// configured job lists and an observed `job_states` snapshot.
 ///
 /// Semantics:
 ///
-/// * A `required` job blocks promotion until it reaches
-///   `Completed(Success)`. Any failure terminal state (Failure,
-///   TransitiveFailure, Interrupted(_), UnsatisfiableRequirements)
-///   yields `Blocked` — *every* offender is listed so the audit row
-///   names them all rather than just the first one observed.
-/// * A `packages` job blocks promotion only until it reaches *any*
-///   terminal state; its individual success/failure outcome doesn't
-///   gate promotion.
-/// * A missing entry in `job_states` is treated as non-terminal: we
-///   don't yet have evidence the job has finished, so we wait.
+/// * A `required` job blocks promotion until it reaches `Completed(Success)`. Any failure terminal
+///   state (Failure, TransitiveFailure, Interrupted(_), UnsatisfiableRequirements) yields `Blocked`
+///   — *every* offender is listed so the audit row names them all rather than just the first one
+///   observed.
+/// * A `packages` job blocks promotion only until it reaches *any* terminal state; its individual
+///   success/failure outcome doesn't gate promotion.
+/// * A missing entry in `job_states` is treated as non-terminal: we don't yet have evidence the job
+///   has finished, so we wait.
 ///
 /// `Blocked` takes precedence over `Waiting` even if some packages are
 /// still pending: once a required job has failed, no amount of waiting
@@ -109,12 +105,9 @@ pub fn evaluate_promotion(
 mod tests {
     use std::collections::HashMap;
 
-    use crate::config::{ChannelConfig, ChannelForge};
-    use crate::db::model::build_event::{
-        DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState,
-    };
-
     use super::*;
+    use crate::config::{ChannelConfig, ChannelForge};
+    use crate::db::model::build_event::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
 
     fn channel(required: &[&str], packages: &[&str]) -> ChannelConfig {
         ChannelConfig {
@@ -299,10 +292,7 @@ mod tests {
     #[test]
     fn waiting_when_packages_not_terminal() {
         let ch = channel(&["coreutils"], &["coreutils", "slow"]);
-        let s = states(&[
-            ("coreutils", success()),
-            ("slow", DrvBuildState::Queued),
-        ]);
+        let s = states(&[("coreutils", success()), ("slow", DrvBuildState::Queued)]);
         match evaluate_promotion(&ch, &s) {
             PromotionDecision::Waiting {
                 pending_required,
@@ -337,17 +327,10 @@ mod tests {
                 pending_required,
                 pending_packages,
             } => {
-                assert_eq!(
-                    pending_required,
-                    vec!["m".to_string(), "z".to_string()]
-                );
+                assert_eq!(pending_required, vec!["m".to_string(), "z".to_string()]);
                 assert_eq!(
                     pending_packages,
-                    vec![
-                        "aa".to_string(),
-                        "mm".to_string(),
-                        "yy".to_string()
-                    ]
+                    vec!["aa".to_string(), "mm".to_string(), "yy".to_string()]
                 );
             },
             other => panic!("expected Waiting, got {other:?}"),
