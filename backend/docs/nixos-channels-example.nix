@@ -43,7 +43,7 @@
             "bash"
           ];
           packages = [ ];
-          dry_run = true;  # Test mode - evaluation only, no push
+          dry_run = true; # Test mode - evaluation only, no push
         }
 
         {

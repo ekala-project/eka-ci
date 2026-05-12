@@ -798,19 +798,16 @@ fn clamp_timeout_seconds(field: &'static str, value: u64, min: u64, max: u64) ->
 /// Validation rules (each violation aborts startup so misconfiguration
 /// never silently disables gated releases):
 ///
-///   1. Channel name is non-empty and contains no `/` (so the slash
-///      separators inside `channel_id` remain unambiguous).
-///   2. `tracking_branch != target_branch` — self-promotion is almost
-///      certainly a typo and would loop forever.
-///   3. `channel_id` is unique — two channels cannot share the same
-///      `(forge, owner, repo, name)`.
-///   4. `(forge, owner, repo, target_branch)` is unique — two channels
-///      cannot race to push the same branch ref.
-///   5. A channel's `target_branch` may not be another channel's
-///      `tracking_branch` on the same repo. Chained releases are not
-///      supported in v1; we surface this as an error rather than
-///      silently allowing a release on one channel to cascade into
-///      another.
+///   1. Channel name is non-empty and contains no `/` (so the slash separators inside `channel_id`
+///      remain unambiguous).
+///   2. `tracking_branch != target_branch` — self-promotion is almost certainly a typo and would
+///      loop forever.
+///   3. `channel_id` is unique — two channels cannot share the same `(forge, owner, repo, name)`.
+///   4. `(forge, owner, repo, target_branch)` is unique — two channels cannot race to push the same
+///      branch ref.
+///   5. A channel's `target_branch` may not be another channel's `tracking_branch` on the same
+///      repo. Chained releases are not supported in v1; we surface this as an error rather than
+///      silently allowing a release on one channel to cascade into another.
 pub(crate) fn validate_channels(
     raw: Vec<ChannelConfig>,
 ) -> anyhow::Result<HashMap<String, ChannelConfig>> {
@@ -820,8 +817,8 @@ pub(crate) fn validate_channels(
     for channel in &raw {
         if channel.name.is_empty() || channel.name.contains('/') {
             bail!(
-                "channel name {:?} (owner={}, repo={}) is invalid: must be non-empty and must \
-                 not contain '/'",
+                "channel name {:?} (owner={}, repo={}) is invalid: must be non-empty and must not \
+                 contain '/'",
                 channel.name,
                 channel.owner,
                 channel.repo,
@@ -829,8 +826,8 @@ pub(crate) fn validate_channels(
         }
         if channel.tracking_branch == channel.target_branch {
             bail!(
-                "channel {:?}: tracking_branch and target_branch are both {:?}; refusing to \
-                 start because this would self-promote on every push",
+                "channel {:?}: tracking_branch and target_branch are both {:?}; refusing to start \
+                 because this would self-promote on every push",
                 channel.channel_id(),
                 channel.tracking_branch,
             );
@@ -859,8 +856,8 @@ pub(crate) fn validate_channels(
         }
         if all_tracking.contains(&target_key) {
             bail!(
-                "channel {:?} target_branch {:?} is also a tracking_branch of another channel \
-                 on the same repo; chained releases are not supported",
+                "channel {:?} target_branch {:?} is also a tracking_branch of another channel on \
+                 the same repo; chained releases are not supported",
                 id,
                 channel.target_branch,
             );

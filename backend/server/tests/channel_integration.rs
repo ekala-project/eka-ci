@@ -9,19 +9,16 @@ mod common;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use common::{TestContext, test_drv, insert_test_drv};
-use eka_ci_server::channels::{ChannelService, types::PromotionStatus};
+use common::{TestContext, insert_test_drv, test_drv};
+use eka_ci_server::channels::ChannelService;
+use eka_ci_server::channels::types::PromotionStatus;
 use eka_ci_server::config::{ChannelConfig, ChannelForge};
 use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::services::AsyncService;
 use tokio_util::sync::CancellationToken;
 
 /// Helper to create a test channel configuration.
-fn test_channel_config(
-    name: &str,
-    required: &[&str],
-    packages: &[&str],
-) -> ChannelConfig {
+fn test_channel_config(name: &str, required: &[&str], packages: &[&str]) -> ChannelConfig {
     ChannelConfig {
         forge: ChannelForge::GitHub,
         owner: "testorg".to_string(),
@@ -69,24 +66,20 @@ async fn test_channel_promotion_on_successful_required_jobs() {
     let sha = "abc123def456";
 
     // Step 1: Simulate a push webhook by creating a GitHubJobSet
-    sqlx::query(
-        "INSERT INTO GitHubJobSets (owner, repo_name, sha, job) VALUES (?, ?, ?, ?)"
-    )
-    .bind(&channel.owner)
-    .bind(&channel.repo)
-    .bind(sha)
-    .bind("test-jobset")
-    .execute(&ctx.db_service.pool)
-    .await
-    .expect("Failed to insert jobset");
+    sqlx::query("INSERT INTO GitHubJobSets (owner, repo_name, sha, job) VALUES (?, ?, ?, ?)")
+        .bind(&channel.owner)
+        .bind(&channel.repo)
+        .bind(sha)
+        .bind("test-jobset")
+        .execute(&ctx.db_service.pool)
+        .await
+        .expect("Failed to insert jobset");
 
-    let jobset_id: i64 = sqlx::query_scalar(
-        "SELECT ROWID FROM GitHubJobSets WHERE sha = ?"
-    )
-    .bind(sha)
-    .fetch_one(&ctx.db_service.pool)
-    .await
-    .expect("Failed to get jobset ROWID");
+    let jobset_id: i64 = sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ?")
+        .bind(sha)
+        .fetch_one(&ctx.db_service.pool)
+        .await
+        .expect("Failed to get jobset ROWID");
 
     // Step 2: Create successful derivations for the required jobs
     for job_name in &["coreutils", "bash"] {
@@ -97,23 +90,19 @@ async fn test_channel_promotion_on_successful_required_jobs() {
             .await
             .expect("Failed to insert test drv");
 
-        let drv_rowid: i64 = sqlx::query_scalar(
-            "SELECT ROWID FROM Drv WHERE drv_path = ?"
-        )
-        .bind(&*drv.drv_path)
-        .fetch_one(&ctx.db_service.pool)
-        .await
-        .expect("Failed to get drv ROWID");
+        let drv_rowid: i64 = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
+            .bind(&*drv.drv_path)
+            .fetch_one(&ctx.db_service.pool)
+            .await
+            .expect("Failed to get drv ROWID");
 
-        sqlx::query(
-            "INSERT INTO Job (jobset, name, drv_id) VALUES (?, ?, ?)"
-        )
-        .bind(jobset_id)
-        .bind(job_name)
-        .bind(drv_rowid)
-        .execute(&ctx.db_service.pool)
-        .await
-        .expect("Failed to insert job");
+        sqlx::query("INSERT INTO Job (jobset, name, drv_id) VALUES (?, ?, ?)")
+            .bind(jobset_id)
+            .bind(job_name)
+            .bind(drv_rowid)
+            .execute(&ctx.db_service.pool)
+            .await
+            .expect("Failed to insert job");
     }
 
     // Step 3: Trigger channel evaluation via EvaluatePush
@@ -132,7 +121,7 @@ async fn test_channel_promotion_on_successful_required_jobs() {
 
     // Step 4: Verify a Promoted row was written
     let promoted_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM ChannelPromotion WHERE channel_id = ? AND status = ?"
+        "SELECT COUNT(*) FROM ChannelPromotion WHERE channel_id = ? AND status = ?",
     )
     .bind(&channel.channel_id())
     .bind(PromotionStatus::Promoted.as_i64())
@@ -170,12 +159,8 @@ async fn test_channel_blocked_on_failed_required_job() {
     let mut channels = HashMap::new();
     channels.insert(channel.channel_id(), channel.clone());
 
-    let channel_service = ChannelService::new(
-        ctx.db_service.clone(),
-        Arc::new(channels),
-        None,
-        None,
-    );
+    let channel_service =
+        ChannelService::new(ctx.db_service.clone(), Arc::new(channels), None, None);
 
     let channel_sender = channel_service.get_sender();
 
@@ -188,24 +173,20 @@ async fn test_channel_blocked_on_failed_required_job() {
     let sha = "failed123abc";
 
     // Create jobset
-    sqlx::query(
-        "INSERT INTO GitHubJobSets (owner, repo_name, sha, job) VALUES (?, ?, ?, ?)"
-    )
-    .bind(&channel.owner)
-    .bind(&channel.repo)
-    .bind(sha)
-    .bind("test-jobset")
-    .execute(&ctx.db_service.pool)
-    .await
-    .expect("Failed to insert jobset");
+    sqlx::query("INSERT INTO GitHubJobSets (owner, repo_name, sha, job) VALUES (?, ?, ?, ?)")
+        .bind(&channel.owner)
+        .bind(&channel.repo)
+        .bind(sha)
+        .bind("test-jobset")
+        .execute(&ctx.db_service.pool)
+        .await
+        .expect("Failed to insert jobset");
 
-    let jobset_id: i64 = sqlx::query_scalar(
-        "SELECT ROWID FROM GitHubJobSets WHERE sha = ?"
-    )
-    .bind(sha)
-    .fetch_one(&ctx.db_service.pool)
-    .await
-    .expect("Failed to get jobset ROWID");
+    let jobset_id: i64 = sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ?")
+        .bind(sha)
+        .fetch_one(&ctx.db_service.pool)
+        .await
+        .expect("Failed to get jobset ROWID");
 
     // Create a FAILED derivation for the required job
     let mut drv = test_drv("failing-job", "x86_64-linux");
@@ -215,23 +196,19 @@ async fn test_channel_blocked_on_failed_required_job() {
         .await
         .expect("Failed to insert test drv");
 
-    let drv_rowid: i64 = sqlx::query_scalar(
-        "SELECT ROWID FROM Drv WHERE drv_path = ?"
-    )
-    .bind(&*drv.drv_path)
-    .fetch_one(&ctx.db_service.pool)
-    .await
-    .expect("Failed to get drv ROWID");
+    let drv_rowid: i64 = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
+        .bind(&*drv.drv_path)
+        .fetch_one(&ctx.db_service.pool)
+        .await
+        .expect("Failed to get drv ROWID");
 
-    sqlx::query(
-        "INSERT INTO Job (jobset, name, drv_id) VALUES (?, ?, ?)"
-    )
-    .bind(jobset_id)
-    .bind("failing-job")
-    .bind(drv_rowid)
-    .execute(&ctx.db_service.pool)
-    .await
-    .expect("Failed to insert job");
+    sqlx::query("INSERT INTO Job (jobset, name, drv_id) VALUES (?, ?, ?)")
+        .bind(jobset_id)
+        .bind("failing-job")
+        .bind(drv_rowid)
+        .execute(&ctx.db_service.pool)
+        .await
+        .expect("Failed to insert job");
 
     // Trigger channel evaluation
     use eka_ci_server::channels::types::ChannelTask;
@@ -249,7 +226,7 @@ async fn test_channel_blocked_on_failed_required_job() {
 
     // Verify the channel was BLOCKED, not promoted
     let blocked_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM ChannelPromotion WHERE channel_id = ? AND status = ?"
+        "SELECT COUNT(*) FROM ChannelPromotion WHERE channel_id = ? AND status = ?",
     )
     .bind(&channel.channel_id())
     .bind(PromotionStatus::Blocked.as_i64())
@@ -263,7 +240,7 @@ async fn test_channel_blocked_on_failed_required_job() {
     );
 
     let promoted_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM ChannelPromotion WHERE channel_id = ? AND status = ?"
+        "SELECT COUNT(*) FROM ChannelPromotion WHERE channel_id = ? AND status = ?",
     )
     .bind(&channel.channel_id())
     .bind(PromotionStatus::Promoted.as_i64())

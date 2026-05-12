@@ -50,7 +50,13 @@ pub fn match_push_channels<'a>(
 mod tests {
     use super::*;
 
-    fn ch(forge: ChannelForge, owner: &str, repo: &str, name: &str, tracking: &str) -> ChannelConfig {
+    fn ch(
+        forge: ChannelForge,
+        owner: &str,
+        repo: &str,
+        name: &str,
+        tracking: &str,
+    ) -> ChannelConfig {
         ChannelConfig {
             forge,
             owner: owner.to_string(),
@@ -65,10 +71,7 @@ mod tests {
     }
 
     fn registry(items: Vec<ChannelConfig>) -> HashMap<String, ChannelConfig> {
-        items
-            .into_iter()
-            .map(|c| (c.channel_id(), c))
-            .collect()
+        items.into_iter().map(|c| (c.channel_id(), c)).collect()
     }
 
     #[test]
@@ -80,8 +83,7 @@ mod tests {
             "stable",
             "master",
         )]);
-        let hits =
-            match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "master");
+        let hits = match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "master");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "stable");
     }
@@ -98,8 +100,7 @@ mod tests {
             "stable",
             "master",
         )]);
-        let hits =
-            match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "master");
+        let hits = match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "master");
         assert_eq!(hits.len(), 1);
     }
 
@@ -113,8 +114,7 @@ mod tests {
             "stable",
             "master",
         )]);
-        let hits =
-            match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "Master");
+        let hits = match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "Master");
         assert!(hits.is_empty());
     }
 
@@ -150,8 +150,7 @@ mod tests {
             "stable",
             "master",
         )]);
-        let hits =
-            match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "master");
+        let hits = match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "master");
         assert!(hits.is_empty());
     }
 
@@ -198,16 +197,14 @@ mod tests {
                 "master",
             ),
         ]);
-        let hits =
-            match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "master");
+        let hits = match_push_channels(&map, &ChannelForge::GitHub, "ekacorp", "ekapkgs", "master");
         assert_eq!(hits.len(), 2);
     }
 
     #[test]
     fn empty_registry_returns_empty() {
         let map: HashMap<String, ChannelConfig> = HashMap::new();
-        let hits =
-            match_push_channels(&map, &ChannelForge::GitHub, "anyone", "anything", "any");
+        let hits = match_push_channels(&map, &ChannelForge::GitHub, "anyone", "anything", "any");
         assert!(hits.is_empty());
     }
 }

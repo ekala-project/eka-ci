@@ -23,19 +23,14 @@ pub enum ChannelTask {
     /// A push to the channel's tracking-branch was observed at `sha`.
     ///
     /// The ChannelService will:
-    ///   1. Refuse the task if `(channel_id, sha)` already has a
-    ///      terminal decision recorded (idempotency).
-    ///   2. Run the coalescer: if a different sha is already
-    ///      Evaluating, mark the new attempt as Skipped immediately
-    ///      and bail; if no in-flight row exists, open an Evaluating
-    ///      row for this sha.
-    ///   3. Snapshot the current job-states and run the pure
-    ///      evaluator. (Wired in a follow-up PR once a `JobsetComplete`
-    ///      event from the recorder drives re-evaluation.)
-    EvaluatePush {
-        channel: ChannelConfig,
-        sha: String,
-    },
+    ///   1. Refuse the task if `(channel_id, sha)` already has a terminal decision recorded
+    ///      (idempotency).
+    ///   2. Run the coalescer: if a different sha is already Evaluating, mark the new attempt as
+    ///      Skipped immediately and bail; if no in-flight row exists, open an Evaluating row for
+    ///      this sha.
+    ///   3. Snapshot the current job-states and run the pure evaluator. (Wired in a follow-up PR
+    ///      once a `JobsetComplete` event from the recorder drives re-evaluation.)
+    EvaluatePush { channel: ChannelConfig, sha: String },
 
     /// A jobset run at `sha` for `(forge, owner, repo)` has concluded
     /// (every Job in the jobset reached a terminal `DrvBuildState`).

@@ -5,10 +5,9 @@
 // channel *configuration* lives in admin-only `ekaci.toml`, so no FK
 // constraints are possible. Idempotency and coalescing semantics rely
 // on:
-//   - the partial UNIQUE index `ChannelPromotionInFlight` (one
-//     Evaluating row per channel), and
-//   - the index `ChannelPromotionByChannelSha` (fast lookup of any
-//     prior decision for a given (channel, sha) pair).
+//   - the partial UNIQUE index `ChannelPromotionInFlight` (one Evaluating row per channel), and
+//   - the index `ChannelPromotionByChannelSha` (fast lookup of any prior decision for a given
+//     (channel, sha) pair).
 
 use std::collections::HashMap;
 

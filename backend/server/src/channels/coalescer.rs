@@ -55,12 +55,11 @@ pub enum CoalesceAction {
 ///
 /// Inputs (all pure):
 ///
-/// * `in_flight_sha`: `Some(sha)` if there is an `Evaluating`
-///   ChannelPromotion row for this channel, else `None`.
-/// * `current_pending_sha`: `Some(sha)` if the service had already
-///   queued a newer SHA waiting for `in_flight_sha` to complete.
-/// * `candidate_sha`: the SHA carried by the just-arrived
-///   `EvaluatePush` task.
+/// * `in_flight_sha`: `Some(sha)` if there is an `Evaluating` ChannelPromotion row for this
+///   channel, else `None`.
+/// * `current_pending_sha`: `Some(sha)` if the service had already queued a newer SHA waiting for
+///   `in_flight_sha` to complete.
+/// * `candidate_sha`: the SHA carried by the just-arrived `EvaluatePush` task.
 pub fn coalesce(
     in_flight_sha: Option<&str>,
     current_pending_sha: Option<&str>,
@@ -94,10 +93,7 @@ mod tests {
 
     #[test]
     fn start_fresh_when_no_in_flight() {
-        assert_eq!(
-            coalesce(None, None, "sha-a"),
-            CoalesceAction::StartFresh
-        );
+        assert_eq!(coalesce(None, None, "sha-a"), CoalesceAction::StartFresh);
     }
 
     #[test]

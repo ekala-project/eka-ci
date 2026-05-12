@@ -2,39 +2,34 @@
 //
 // PR 3 lands the skeleton:
 //   - the AsyncService trait impl,
-//   - the idempotency guard (terminal decisions for `(channel, sha)`
-//     short-circuit re-evaluation),
-//   - the coalescer wiring (writes Skipped audit rows for superseded
-//     SHAs while a previous evaluation is still in flight), and
-//   - a stub evaluator path: job-state snapshotting is a follow-up
-//     wired alongside RecorderService -> ChannelService delivery.
+//   - the idempotency guard (terminal decisions for `(channel, sha)` short-circuit re-evaluation),
+//   - the coalescer wiring (writes Skipped audit rows for superseded SHAs while a previous
+//     evaluation is still in flight), and
+//   - a stub evaluator path: job-state snapshotting is a follow-up wired alongside RecorderService
+//     -> ChannelService delivery.
 //
 // The intentional gaps left for PR 4 are marked with NB and isolate
 // the cost of the eventual git push integration:
-//   - `snapshot_job_states` returns an empty map for now, which keeps
-//     evaluation in `Waiting` until the recorder pushes terminal
-//     states into this service.
-//   - `perform_promotion` only logs; the actual fast-forward push
-//     lives in PR 4.
+//   - `snapshot_job_states` returns an empty map for now, which keeps evaluation in `Waiting` until
+//     the recorder pushes terminal states into this service.
+//   - `perform_promotion` only logs; the actual fast-forward push lives in PR 4.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use octocrab::Octocrab;
-use tokio::sync::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, info, instrument, warn};
 
+use super::coalescer::{CoalesceAction, coalesce};
+use super::evaluator::evaluate_promotion;
+use super::types::{ChannelTask, PromotionDecision, PromotionStatus};
 use crate::config::{ChannelConfig, ChannelForge};
 use crate::db::DbService;
 use crate::db::model::build_event::DrvBuildState;
 use crate::github::GitHubTask;
 use crate::services::AsyncService;
-
-use super::coalescer::{CoalesceAction, coalesce};
-use super::evaluator::evaluate_promotion;
-use super::types::{ChannelTask, PromotionDecision, PromotionStatus};
 
 /// Capacity of the inbound mpsc channel. Matches other AsyncServices
 /// (GitService, EvalService) so backpressure characteristics are
@@ -124,10 +119,7 @@ impl ChannelService {
         let sender = github_sender.clone();
         tokio::spawn(async move {
             if let Err(e) = sender.send(task).await {
-                warn!(
-                    "Failed to send CreateChannelPromotionCheck task: {:?}",
-                    e
-                );
+                warn!("Failed to send CreateChannelPromotionCheck task: {:?}", e);
             }
         });
     }
@@ -200,9 +192,7 @@ impl ChannelService {
         }
 
         match channel.forge {
-            ChannelForge::GitHub => {
-                self.perform_github_promotion(channel, sha).await
-            },
+            ChannelForge::GitHub => self.perform_github_promotion(channel, sha).await,
             ChannelForge::GitLab { .. } | ChannelForge::Gitea { .. } => {
                 bail!(
                     "channel {} uses {:?} forge; only GitHub is supported in this release",
@@ -314,11 +304,7 @@ impl ChannelService {
             target = %channel.target_branch
         )
     )]
-    async fn handle_evaluate_push(
-        &self,
-        channel: ChannelConfig,
-        sha: String,
-    ) -> Result<()> {
+    async fn handle_evaluate_push(&self, channel: ChannelConfig, sha: String) -> Result<()> {
         let channel_id = channel.channel_id();
 
         // 1. Idempotency: shortcut replayed webhooks.
@@ -427,8 +413,7 @@ impl ChannelService {
                 // PR 4 will perform the actual FF push here. For now
                 // we record the Promoted row so audit history is
                 // already structurally correct.
-                let previous_target_sha =
-                    self.perform_promotion(&channel, &sha).await?;
+                let previous_target_sha = self.perform_promotion(&channel, &sha).await?;
                 let required_json =
                     serde_json::to_string(&required_results).unwrap_or_else(|_| "{}".to_string());
                 crate::db::channels::finalise_evaluation(
@@ -516,17 +501,14 @@ impl ChannelService {
     /// about a given jobset, so it broadcasts the conclusion and lets
     /// ChannelService route. For each channel watching the supplied
     /// `(forge, owner, repo)`:
-    ///   1. If no in-flight Evaluating row exists for the channel,
-    ///      the jobset completion is irrelevant (no promotion is
-    ///      currently in flight that depends on it). Skip silently.
-    ///   2. If the in-flight row's `tracking_sha` differs from `sha`,
-    ///      the jobset belongs to a different attempt (e.g. a stale
-    ///      PR head, or a since-superseded SHA). Skip silently.
-    ///   3. Otherwise, re-run the same evaluation pipeline as
-    ///      `handle_evaluate_push` *without* re-inserting an
-    ///      Evaluating row (one is already open). The pipeline will
-    ///      either transition the row to a terminal state or keep
-    ///      it Waiting until the next jobset completion.
+    ///   1. If no in-flight Evaluating row exists for the channel, the jobset completion is
+    ///      irrelevant (no promotion is currently in flight that depends on it). Skip silently.
+    ///   2. If the in-flight row's `tracking_sha` differs from `sha`, the jobset belongs to a
+    ///      different attempt (e.g. a stale PR head, or a since-superseded SHA). Skip silently.
+    ///   3. Otherwise, re-run the same evaluation pipeline as `handle_evaluate_push` *without*
+    ///      re-inserting an Evaluating row (one is already open). The pipeline will either
+    ///      transition the row to a terminal state or keep it Waiting until the next jobset
+    ///      completion.
     #[instrument(
         skip(self),
         fields(
@@ -549,11 +531,7 @@ impl ChannelService {
         let matches: Vec<ChannelConfig> = self
             .channels
             .values()
-            .filter(|c| {
-                c.forge == forge
-                    && c.owner.eq_ignore_ascii_case(&owner)
-                    && c.repo == repo
-            })
+            .filter(|c| c.forge == forge && c.owner.eq_ignore_ascii_case(&owner) && c.repo == repo)
             .cloned()
             .collect();
 
@@ -570,8 +548,7 @@ impl ChannelService {
 
         for channel in matches {
             let channel_id = channel.channel_id();
-            let in_flight =
-                crate::db::channels::get_in_flight(&channel_id, &self.db.pool).await?;
+            let in_flight = crate::db::channels::get_in_flight(&channel_id, &self.db.pool).await?;
             let in_flight_row = match in_flight {
                 Some(r) => r,
                 None => {
@@ -605,8 +582,7 @@ impl ChannelService {
 
             match decision {
                 PromotionDecision::Ready { required_results } => {
-                    let previous_target_sha =
-                        self.perform_promotion(&channel, &sha).await?;
+                    let previous_target_sha = self.perform_promotion(&channel, &sha).await?;
                     let required_json = serde_json::to_string(&required_results)
                         .unwrap_or_else(|_| "{}".to_string());
                     crate::db::channels::finalise_evaluation(

@@ -266,7 +266,10 @@ async fn handle_push_event(
     // A branch-deletion push delivers `after = "0000…"`; nothing to eval.
     let after_is_zero = event.after.bytes().all(|b| b == b'0');
     if after_is_zero {
-        debug!(event = "gitlab_push_branch_deleted", "ignoring branch deletion");
+        debug!(
+            event = "gitlab_push_branch_deleted",
+            "ignoring branch deletion"
+        );
         return Ok(());
     }
 
