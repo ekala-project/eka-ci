@@ -36,7 +36,36 @@ Release channels provide automated continuous delivery of Nix packages to target
 
 ### Adding a Release Channel
 
-Edit `ekaci.toml`:
+#### Via NixOS Module (Recommended)
+
+For NixOS deployments, configure channels in your system configuration:
+
+```nix
+services.eka-ci = {
+  enable = true;
+  settings = {
+    channels = [
+      {
+        forge = "github";
+        owner = "myorg";
+        repo = "myrepo";
+        name = "stable";
+        tracking_branch = "master";
+        target_branch = "ekapkgs-stable";
+        required = [ "coreutils" "bash" "gcc" ];
+        packages = [ "firefox" "chromium" ];
+        dry_run = false;
+      }
+    ];
+  };
+};
+```
+
+See [nixos-channels-example.nix](./nixos-channels-example.nix) for a complete example with multiple channels.
+
+#### Via TOML Configuration File
+
+For non-NixOS deployments, edit `ekaci.toml`:
 
 ```toml
 [[channels]]
