@@ -1,6 +1,15 @@
 use clap::Parser;
 use serde::{self, Deserialize, Serialize};
 
+// Derivation-related types
+mod drv_id;
+mod build_state;
+mod drv;
+
+pub use drv_id::{DrvId, InvalidDrvId, Reference, Referrer, strip_store_path};
+pub use build_state::{DrvBuildState, DrvBuildResult, DrvBuildInterruptionKind};
+pub use drv::Drv;
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum ClientRequest {

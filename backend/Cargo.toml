@@ -3,7 +3,9 @@ resolver = "2"
 members = [
   "client",
   "evaluator",
-  "server", "shared",
+  "graph",
+  "server",
+  "shared",
 ]
 
 [workspace.dependencies]

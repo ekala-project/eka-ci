@@ -1,0 +1,31 @@
+[package]
+name = "graph"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shared = { workspace = true }
+
+# For database operations (sqlx types used in trait bounds)
+sqlx = { version = "0.8.5", features = ["runtime-tokio", "sqlite"], default-features = false }
+
+# async-trait for defining async trait methods
+async-trait = "0.1"
+
+# Async runtime
+tokio = { version = "1.41.0", features = ["full"] }
+tokio-util = "0.7.15"
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true}
+
+# Logging
+tracing = { workspace = true }
+
+# Concurrency
+dashmap = "6.1"
+lru = "0.16.2"
+
+# Serialization (for CachedNode)
+serde = { workspace = true }

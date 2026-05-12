@@ -7,4 +7,5 @@ edition = "2021"
 anyhow = {workspace = true}
 clap = {workspace = true}
 serde = {workspace = true}
+thiserror = {workspace = true}
 xdg = {workspace = true}
