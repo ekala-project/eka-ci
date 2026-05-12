@@ -4,9 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use tokio::sync::oneshot;
 
-use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::drv::Drv;
-use crate::db::model::drv_id::DrvId;
+use shared::types::{Drv, DrvBuildState, DrvId};
 
 /// Commands that can be sent to the GraphService.
 ///

@@ -2,10 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
-
-use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
-use crate::db::model::drv::Drv;
-use crate::db::model::drv_id::DrvId;
+use shared::types::{Drv, DrvBuildResult, DrvBuildState, DrvId};
 
 /// A node in the build graph representing a single derivation
 #[derive(Debug, Clone)]

@@ -2,9 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::drv::Drv;
-use crate::db::model::drv_id::DrvId;
+use shared::types::{Drv, DrvBuildState, DrvId};
 
 /// Cached read-only node data for lockfree concurrent access
 #[derive(Debug, Clone)]

@@ -9,13 +9,12 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tracing::debug;
 
-use crate::db::DbService;
-use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::drv::Drv;
-use crate::db::model::drv_id::DrvId;
-use crate::graph::graph::BuildGraph;
-use crate::graph::service::cached_node::CachedNode;
-use crate::metrics::GraphMetrics;
+use shared::types::{Drv, DrvBuildState, DrvId};
+
+use crate::graph::BuildGraph;
+use crate::traits::{GraphDatabase, GraphMetricsCollector};
+
+use super::CachedNode;
 
 /// Ensure a node is loaded in the cache, reloading from DB if evicted
 /// Returns true if the node was reloaded, false if it was already in cache
