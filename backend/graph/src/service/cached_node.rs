@@ -17,7 +17,7 @@ pub struct CachedNode {
 }
 
 impl CachedNode {
-    pub(super) fn from_graph_node(node: &crate::graph::graph::GraphNode) -> Self {
+    pub(super) fn from_graph_node(node: &crate::graph::GraphNode) -> Self {
         Self {
             drv_id: node.drv_id.clone(),
             system: node.system.clone(),

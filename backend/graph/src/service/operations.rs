@@ -1,7 +1,6 @@
 // Core graph operations
 
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -24,17 +23,14 @@ pub(super) async fn ensure_loaded(
     shared_view: &Arc<DashMap<DrvId, CachedNode>>,
     last_accessed: &mut HashMap<DrvId, Instant>,
     ref_counts: &mut HashMap<DrvId, usize>,
-    db_service: &DbService,
-    metrics: Option<&Arc<GraphMetrics>>,
+    db: &dyn GraphDatabase,
+    metrics: Option<&dyn GraphMetricsCollector>,
 ) -> Result<bool> {
     // Check if node is already in cache (use contains for efficient check)
     if graph.nodes.contains(drv_id) {
         // Cache hit - node is already in memory
         if let Some(metrics) = metrics {
-            metrics
-                .cache_hits_total
-                .with_label_values(&["ensure_loaded"])
-                .inc();
+            metrics.increment_cache_hits();
         }
         return Ok(false);
     }
@@ -42,49 +38,30 @@ pub(super) async fn ensure_loaded(
     // Cache miss - node was evicted or never loaded
     debug!("Cache miss: reloading {:?} from database", drv_id);
     if let Some(metrics) = metrics {
-        metrics
-            .cache_misses_total
-            .with_label_values(&["ensure_loaded"])
-            .inc();
+        metrics.increment_cache_misses();
     }
 
     // Record cache reload metrics
     let reload_start = Instant::now();
     if let Some(metrics) = metrics {
-        metrics.cache_reloads_total.inc();
+        metrics.increment_cache_reloads();
     }
 
     // Load the drv from database
-    let Some(drv) = db_service.get_drv(drv_id).await? else {
+    let Some(drv) = db.get_drv(drv_id).await? else {
         anyhow::bail!("Drv not found in database: {:?}", drv_id);
     };
 
-    // Load all edges where this drv is involved
-    let pool = &db_service.pool;
-
-    // Load dependencies (where this drv is the referrer)
-    let deps: Vec<(String,)> = sqlx::query_as("SELECT reference FROM DrvRefs WHERE referrer = ?")
-        .bind(drv_id)
-        .fetch_all(pool)
-        .await?;
-
-    // Load dependents (where this drv is the reference)
-    let dependents: Vec<(String,)> =
-        sqlx::query_as("SELECT referrer FROM DrvRefs WHERE reference = ?")
-            .bind(drv_id)
-            .fetch_all(pool)
-            .await?;
+    // Load all edges where this drv is involved using trait methods
+    let deps = db.get_drv_refs(drv_id).await?;
+    let dependents = db.get_drv_dependents(drv_id).await?;
 
     // Insert the node and track potential eviction
     let now = Instant::now();
-    if let Some((evicted_id, evicted_node)) = graph.insert_node(drv) {
+    if let Some((evicted_id, _evicted_node)) = graph.insert_node(drv) {
         // Record eviction metric
         if let Some(metrics) = metrics {
-            let state_label = format!("{:?}", evicted_node.build_state);
-            metrics
-                .evictions_total
-                .with_label_values(&[&state_label])
-                .inc();
+            metrics.increment_evictions();
         }
 
         // Clean up tracking data for evicted node
@@ -95,16 +72,14 @@ pub(super) async fn ensure_loaded(
     last_accessed.insert(drv_id.clone(), now);
 
     // Re-add edges
-    for (dep_str,) in deps {
-        let dep_id: DrvId = FromStr::from_str(&dep_str)?;
+    for dep_id in deps {
         graph.add_edge(drv_id.clone(), dep_id.clone());
 
         // Update ref_count
         *ref_counts.entry(dep_id).or_insert(0) += 1;
     }
 
-    for (dependent_str,) in dependents {
-        let dependent_id: DrvId = FromStr::from_str(&dependent_str)?;
+    for dependent_id in dependents {
         graph.add_edge(dependent_id.clone(), drv_id.clone());
 
         // Update ref_count
@@ -120,9 +95,7 @@ pub(super) async fn ensure_loaded(
     // Record reload duration
     if let Some(metrics) = metrics {
         let reload_duration = reload_start.elapsed();
-        metrics
-            .cache_reload_duration_seconds
-            .observe(reload_duration.as_secs_f64());
+        metrics.observe_cache_reload_duration(reload_duration.as_secs_f64());
     }
 
     Ok(true)
@@ -134,7 +107,7 @@ pub(super) async fn update_state(
     new_state: DrvBuildState,
     graph: &mut BuildGraph,
     shared_view: &Arc<DashMap<DrvId, CachedNode>>,
-    db_service: &DbService,
+    db: &dyn GraphDatabase,
 ) -> Result<()> {
     // In-memory graph update takes the first clone.
     graph.update_state(drv_id, new_state.clone());
@@ -144,7 +117,7 @@ pub(super) async fn update_state(
         cached.build_state = new_state.clone();
     }
 
-    db_service.update_drv_status(drv_id, &new_state).await?;
+    db.update_drv_status(drv_id, &new_state).await?;
 
     Ok(())
 }
@@ -157,7 +130,7 @@ pub(super) async fn insert_drvs(
     shared_view: &Arc<DashMap<DrvId, CachedNode>>,
     last_accessed: &mut HashMap<DrvId, Instant>,
     ref_counts: &mut HashMap<DrvId, usize>,
-    metrics: Option<&Arc<GraphMetrics>>,
+    metrics: Option<&dyn GraphMetricsCollector>,
 ) -> Result<()> {
     let now = Instant::now();
 
@@ -166,14 +139,10 @@ pub(super) async fn insert_drvs(
         let drv_id = drv.drv_path.clone();
 
         // Insert node and track evictions
-        if let Some((evicted_id, evicted_node)) = graph.insert_node(drv) {
+        if let Some((evicted_id, _evicted_node)) = graph.insert_node(drv) {
             // Record eviction metric
             if let Some(metrics) = metrics {
-                let state_label = format!("{:?}", evicted_node.build_state);
-                metrics
-                    .evictions_total
-                    .with_label_values(&[&state_label])
-                    .inc();
+                metrics.increment_evictions();
             }
 
             // Clean up tracking data for evicted node
@@ -215,7 +184,7 @@ pub(super) async fn propagate_failure(
     failed_drv: &DrvId,
     graph: &mut BuildGraph,
     shared_view: &Arc<DashMap<DrvId, CachedNode>>,
-    db_service: &DbService,
+    db: &dyn GraphDatabase,
 ) -> Result<Vec<DrvId>> {
     let blocked = graph.propagate_failure(failed_drv);
 
@@ -228,8 +197,7 @@ pub(super) async fn propagate_failure(
 
     // Persist transitive failures to database
     if !blocked.is_empty() {
-        db_service
-            .insert_transitive_failures(failed_drv, &blocked)
+        db.insert_transitive_failures(failed_drv, &blocked)
             .await?;
     }
 
@@ -241,7 +209,7 @@ pub(super) async fn clear_failure(
     formerly_failed: &DrvId,
     graph: &mut BuildGraph,
     shared_view: &Arc<DashMap<DrvId, CachedNode>>,
-    db_service: &DbService,
+    db: &dyn GraphDatabase,
 ) -> Result<Vec<DrvId>> {
     let unblocked = graph.clear_failure(formerly_failed);
 
@@ -253,8 +221,7 @@ pub(super) async fn clear_failure(
     }
 
     // Persist clearing of transitive failures to database
-    db_service
-        .clear_transitive_failures(formerly_failed)
+    db.clear_transitive_failures(formerly_failed)
         .await?;
 
     Ok(unblocked)

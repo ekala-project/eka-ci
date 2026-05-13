@@ -1,7 +1,6 @@
 // Metrics and eviction monitoring
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use tracing::{debug, error, info};
@@ -18,7 +17,7 @@ pub(super) fn update_metrics(
     ref_counts: &HashMap<DrvId, usize>,
     eviction_selector: &EvictionCandidateSelector,
     last_accessed: &HashMap<DrvId, Instant>,
-    metrics: Option<&Arc<GraphMetrics>>,
+    metrics: Option<&dyn GraphMetricsCollector>,
 ) {
     let Some(metrics) = metrics else {
         return;
@@ -26,7 +25,7 @@ pub(super) fn update_metrics(
 
     // Update memory estimate
     let memory_bytes = graph.estimate_memory_bytes();
-    metrics.memory_bytes_estimate.set(memory_bytes as f64);
+    metrics.set_memory_bytes(memory_bytes);
 
     // Update node counts by state
     use DrvBuildState::*;
@@ -44,47 +43,33 @@ pub(super) fn update_metrics(
     for state in states {
         let count = graph.get_drvs_by_state(&state).len();
         let state_label = format!("{:?}", state);
-        metrics
-            .nodes_total
-            .with_label_values(&[&state_label])
-            .set(count as f64);
+        metrics.set_state_count(&state_label, count);
     }
 
     // Update ref_count histogram
     for (drv_id, &ref_count) in ref_counts {
         let has_dependents = if let Some(node) = graph.get_node(drv_id) {
-            if node.dependents.is_empty() {
-                "false"
-            } else {
-                "true"
-            }
+            !node.dependents.is_empty()
         } else {
-            "unknown"
+            false
         };
 
-        metrics
-            .ref_count_histogram
-            .with_label_values(&[has_dependents])
-            .observe(ref_count as f64);
+        metrics.observe_ref_count(ref_count, has_dependents);
     }
 
     // Update eviction candidate counts by tier
     let candidate_counts =
         eviction_selector.count_candidates_by_tier(graph, last_accessed, ref_counts);
 
-    for (tier, count) in candidate_counts {
-        metrics
-            .eviction_candidates_total
-            .with_label_values(&[tier.name()])
-            .set(count as f64);
-    }
+    let total_candidates: usize = candidate_counts.values().sum();
+    metrics.set_eviction_candidates(total_candidates);
 
     // Update pinned nodes count
-    metrics.pinned_nodes_total.set(graph.pinned_count() as f64);
+    metrics.set_pinned_nodes(graph.pinned_count());
 
     // Update capacity and utilization
-    metrics.cache_capacity.set(graph.capacity() as f64);
-    metrics.cache_utilization.set(graph.utilization());
+    metrics.set_cache_capacity(graph.capacity());
+    metrics.set_cache_utilization(graph.utilization());
 }
 
 /// Perform a dry-run eviction check and log what would be evicted
@@ -162,9 +147,9 @@ pub(super) fn maybe_dry_run_eviction_check(
 
     for candidate in &candidates {
         match candidate.tier {
-            crate::graph::eviction::EvictionTier::Tier1 => tier1_count += 1,
-            crate::graph::eviction::EvictionTier::Tier2 => tier2_count += 1,
-            crate::graph::eviction::EvictionTier::Tier3 => tier3_count += 1,
+            crate::eviction::EvictionTier::Tier1 => tier1_count += 1,
+            crate::eviction::EvictionTier::Tier2 => tier2_count += 1,
+            crate::eviction::EvictionTier::Tier3 => tier3_count += 1,
         }
     }
 
@@ -181,13 +166,13 @@ pub(super) fn maybe_dry_run_eviction_check(
     // Log details of oldest candidate from each tier (for debugging)
     let tier1_oldest = candidates
         .iter()
-        .find(|c| c.tier == crate::graph::eviction::EvictionTier::Tier1);
+        .find(|c| c.tier == crate::eviction::EvictionTier::Tier1);
     let tier2_oldest = candidates
         .iter()
-        .find(|c| c.tier == crate::graph::eviction::EvictionTier::Tier2);
+        .find(|c| c.tier == crate::eviction::EvictionTier::Tier2);
     let tier3_oldest = candidates
         .iter()
-        .find(|c| c.tier == crate::graph::eviction::EvictionTier::Tier3);
+        .find(|c| c.tier == crate::eviction::EvictionTier::Tier3);
 
     if let Some(candidate) = tier1_oldest {
         debug!(
