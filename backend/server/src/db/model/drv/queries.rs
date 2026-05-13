@@ -523,6 +523,88 @@ pub async fn count_drv_dependencies(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyh
     Ok(count)
 }
 
+/// Get all drvs from the database (for graph initialization)
+pub async fn get_all_drvs(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
+    let drvs = sqlx::query_as(
+        r#"
+        SELECT drv_path, system, required_system_features, is_fod, build_state, output_size,
+               closure_size, pname, version, license_json, maintainers_json, meta_position,
+               broken, insecure
+        FROM Drv
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(drvs)
+}
+
+/// Get all references (referrer, reference) pairs (for graph initialization)
+pub async fn get_all_refs(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<(DrvId, DrvId)>> {
+    use std::str::FromStr;
+
+    let rows: Vec<(String, String)> = sqlx::query_as("SELECT referrer, reference FROM DrvRefs")
+        .fetch_all(pool)
+        .await?;
+
+    let refs: Result<Vec<_>, _> = rows
+        .into_iter()
+        .map(|(referrer, reference)| {
+            Ok((DrvId::from_str(&referrer)?, DrvId::from_str(&reference)?))
+        })
+        .collect();
+
+    refs
+}
+
+/// Get references (dependencies) for a derivation as DrvIds
+pub async fn get_drv_refs(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<DrvId>> {
+    use std::str::FromStr;
+
+    let refs: Vec<(String,)> = sqlx::query_as(
+        r#"
+        SELECT reference
+        FROM DrvRefs
+        WHERE referrer = ?
+        ORDER BY reference
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_all(pool)
+    .await?;
+
+    let drv_ids: Result<Vec<_>, _> = refs
+        .into_iter()
+        .map(|(ref_str,)| DrvId::from_str(&ref_str))
+        .collect();
+
+    Ok(drv_ids?)
+}
+
+/// Get referrers (dependents) for a derivation as DrvIds
+pub async fn get_drv_dependents(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Vec<DrvId>> {
+    use std::str::FromStr;
+
+    let dependents: Vec<(String,)> = sqlx::query_as(
+        r#"
+        SELECT referrer
+        FROM DrvRefs
+        WHERE reference = ?
+        ORDER BY referrer
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_all(pool)
+    .await?;
+
+    let drv_ids: Result<Vec<_>, _> = dependents
+        .into_iter()
+        .map(|(dep_str,)| DrvId::from_str(&dep_str))
+        .collect();
+
+    Ok(drv_ids?)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::bail;

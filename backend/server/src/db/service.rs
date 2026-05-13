@@ -91,6 +91,22 @@ impl DbService {
         drv::update_drv_status(&self.pool, drv_id, state).await
     }
 
+    pub async fn get_all_drvs(&self) -> anyhow::Result<Vec<Drv>> {
+        drv::get_all_drvs(&self.pool).await
+    }
+
+    pub async fn get_all_refs(&self) -> anyhow::Result<Vec<(DrvId, DrvId)>> {
+        drv::get_all_refs(&self.pool).await
+    }
+
+    pub async fn get_drv_refs(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        drv::get_drv_refs(drv_id, &self.pool).await
+    }
+
+    pub async fn get_drv_dependents(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>> {
+        drv::get_drv_dependents(drv_id, &self.pool).await
+    }
+
     pub async fn create_github_jobset_with_jobs(
         &self,
         sha: &str,

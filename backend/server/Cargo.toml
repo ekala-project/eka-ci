@@ -40,6 +40,7 @@ vaultrs-login = "0.2.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { workspace = true }
+graph = { path = "../graph" }
 sqlx = { version = "0.8.5", features = [ "runtime-tokio", "sqlite", "migrate", "macros", "chrono" ], default-features = false }
 tempfile = "3.14"
 thiserror = { workspace = true }

@@ -445,19 +445,11 @@ impl BuildGraph {
     /// Initialize the graph from database on startup
     /// Normalizes transient states to Queued and recomputes transitive failures
     pub async fn from_database(
-        db_service: &crate::db::DbService,
+        db: &dyn crate::traits::GraphDatabase,
         capacity: usize,
     ) -> anyhow::Result<Self> {
-        let pool = &db_service.pool;
-
-        // Load all drvs using query_as to properly deserialize
-        let drvs: Vec<Drv> = sqlx::query_as(
-            "SELECT drv_path, system, required_system_features, is_fod, build_state, output_size, \
-             closure_size, pname, version, license_json, maintainers_json, meta_position, broken, \
-             insecure FROM Drv",
-        )
-        .fetch_all(pool)
-        .await?;
+        // Load all drvs using trait method
+        let drvs = db.get_all_drvs().await?;
 
         let mut graph = BuildGraph::new(capacity);
 
@@ -478,15 +470,10 @@ impl BuildGraph {
             graph.insert_node(drv);
         }
 
-        // Load all edges
-        let refs: Vec<(String, String)> = sqlx::query_as("SELECT referrer, reference FROM DrvRefs")
-            .fetch_all(pool)
-            .await?;
+        // Load all edges using trait method
+        let refs = db.get_all_refs().await?;
 
-        for (referrer, reference) in refs {
-            let referrer_id = std::str::FromStr::from_str(&referrer)?;
-            let reference_id = std::str::FromStr::from_str(&reference)?;
-
+        for (referrer_id, reference_id) in refs {
             graph.add_edge(referrer_id, reference_id);
         }
 

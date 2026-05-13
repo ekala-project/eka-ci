@@ -22,8 +22,11 @@ pub trait GraphDatabase: Send + Sync {
     /// Get all references (referrer, reference) pairs - for efficient bulk loading
     async fn get_all_refs(&self) -> anyhow::Result<Vec<(DrvId, DrvId)>>;
 
-    /// Get references for a derivation
+    /// Get references (dependencies) for a derivation
     async fn get_drv_refs(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>>;
+
+    /// Get referrers (dependents) for a derivation
+    async fn get_drv_dependents(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>>;
 
     /// Insert transitive failures for dependents of a failed derivation
     async fn insert_transitive_failures(

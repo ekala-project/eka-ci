@@ -29,13 +29,13 @@ pub struct GraphService {
     graph: BuildGraph,
     shared_view: Arc<DashMap<DrvId, CachedNode>>,
     command_receiver: mpsc::Receiver<GraphCommand>,
-    db_service: DbService,
+    db: Box<dyn GraphDatabase>,
     /// Track last access time for LRU eviction policy
     last_accessed: HashMap<DrvId, Instant>,
     /// Reference counts: how many in-cache nodes depend on this node
     ref_counts: HashMap<DrvId, usize>,
     /// Metrics for observability
-    metrics: Option<Arc<GraphMetrics>>,
+    metrics: Option<Box<dyn GraphMetricsCollector>>,
     /// Eviction candidate selector
     eviction_selector: EvictionCandidateSelector,
     /// Last time we ran dry-run eviction check
@@ -45,16 +45,16 @@ pub struct GraphService {
 impl GraphService {
     /// Create a new GraphService, initializing the graph from the database
     pub async fn new(
-        db_service: DbService,
+        db: Box<dyn GraphDatabase>,
         command_receiver: mpsc::Receiver<GraphCommand>,
-        metrics: Option<Arc<GraphMetrics>>,
+        metrics: Option<Box<dyn GraphMetricsCollector>>,
         lru_capacity: usize,
     ) -> anyhow::Result<Self> {
         info!(
             "Initializing BuildGraph from database with LRU capacity: {}",
             lru_capacity
         );
-        let graph = BuildGraph::from_database(&db_service, lru_capacity).await?;
+        let graph = BuildGraph::from_database(db.as_ref(), lru_capacity).await?;
         info!("BuildGraph initialized with {} nodes", graph.node_count());
 
         // Build the shared view cache
@@ -81,7 +81,7 @@ impl GraphService {
             graph,
             shared_view,
             command_receiver,
-            db_service,
+            db,
             last_accessed,
             ref_counts,
             metrics,
@@ -95,7 +95,7 @@ impl GraphService {
             &service.ref_counts,
             &service.eviction_selector,
             &service.last_accessed,
-            service.metrics.as_ref(),
+            service.metrics.as_deref(),
         );
 
         Ok(service)
@@ -149,7 +149,7 @@ impl GraphService {
                     new_state,
                     &mut self.graph,
                     &self.shared_view,
-                    &self.db_service,
+                    self.db.as_ref(),
                 )
                 .await?;
                 if response.send(()).is_err() {
@@ -174,7 +174,7 @@ impl GraphService {
                     &self.shared_view,
                     &mut self.last_accessed,
                     &mut self.ref_counts,
-                    self.metrics.as_ref(),
+                    self.metrics.as_deref(),
                 )
                 .await?;
 
@@ -184,7 +184,7 @@ impl GraphService {
                     &self.ref_counts,
                     &self.eviction_selector,
                     &self.last_accessed,
-                    self.metrics.as_ref(),
+                    self.metrics.as_deref(),
                 );
 
                 if response.send(()).is_err() {
@@ -204,7 +204,7 @@ impl GraphService {
                     &failed_drv,
                     &mut self.graph,
                     &self.shared_view,
-                    &self.db_service,
+                    self.db.as_ref(),
                 )
                 .await?;
                 if response.send(blocked).is_err() {
@@ -224,7 +224,7 @@ impl GraphService {
                     &formerly_failed,
                     &mut self.graph,
                     &self.shared_view,
-                    &self.db_service,
+                    self.db.as_ref(),
                 )
                 .await?;
                 if response.send(unblocked).is_err() {
@@ -250,8 +250,8 @@ impl GraphService {
                     &self.shared_view,
                     &mut self.last_accessed,
                     &mut self.ref_counts,
-                    &self.db_service,
-                    self.metrics.as_ref(),
+                    self.db.as_ref(),
+                    self.metrics.as_deref(),
                 )
                 .await
                 {
@@ -268,7 +268,7 @@ impl GraphService {
                         &self.ref_counts,
                         &self.eviction_selector,
                         &self.last_accessed,
-                        self.metrics.as_ref(),
+                        self.metrics.as_deref(),
                     );
                 }
 
@@ -288,8 +288,8 @@ impl GraphService {
                     &self.shared_view,
                     &mut self.last_accessed,
                     &mut self.ref_counts,
-                    &self.db_service,
-                    self.metrics.as_ref(),
+                    self.db.as_ref(),
+                    self.metrics.as_deref(),
                 )
                 .await
                 {
@@ -306,7 +306,7 @@ impl GraphService {
                         &self.ref_counts,
                         &self.eviction_selector,
                         &self.last_accessed,
-                        self.metrics.as_ref(),
+                        self.metrics.as_deref(),
                     );
                 }
 
@@ -326,8 +326,8 @@ impl GraphService {
                     &self.shared_view,
                     &mut self.last_accessed,
                     &mut self.ref_counts,
-                    &self.db_service,
-                    self.metrics.as_ref(),
+                    self.db.as_ref(),
+                    self.metrics.as_deref(),
                 )
                 .await
                 {
@@ -344,7 +344,7 @@ impl GraphService {
                         &self.ref_counts,
                         &self.eviction_selector,
                         &self.last_accessed,
-                        self.metrics.as_ref(),
+                        self.metrics.as_deref(),
                     );
                 }
 
@@ -377,8 +377,8 @@ impl GraphService {
                         &self.shared_view,
                         &mut self.last_accessed,
                         &mut self.ref_counts,
-                        &self.db_service,
-                        self.metrics.as_ref(),
+                        self.db.as_ref(),
+                        self.metrics.as_deref(),
                     )
                     .await
                     {
@@ -397,7 +397,7 @@ impl GraphService {
                         &self.ref_counts,
                         &self.eviction_selector,
                         &self.last_accessed,
-                        self.metrics.as_ref(),
+                        self.metrics.as_deref(),
                     );
                 }
 
@@ -418,8 +418,8 @@ impl GraphService {
                         &self.shared_view,
                         &mut self.last_accessed,
                         &mut self.ref_counts,
-                        &self.db_service,
-                        self.metrics.as_ref(),
+                        self.db.as_ref(),
+                        self.metrics.as_deref(),
                     )
                     .await
                     {
@@ -438,7 +438,7 @@ impl GraphService {
                         &self.ref_counts,
                         &self.eviction_selector,
                         &self.last_accessed,
-                        self.metrics.as_ref(),
+                        self.metrics.as_deref(),
                     );
                 }
 
