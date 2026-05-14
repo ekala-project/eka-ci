@@ -248,8 +248,8 @@ mod tests {
     use shared::types::DrvId;
     use sqlx::SqlitePool;
 
-    use super::types::{PerSystemImpact, TopBlastRadiusEntry};
     use super::*;
+    use crate::types::{PerSystemImpact, TopBlastRadiusEntry};
 
     fn pad_hash(prefix: &str) -> String {
         let sanitized: String = prefix
@@ -296,14 +296,14 @@ mod tests {
         }
     }
 
-    #[sqlx::test(migrations = "./sql/migrations")]
+    #[sqlx::test(migrations = "../server/sql/migrations")]
     async fn lookup_returns_none_on_miss(pool: SqlitePool) -> anyhow::Result<()> {
         let result = lookup(&pool, "nope", "nope2", "ci", false).await?;
         assert!(result.is_none());
         Ok(())
     }
 
-    #[sqlx::test(migrations = "./sql/migrations")]
+    #[sqlx::test(migrations = "../server/sql/migrations")]
     async fn upsert_then_lookup_round_trips(pool: SqlitePool) -> anyhow::Result<()> {
         let resp = make_response("h1", "b1", "ci");
         upsert(&pool, &resp, false).await?;
@@ -323,7 +323,7 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test(migrations = "./sql/migrations")]
+    #[sqlx::test(migrations = "../server/sql/migrations")]
     async fn upsert_replaces_existing_row(pool: SqlitePool) -> anyhow::Result<()> {
         let mut resp = make_response("h1", "b1", "ci");
         upsert(&pool, &resp, false).await?;
@@ -348,7 +348,7 @@ mod tests {
     }
 
     /// Same triple, different `full_blast_radius` flag → two distinct rows.
-    #[sqlx::test(migrations = "./sql/migrations")]
+    #[sqlx::test(migrations = "../server/sql/migrations")]
     async fn upsert_separates_seeds_only_and_full(pool: SqlitePool) -> anyhow::Result<()> {
         let mut resp = make_response("h1", "b1", "ci");
         upsert(&pool, &resp, false).await?;
@@ -372,7 +372,7 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test(migrations = "./sql/migrations")]
+    #[sqlx::test(migrations = "../server/sql/migrations")]
     async fn upsert_records_headline_columns(pool: SqlitePool) -> anyhow::Result<()> {
         let resp = make_response("h1", "b1", "ci");
         upsert(&pool, &resp, false).await?;
@@ -396,7 +396,7 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test(migrations = "./sql/migrations")]
+    #[sqlx::test(migrations = "../server/sql/migrations")]
     async fn cleanup_removes_old_rows(pool: SqlitePool) -> anyhow::Result<()> {
         // Insert a row, then back-date it past the threshold.
         let resp = make_response("old-head", "old-base", "ci");
@@ -425,7 +425,7 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test(migrations = "./sql/migrations")]
+    #[sqlx::test(migrations = "../server/sql/migrations")]
     async fn lookup_treats_corrupt_json_as_miss(pool: SqlitePool) -> anyhow::Result<()> {
         sqlx::query(
             r#"

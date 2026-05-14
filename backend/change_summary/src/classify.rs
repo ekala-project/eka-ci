@@ -380,8 +380,9 @@ fn parse_maintainer_labels(json: Option<&str>) -> BTreeSet<String> {
 
 #[cfg(test)]
 mod tests {
+    use shared::types::DrvId;
+
     use super::*;
-    use crate::db::model::DrvId;
 
     /// Build a test row. `attr_path` is also used in the synthetic drv path
     /// to ensure unique drv_paths across rows.
