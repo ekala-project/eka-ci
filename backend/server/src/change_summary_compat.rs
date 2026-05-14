@@ -211,7 +211,7 @@ pub async fn resolve_options_from_jobset_data(
 
     match load_result {
         ci::CIConfigLoad::Loaded(cfg) => (
-            ChangeSummaryOptions::from(&cfg),
+            change_summary_options_from_ci_config(&cfg),
             ConfigLoadStatus::default(),
         ),
         ci::CIConfigLoad::Absent => {
@@ -254,19 +254,18 @@ pub async fn resolve_options_from_jobset_data(
     }
 }
 
-impl From<&CIConfig> for ChangeSummaryOptions {
-    fn from(cfg: &CIConfig) -> Self {
-        let mut out = Self::default();
-        if let Some(pcs) = &cfg.package_change_summary {
-            out.summary_enabled = pcs.enabled;
-            out.max_packages_listed = pcs.max_packages_listed;
-            out.include_rebuild_only = pcs.include_rebuild_only;
-        }
-        if let Some(ri) = &cfg.rebuild_impact {
-            out.impact_enabled = ri.enabled;
-            out.max_top_blast_radius = ri.max_top_blast_radius;
-            out.compute_full_blast_radius = ri.compute_full_blast_radius;
-        }
-        out
+/// Convert CIConfig to ChangeSummaryOptions
+fn change_summary_options_from_ci_config(cfg: &CIConfig) -> ChangeSummaryOptions {
+    let mut out = ChangeSummaryOptions::default();
+    if let Some(pcs) = &cfg.package_change_summary {
+        out.summary_enabled = pcs.enabled;
+        out.max_packages_listed = pcs.max_packages_listed;
+        out.include_rebuild_only = pcs.include_rebuild_only;
     }
+    if let Some(ri) = &cfg.rebuild_impact {
+        out.impact_enabled = ri.enabled;
+        out.max_top_blast_radius = ri.max_top_blast_radius;
+        out.compute_full_blast_radius = ri.compute_full_blast_radius;
+    }
+    out
 }

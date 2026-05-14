@@ -1,4 +1,5 @@
-pub mod config;
+// Re-export the config module from the ci_config crate
+pub use ci_config as config;
 pub mod flake;
 
 use std::path::PathBuf;
