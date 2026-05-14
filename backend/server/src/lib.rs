@@ -18,7 +18,9 @@ pub mod gitea;
 pub mod github;
 pub mod github_permissions;
 pub mod gitlab;
-pub mod graph;
+// Re-export the graph crate to maintain backward compatibility with existing imports
+pub use graph;
+mod graph_compat;
 pub mod hooks;
 pub mod jobset_data;
 pub mod metrics;

@@ -5,6 +5,8 @@ use prometheus::{
     Registry,
 };
 
+mod graph_impl;
+
 /// Metrics for webhook ingress (H1: observe signature-verification
 /// failures so operators can alert on forgery attempts or secret
 /// rotation lag).

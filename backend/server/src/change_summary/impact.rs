@@ -12,6 +12,7 @@ use super::cache;
 use super::types::{PerSystemImpact, RebuildImpactResponse, TopBlastRadiusEntry};
 use crate::db::model::DrvId;
 use crate::graph::GraphServiceHandle;
+use crate::graph_compat;
 use crate::metrics::ChangeSummaryMetrics;
 
 /// Default cap on `top_blast_radius` rows per system.
@@ -73,8 +74,9 @@ pub async fn build_rebuild_impact_response(
 
     // Union BFS across all seeds → `total_unique_drvs`.
     let all_seeds: Vec<DrvId> = rows.iter().map(|r| r.drv_path.clone()).collect();
+    let all_seeds_shared = graph_compat::to_shared_drv_ids(&all_seeds)?;
     let union_reachable = graph
-        .reverse_reachable_from_set(all_seeds.clone())
+        .reverse_reachable_from_set(all_seeds_shared)
         .await
         .context("Failed to compute union reverse-reachable set")?;
     let total_unique_drvs = union_reachable.len();
@@ -98,8 +100,9 @@ pub async fn build_rebuild_impact_response(
 
         // Per-seed blast radius for ranking; cost is dominated by the BFS.
         let seed_ids: Vec<DrvId> = rows_for_system.iter().map(|r| r.drv_path.clone()).collect();
-        let radii = graph
-            .blast_radius_per_seed(seed_ids)
+        let seed_ids_shared = graph_compat::to_shared_drv_ids(&seed_ids)?;
+        let radii_shared = graph
+            .blast_radius_per_seed(seed_ids_shared)
             .await
             .with_context(|| format!("Failed to compute blast radii for system {system}"))?;
 
@@ -111,10 +114,13 @@ pub async fn build_rebuild_impact_response(
 
         let mut entries: Vec<TopBlastRadiusEntry> = rows_for_system
             .iter()
-            .map(|row| TopBlastRadiusEntry {
-                pname: row.pname.clone(),
-                drv_path: row.drv_path.clone(),
-                blast_radius: radii.get(&row.drv_path).copied().unwrap_or(0),
+            .filter_map(|row| {
+                let shared_id = graph_compat::to_shared_drv_id(&row.drv_path).ok()?;
+                Some(TopBlastRadiusEntry {
+                    pname: row.pname.clone(),
+                    drv_path: row.drv_path.clone(),
+                    blast_radius: radii_shared.get(&shared_id).copied().unwrap_or(0),
+                })
             })
             .collect();
 

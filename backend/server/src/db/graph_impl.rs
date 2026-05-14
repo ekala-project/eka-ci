@@ -136,7 +136,7 @@ impl GraphDatabase for DbService {
 }
 
 // Helper functions to convert between build state types
-fn convert_build_state(state: &crate::db::model::build_event::DrvBuildState) -> shared::types::DrvBuildState {
+pub fn convert_build_state(state: &crate::db::model::build_event::DrvBuildState) -> shared::types::DrvBuildState {
     use crate::db::model::build_event::{DrvBuildInterruptionKind as LocalInterrupt, DrvBuildResult as LocalResult, DrvBuildState as LocalState};
     use shared::types::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
 
