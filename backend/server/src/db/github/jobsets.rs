@@ -6,7 +6,7 @@ use sqlx::{Pool, Sqlite};
 use super::super::model::DrvId;
 use super::types::{BaseJob, JobInfo, JobSetInfo};
 use crate::github::JobDifference;
-use crate::nix::nix_eval_jobs::NixEvalDrv;
+use crate::nix::NixEvalDrv;
 
 pub async fn has_jobset(
     sha: &str,

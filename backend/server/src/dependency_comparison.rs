@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use sqlx::SqlitePool;
 
+// Re-export from evaluator for use elsewhere in the server
+pub use evaluator::utils::{pname_from_name, version_from_name};
+
 /// Extract pname from a store path (output path, not drv path)
 ///
 /// Examples:
@@ -56,56 +59,7 @@ fn extract_pname(store_path: &str) -> String {
     }
 }
 
-/// Extract pname from a bare derivation name (no `/nix/store/<hash>-` prefix).
-///
-/// The `name` field of `nix-eval-jobs` output is normally `${pname}-${version}`
-/// (e.g., `"hello-2.12.1"` or `"python3.12-setuptools-69.0.0"`). This is a
-/// sibling of [`extract_pname`] that operates on bare names rather than store
-/// paths, sharing the same trailing-version-stripping logic.
-///
-/// Returns the input unchanged if no version-looking suffix is found.
-pub(crate) fn pname_from_name(name: &str) -> String {
-    let parts: Vec<&str> = name.split('-').collect();
-    if parts.len() == 1 {
-        return name.to_string();
-    }
-    let mut keep_parts = parts.len();
-    for (i, part) in parts.iter().enumerate().rev() {
-        if looks_like_version(part) {
-            keep_parts = i;
-        } else {
-            break;
-        }
-    }
-    if keep_parts == 0 {
-        // All parts look like versions — keep everything (defensive).
-        name.to_string()
-    } else {
-        parts[..keep_parts].join("-")
-    }
-}
-
-/// Extract version from a bare derivation name. Returns `None` if there's no
-/// trailing version-looking suffix, or if the entire name is version-like.
-pub(crate) fn version_from_name(name: &str) -> Option<String> {
-    let parts: Vec<&str> = name.split('-').collect();
-    if parts.len() == 1 {
-        return None;
-    }
-    let mut first_version_idx = parts.len();
-    for (i, part) in parts.iter().enumerate().rev() {
-        if looks_like_version(part) {
-            first_version_idx = i;
-        } else {
-            break;
-        }
-    }
-    if first_version_idx == 0 || first_version_idx == parts.len() {
-        None
-    } else {
-        Some(parts[first_version_idx..].join("-"))
-    }
-}
+// pname_from_name and version_from_name are now imported from evaluator above
 
 /// Check if a string segment looks like a version identifier
 fn looks_like_version(s: &str) -> bool {

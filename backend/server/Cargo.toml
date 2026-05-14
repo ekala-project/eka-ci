@@ -41,6 +41,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { workspace = true }
 graph = { path = "../graph" }
+evaluator = { path = "../evaluator" }
 sqlx = { version = "0.8.5", features = [ "runtime-tokio", "sqlite", "migrate", "macros", "chrono" ], default-features = false }
 tempfile = "3.14"
 thiserror = { workspace = true }

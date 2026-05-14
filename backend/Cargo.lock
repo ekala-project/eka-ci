@@ -1105,13 +1105,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eka_ci_evaluator"
-version = "0.1.0"
-dependencies = [
- "clap",
-]
-
-[[package]]
 name = "eka_ci_server"
 version = "0.1.0"
 dependencies = [
@@ -1127,6 +1120,7 @@ dependencies = [
  "clap",
  "dashmap",
  "envy",
+ "evaluator",
  "figment",
  "futures",
  "gix-hash",
@@ -1221,6 +1215,19 @@ dependencies = [
  "cfg-if",
  "home",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "evaluator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "shared",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

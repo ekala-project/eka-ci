@@ -174,7 +174,7 @@ mod tests {
     use crate::db::model::build_event::DrvBuildState;
     use crate::db::model::drv::insert_drv;
     use crate::db::model::drv_id::DrvId;
-    use crate::nix::nix_eval_jobs::NixEvalDrv;
+    use crate::nix::NixEvalDrv;
 
     /// Test helper: insert a drv with a specific state
     async fn insert_drv_with_state(

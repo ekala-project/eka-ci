@@ -9,7 +9,7 @@ use super::GitHubService;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::github::service::{CHANGE_SUMMARY_DEBOUNCE, CICheckInfo, GitHubTask, actions};
-use crate::nix::nix_eval_jobs::NixEvalDrv;
+use crate::nix::NixEvalDrv;
 
 impl GitHubService {
     pub(super) async fn create_job_set(

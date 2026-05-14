@@ -227,7 +227,7 @@ impl IngressWorker {
         // transitive deps) and keep only the ones NOT marked as
         // "will be built", since those are the cache hits.
         let mut cache_hits: Vec<drv_id::DrvId> = Vec::new();
-        match crate::nix::drv_requisites(&drv_id.store_path()).await {
+        match crate::nix::drv_requisites_as_ids(&drv_id.store_path()).await {
             Ok(requisites) => {
                 for req in requisites {
                     if !report.will_build.contains(&req.store_path()) {

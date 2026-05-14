@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dependency_comparison::{pname_from_name, version_from_name};
+use crate::utils::{pname_from_name, version_from_name};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
@@ -44,7 +44,7 @@ pub struct NixEvalDrv {
     ///   * older runs / test fixtures may not include it
     ///   * a derivation may have no `meta` attribute at all
     ///   * a malformed `meta` payload is logged and dropped (see
-    ///     [`crate::nix::jobs::process_nix_eval_output`])
+    ///     [`crate::service::jobs::process_nix_eval_output`])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<NixEvalMeta>,
 }

@@ -19,7 +19,7 @@ pub const CHANGE_SUMMARY_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
 pub(super) async fn create_job_set(
     ci_info: &Arc<GitLabCIInfo>,
     name: &str,
-    jobs: &[crate::nix::nix_eval_jobs::NixEvalDrv],
+    jobs: &[crate::nix::NixEvalDrv],
     config_json: Option<&str>,
     db_pool: &sqlx::Pool<sqlx::Sqlite>,
     gitlab_sender: &mpsc::Sender<GitLabTask>,

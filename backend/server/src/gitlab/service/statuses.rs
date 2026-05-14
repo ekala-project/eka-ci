@@ -422,7 +422,7 @@ pub(super) async fn handle_complete_ci_eval_job(
 pub(super) async fn handle_fail_ci_eval_job(
     ci_info: &GitLabCIInfo,
     job_name: &str,
-    errors: &[crate::nix::nix_eval_jobs::NixEvalError],
+    errors: &[crate::nix::NixEvalError],
     client: &GitLabClient,
 ) -> Result<()> {
     debug!(

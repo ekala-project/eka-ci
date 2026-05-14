@@ -170,7 +170,7 @@ pub async fn fail_ci_eval_job(
     client: &GitLabClient,
     ci_info: &GitLabCIInfo,
     job_name: &str,
-    errors: &[crate::nix::nix_eval_jobs::NixEvalError],
+    errors: &[crate::nix::NixEvalError],
 ) -> Result<i64> {
     debug!(
         "Creating failed CI eval job status for job '{}' on commit {} with {} errors",
