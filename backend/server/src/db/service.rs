@@ -11,7 +11,7 @@ use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
 use super::{approved_users, checks, github, hooks, installations};
-use crate::nix::nix_eval_jobs::NixEvalDrv;
+use crate::nix::NixEvalDrv;
 
 #[derive(Clone)]
 pub struct DbService {

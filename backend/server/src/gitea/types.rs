@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::github::JobDifference; // Reuse from GitHub
-use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalError};
+use crate::nix::{NixEvalDrv, NixEvalError};
 
 /// Information needed to create a CI check for Gitea
 /// Gitea uses a GitHub-compatible API, so this is similar to GitHub's CICheckInfo

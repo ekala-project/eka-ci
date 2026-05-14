@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::checks::types::CheckResultMessage;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
-use crate::nix::nix_eval_jobs::{NixEvalDrv, NixEvalError};
+use crate::nix::{NixEvalDrv, NixEvalError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum JobDifference {

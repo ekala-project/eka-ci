@@ -193,7 +193,7 @@ ON CONFLICT(drv_path) DO UPDATE SET
 /// exist before we can persist a `Job`, so we can rely on it being present.
 pub async fn update_drv_package_metadata(
     pool: &Pool<Sqlite>,
-    items: &[(DrvId, crate::nix::nix_eval_jobs::DrvPackageMetadata)],
+    items: &[(DrvId, crate::nix::DrvPackageMetadata)],
 ) -> anyhow::Result<()> {
     if items.is_empty() {
         return Ok(());
@@ -725,7 +725,7 @@ mod tests {
     /// be readable via `get_drv`.
     #[sqlx::test(migrations = "./sql/migrations")]
     async fn metadata_round_trip(pool: SqlitePool) -> anyhow::Result<()> {
-        use crate::nix::nix_eval_jobs::DrvPackageMetadata;
+        use crate::nix::DrvPackageMetadata;
 
         let drv_id =
             DrvId::from_str("/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv")?;
@@ -784,7 +784,7 @@ mod tests {
     /// again with all-None to confirm the original values survive.
     #[sqlx::test(migrations = "./sql/migrations")]
     async fn metadata_coalesce_preserves_previous_values(pool: SqlitePool) -> anyhow::Result<()> {
-        use crate::nix::nix_eval_jobs::DrvPackageMetadata;
+        use crate::nix::DrvPackageMetadata;
 
         let drv_id =
             DrvId::from_str("/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv")?;
@@ -864,7 +864,7 @@ mod tests {
     /// the eval-time enrichment is resilient to ordering.
     #[sqlx::test(migrations = "./sql/migrations")]
     async fn metadata_update_on_missing_drv_is_noop(pool: SqlitePool) -> anyhow::Result<()> {
-        use crate::nix::nix_eval_jobs::DrvPackageMetadata;
+        use crate::nix::DrvPackageMetadata;
 
         let drv_id =
             DrvId::from_str("/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.1.drv")?;

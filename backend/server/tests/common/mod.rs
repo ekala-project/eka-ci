@@ -17,6 +17,7 @@ pub struct TestContext {
     pub temp_dir: TempDir,
     pub db_service: DbService,
     pub logs_dir: PathBuf,
+    #[allow(dead_code)]
     pub static_dir: PathBuf,
 }
 
@@ -52,6 +53,7 @@ impl TestContext {
 /// Create a simple Nix derivation for testing.
 ///
 /// Returns the derivation path (.drv file path).
+#[allow(dead_code)]
 pub fn create_simple_drv(name: &str, should_succeed: bool) -> Result<String> {
     let nix_expr = if should_succeed {
         format!(
@@ -97,6 +99,7 @@ pub fn create_simple_drv(name: &str, should_succeed: bool) -> Result<String> {
 }
 
 /// Get the current system architecture for Nix.
+#[allow(dead_code)]
 fn current_system() -> &'static str {
     if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
         "x86_64-linux"
@@ -146,6 +149,7 @@ pub async fn insert_test_drv(db: &DbService, drv: &Drv) -> Result<()> {
 ///
 /// Polls the database every 100ms until the drv reaches the expected state
 /// or the timeout is reached.
+#[allow(dead_code)]
 pub async fn wait_for_drv_state(
     db: &DbService,
     drv_path: &DrvId,

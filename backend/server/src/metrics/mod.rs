@@ -323,6 +323,25 @@ impl NixEvalMetrics {
     }
 }
 
+/// Implementation of evaluator::traits::EvalMetricsCollector for NixEvalMetrics
+impl evaluator::traits::EvalMetricsCollector for NixEvalMetrics {
+    fn items_total_inc(&self, label: &str, count: u64) {
+        self.items_total.with_label_values(&[label]).inc_by(count);
+    }
+
+    fn truncated_total_inc(&self, reason: &str) {
+        self.truncated_total.with_label_values(&[reason]).inc();
+    }
+
+    fn output_entries_observe(&self, count: f64) {
+        self.output_entries.observe(count);
+    }
+
+    fn output_bytes_observe(&self, bytes: f64) {
+        self.output_bytes.observe(bytes);
+    }
+}
+
 /// Metrics for the package-change / rebuild-impact pipeline.
 #[derive(Clone)]
 pub struct ChangeSummaryMetrics {

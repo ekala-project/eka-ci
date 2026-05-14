@@ -15,13 +15,11 @@ pub mod types;
 
 // Re-export main builder functions
 pub use builder::{
-    build_change_summary, build_change_summary_from_jobset_ids,
-    build_package_changes_from_jobset_ids, build_package_changes_response,
+    build_change_summary, build_change_summary_from_jobset_ids, build_package_changes_response,
 };
 // Re-export options and configuration
 pub use options::{
-    ChangeSummaryOptions, ConfigLoadStatus, resolve_options_for_jobset,
-    resolve_options_from_jobset_data,
+    ChangeSummaryOptions, resolve_options_for_jobset, resolve_options_from_jobset_data,
 };
 #[allow(unused_imports)]
 pub use types::{
@@ -39,11 +37,12 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+    use super::options::ConfigLoadStatus;
     use crate::db::github::{create_jobs_for_jobset, create_jobset};
     use crate::db::model::DrvId;
     use crate::db::model::build_event::DrvBuildState;
     use crate::db::model::drv::{Drv, insert_drv};
-    use crate::nix::nix_eval_jobs::NixEvalDrv;
+    use crate::nix::NixEvalDrv;
 
     /// Build a [`NixEvalDrv`] sufficient to satisfy `create_jobs_for_jobset`.
     /// This is the *evaluation-shape* counterpart of the DB-shape `Drv`

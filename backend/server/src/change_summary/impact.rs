@@ -254,7 +254,7 @@ mod tests {
     use crate::db::model::drv::{Drv, insert_drv};
     use crate::db::model::drv_id::DrvId;
     use crate::graph::{GraphCommand, GraphService};
-    use crate::nix::nix_eval_jobs::NixEvalDrv;
+    use crate::nix::NixEvalDrv;
 
     /// Spin up a real `GraphService` against a test pool and return a handle
     /// + a guard that aborts the service task on drop. Mirrors the pattern

@@ -9,7 +9,7 @@ use tracing::debug;
 use crate::auth::types::GitHubPermission;
 use crate::db::model::build_event::DrvBuildState;
 use crate::github::CICheckInfo;
-use crate::nix::nix_eval_jobs::NixEvalError;
+use crate::nix::NixEvalError;
 
 /// This will send an initial ci gate which is used to determine what gates
 /// are relevant for a PR
