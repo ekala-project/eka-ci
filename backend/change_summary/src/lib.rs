@@ -16,25 +16,13 @@ pub mod render;
 pub mod types;
 
 // Re-export main builder functions
-pub use builder::{
-    build_change_summary_from_jobset_ids,
-    build_package_changes_from_jobset_ids,
-};
-
+pub use builder::{build_change_summary_from_jobset_ids, build_package_changes_from_jobset_ids};
 // Re-export options and configuration
-pub use options::{
-    ChangeSummaryOptions,
-    ConfigLoadStatus,
-};
-
+pub use options::{ChangeSummaryOptions, ConfigLoadStatus};
 // Re-export public types
 pub use types::{
-    ChangeSummary,
-    ChangeSummaryRebuildImpact,
-    PackageChange,
-    PerSystemImpact,
-    RebuildImpactResponse,
-    TopBlastRadiusEntry,
+    ChangeSummary, ChangeSummaryRebuildImpact, PackageChange, PerSystemImpact,
+    RebuildImpactResponse, TopBlastRadiusEntry,
 };
 
 /// Default cap on package-change rows surfaced to the renderer.

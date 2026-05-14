@@ -16,12 +16,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Context;
+use evaluator::{pname_from_name, version_from_name};
 use serde::Deserialize;
+use shared::types::DrvId;
 use sqlx::{Pool, Sqlite};
 
 use super::types::PackageChange;
-use shared::types::DrvId;
-use evaluator::{pname_from_name, version_from_name};
 
 /// One row of `Job ⋈ Drv` for a single jobset, holding only the columns
 /// classify needs. Mapping by hand (rather than reusing the full `Drv`

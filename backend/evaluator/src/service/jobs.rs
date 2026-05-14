@@ -1,6 +1,6 @@
 use std::process::Stdio;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, warn};
@@ -209,7 +209,10 @@ pub async fn run_nix_eval_jobs<F>(
     mut on_drv_traversed: Option<F>,
 ) -> anyhow::Result<(Vec<NixEvalDrv>, Vec<NixEvalError>)>
 where
-    F: FnMut(&str, &Option<std::collections::HashMap<String, Vec<String>>>) -> Result<(), anyhow::Error>,
+    F: FnMut(
+        &str,
+        &Option<std::collections::HashMap<String, Vec<String>>>,
+    ) -> Result<(), anyhow::Error>,
 {
     let mut cmd = Command::new("nix-eval-jobs")
         .arg("--show-input-drvs")

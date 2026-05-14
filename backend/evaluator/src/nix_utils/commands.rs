@@ -161,7 +161,12 @@ pub async fn is_drv_cached(drv_path: &str) -> Result<bool> {
     )
     .await
     .with_context(|| format!("nix-store --realise --dry-run timed out for {}", drv_path))?
-    .with_context(|| format!("failed to spawn nix-store --realise --dry-run for {}", drv_path))?;
+    .with_context(|| {
+        format!(
+            "failed to spawn nix-store --realise --dry-run for {}",
+            drv_path
+        )
+    })?;
 
     if !output.status.success() {
         // If the command failed, assume not cached
@@ -172,9 +177,9 @@ pub async fn is_drv_cached(drv_path: &str) -> Result<bool> {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     // If "will be built" appears in the output, it's not cached
-    let needs_build = stderr.contains("will be built") ||
-                      stderr.contains("derivation(s) will be built") ||
-                      stderr.contains("don't know how to build");
+    let needs_build = stderr.contains("will be built")
+        || stderr.contains("derivation(s) will be built")
+        || stderr.contains("don't know how to build");
 
     Ok(!needs_build)
 }

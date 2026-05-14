@@ -1,7 +1,6 @@
 // Re-export git crate types and functions
-pub use git::{GitProtocol, GitRepo, GitWorkspace, workspace_root};
-
 use anyhow::{Context, Result};
+pub use git::{GitProtocol, GitRepo, GitWorkspace, workspace_root};
 use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
 use tracing::warn;

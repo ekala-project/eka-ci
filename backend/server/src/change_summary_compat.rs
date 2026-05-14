@@ -6,24 +6,22 @@
 //! - Metrics handling that converts between server and change_summary types
 
 use anyhow::Context;
-use sqlx::{Pool, Sqlite};
-
-use crate::ci::{self, config::CIConfig};
-use crate::graph::GraphServiceHandle;
-use crate::metrics::ChangeSummaryMetrics;
-use shared::types::JobsetData;
-
-// Re-export change_summary types for convenience
-pub use change_summary::{
-    types::PackageChangesResponse,
-    ChangeSummary, ChangeSummaryOptions, ChangeSummaryRebuildImpact, ConfigLoadStatus,
-    PackageChange, PerSystemImpact, RebuildImpactResponse, TopBlastRadiusEntry,
-    DEFAULT_MAX_PACKAGES_LISTED,
-};
-
 // Re-export impact module functions
 pub use change_summary::impact;
 pub use change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
+// Re-export change_summary types for convenience
+pub use change_summary::{
+    ChangeSummary, ChangeSummaryOptions, ChangeSummaryRebuildImpact, ConfigLoadStatus,
+    DEFAULT_MAX_PACKAGES_LISTED, PackageChange, PerSystemImpact, RebuildImpactResponse,
+    TopBlastRadiusEntry, types::PackageChangesResponse,
+};
+use shared::types::JobsetData;
+use sqlx::{Pool, Sqlite};
+
+use crate::ci::config::CIConfig;
+use crate::ci::{self};
+use crate::graph::GraphServiceHandle;
+use crate::metrics::ChangeSummaryMetrics;
 
 /// Build package changes response from head/base SHA and job (GitHub-specific).
 ///
@@ -59,13 +57,12 @@ pub async fn build_package_changes_response(
             .context("Failed to resolve base jobset id")?;
 
     // Get jobset metadata for the head
-    let (owner, repo, domain): (String, String, String) = sqlx::query_as(
-        "SELECT owner, repo_name, 'github.com' FROM GitHubJobSets WHERE ROWID = ?",
-    )
-    .bind(head_jobset_id)
-    .fetch_one(pool)
-    .await
-    .context("Failed to fetch head jobset metadata")?;
+    let (owner, repo, domain): (String, String, String) =
+        sqlx::query_as("SELECT owner, repo_name, 'github.com' FROM GitHubJobSets WHERE ROWID = ?")
+            .bind(head_jobset_id)
+            .fetch_one(pool)
+            .await
+            .context("Failed to fetch head jobset metadata")?;
 
     let jobset_data = JobsetData::new(owner, repo, domain, head_sha, job, None);
 
@@ -119,13 +116,12 @@ pub async fn build_change_summary(
             .context("Failed to resolve base jobset id")?;
 
     // Get jobset metadata for the head
-    let (owner, repo, domain): (String, String, String) = sqlx::query_as(
-        "SELECT owner, repo_name, 'github.com' FROM GitHubJobSets WHERE ROWID = ?",
-    )
-    .bind(head_jobset_id)
-    .fetch_one(pool)
-    .await
-    .context("Failed to fetch head jobset metadata")?;
+    let (owner, repo, domain): (String, String, String) =
+        sqlx::query_as("SELECT owner, repo_name, 'github.com' FROM GitHubJobSets WHERE ROWID = ?")
+            .bind(head_jobset_id)
+            .fetch_one(pool)
+            .await
+            .context("Failed to fetch head jobset metadata")?;
 
     let jobset_data = JobsetData::new(owner, repo, domain, head_sha, job, None);
 
@@ -174,10 +170,7 @@ pub async fn resolve_options_for_jobset(
             head_sha,
             job
         );
-        return (
-            ChangeSummaryOptions::default(),
-            ConfigLoadStatus::default(),
-        );
+        return (ChangeSummaryOptions::default(), ConfigLoadStatus::default());
     };
 
     let jobset_data = JobsetData::new(owner, repo, "github.com", head_sha, job, None);
@@ -221,11 +214,8 @@ pub async fn resolve_options_from_jobset_data(
                 jobset_data.repo,
                 jobset_data.sha
             );
-            (
-                ChangeSummaryOptions::default(),
-                ConfigLoadStatus::default(),
-            )
-        }
+            (ChangeSummaryOptions::default(), ConfigLoadStatus::default())
+        },
         ci::CIConfigLoad::Unreadable(e) => {
             tracing::debug!(
                 "Unreadable .ekaci/config.json for {}/{}@{}: {}; using defaults",
@@ -234,11 +224,8 @@ pub async fn resolve_options_from_jobset_data(
                 jobset_data.sha,
                 e
             );
-            (
-                ChangeSummaryOptions::default(),
-                ConfigLoadStatus::default(),
-            )
-        }
+            (ChangeSummaryOptions::default(), ConfigLoadStatus::default())
+        },
         ci::CIConfigLoad::Invalid { source, error } => {
             tracing::warn!(
                 "Invalid .ekaci/config.json at {}: {}; using defaults",
@@ -250,7 +237,7 @@ pub async fn resolve_options_from_jobset_data(
                 ChangeSummaryOptions::default(),
                 ConfigLoadStatus { parse_error },
             )
-        }
+        },
     }
 }
 

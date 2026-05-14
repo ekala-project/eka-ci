@@ -242,8 +242,13 @@ pub(super) async fn get_package_changes_handler(
     State(state): State<AppState>,
     Path(sha): Path<String>,
     Query(query): Query<PackageChangesQuery>,
-) -> Result<Json<crate::change_summary_compat::PackageChangesResponse>, (axum::http::StatusCode, String)> {
-    use crate::change_summary_compat::{DEFAULT_MAX_PACKAGES_LISTED, build_package_changes_response};
+) -> Result<
+    Json<crate::change_summary_compat::PackageChangesResponse>,
+    (axum::http::StatusCode, String),
+> {
+    use crate::change_summary_compat::{
+        DEFAULT_MAX_PACKAGES_LISTED, build_package_changes_response,
+    };
 
     let max_listed = query
         .max_packages_listed
@@ -291,7 +296,10 @@ pub(super) async fn get_rebuild_impact_handler(
     State(state): State<AppState>,
     Path(sha): Path<String>,
     Query(query): Query<RebuildImpactQuery>,
-) -> Result<Json<crate::change_summary_compat::RebuildImpactResponse>, (axum::http::StatusCode, String)> {
+) -> Result<
+    Json<crate::change_summary_compat::RebuildImpactResponse>,
+    (axum::http::StatusCode, String),
+> {
     use crate::change_summary_compat::impact::{
         DEFAULT_MAX_TOP_BLAST_RADIUS, build_rebuild_impact_response_cached,
     };
@@ -350,8 +358,8 @@ pub(super) async fn get_change_summary_handler(
     Query(query): Query<ChangeSummaryQuery>,
 ) -> Result<Json<crate::change_summary_compat::ChangeSummary>, (axum::http::StatusCode, String)> {
     use crate::change_summary_compat::{
-        DEFAULT_MAX_PACKAGES_LISTED, DEFAULT_MAX_TOP_BLAST_RADIUS,
-        build_change_summary, resolve_options_for_jobset,
+        DEFAULT_MAX_PACKAGES_LISTED, DEFAULT_MAX_TOP_BLAST_RADIUS, build_change_summary,
+        resolve_options_for_jobset,
     };
 
     let (base_opts, status) = resolve_options_for_jobset(
@@ -412,8 +420,8 @@ pub(super) async fn get_change_summary_markdown_handler(
     Query(query): Query<ChangeSummaryQuery>,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
     use crate::change_summary_compat::{
-        DEFAULT_MAX_PACKAGES_LISTED, DEFAULT_MAX_TOP_BLAST_RADIUS,
-        build_change_summary, resolve_options_for_jobset,
+        DEFAULT_MAX_PACKAGES_LISTED, DEFAULT_MAX_TOP_BLAST_RADIUS, build_change_summary,
+        resolve_options_for_jobset,
     };
 
     let (base_opts, status) = resolve_options_for_jobset(
