@@ -1,0 +1,14 @@
+[package]
+name = "ci_config"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jonathan Ringer <jonringer117@gmail.com>"]
+description = "CI configuration types for eka-ci"
+repository = "https://github.com/ekala-project/eka-ci"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# No dev dependencies needed currently

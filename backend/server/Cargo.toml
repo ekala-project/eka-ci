@@ -41,6 +41,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { workspace = true }
 change_summary = { path = "../change_summary" }
+ci_config = { path = "../ci_config" }
 graph = { path = "../graph" }
 evaluator = { path = "../evaluator" }
 git = { path = "../git" }
