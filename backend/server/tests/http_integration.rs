@@ -48,7 +48,7 @@ async fn create_test_server_with_options(
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = mpsc::channel::<GraphCommand>(1000);
     let graph_service = GraphService::new(
-        ctx.db_service.clone(),
+        Box::new(ctx.db_service.clone()),
         graph_command_receiver,
         None,
         1_000_000,

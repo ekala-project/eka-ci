@@ -4,9 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::{mpsc, oneshot};
-
 use shared::types::{DrvBuildResult, DrvBuildState, DrvId};
+use tokio::sync::{mpsc, oneshot};
 
 use super::{CachedNode, GraphCommand};
 

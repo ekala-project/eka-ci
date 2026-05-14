@@ -20,7 +20,7 @@ pub mod github_permissions;
 pub mod gitlab;
 // Re-export the graph crate to maintain backward compatibility with existing imports
 pub use graph;
-mod graph_compat;
+pub mod graph_compat;
 pub mod hooks;
 pub mod jobset_data;
 pub mod metrics;

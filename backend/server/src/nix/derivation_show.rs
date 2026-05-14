@@ -14,7 +14,7 @@ where
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct DrvOutput {
+pub struct DrvOutput {
     // nix derivaiton show always structures the output as:
     // { ${drv}: { ... } }
     #[serde(flatten)]
@@ -23,7 +23,7 @@ pub(crate) struct DrvOutput {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub(crate) enum EnvAttrs {
+pub enum EnvAttrs {
     StructuredAttrs {
         // nix derivation show renders `__structuredAttrs` as an escaped JSON string
         // which contains the inner env attr set. So we have to deserialize it twice.
@@ -34,33 +34,33 @@ pub(crate) enum EnvAttrs {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct LegacyAttrsStruct {
-    pub(crate) name: String,
-    pub(crate) pname: Option<String>,
+pub struct LegacyAttrsStruct {
+    pub name: String,
+    pub pname: Option<String>,
     #[serde(rename = "preferLocalBuild")]
-    pub(crate) prefer_local: Option<String>,
+    pub prefer_local: Option<String>,
     #[serde(rename = "outputHash")]
-    pub(crate) output_hash: Option<String>,
+    pub output_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct RawDrvInfo {
+pub struct RawDrvInfo {
     /// to reattempt the build (depending on the interruption kind).
-    pub(crate) system: String,
+    pub system: String,
 
-    pub(crate) env: EnvAttrs,
+    pub env: EnvAttrs,
 
     #[serde(rename = "requiredSystemFeatures")]
-    pub(crate) required_system_features: Option<String>,
+    pub required_system_features: Option<String>,
 
     /// Map of output names to their store paths
     /// e.g., {"out": "/nix/store/hash-name", "dev": "/nix/store/hash-name-dev"}
-    pub(crate) outputs: Option<HashMap<String, DrvOutputInfo>>,
+    pub outputs: Option<HashMap<String, DrvOutputInfo>>,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct DrvOutputInfo {
-    pub(crate) path: String,
+pub struct DrvOutputInfo {
+    pub path: String,
 }
 
 impl RawDrvInfo {

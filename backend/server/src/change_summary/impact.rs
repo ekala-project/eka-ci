@@ -263,7 +263,7 @@ mod tests {
     async fn spawn_graph(pool: &SqlitePool) -> crate::graph::GraphServiceHandle {
         let db_service = DbService { pool: pool.clone() };
         let (tx, rx) = mpsc::channel::<GraphCommand>(64);
-        let service = GraphService::new(db_service, rx, None, 1_000_000)
+        let service = GraphService::new(Box::new(db_service), rx, None, 1_000_000)
             .await
             .expect("GraphService::new failed");
         let handle = service.handle(tx);

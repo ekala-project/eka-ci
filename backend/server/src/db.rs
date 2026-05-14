@@ -1,10 +1,10 @@
 mod approved_users;
 pub mod channels;
 mod checks;
-pub mod graph_impl;
 pub mod gitea;
 pub mod github;
 pub mod gitlab;
+pub mod graph_impl;
 pub mod hooks;
 pub mod installations;
 pub mod maintainers;

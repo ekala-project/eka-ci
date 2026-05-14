@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod serialization {
-    use crate::nix::derivation_show::*;
+    use eka_ci_server::nix::derivation_show::*;
 
     #[test]
     pub fn deserialize_structured_attrs() {

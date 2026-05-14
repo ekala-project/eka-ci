@@ -103,9 +103,9 @@ pub async fn start_services(config: Config) -> Result<()> {
         GraphMetrics::new(&metrics_registry).context("failed to create GraphMetrics")?;
 
     let graph_service = GraphService::new(
-        db_service.clone(),
+        Box::new(db_service.clone()),
         graph_command_receiver,
-        Some(graph_metrics),
+        Some(Box::new((*graph_metrics).clone())),
         config.graph_lru_capacity,
     )
     .await
@@ -385,8 +385,9 @@ async fn enqueue_buildable_builds(
     let queued_drvs = graph_handle.get_buildable_drvs().await?;
 
     info!("Checking {} drvs for build candidates", queued_drvs.len());
-    for drv_id in queued_drvs {
-        let ingress_task = IngressTask::CheckBuildable(std::sync::Arc::new(drv_id));
+    for shared_drv_id in queued_drvs {
+        let server_drv_id = crate::graph_compat::to_server_drv_id(&shared_drv_id)?;
+        let ingress_task = IngressTask::CheckBuildable(std::sync::Arc::new(server_drv_id));
         ingress_sender.send(ingress_task).await?;
     }
 

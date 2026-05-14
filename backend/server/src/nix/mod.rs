@@ -259,9 +259,16 @@ impl EvalService {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::InsertDrvs {
             drvs: crate::graph_compat::to_shared_drvs(&new_drvs)?,
-            refs: drv_refs.clone().into_iter().map(|(r, d)| {
-                Ok((crate::graph_compat::to_shared_drv_id(&r)?, crate::graph_compat::to_shared_drv_id(&d)?))
-            }).collect::<anyhow::Result<Vec<_>>>()?,
+            refs: drv_refs
+                .clone()
+                .into_iter()
+                .map(|(r, d)| {
+                    Ok((
+                        crate::graph_compat::to_shared_drv_id(&r)?,
+                        crate::graph_compat::to_shared_drv_id(&d)?,
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
             response: tx,
         };
         self.graph_command_sender.send(cmd).await?;
