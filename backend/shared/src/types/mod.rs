@@ -10,6 +10,11 @@ pub use build_state::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
 pub use drv::Drv;
 pub use drv_id::{DrvId, InvalidDrvId, Reference, Referrer, strip_store_path};
 
+// Jobset-related types
+mod jobset_data;
+
+pub use jobset_data::JobsetData;
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum ClientRequest {

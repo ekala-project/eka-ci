@@ -56,7 +56,7 @@ pub(super) async fn handle_create_change_summary_comment(
     .await?;
 
     // Create JobsetData for the head commit
-    let jobset_data = crate::jobset_data::JobsetData::new(
+    let jobset_data = crate::JobsetData::new(
         &ci_info.owner,
         &ci_info.repo_name,
         &ci_info.domain,
@@ -66,13 +66,14 @@ pub(super) async fn handle_create_change_summary_comment(
     );
 
     // Resolve options from jobset data
-    let (opts, status) = crate::change_summary::resolve_options_from_jobset_data(
+    let (opts, status) = crate::change_summary_compat::resolve_options_from_jobset_data(
         &jobset_data,
         change_summary_metrics.map(|m| m.as_ref()),
     )
     .await;
 
     // Build change summary using platform-agnostic function
+    // TODO: Pass actual metrics when change_summary crate supports server's metrics type
     let summary = match crate::change_summary::build_change_summary_from_jobset_ids(
         db_pool,
         graph_handle,
@@ -82,7 +83,7 @@ pub(super) async fn handle_create_change_summary_comment(
         base_sha,
         &opts,
         &status,
-        change_summary_metrics.map(|m| m.as_ref()),
+        None, // metrics not supported yet
     )
     .await
     {

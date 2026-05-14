@@ -2,12 +2,12 @@
 
 use anyhow::Context;
 use sqlx::{Pool, Sqlite};
+use shared::types::JobsetData;
+use graph::GraphServiceHandle;
 
-use super::options::{ChangeSummaryOptions, ConfigLoadStatus};
+use super::options::{ChangeSummaryOptions, ConfigLoadStatus, ChangeSummaryMetrics};
 use super::types::{ChangeSummary, ChangeSummaryRebuildImpact, PackageChangesResponse};
 use super::{classify, impact, render};
-use crate::jobset_data::JobsetData;
-use crate::metrics::ChangeSummaryMetrics;
 
 /// Build package changes response from jobset IDs (platform-agnostic).
 /// This is the preferred interface for platform services that have already
@@ -111,7 +111,7 @@ pub async fn build_package_changes_response(
 /// This is the preferred interface for platform services.
 pub async fn build_change_summary_from_jobset_ids(
     pool: &Pool<Sqlite>,
-    graph: &crate::graph::GraphServiceHandle,
+    graph: &GraphServiceHandle,
     head_jobset_id: i64,
     base_jobset_id: Option<i64>,
     head_jobset_data: &JobsetData,
@@ -251,7 +251,7 @@ pub async fn build_change_summary_from_jobset_ids(
 /// `build_change_summary_from_jobset_ids` instead.
 pub async fn build_change_summary(
     pool: &Pool<Sqlite>,
-    graph: &crate::graph::GraphServiceHandle,
+    graph: &GraphServiceHandle,
     head_sha: &str,
     base_sha: &str,
     job: &str,

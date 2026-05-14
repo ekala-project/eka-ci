@@ -95,7 +95,7 @@ impl GitHubService {
                 .await?;
 
         // Create JobsetData for the head commit
-        let jobset_data = crate::jobset_data::JobsetData::new(
+        let jobset_data = crate::JobsetData::new(
             owner,
             repo_name,
             "github.com",
@@ -105,13 +105,14 @@ impl GitHubService {
         );
 
         // Resolve options from jobset data
-        let (opts, status) = crate::change_summary::resolve_options_from_jobset_data(
+        let (opts, status) = crate::change_summary_compat::resolve_options_from_jobset_data(
             &jobset_data,
             self.change_summary_metrics.as_deref(),
         )
         .await;
 
         // Build change summary using the new platform-agnostic function
+        // TODO: Pass actual metrics when change_summary crate supports server's metrics type
         let summary = match crate::change_summary::build_change_summary_from_jobset_ids(
             &self.db_service.pool,
             &self.graph_handle,
@@ -121,7 +122,7 @@ impl GitHubService {
             base_sha,
             &opts,
             &status,
-            self.change_summary_metrics.as_deref(),
+            None, // metrics not supported yet
         )
         .await
         {

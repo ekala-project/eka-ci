@@ -201,9 +201,9 @@ struct CachedTopEntry {
 impl CachedResponse {
     fn into_response(self) -> RebuildImpactResponse {
         use std::str::FromStr;
+        use shared::types::DrvId;
 
         use super::types::{PerSystemImpact, TopBlastRadiusEntry};
-        use crate::db::model::DrvId;
 
         let per_system = self
             .per_system
@@ -247,8 +247,8 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
-    use crate::change_summary::types::{PerSystemImpact, TopBlastRadiusEntry};
-    use crate::db::model::DrvId;
+    use super::types::{PerSystemImpact, TopBlastRadiusEntry};
+    use shared::types::DrvId;
 
     fn pad_hash(prefix: &str) -> String {
         let sanitized: String = prefix

@@ -720,6 +720,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "change_summary"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "evaluator",
+ "graph",
+ "prometheus",
+ "serde",
+ "serde_json",
+ "shared",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1116,6 +1134,7 @@ dependencies = [
  "axum",
  "birdcage",
  "bstr",
+ "change_summary",
  "chrono",
  "clap",
  "dashmap",

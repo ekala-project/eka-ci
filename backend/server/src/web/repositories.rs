@@ -242,8 +242,8 @@ pub(super) async fn get_package_changes_handler(
     State(state): State<AppState>,
     Path(sha): Path<String>,
     Query(query): Query<PackageChangesQuery>,
-) -> Result<Json<crate::change_summary::PackageChangesResponse>, (axum::http::StatusCode, String)> {
-    use crate::change_summary::{DEFAULT_MAX_PACKAGES_LISTED, build_package_changes_response};
+) -> Result<Json<crate::change_summary_compat::PackageChangesResponse>, (axum::http::StatusCode, String)> {
+    use crate::change_summary_compat::{DEFAULT_MAX_PACKAGES_LISTED, build_package_changes_response};
 
     let max_listed = query
         .max_packages_listed
@@ -291,8 +291,8 @@ pub(super) async fn get_rebuild_impact_handler(
     State(state): State<AppState>,
     Path(sha): Path<String>,
     Query(query): Query<RebuildImpactQuery>,
-) -> Result<Json<crate::change_summary::RebuildImpactResponse>, (axum::http::StatusCode, String)> {
-    use crate::change_summary::impact::{
+) -> Result<Json<crate::change_summary_compat::RebuildImpactResponse>, (axum::http::StatusCode, String)> {
+    use crate::change_summary_compat::impact::{
         DEFAULT_MAX_TOP_BLAST_RADIUS, build_rebuild_impact_response_cached,
     };
 
@@ -302,6 +302,7 @@ pub(super) async fn get_rebuild_impact_handler(
         .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
         .max(1);
 
+    // TODO: Pass actual metrics when change_summary crate supports server's metrics type
     match build_rebuild_impact_response_cached(
         &state.db_service.pool,
         &state.graph_handle,
@@ -310,7 +311,7 @@ pub(super) async fn get_rebuild_impact_handler(
         &query.job,
         top_k,
         false,
-        state.change_summary_metrics.as_deref(),
+        None, // metrics not supported yet
     )
     .await
     {
@@ -347,10 +348,10 @@ pub(super) async fn get_change_summary_handler(
     State(state): State<AppState>,
     Path(sha): Path<String>,
     Query(query): Query<ChangeSummaryQuery>,
-) -> Result<Json<crate::change_summary::ChangeSummary>, (axum::http::StatusCode, String)> {
-    use crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
-    use crate::change_summary::{
-        DEFAULT_MAX_PACKAGES_LISTED, build_change_summary, resolve_options_for_jobset,
+) -> Result<Json<crate::change_summary_compat::ChangeSummary>, (axum::http::StatusCode, String)> {
+    use crate::change_summary_compat::{
+        DEFAULT_MAX_PACKAGES_LISTED, DEFAULT_MAX_TOP_BLAST_RADIUS,
+        build_change_summary, resolve_options_for_jobset,
     };
 
     let (base_opts, status) = resolve_options_for_jobset(
@@ -361,7 +362,7 @@ pub(super) async fn get_change_summary_handler(
     )
     .await;
 
-    let opts = crate::change_summary::ChangeSummaryOptions {
+    let opts = crate::change_summary_compat::ChangeSummaryOptions {
         max_packages_listed: query
             .max_packages_listed
             .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
@@ -410,9 +411,9 @@ pub(super) async fn get_change_summary_markdown_handler(
     Path(sha): Path<String>,
     Query(query): Query<ChangeSummaryQuery>,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
-    use crate::change_summary::impact::DEFAULT_MAX_TOP_BLAST_RADIUS;
-    use crate::change_summary::{
-        DEFAULT_MAX_PACKAGES_LISTED, build_change_summary, resolve_options_for_jobset,
+    use crate::change_summary_compat::{
+        DEFAULT_MAX_PACKAGES_LISTED, DEFAULT_MAX_TOP_BLAST_RADIUS,
+        build_change_summary, resolve_options_for_jobset,
     };
 
     let (base_opts, status) = resolve_options_for_jobset(
@@ -423,7 +424,7 @@ pub(super) async fn get_change_summary_markdown_handler(
     )
     .await;
 
-    let opts = crate::change_summary::ChangeSummaryOptions {
+    let opts = crate::change_summary_compat::ChangeSummaryOptions {
         max_packages_listed: query
             .max_packages_listed
             .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)

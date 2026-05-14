@@ -1,8 +1,7 @@
 //! Wire types for the package change summary; serialised to HTTP and consumed by the renderer.
 
 use serde::Serialize;
-
-use crate::db::model::DrvId;
+use shared::types::DrvId;
 
 /// A classified package change. A drv may produce multiple entries (e.g. version bump +
 /// maintainer change). `attr_path` (= `Job.name`) is the stable cross-rev identity.
