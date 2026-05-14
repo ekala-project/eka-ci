@@ -6,9 +6,9 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use sqlx::{Pool, Sqlite};
-use shared::types::DrvId;
 use graph::GraphServiceHandle;
+use shared::types::DrvId;
+use sqlx::{Pool, Sqlite};
 
 use super::cache;
 use super::options::ChangeSummaryMetrics;
@@ -111,12 +111,10 @@ pub async fn build_rebuild_impact_response(
 
         let mut entries: Vec<TopBlastRadiusEntry> = rows_for_system
             .iter()
-            .map(|row| {
-                TopBlastRadiusEntry {
-                    pname: row.pname.clone(),
-                    drv_path: row.drv_path.clone(),
-                    blast_radius: radii.get(&row.drv_path).copied().unwrap_or(0),
-                }
+            .map(|row| TopBlastRadiusEntry {
+                pname: row.pname.clone(),
+                drv_path: row.drv_path.clone(),
+                blast_radius: radii.get(&row.drv_path).copied().unwrap_or(0),
             })
             .collect();
 

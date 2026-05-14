@@ -1,10 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use sqlx::SqlitePool;
-
 // Re-export from evaluator for use elsewhere in the server
 pub use evaluator::utils::{pname_from_name, version_from_name};
+use sqlx::SqlitePool;
 
 /// Extract pname from a store path (output path, not drv path)
 ///

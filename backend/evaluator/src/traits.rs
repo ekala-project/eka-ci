@@ -37,7 +37,10 @@ pub struct NullMetrics;
 
 impl EvalMetricsCollector for NullMetrics {
     fn items_total_inc(&self, _label: &str, _count: u64) {}
+
     fn truncated_total_inc(&self, _reason: &str) {}
+
     fn output_entries_observe(&self, _count: f64) {}
+
     fn output_bytes_observe(&self, _bytes: f64) {}
 }

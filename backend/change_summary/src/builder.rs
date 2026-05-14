@@ -1,11 +1,11 @@
 // Package change and change summary builder functions
 
 use anyhow::Context;
-use sqlx::{Pool, Sqlite};
-use shared::types::JobsetData;
 use graph::GraphServiceHandle;
+use shared::types::JobsetData;
+use sqlx::{Pool, Sqlite};
 
-use super::options::{ChangeSummaryOptions, ConfigLoadStatus, ChangeSummaryMetrics};
+use super::options::{ChangeSummaryMetrics, ChangeSummaryOptions, ConfigLoadStatus};
 use super::types::{ChangeSummary, ChangeSummaryRebuildImpact, PackageChangesResponse};
 use super::{classify, impact, render};
 
