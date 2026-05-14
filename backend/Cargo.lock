@@ -1123,6 +1123,7 @@ dependencies = [
  "evaluator",
  "figment",
  "futures",
+ "git",
  "gix-hash",
  "gix-url",
  "graph",
@@ -1499,6 +1500,19 @@ dependencies = [
  "r-efi 6.0.0",
  "wasip2",
  "wasip3",
+]
+
+[[package]]
+name = "git"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "octocrab",
+ "shared",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "xdg",
 ]
 
 [[package]]
