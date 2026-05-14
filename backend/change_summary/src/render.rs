@@ -533,12 +533,13 @@ impl ChangeCounts {
 mod tests {
     use std::str::FromStr;
 
+    use shared::types::DrvId;
+
     use super::*;
-    use crate::change_summary::types::{
+    use crate::types::{
         ChangeSummary, ChangeSummaryRebuildImpact, PackageChange, PerSystemImpact,
         TopBlastRadiusEntry,
     };
-    use crate::db::model::DrvId;
 
     fn pad_hash(prefix: &str) -> String {
         let sanitized: String = prefix
