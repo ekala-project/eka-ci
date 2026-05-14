@@ -8,6 +8,7 @@ use tracing::{debug, warn};
 use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::drv_id;
 use crate::graph::GraphServiceHandle;
+use crate::graph_compat;
 use crate::scheduler::build::BuildRequest;
 use crate::scheduler::recorder::RecorderTask;
 
@@ -127,23 +128,29 @@ impl IngressWorker {
     async fn handle_check_buildable_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
         debug!("checking if {:?} is buildable", drv_id);
 
-        if self.graph_handle.is_buildable(drv_id) {
+        let shared_id = graph_compat::to_shared_drv_id(drv_id)?;
+        if self.graph_handle.is_buildable(&shared_id) {
             debug!("{:?} is now buildable", drv_id);
 
             let cached_node = self
                 .graph_handle
-                .get_node(drv_id)
+                .get_node(&shared_id)
                 .context("drv is missing from graph")?;
 
             // FailedRetry must be preserved so the recorder can detect second failures.
-            if cached_node.build_state != DrvBuildState::FailedRetry {
+            let shared_failed_retry =
+                crate::db::graph_impl::convert_build_state(&DrvBuildState::FailedRetry);
+            if cached_node.build_state != shared_failed_retry {
+                let shared_buildable =
+                    crate::db::graph_impl::convert_build_state(&DrvBuildState::Buildable);
                 self.graph_handle
-                    .update_state(drv_id, DrvBuildState::Buildable)
+                    .update_state(&shared_id, shared_buildable)
                     .await?;
             }
 
-            let drv = cached_node.to_drv();
-            self.buildable_sender.send(BuildRequest(drv)).await?;
+            let shared_drv = cached_node.to_drv();
+            let server_drv = graph_compat::to_server_drv(&shared_drv)?;
+            self.buildable_sender.send(BuildRequest(server_drv)).await?;
         }
 
         Ok(())
@@ -157,7 +164,8 @@ impl IngressWorker {
             drv_id.store_path()
         );
 
-        if let Some(build_state) = self.graph_handle.get_build_state(drv_id) {
+        let shared_id = graph_compat::to_shared_drv_id(drv_id)?;
+        if let Some(build_state) = self.graph_handle.get_build_state(&shared_id) {
             if build_state.is_terminal() {
                 debug!(
                     "{:?} is already in terminal state {:?}, skipping build",
@@ -253,12 +261,15 @@ impl IngressWorker {
         // racing with an in-flight build or clobbering a previously recorded
         // success/failure.
         for hit in cache_hits {
-            let current = self.graph_handle.get_build_state(&hit);
+            let hit_shared = graph_compat::to_shared_drv_id(&hit)?;
+            let current = self.graph_handle.get_build_state(&hit_shared);
             let safe_to_mark = match &current {
                 None => true, // not in graph yet; recorder will reject if no DB row
-                Some(DrvBuildState::Building) => false,
-                Some(state) if state.is_terminal() => false,
-                Some(_) => true,
+                Some(state) => {
+                    // Convert back to server type for comparison
+                    let server_state = crate::db::graph_impl::convert_build_state_back(state);
+                    !matches!(server_state, DrvBuildState::Building) && !server_state.is_terminal()
+                },
             };
             if !safe_to_mark {
                 debug!(
@@ -290,31 +301,42 @@ impl IngressWorker {
 
         debug!("Attempting to rebuild failed drv: {:?}", drv_id);
 
+        let shared_id = graph_compat::to_shared_drv_id(drv_id)?;
         let node = self
             .graph_handle
-            .get_node(drv_id)
+            .get_node(&shared_id)
             .context("drv not found")?;
 
-        match &node.build_state {
+        // Convert shared build state back to server type for matching
+        let server_build_state = crate::db::graph_impl::convert_build_state_back(&node.build_state);
+
+        match &server_build_state {
             DrvBuildState::Completed(DrvBuildResult::Failure)
             | DrvBuildState::TransitiveFailure
             | DrvBuildState::FailedRetry => {
                 debug!(
                     "{:?} is in failed state {:?}, rebuilding",
-                    drv_id, &node.build_state
+                    drv_id, &server_build_state
                 );
 
-                let failed_deps = self.graph_handle.get_failed_dependencies(drv_id).await?;
+                let failed_deps = self
+                    .graph_handle
+                    .get_failed_dependencies(&shared_id)
+                    .await?;
                 for dep in &failed_deps {
+                    // Convert shared dep back to server type for recursive call
+                    let server_dep = graph_compat::to_server_drv_id(&dep)?;
                     debug!(
                         "{:?} has failed dependency {:?}, rebuilding it first",
-                        drv_id, dep
+                        drv_id, server_dep
                     );
-                    Box::pin(self.handle_rebuild_failed_task(dep)).await?;
+                    Box::pin(self.handle_rebuild_failed_task(&server_dep)).await?;
                 }
 
+                let shared_queued =
+                    crate::db::graph_impl::convert_build_state(&DrvBuildState::Queued);
                 self.graph_handle
-                    .update_state(drv_id, DrvBuildState::Queued)
+                    .update_state(&shared_id, shared_queued)
                     .await?;
 
                 // Transitive-failure cleanup happens in the graph service's
@@ -327,7 +349,7 @@ impl IngressWorker {
             _ => {
                 warn!(
                     "{:?} is not in a failed state (current state: {:?}), cannot rebuild",
-                    drv_id, &node.build_state
+                    drv_id, &server_build_state
                 );
             },
         }
@@ -342,8 +364,10 @@ impl IngressWorker {
         let failed_drvs = self.graph_handle.get_all_failed_drvs().await?;
         debug!("Found {} failed drvs to rebuild", failed_drvs.len());
 
-        for drv_id in &failed_drvs {
-            self.handle_rebuild_failed_task(drv_id).await?;
+        for shared_drv_id in &failed_drvs {
+            // Convert shared type back to server type for handle_rebuild_failed_task
+            let server_drv_id = graph_compat::to_server_drv_id(shared_drv_id)?;
+            self.handle_rebuild_failed_task(&server_drv_id).await?;
         }
 
         Ok(())

@@ -42,7 +42,7 @@ async fn test_build_simple_drv_success() {
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
     let graph_service = GraphService::new(
-        ctx.db_service.clone(),
+        Box::new(ctx.db_service.clone()),
         graph_command_receiver,
         None,
         1_000_000,
@@ -145,7 +145,7 @@ async fn test_build_failure_retry_logic() {
     // Create GraphService for in-memory build state tracking
     let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
     let graph_service = GraphService::new(
-        ctx.db_service.clone(),
+        Box::new(ctx.db_service.clone()),
         graph_command_receiver,
         None,
         1_000_000,
@@ -288,7 +288,7 @@ async fn test_drv_dependencies() {
     // Create GraphService for in-memory dependency tracking
     let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
     let graph_service = GraphService::new(
-        ctx.db_service.clone(),
+        Box::new(ctx.db_service.clone()),
         graph_command_receiver,
         None,
         1_000_000,
@@ -307,13 +307,17 @@ async fn test_drv_dependencies() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify drv_a has drv_b as a dependency using the graph service
+    let shared_drv_b_id = eka_ci_server::graph_compat::to_shared_drv_id(&drv_b.drv_path)
+        .expect("Failed to convert drv_b id");
     let dependents = graph_handle
-        .get_dependents(&drv_b.drv_path)
+        .get_dependents(&shared_drv_b_id)
         .await
         .expect("Failed to get dependents");
 
     assert_eq!(dependents.len(), 1);
-    assert_eq!(dependents[0], drv_a.drv_path);
+    let server_dependent = eka_ci_server::graph_compat::to_server_drv_id(&dependents[0])
+        .expect("Failed to convert dependent");
+    assert_eq!(server_dependent, drv_a.drv_path);
 
     println!("✓ Drv dependency graph stored correctly");
 }

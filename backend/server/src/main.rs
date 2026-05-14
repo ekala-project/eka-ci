@@ -1,30 +1,5 @@
-mod auth;
-mod auto_merge;
-mod cache_permissions;
-mod change_summary;
-mod channels;
-mod checks;
-mod ci;
-mod client;
-mod config;
-mod db;
-mod dependency_comparison;
-mod git;
-mod gitea;
-mod github;
-mod github_permissions;
-mod gitlab;
-mod graph;
-mod hooks;
-mod jobset_data;
-mod metrics;
-mod nix;
-mod path_safety;
-mod scheduler;
-mod secret;
-mod services;
-mod web;
-mod webhook_security;
+// Import from the library crate instead of re-declaring modules
+use eka_ci_server::*;
 
 #[cfg(test)]
 mod tests;

@@ -5,7 +5,7 @@ use graph::traits::GraphMetricsCollector;
 use super::GraphMetrics;
 
 impl GraphMetricsCollector for GraphMetrics {
-    fn set_node_count(&self, count: usize) {
+    fn set_node_count(&self, _count: usize) {
         // This is called per-state, so we don't have a single total metric
         // The caller will call set_state_count for each state
     }
@@ -26,7 +26,7 @@ impl GraphMetricsCollector for GraphMetrics {
         // Cache capacity and utilization serve this purpose
     }
 
-    fn set_eviction_candidates(&self, count: usize) {
+    fn set_eviction_candidates(&self, _count: usize) {
         // Total eviction candidates across all tiers
         // Note: The Prometheus metric uses tier labels, so we'd need to track per-tier
         // For now, this is a summary metric that isn't directly exposed
@@ -38,9 +38,7 @@ impl GraphMetricsCollector for GraphMetrics {
     }
 
     fn increment_cache_hits(&self) {
-        self.cache_hits_total
-            .with_label_values(&["default"])
-            .inc();
+        self.cache_hits_total.with_label_values(&["default"]).inc();
     }
 
     fn increment_cache_misses(&self) {
@@ -50,9 +48,7 @@ impl GraphMetricsCollector for GraphMetrics {
     }
 
     fn increment_evictions(&self) {
-        self.evictions_total
-            .with_label_values(&["default"])
-            .inc();
+        self.evictions_total.with_label_values(&["default"]).inc();
     }
 
     fn set_memory_bytes(&self, bytes: usize) {

@@ -3,9 +3,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use tracing::{debug, error, info};
-
 use shared::types::{DrvBuildResult, DrvBuildState, DrvId};
+use tracing::{debug, error, info};
 
 use crate::eviction::EvictionCandidateSelector;
 use crate::graph::BuildGraph;

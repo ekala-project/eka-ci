@@ -93,9 +93,11 @@ impl RecorderWorker {
                 }
 
                 // Check direct referrers for buildability
-                let referrers = self.graph_handle.get_dependents(drv).await?;
+                let shared_drv_id = crate::graph_compat::to_shared_drv_id(drv)?;
+                let referrers = self.graph_handle.get_dependents(&shared_drv_id).await?;
                 for referrer in referrers {
-                    let task = IngressTask::CheckBuildable(std::sync::Arc::new(referrer));
+                    let server_referrer = crate::graph_compat::to_server_drv_id(&referrer)?;
+                    let task = IngressTask::CheckBuildable(std::sync::Arc::new(server_referrer));
                     self.ingress_sender.send(task).await?;
                 }
             },

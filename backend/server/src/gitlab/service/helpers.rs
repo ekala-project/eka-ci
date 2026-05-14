@@ -16,6 +16,7 @@ pub(super) fn short_sha(sha: &str) -> &str {
 }
 
 /// Convert DrvBuildState to GitLab pipeline status string
+#[allow(dead_code)]
 pub(super) fn build_state_to_pipeline_status(
     state: &crate::db::model::build_event::DrvBuildState,
 ) -> String {

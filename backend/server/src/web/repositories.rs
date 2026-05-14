@@ -503,8 +503,10 @@ pub(super) async fn get_drv_details_handler(
     Path(drv): Path<String>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let drv_id = parse_drv_id(&drv)?;
+    let shared_drv_id = crate::graph_compat::to_shared_drv_id(&drv_id)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    match state.graph_handle.get_node(&drv_id) {
+    match state.graph_handle.get_node(&shared_drv_id) {
         Some(node) => {
             let dep_count = node.dependencies.len() as i64;
 
@@ -529,8 +531,10 @@ pub(super) async fn get_drv_dependencies_handler(
     Path(drv): Path<String>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let drv_id = parse_drv_id(&drv)?;
+    let shared_drv_id = crate::graph_compat::to_shared_drv_id(&drv_id)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    match state.graph_handle.get_dependencies(&drv_id).await {
+    match state.graph_handle.get_dependencies(&shared_drv_id).await {
         Ok(dep_ids) => {
             let mut dependencies = Vec::new();
             for dep_id in &dep_ids {

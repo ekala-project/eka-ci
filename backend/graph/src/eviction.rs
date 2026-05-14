@@ -34,6 +34,7 @@ impl EvictionTier {
     }
 
     /// Get human-readable name for metrics labels
+    #[allow(dead_code)]
     pub fn name(&self) -> &'static str {
         match self {
             EvictionTier::Tier1 => "tier1_transitive_failure",

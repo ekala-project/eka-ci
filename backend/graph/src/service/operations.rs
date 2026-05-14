@@ -6,14 +6,12 @@ use std::time::Instant;
 
 use anyhow::Result;
 use dashmap::DashMap;
+use shared::types::{Drv, DrvBuildState, DrvId};
 use tracing::debug;
 
-use shared::types::{Drv, DrvBuildState, DrvId};
-
+use super::CachedNode;
 use crate::graph::BuildGraph;
 use crate::traits::{GraphDatabase, GraphMetricsCollector};
-
-use super::CachedNode;
 
 /// Ensure a node is loaded in the cache, reloading from DB if evicted
 /// Returns true if the node was reloaded, false if it was already in cache
@@ -197,8 +195,7 @@ pub(super) async fn propagate_failure(
 
     // Persist transitive failures to database
     if !blocked.is_empty() {
-        db.insert_transitive_failures(failed_drv, &blocked)
-            .await?;
+        db.insert_transitive_failures(failed_drv, &blocked).await?;
     }
 
     Ok(blocked)
@@ -221,8 +218,7 @@ pub(super) async fn clear_failure(
     }
 
     // Persist clearing of transitive failures to database
-    db.clear_transitive_failures(formerly_failed)
-        .await?;
+    db.clear_transitive_failures(formerly_failed).await?;
 
     Ok(unblocked)
 }

@@ -2,9 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tokio::sync::oneshot;
-
 use shared::types::{Drv, DrvBuildState, DrvId};
+use tokio::sync::oneshot;
 
 /// Commands that can be sent to the GraphService.
 ///

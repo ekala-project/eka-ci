@@ -83,9 +83,11 @@ impl RecorderWorker {
         new_state: build_event::DrvBuildState,
     ) -> anyhow::Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let shared_drv_id = crate::graph_compat::to_shared_drv_id(drv_id)?;
+        let shared_state = crate::db::graph_impl::convert_build_state(&new_state);
         let cmd = GraphCommand::UpdateState {
-            drv_id: drv_id.clone(),
-            new_state,
+            drv_id: shared_drv_id,
+            new_state: shared_state,
             response: tx,
         };
 
@@ -100,13 +102,15 @@ impl RecorderWorker {
         drv_id: &drv_id::DrvId,
     ) -> anyhow::Result<Vec<drv_id::DrvId>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let shared_drv_id = crate::graph_compat::to_shared_drv_id(drv_id)?;
         let cmd = GraphCommand::ClearFailure {
-            formerly_failed: drv_id.clone(),
+            formerly_failed: shared_drv_id,
             response: tx,
         };
 
         self.graph_command_sender.send(cmd).await?;
-        let unblocked = rx.await?;
+        let shared_unblocked = rx.await?;
+        let unblocked = crate::graph_compat::to_server_drv_ids(&shared_unblocked)?;
         Ok(unblocked)
     }
 
@@ -116,13 +120,15 @@ impl RecorderWorker {
         drv_id: &drv_id::DrvId,
     ) -> anyhow::Result<Vec<drv_id::DrvId>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let shared_drv_id = crate::graph_compat::to_shared_drv_id(drv_id)?;
         let cmd = GraphCommand::PropagateFailure {
-            failed_drv: drv_id.clone(),
+            failed_drv: shared_drv_id,
             response: tx,
         };
 
         self.graph_command_sender.send(cmd).await?;
-        let blocked = rx.await?;
+        let shared_blocked = rx.await?;
+        let blocked = crate::graph_compat::to_server_drv_ids(&shared_blocked)?;
         Ok(blocked)
     }
 }

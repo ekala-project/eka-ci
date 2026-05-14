@@ -10,11 +10,7 @@ pub trait GraphDatabase: Send + Sync {
     async fn get_drv(&self, drv_path: &DrvId) -> anyhow::Result<Option<Drv>>;
 
     /// Update the build status of a derivation
-    async fn update_drv_status(
-        &self,
-        drv_id: &DrvId,
-        state: &DrvBuildState,
-    ) -> anyhow::Result<()>;
+    async fn update_drv_status(&self, drv_id: &DrvId, state: &DrvBuildState) -> anyhow::Result<()>;
 
     /// Get all derivations (for initial graph load)
     async fn get_all_drvs(&self) -> anyhow::Result<Vec<Drv>>;
@@ -66,19 +62,34 @@ pub struct NullMetrics;
 
 impl GraphMetricsCollector for NullMetrics {
     fn set_node_count(&self, _count: usize) {}
+
     fn set_state_count(&self, _state: &str, _count: usize) {}
+
     fn set_ref_count_stats(&self, _min: usize, _max: usize, _mean: f64) {}
+
     fn set_lru_size(&self, _size: usize) {}
+
     fn set_eviction_candidates(&self, _count: usize) {}
+
     fn record_command_duration(&self, _command_type: &str, _duration_seconds: f64) {}
+
     fn increment_cache_hits(&self) {}
+
     fn increment_cache_misses(&self) {}
+
     fn increment_evictions(&self) {}
+
     fn set_memory_bytes(&self, _bytes: usize) {}
+
     fn observe_ref_count(&self, _count: usize, _has_dependents: bool) {}
+
     fn increment_cache_reloads(&self) {}
+
     fn observe_cache_reload_duration(&self, _seconds: f64) {}
+
     fn set_pinned_nodes(&self, _count: usize) {}
+
     fn set_cache_capacity(&self, _capacity: usize) {}
+
     fn set_cache_utilization(&self, _utilization: f64) {}
 }

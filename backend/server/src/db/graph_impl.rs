@@ -71,21 +71,21 @@ impl GraphDatabase for DbService {
             .collect())
     }
 
-    async fn get_all_refs(&self) -> anyhow::Result<Vec<(shared::types::DrvId, shared::types::DrvId)>> {
+    async fn get_all_refs(
+        &self,
+    ) -> anyhow::Result<Vec<(shared::types::DrvId, shared::types::DrvId)>> {
         let local_refs = self.get_all_refs().await?;
         let converted: Result<Vec<_>, _> = local_refs
             .into_iter()
-            .map(|(r, d)| {
-                Ok((
-                    r.to_string().parse()?,
-                    d.to_string().parse()?,
-                ))
-            })
+            .map(|(r, d)| Ok((r.to_string().parse()?, d.to_string().parse()?)))
             .collect();
         converted
     }
 
-    async fn get_drv_refs(&self, drv_id: &shared::types::DrvId) -> anyhow::Result<Vec<shared::types::DrvId>> {
+    async fn get_drv_refs(
+        &self,
+        drv_id: &shared::types::DrvId,
+    ) -> anyhow::Result<Vec<shared::types::DrvId>> {
         let local_id = drv_id.to_string().parse()?;
         let local_refs = self.get_drv_refs(&local_id).await?;
         let converted: Result<Vec<_>, _> = local_refs
@@ -118,7 +118,8 @@ impl GraphDatabase for DbService {
             .iter()
             .map(|id| id.to_string().parse())
             .collect();
-        self.insert_transitive_failures(&local_failed, &local_referrers?).await
+        self.insert_transitive_failures(&local_failed, &local_referrers?)
+            .await
     }
 
     async fn clear_transitive_failures(
@@ -136,44 +137,84 @@ impl GraphDatabase for DbService {
 }
 
 // Helper functions to convert between build state types
-pub fn convert_build_state(state: &crate::db::model::build_event::DrvBuildState) -> shared::types::DrvBuildState {
-    use crate::db::model::build_event::{DrvBuildInterruptionKind as LocalInterrupt, DrvBuildResult as LocalResult, DrvBuildState as LocalState};
+pub fn convert_build_state(
+    state: &crate::db::model::build_event::DrvBuildState,
+) -> shared::types::DrvBuildState {
     use shared::types::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
+
+    use crate::db::model::build_event::{
+        DrvBuildInterruptionKind as LocalInterrupt, DrvBuildResult as LocalResult,
+        DrvBuildState as LocalState,
+    };
 
     match state {
         LocalState::Queued => DrvBuildState::Queued,
         LocalState::Buildable => DrvBuildState::Buildable,
         LocalState::FailedRetry => DrvBuildState::FailedRetry,
         LocalState::Building => DrvBuildState::Building,
-        LocalState::Completed(LocalResult::Success) => DrvBuildState::Completed(DrvBuildResult::Success),
-        LocalState::Completed(LocalResult::Failure) => DrvBuildState::Completed(DrvBuildResult::Failure),
-        LocalState::Interrupted(LocalInterrupt::Cancelled) => DrvBuildState::Interrupted(DrvBuildInterruptionKind::Cancelled),
-        LocalState::Interrupted(LocalInterrupt::Timeout) => DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout),
-        LocalState::Interrupted(LocalInterrupt::OutOfMemory) => DrvBuildState::Interrupted(DrvBuildInterruptionKind::OutOfMemory),
-        LocalState::Interrupted(LocalInterrupt::ProcessDeath) => DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath),
-        LocalState::Interrupted(LocalInterrupt::SchedulerDeath) => DrvBuildState::Interrupted(DrvBuildInterruptionKind::SchedulerDeath),
+        LocalState::Completed(LocalResult::Success) => {
+            DrvBuildState::Completed(DrvBuildResult::Success)
+        },
+        LocalState::Completed(LocalResult::Failure) => {
+            DrvBuildState::Completed(DrvBuildResult::Failure)
+        },
+        LocalState::Interrupted(LocalInterrupt::Cancelled) => {
+            DrvBuildState::Interrupted(DrvBuildInterruptionKind::Cancelled)
+        },
+        LocalState::Interrupted(LocalInterrupt::Timeout) => {
+            DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout)
+        },
+        LocalState::Interrupted(LocalInterrupt::OutOfMemory) => {
+            DrvBuildState::Interrupted(DrvBuildInterruptionKind::OutOfMemory)
+        },
+        LocalState::Interrupted(LocalInterrupt::ProcessDeath) => {
+            DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath)
+        },
+        LocalState::Interrupted(LocalInterrupt::SchedulerDeath) => {
+            DrvBuildState::Interrupted(DrvBuildInterruptionKind::SchedulerDeath)
+        },
         LocalState::TransitiveFailure => DrvBuildState::TransitiveFailure,
         LocalState::Blocked => DrvBuildState::Blocked,
         LocalState::UnsatisfiableRequirements => DrvBuildState::UnsatisfiableRequirements,
     }
 }
 
-fn convert_build_state_back(state: &shared::types::DrvBuildState) -> crate::db::model::build_event::DrvBuildState {
-    use crate::db::model::build_event::{DrvBuildInterruptionKind as LocalInterrupt, DrvBuildResult as LocalResult, DrvBuildState as LocalState};
+pub fn convert_build_state_back(
+    state: &shared::types::DrvBuildState,
+) -> crate::db::model::build_event::DrvBuildState {
     use shared::types::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
+
+    use crate::db::model::build_event::{
+        DrvBuildInterruptionKind as LocalInterrupt, DrvBuildResult as LocalResult,
+        DrvBuildState as LocalState,
+    };
 
     match state {
         DrvBuildState::Queued => LocalState::Queued,
         DrvBuildState::Buildable => LocalState::Buildable,
         DrvBuildState::FailedRetry => LocalState::FailedRetry,
         DrvBuildState::Building => LocalState::Building,
-        DrvBuildState::Completed(DrvBuildResult::Success) => LocalState::Completed(LocalResult::Success),
-        DrvBuildState::Completed(DrvBuildResult::Failure) => LocalState::Completed(LocalResult::Failure),
-        DrvBuildState::Interrupted(DrvBuildInterruptionKind::Cancelled) => LocalState::Interrupted(LocalInterrupt::Cancelled),
-        DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout) => LocalState::Interrupted(LocalInterrupt::Timeout),
-        DrvBuildState::Interrupted(DrvBuildInterruptionKind::OutOfMemory) => LocalState::Interrupted(LocalInterrupt::OutOfMemory),
-        DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath) => LocalState::Interrupted(LocalInterrupt::ProcessDeath),
-        DrvBuildState::Interrupted(DrvBuildInterruptionKind::SchedulerDeath) => LocalState::Interrupted(LocalInterrupt::SchedulerDeath),
+        DrvBuildState::Completed(DrvBuildResult::Success) => {
+            LocalState::Completed(LocalResult::Success)
+        },
+        DrvBuildState::Completed(DrvBuildResult::Failure) => {
+            LocalState::Completed(LocalResult::Failure)
+        },
+        DrvBuildState::Interrupted(DrvBuildInterruptionKind::Cancelled) => {
+            LocalState::Interrupted(LocalInterrupt::Cancelled)
+        },
+        DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout) => {
+            LocalState::Interrupted(LocalInterrupt::Timeout)
+        },
+        DrvBuildState::Interrupted(DrvBuildInterruptionKind::OutOfMemory) => {
+            LocalState::Interrupted(LocalInterrupt::OutOfMemory)
+        },
+        DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath) => {
+            LocalState::Interrupted(LocalInterrupt::ProcessDeath)
+        },
+        DrvBuildState::Interrupted(DrvBuildInterruptionKind::SchedulerDeath) => {
+            LocalState::Interrupted(LocalInterrupt::SchedulerDeath)
+        },
         DrvBuildState::TransitiveFailure => LocalState::TransitiveFailure,
         DrvBuildState::Blocked => LocalState::Blocked,
         DrvBuildState::UnsatisfiableRequirements => LocalState::UnsatisfiableRequirements,
