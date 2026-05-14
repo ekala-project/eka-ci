@@ -5,7 +5,10 @@
 pub mod auth;
 pub mod auto_merge;
 pub mod cache_permissions;
-pub mod change_summary;
+// Re-export the change_summary crate to maintain backward compatibility with existing imports
+pub use change_summary;
+// Compatibility layer for legacy change_summary functions
+pub mod change_summary_compat;
 pub mod channels;
 pub mod checks;
 pub mod ci;
@@ -22,7 +25,8 @@ pub mod gitlab;
 pub use graph;
 pub mod graph_compat;
 pub mod hooks;
-pub mod jobset_data;
+// Re-export JobsetData from shared for backward compatibility
+pub use shared::types::JobsetData;
 pub mod metrics;
 pub mod nix;
 pub mod path_safety;
