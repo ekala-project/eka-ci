@@ -5,10 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = { workspace = true }
+birdcage = "0.8.1"
+ci_config = { path = "../ci_config" }
 clap = {workspace = true}
+colored = "2"
 serde = {workspace = true}
 serde_json = {workspace = true}
 thiserror = { workspace = true }
 shared = { workspace = true }
+tokio = { version = "1.41.0", features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
