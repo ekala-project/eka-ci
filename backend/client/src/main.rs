@@ -1,3 +1,4 @@
+mod check;
 mod cli;
 mod requests;
 
@@ -14,7 +15,8 @@ use tracing::debug;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -86,6 +88,12 @@ fn main() -> anyhow::Result<()> {
             debug!("Requesting job eval: {:?}", &abs_req);
             send_request(&socket, ClientRequest::Job(abs_req))
                 .context("failed to send info request to server")?;
+        },
+        Some(Commands::Check(check_cmd)) => {
+            // Check command runs locally, no server communication needed
+            check::handle_check_command(check_cmd)
+                .await
+                .context("failed to execute check command")?;
         },
         None => {},
     }

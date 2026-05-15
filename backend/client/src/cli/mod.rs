@@ -27,6 +27,10 @@ pub(crate) enum Commands {
     /// Query release channel status and promotion history
     #[command(subcommand)]
     Channel(ChannelCommands),
+
+    /// Run checks locally with CI-equivalent environment
+    #[command(subcommand)]
+    Check(crate::check::CheckCommand),
 }
 
 #[derive(Debug, Subcommand)]
