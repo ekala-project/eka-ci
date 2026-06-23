@@ -70,6 +70,8 @@ pub fn get_output_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>>
 ///
 /// Returns a map from store path → closure size in bytes (path + runtime deps).
 /// Paths not reported by `nix path-info` will be absent from the map.
+// TODO: closure size will be a future feature
+#[allow(dead_code)]
 pub fn get_closure_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>> {
     if output_paths.is_empty() {
         return Ok(HashMap::new());

@@ -139,6 +139,8 @@ pub async fn update_output_size(
 /// * `drv_id` - ROWID from Drv table
 /// * `output_name` - Name of the output
 /// * `closure_size` - Closure size in bytes
+// TODO: closure size will be a future feature
+#[allow(dead_code)]
 pub async fn update_closure_size(
     pool: &SqlitePool,
     drv_id: i64,

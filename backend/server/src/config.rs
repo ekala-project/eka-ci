@@ -216,6 +216,7 @@ pub enum CredentialSource {
     /// Works without explicit credentials for cloud VMs with IAM roles
     InstanceMetadata,
     /// GitHub App private key from file (app_id from env var)
+    #[serde(alias = "github-app-key-file")]
     GitHubAppKeyFile {
         /// Environment variable containing the app ID
         app_id_env: String,

@@ -70,15 +70,15 @@ impl RecorderWorker {
                     // Don't fail the build if size check fails
                 }
 
-                // Calculate and check closure size if configured
-                if let Err(e) = self.check_closure_size(drv, &job_infos).await {
-                    warn!(
-                        "Failed to check closure size for {}: {}",
-                        drv.store_path(),
-                        e
-                    );
-                    // Don't fail the build if closure size check fails
-                }
+                // TODO: closure size will be a future feature
+                // if let Err(e) = self.check_closure_size(drv, &job_infos).await {
+                //     warn!(
+                //         "Failed to check closure size for {}: {}",
+                //         drv.store_path(),
+                //         e
+                //     );
+                //     // Don't fail the build if closure size check fails
+                // }
 
                 // Clear any transitive failures in graph (fast in-memory operation)
                 let unblocked_drvs = self.clear_graph_failure(drv).await?;

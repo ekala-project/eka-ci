@@ -1,7 +1,7 @@
 // Re-export evaluator types and functions for backward compatibility
 pub use evaluator::nix_utils::{
-    self as size, drv_references, drv_requisites, format_size, get_closure_sizes, get_drv_outputs,
-    get_output_sizes, is_drv_cached, output_references,
+    self as size, drv_references, drv_requisites, format_size, get_drv_outputs, get_output_sizes,
+    is_drv_cached, output_references,
 };
 pub use evaluator::service::jobs::{
     NIX_EVAL_JOBS_MAX_ENTRIES, NIX_EVAL_JOBS_MAX_LINE_BYTES, NIX_EVAL_JOBS_MAX_STDOUT_BYTES,

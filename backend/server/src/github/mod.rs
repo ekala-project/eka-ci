@@ -58,8 +58,21 @@ pub async fn register_app_from_config(
             .parse::<u64>()?
             .into();
 
-        let private_key = std::env::var("GITHUB_APP_PRIVATE_KEY")
-            .context("failed to locate $GITHUB_APP_PRIVATE_KEY")?;
+        let private_key = if let Ok(key) = std::env::var("GITHUB_APP_PRIVATE_KEY") {
+            key
+        } else if let Ok(path) = std::env::var("GITHUB_APP_PRIVATE_KEY_FILE") {
+            tokio::fs::read_to_string(&path).await.with_context(|| {
+                format!(
+                    "failed to read private key from $GITHUB_APP_PRIVATE_KEY_FILE: {}",
+                    path
+                )
+            })?
+        } else {
+            return Err(anyhow::anyhow!(
+                "neither $GITHUB_APP_PRIVATE_KEY nor $GITHUB_APP_PRIVATE_KEY_FILE is set"
+            )
+            .into());
+        };
 
         (app_id, private_key)
     };
