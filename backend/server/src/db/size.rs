@@ -138,6 +138,8 @@ pub async fn update_drv_output_size(
 /// * `Ok(Some(size))` - Found baseline closure size in bytes
 /// * `Ok(None)` - No baseline found (first time building this drv on base branch)
 /// * `Err` - Database error
+// TODO: closure size will be a future feature
+#[allow(dead_code)]
 pub async fn get_baseline_closure_size(
     pool: &SqlitePool,
     drv_path: &str,
@@ -173,6 +175,8 @@ pub async fn get_baseline_closure_size(
 /// * `closure_size` - Closure size in bytes (includes all dependencies)
 /// * `git_commit` - Commit SHA this build corresponds to
 /// * `git_repo` - Repository URL
+// TODO: closure size will be a future feature
+#[allow(dead_code)]
 pub async fn store_closure_size(
     pool: &SqlitePool,
     drv_path: &str,
@@ -207,6 +211,8 @@ pub async fn store_closure_size(
 /// * `pool` - Database connection pool
 /// * `drv_path` - The derivation store path (DrvId)
 /// * `closure_size` - Closure size in bytes
+// TODO: closure size will be a future feature
+#[allow(dead_code)]
 pub async fn update_drv_closure_size(
     pool: &SqlitePool,
     drv_path: &str,

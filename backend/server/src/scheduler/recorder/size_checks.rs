@@ -269,16 +269,19 @@ impl RecorderWorker {
     /// This calculates the closure size for a successful build, stores it in the database,
     /// and compares it against the baseline (base branch) if size checks are configured.
     /// If the size increase exceeds the threshold, sends a neutral GitHub check with warning.
+    // TODO: closure size will be a future feature
+    #[allow(dead_code)]
     pub(super) async fn check_closure_size(
         &self,
         drv_id: &DrvId,
         job_infos: &[JobInfo],
     ) -> anyhow::Result<()> {
+        use evaluator::nix_utils::size::get_closure_sizes;
+
         use crate::ci::config::CIConfig;
         use crate::db::size::{
             get_baseline_closure_size, store_closure_size, update_drv_closure_size,
         };
-        use crate::nix::size::get_closure_sizes;
 
         // Get output name → path mapping for this derivation
         let outputs = match crate::nix::get_drv_outputs(&drv_id.store_path()).await {

@@ -105,11 +105,21 @@ pub async fn get_drv_outputs(drv_path: &str) -> Result<HashMap<String, String>> 
 
     let json_str = String::from_utf8(output.stdout)?;
     let drv_output: derivation_show::DrvOutput =
-        serde_json::from_str(&json_str).context("Failed to parse nix derivation show output")?;
+        serde_json::from_str(&json_str).with_context(|| {
+            let snippet = if json_str.len() > 200 {
+                &json_str[..200]
+            } else {
+                &json_str
+            };
+            format!(
+                "Failed to parse `nix derivation show` output for {}: {}...",
+                drv_path, snippet
+            )
+        })?;
 
     // The output is a map with the drv path as key, get the first (and only) value
     let drv_info = drv_output
-        .drvs
+        .into_drvs()
         .into_values()
         .next()
         .context("No derivation info found in output")?;
@@ -118,7 +128,7 @@ pub async fn get_drv_outputs(drv_path: &str) -> Result<HashMap<String, String>> 
     let outputs_map: HashMap<String, String> = if let Some(outputs) = drv_info.outputs {
         outputs
             .into_iter()
-            .map(|(name, info)| (name, info.path))
+            .filter_map(|(name, info)| info.path.map(|p| (name, p)))
             .collect()
     } else {
         // Fallback: if no outputs field, assume single "out" output
