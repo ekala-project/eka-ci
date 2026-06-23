@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tracing::warn;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 use super::{BuildRequest, Builder, Platform};
 use crate::metrics::BuildMetrics;
@@ -53,11 +54,11 @@ impl PlatformQueue {
         self.fod_builder = Some(builder);
     }
 
-    pub fn run(self) -> mpsc::Sender<BuildRequest> {
+    pub fn run(self, cancellation_token: CancellationToken) -> mpsc::Sender<BuildRequest> {
         let (tx, rx) = mpsc::channel(1000);
 
         tokio::spawn(async move {
-            self.loop_all_builds(rx).await;
+            self.loop_all_builds(rx, cancellation_token).await;
         });
 
         tx
@@ -67,11 +68,12 @@ impl PlatformQueue {
         &self,
         builder_name: &str,
         maybe_builder: Option<Builder>,
+        cancellation_token: &CancellationToken,
     ) -> Option<mpsc::Sender<BuildRequest>> {
         if let Some(builder) = maybe_builder {
             let mut builders = HashMap::new();
             builders.insert(builder_name.to_string(), builder);
-            return Some(self.spawn_builders_loop(builders).await);
+            return Some(self.spawn_builders_loop(builders, cancellation_token).await);
         }
 
         None
@@ -80,19 +82,25 @@ impl PlatformQueue {
     pub async fn spawn_builders_loop(
         &self,
         builders: HashMap<SystemName, Builder>,
+        cancellation_token: &CancellationToken,
     ) -> mpsc::Sender<BuildRequest> {
         let (tx, rx) = mpsc::channel(100);
         let platform_clone = self.platform.clone();
         let metrics_clone = self.metrics.clone();
+        let cancel_clone = cancellation_token.clone();
 
         tokio::spawn(async move {
-            loop_builds(builders, rx, platform_clone, metrics_clone).await;
+            loop_builds(builders, rx, platform_clone, metrics_clone, cancel_clone).await;
         });
 
         tx
     }
 
-    pub async fn loop_all_builds(mut self, mut receiver: mpsc::Receiver<BuildRequest>) {
+    pub async fn loop_all_builds(
+        mut self,
+        mut receiver: mpsc::Receiver<BuildRequest>,
+        cancellation_token: CancellationToken,
+    ) {
         // Extract builder features for orphan detection before moving self
         // We only need the feature sets, not the full builders
         struct BuilderFeatures {
@@ -165,17 +173,29 @@ impl PlatformQueue {
         let maybe_fod = self.fod_builder.take();
         let maybe_local = self.local_builder.take();
 
-        let maybe_fod_tx = self.spawn_builder_loop("localhost_fod", maybe_fod).await;
-        let maybe_local_tx = self.spawn_builder_loop("localhost", maybe_local).await;
+        let maybe_fod_tx = self
+            .spawn_builder_loop("localhost_fod", maybe_fod, &cancellation_token)
+            .await;
+        let maybe_local_tx = self
+            .spawn_builder_loop("localhost", maybe_local, &cancellation_token)
+            .await;
 
         // Due to mut self, we need to provision this explicitly
         let (remote_tx, remote_rx) = mpsc::channel(100);
         let platform_clone = self.platform.clone();
         let metrics_clone = self.metrics.clone();
+        let cancel_clone = cancellation_token.clone();
         let builders = self.builders;
 
         tokio::spawn(async move {
-            loop_builds(builders, remote_rx, platform_clone, metrics_clone).await;
+            loop_builds(
+                builders,
+                remote_rx,
+                platform_clone,
+                metrics_clone,
+                cancel_clone,
+            )
+            .await;
         });
 
         // Helper to check for orphaned jobs and fail them immediately
@@ -219,7 +239,10 @@ impl PlatformQueue {
             let fod_tx = maybe_fod_tx.unwrap();
             let local_tx = maybe_local_tx.unwrap();
 
-            while let Some(work) = receiver.recv().await {
+            while let Some(Some(work)) = cancellation_token
+                .run_until_cancelled(receiver.recv())
+                .await
+            {
                 if check_orphan(&work) {
                     continue;
                 }
@@ -247,7 +270,10 @@ impl PlatformQueue {
             let fod_tx = maybe_fod_tx.unwrap();
             let local_tx = maybe_local_tx.unwrap();
 
-            while let Some(work) = receiver.recv().await {
+            while let Some(Some(work)) = cancellation_token
+                .run_until_cancelled(receiver.recv())
+                .await
+            {
                 if check_orphan(&work) {
                     continue;
                 }
@@ -269,7 +295,10 @@ impl PlatformQueue {
         else if has_fod && has_remote {
             let fod_tx = maybe_fod_tx.unwrap();
 
-            while let Some(work) = receiver.recv().await {
+            while let Some(Some(work)) = cancellation_token
+                .run_until_cancelled(receiver.recv())
+                .await
+            {
                 if check_orphan(&work) {
                     continue;
                 }
@@ -291,7 +320,10 @@ impl PlatformQueue {
         else if has_local && has_remote {
             let local_tx = maybe_local_tx.unwrap();
 
-            while let Some(work) = receiver.recv().await {
+            while let Some(Some(work)) = cancellation_token
+                .run_until_cancelled(receiver.recv())
+                .await
+            {
                 if check_orphan(&work) {
                     continue;
                 }
@@ -311,7 +343,10 @@ impl PlatformQueue {
         }
         // Case 5: Remote only
         else if has_remote {
-            while let Some(work) = receiver.recv().await {
+            while let Some(Some(work)) = cancellation_token
+                .run_until_cancelled(receiver.recv())
+                .await
+            {
                 if check_orphan(&work) {
                     continue;
                 }
@@ -325,7 +360,10 @@ impl PlatformQueue {
         // Case 6: Local only
         else {
             let local_tx = maybe_local_tx.expect("Failed to setup local builder");
-            while let Some(work) = receiver.recv().await {
+            while let Some(Some(work)) = cancellation_token
+                .run_until_cancelled(receiver.recv())
+                .await
+            {
                 if check_orphan(&work) {
                     continue;
                 }
@@ -336,6 +374,8 @@ impl PlatformQueue {
                     .expect("Failed to send to remote builder pool");
             }
         }
+
+        info!("PlatformQueue service shutdown gracefully");
     }
 }
 
@@ -344,6 +384,7 @@ async fn loop_builds(
     mut receiver: mpsc::Receiver<BuildRequest>,
     platform: Platform,
     metrics: Arc<BuildMetrics>,
+    cancellation_token: CancellationToken,
 ) {
     use std::collections::VecDeque;
 
@@ -363,7 +404,7 @@ async fn loop_builds(
         .map(|builder| {
             let supported_features = builder.supported_features.clone();
             let mandatory_features = builder.mandatory_features.clone();
-            let channel = builder.run();
+            let channel = builder.run(cancellation_token.clone());
             BuilderChannel {
                 supported_features,
                 mandatory_features,
@@ -377,6 +418,10 @@ async fn loop_builds(
 
     // Anti-starvation: continue receiving new work even while waiting for builder permits
     loop {
+        if cancellation_token.is_cancelled() {
+            break;
+        }
+
         match receiver.try_recv() {
             Ok(work) => {
                 // Drain channel to ensure there's no back pressure
@@ -441,6 +486,10 @@ async fn loop_builds(
 
                 // No permits available; wait for either a permit or new work
                 tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        info!("loop_builds service shutdown gracefully");
+                        return;
+                    }
                     _ = permit_timer.tick() => {
                         // Timer expired, try checking for permits again
                         // (loop will continue)
@@ -476,4 +525,6 @@ async fn loop_builds(
             build_timer.tick().await;
         }
     }
+
+    info!("loop_builds service shutdown gracefully");
 }

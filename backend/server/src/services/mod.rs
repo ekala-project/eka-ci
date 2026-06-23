@@ -9,7 +9,6 @@ use tracing::{info, warn};
 
 use crate::auth::{JwtService, OAuthConfig};
 use crate::channels::ChannelService;
-use crate::checks::types::CheckTask;
 use crate::ci::RepoReader;
 use crate::client::UnixService;
 use crate::config::Config;
@@ -180,6 +179,8 @@ pub async fn start_services(config: Config) -> Result<()> {
     );
     let channel_sender = channel_service.get_sender();
 
+    let cancellation_token = CancellationToken::new();
+
     let scheduler_service = SchedulerService::new(
         db_service.clone(),
         config.logs_dir.clone(),
@@ -195,6 +196,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.security.max_hook_timeout_seconds,
         config.security.audit_hooks,
         Some(channel_sender.clone()),
+        cancellation_token.clone(),
     )
     .await?;
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
@@ -216,12 +218,8 @@ pub async fn start_services(config: Config) -> Result<()> {
     );
 
     // Create ChecksExecutor service
-    let (check_sender, check_receiver) = channel::<CheckTask>(1000);
-    let checks_service = ChecksExecutor::new(
-        check_receiver,
-        db_service.clone(),
-        maybe_github_sender.clone(),
-    );
+    let checks_service = ChecksExecutor::new(db_service.clone(), maybe_github_sender.clone());
+    let check_sender = checks_service.get_sender();
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
     let repo_service = RepoReader::new(
@@ -311,8 +309,6 @@ pub async fn start_services(config: Config) -> Result<()> {
                 .to_string())
     );
 
-    let cancellation_token = CancellationToken::new();
-
     // Note: AsyncService::run() already spawns internally, so we don't wrap in tokio::spawn
     let graph_handle_task = tokio::spawn(graph_service.run(cancellation_token.clone()));
     let git_handle = git_service.run(cancellation_token.clone());
@@ -358,7 +354,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         git_handle,
         gitlab_handle,
         gitea_handle,
-        channel_handle
+        channel_handle,
+        scheduler_service.shutdown(),
     );
 
     // The GitHub service is only spawned when configured; await it

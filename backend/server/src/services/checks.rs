@@ -3,55 +3,33 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::checks::executor::execute_check;
 use crate::checks::types::{CheckResultMessage, CheckTask};
 use crate::db::DbService;
 use crate::github::GitHubTask;
+use crate::services::AsyncService;
 
 pub struct ChecksExecutor {
-    check_receiver: mpsc::Receiver<CheckTask>,
+    check_sender: mpsc::Sender<CheckTask>,
+    check_receiver: Option<mpsc::Receiver<CheckTask>>,
     db_service: DbService,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
 }
 
 impl ChecksExecutor {
-    pub fn new(
-        check_receiver: mpsc::Receiver<CheckTask>,
-        db_service: DbService,
-        github_sender: Option<mpsc::Sender<GitHubTask>>,
-    ) -> Self {
+    pub fn new(db_service: DbService, github_sender: Option<mpsc::Sender<GitHubTask>>) -> Self {
+        let (check_sender, check_receiver) = mpsc::channel(1000);
         Self {
-            check_receiver,
+            check_sender,
+            check_receiver: Some(check_receiver),
             db_service,
             github_sender,
         }
     }
 
-    pub async fn run(mut self, cancellation_token: CancellationToken) {
-        while let Some(request) = cancellation_token
-            .run_until_cancelled(self.check_receiver.recv())
-            .await
-        {
-            let task = match request {
-                Some(task) => task,
-                None => {
-                    warn!("Check receiver channel closed, shutting down");
-                    break;
-                },
-            };
-
-            if let Err(e) = self.handle_check_task(task).await {
-                error!(error = %e, "Failed to handle check task");
-            }
-        }
-
-        info!("ChecksExecutor service shutdown gracefully");
-    }
-
-    async fn handle_check_task(&mut self, task: CheckTask) -> Result<()> {
+    async fn handle_check_task(&self, task: CheckTask) -> Result<()> {
         info!(
             "Executing check '{}' for {}/{}@{}",
             task.check_name, task.owner, task.repo_name, task.sha
@@ -179,5 +157,27 @@ impl ChecksExecutor {
         }
 
         Ok(())
+    }
+}
+
+impl AsyncService<CheckTask> for ChecksExecutor {
+    fn get_sender(&self) -> mpsc::Sender<CheckTask> {
+        self.check_sender.clone()
+    }
+
+    fn take_receiver(&mut self) -> Option<mpsc::Receiver<CheckTask>> {
+        self.check_receiver.take()
+    }
+
+    async fn handle_task(&self, task: CheckTask) -> Result<()> {
+        self.handle_check_task(task).await
+    }
+
+    async fn handle_failure(&mut self, error: anyhow::Error) {
+        error!(error = %error, "Failed to handle check task");
+    }
+
+    async fn handle_closure(&mut self) {
+        info!("ChecksExecutor service shutdown gracefully");
     }
 }

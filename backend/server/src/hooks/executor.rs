@@ -8,10 +8,10 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use super::types::{HookContext, HookResult, HookTask, PostBuildHook};
+use crate::services::AsyncService;
 
 /// Maximum expanded command arg length. Guards against pathological
 /// substitutions (e.g. an attacker-controlled env value exploding a
@@ -24,51 +24,26 @@ const MAX_EXPANDED_ARG_LEN: usize = 1 << 20; // 1 MiB
 const MAX_SUBSTITUTIONS_PER_ARG: usize = 1024;
 
 pub struct HookExecutor {
-    hook_receiver: mpsc::Receiver<HookTask>,
+    hook_sender: mpsc::Sender<HookTask>,
+    hook_receiver: Option<mpsc::Receiver<HookTask>>,
     logs_dir: PathBuf,
     max_hook_timeout: Duration,
     audit_enabled: bool,
 }
 
 impl HookExecutor {
-    pub fn new(
-        hook_receiver: mpsc::Receiver<HookTask>,
-        logs_dir: PathBuf,
-        max_hook_timeout_seconds: u64,
-        audit_enabled: bool,
-    ) -> Self {
+    pub fn new(logs_dir: PathBuf, max_hook_timeout_seconds: u64, audit_enabled: bool) -> Self {
+        let (hook_sender, hook_receiver) = mpsc::channel(1000);
         Self {
-            hook_receiver,
+            hook_sender,
+            hook_receiver: Some(hook_receiver),
             logs_dir,
             max_hook_timeout: Duration::from_secs(max_hook_timeout_seconds),
             audit_enabled,
         }
     }
 
-    pub async fn run(mut self, cancellation_token: CancellationToken) {
-        info!("HookExecutor service starting");
-
-        while let Some(request) = cancellation_token
-            .run_until_cancelled(self.hook_receiver.recv())
-            .await
-        {
-            let task = match request {
-                Some(task) => task,
-                None => {
-                    warn!("Hook receiver channel closed, shutting down");
-                    break;
-                },
-            };
-
-            if let Err(e) = self.handle_hook_task(task).await {
-                error!(error = %e, "Failed to handle hook task");
-            }
-        }
-
-        info!("HookExecutor service shutdown gracefully");
-    }
-
-    async fn handle_hook_task(&mut self, task: HookTask) -> Result<()> {
+    async fn handle_hook_task(&self, task: HookTask) -> Result<()> {
         info!(
             "Executing {} hooks for drv: {} (job: {})",
             task.hooks.len(),
@@ -313,6 +288,28 @@ impl HookExecutor {
         let success = output.status.success();
 
         Ok((exit_code, success))
+    }
+}
+
+impl AsyncService<HookTask> for HookExecutor {
+    fn get_sender(&self) -> mpsc::Sender<HookTask> {
+        self.hook_sender.clone()
+    }
+
+    fn take_receiver(&mut self) -> Option<mpsc::Receiver<HookTask>> {
+        self.hook_receiver.take()
+    }
+
+    async fn handle_task(&self, task: HookTask) -> Result<()> {
+        self.handle_hook_task(task).await
+    }
+
+    async fn handle_failure(&mut self, error: anyhow::Error) {
+        error!(error = %error, "Failed to handle hook task");
+    }
+
+    async fn handle_closure(&mut self) {
+        info!("HookExecutor service shutdown gracefully");
     }
 }
 

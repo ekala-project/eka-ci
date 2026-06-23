@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::process::Command;
 use tokio::sync::mpsc::{self, Sender};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use super::builder_thread::BuilderThread;
@@ -92,7 +93,7 @@ impl Builder {
             .unwrap_or(false)
     }
 
-    pub fn run(self) -> mpsc::Sender<BuildRequest> {
+    pub fn run(self, cancellation_token: CancellationToken) -> mpsc::Sender<BuildRequest> {
         let thread = BuilderThread::init(
             self.build_args(),
             self.max_jobs,
@@ -104,7 +105,7 @@ impl Builder {
             self.max_duration_seconds,
         );
 
-        thread.run()
+        thread.run(cancellation_token)
     }
 
     pub async fn local_from_env(

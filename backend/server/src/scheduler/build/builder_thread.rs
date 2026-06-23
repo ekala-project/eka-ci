@@ -9,7 +9,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep, sleep_until};
-use tracing::{debug, error, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use super::{BuildRequest, Platform};
 use crate::db::model::{DrvId, build_event};
@@ -52,20 +53,21 @@ impl BuilderThread {
         }
     }
 
-    pub fn run(self) -> mpsc::Sender<BuildRequest> {
+    pub fn run(self, cancellation_token: CancellationToken) -> mpsc::Sender<BuildRequest> {
         let (tx, rx) = mpsc::channel(self.max_jobs.into());
 
         tokio::spawn(async move {
-            self.loop_for_builds(rx).await;
+            self.loop_for_builds(rx, cancellation_token).await;
         });
 
         tx
     }
 
-    async fn loop_for_builds(self, mut build_receiver: mpsc::Receiver<BuildRequest>) {
-        use std::time::Duration;
-
-        let mut interval = tokio::time::interval(Duration::from_millis(1));
+    async fn loop_for_builds(
+        self,
+        mut build_receiver: mpsc::Receiver<BuildRequest>,
+        cancellation_token: CancellationToken,
+    ) {
         let mut build_set = JoinSet::new();
 
         loop {
@@ -82,18 +84,29 @@ impl BuilderThread {
                     .set(build_set.len() as f64);
             }
 
-            if let Some(build_request) = build_receiver.recv().await {
-                let new_build = self.create_build(build_request.0.drv_path);
-                build_set.spawn(async move { new_build.attempt_build().await });
-                // Update active builds metric after starting a new build
-                self.metrics
-                    .active_builds
-                    .with_label_values(&[&self.platform])
-                    .set(build_set.len() as f64);
-            } else {
-                interval.tick().await;
+            tokio::select! {
+                _ = cancellation_token.cancelled() => break,
+                result = build_receiver.recv() => {
+                    match result {
+                        Some(build_request) => {
+                            let new_build = self.create_build(build_request.0.drv_path);
+                            build_set.spawn(async move { new_build.attempt_build().await });
+                            // Update active builds metric after starting a new build
+                            self.metrics
+                                .active_builds
+                                .with_label_values(&[&self.platform])
+                                .set(build_set.len() as f64);
+                        },
+                        None => break,
+                    }
+                }
             }
         }
+
+        // Let in-flight builds finish
+        while build_set.join_next().await.is_some() {}
+
+        info!("BuilderThread service shutdown gracefully");
     }
 
     fn create_build(&self, drv_id: DrvId) -> NixBuild {

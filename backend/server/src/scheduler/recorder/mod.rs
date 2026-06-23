@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
 use crate::channels::types::ChannelTask;
 use crate::db::DbService;
@@ -95,7 +96,11 @@ impl RecorderService {
         (res, recorder_sender)
     }
 
-    pub fn run(self, ingress_sender: mpsc::Sender<IngressTask>) -> JoinHandle<()> {
+    pub fn run(
+        self,
+        ingress_sender: mpsc::Sender<IngressTask>,
+        cancellation_token: CancellationToken,
+    ) -> JoinHandle<()> {
         let worker = RecorderWorker::new(
             self.db_service.clone(),
             ingress_sender,
@@ -110,7 +115,7 @@ impl RecorderService {
         );
 
         tokio::spawn(async move {
-            worker.ingest_requests().await;
+            worker.ingest_requests(cancellation_token).await;
         })
     }
 }
@@ -145,14 +150,24 @@ impl RecorderWorker {
         }
     }
 
-    async fn ingest_requests(mut self) {
-        loop {
-            if let Some(task) = self.recorder_receiver.recv().await {
-                debug!("Received recorder task {:?}", &task);
-                if let Err(e) = self.handle_recorder_request(&task).await {
-                    warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
-                }
+    async fn ingest_requests(mut self, cancellation_token: CancellationToken) {
+        while let Some(request) = cancellation_token
+            .run_until_cancelled(self.recorder_receiver.recv())
+            .await
+        {
+            let task = match request {
+                Some(task) => task,
+                None => {
+                    warn!("Recorder receiver channel closed, shutting down");
+                    break;
+                },
+            };
+            debug!("Received recorder task {:?}", &task);
+            if let Err(e) = self.handle_recorder_request(&task).await {
+                warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
             }
         }
+
+        info!("RecorderWorker service shutdown gracefully");
     }
 }
