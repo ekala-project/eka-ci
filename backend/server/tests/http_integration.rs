@@ -84,7 +84,9 @@ async fn create_test_server_with_options(
         cache_configs,
         300,  // 5 minute hook timeout
         true, // audit hooks enabled
-        None, // no ChannelService wired in this integration test
+        None, /* no ChannelService wired in this
+               * integration test */
+        tokio_util::sync::CancellationToken::new(), // cancellation token
     )
     .await
     .expect("Failed to create scheduler");

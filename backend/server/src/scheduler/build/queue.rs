@@ -6,7 +6,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use super::{Builder, Platform, PlatformQueue};
 use crate::db::model::drv::Drv;
@@ -71,9 +72,9 @@ impl BuildQueue {
         system_queue.add_fod_builder(builder).await;
     }
 
-    pub fn run(self) -> JoinHandle<()> {
+    pub fn run(self, cancellation_token: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
-            self.poll_for_builds().await;
+            self.poll_for_builds(cancellation_token).await;
         })
     }
 
@@ -97,11 +98,11 @@ impl BuildQueue {
     /// 3. If both `pending` is fully empty *and* the receiver is empty, fall into a plain blocking
     ///    `recv().await` so we don't burn CPU on empty cycles. Otherwise sleep a few ms on a
     ///    `tokio::time::interval` so downstream queues can drain.
-    async fn poll_for_builds(mut self) {
+    async fn poll_for_builds(mut self, cancellation_token: CancellationToken) {
         let system_senders: HashMap<Platform, mpsc::Sender<BuildRequest>> = self
             .system_queues
             .into_iter()
-            .map(|(system, queue)| (system, queue.run()))
+            .map(|(system, queue)| (system, queue.run(cancellation_token.clone())))
             .collect();
         let default_platform = match default_platform().await {
             Ok(p) => Some(p),
@@ -123,6 +124,10 @@ impl BuildQueue {
         let mut dispatch_timer = tokio::time::interval(Duration::from_millis(10));
 
         loop {
+            if cancellation_token.is_cancelled() {
+                break;
+            }
+
             // Step 1: drain everything currently on the receiver into
             // the per-platform VecDeques without awaiting.
             loop {
@@ -182,24 +187,31 @@ impl BuildQueue {
             // drain before we loop back to step 1.
             let all_empty = pending.values().all(|q| q.is_empty());
             if all_empty {
-                match self.build_request_receiver.recv().await {
-                    Some(build_request) => {
-                        debug!("Received request for build: {:?}", &build_request);
-                        classify_and_enqueue(
-                            build_request,
-                            default_platform.as_deref(),
-                            &mut pending,
-                        );
-                    },
-                    None => {
-                        warn!("Build request channel closed");
-                        return;
-                    },
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => break,
+                    result = self.build_request_receiver.recv() => {
+                        match result {
+                            Some(build_request) => {
+                                debug!("Received request for build: {:?}", &build_request);
+                                classify_and_enqueue(
+                                    build_request,
+                                    default_platform.as_deref(),
+                                    &mut pending,
+                                );
+                            },
+                            None => {
+                                warn!("Build request channel closed");
+                                return;
+                            },
+                        }
+                    }
                 }
             } else {
                 dispatch_timer.tick().await;
             }
         }
+
+        info!("BuildQueue service shutdown gracefully");
     }
 }
 

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
 use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::drv_id;
@@ -75,6 +76,7 @@ impl IngressService {
         self,
         buildable_sender: mpsc::Sender<BuildRequest>,
         recorder_sender: mpsc::Sender<RecorderTask>,
+        cancellation_token: CancellationToken,
     ) -> JoinHandle<()> {
         let worker = IngressWorker {
             request_receiver: self.request_receiver,
@@ -83,20 +85,30 @@ impl IngressService {
             graph_handle: self.graph_handle,
         };
         tokio::spawn(async move {
-            worker.ingest_requests().await;
+            worker.ingest_requests(cancellation_token).await;
         })
     }
 }
 
 impl IngressWorker {
-    async fn ingest_requests(mut self) {
-        loop {
-            if let Some(task) = self.request_receiver.recv().await {
-                if let Err(e) = self.handle_ingress_request(&task).await {
-                    warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
-                }
+    async fn ingest_requests(mut self, cancellation_token: CancellationToken) {
+        while let Some(request) = cancellation_token
+            .run_until_cancelled(self.request_receiver.recv())
+            .await
+        {
+            let task = match request {
+                Some(task) => task,
+                None => {
+                    warn!("Ingress receiver channel closed, shutting down");
+                    break;
+                },
+            };
+            if let Err(e) = self.handle_ingress_request(&task).await {
+                warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
             }
         }
+
+        info!("IngressWorker service shutdown gracefully");
     }
 
     async fn handle_ingress_request(&self, task: &IngressTask) -> anyhow::Result<()> {

@@ -5,6 +5,7 @@ use prometheus::Registry;
 use prometheus::process_collector::ProcessCollector;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use super::build::{BuildQueue, BuildRequest, Builder};
 use super::ingress::{IngressService, IngressTask};
@@ -16,6 +17,7 @@ use crate::github::GitHubTask;
 use crate::graph::{GraphCommand, GraphServiceHandle};
 use crate::hooks::HookExecutor;
 use crate::metrics::BuildMetrics;
+use crate::services::AsyncService;
 use crate::services::websocket::events::ServerEvent;
 
 /// SchedulerService spins up three smaller services:
@@ -67,6 +69,7 @@ impl SchedulerService {
         max_hook_timeout_seconds: u64,
         audit_hooks: bool,
         channel_sender: Option<mpsc::Sender<ChannelTask>>,
+        cancellation_token: CancellationToken,
     ) -> anyhow::Result<Self> {
         // Create build metrics using shared registry
         let build_metrics = BuildMetrics::new(&metrics_registry)?;
@@ -76,13 +79,9 @@ impl SchedulerService {
         metrics_registry.register(Box::new(process_collector))?;
 
         // Initialize HookExecutor service
-        let (hook_sender, hook_receiver) = mpsc::channel(1000);
-        let hook_executor = HookExecutor::new(
-            hook_receiver,
-            logs_dir.clone(),
-            max_hook_timeout_seconds,
-            audit_hooks,
-        );
+        let hook_executor =
+            HookExecutor::new(logs_dir.clone(), max_hook_timeout_seconds, audit_hooks);
+        let hook_sender = hook_executor.get_sender();
 
         let (ingress_service, ingress_sender) = IngressService::init(graph_handle.clone());
         let (recorder_service, recorder_sender) = RecorderService::init(
@@ -132,16 +131,16 @@ impl SchedulerService {
         // Ingress now needs the recorder channel as well, so it can short-circuit
         // cache-hit drvs straight to "successful build" without queuing them on
         // the builder.
-        let ingress_thread = ingress_service.run(builder_sender.clone(), recorder_sender.clone());
-        let recorder_thread = recorder_service.run(ingress_sender.clone());
-        let builder_thread = builder_service.run();
+        let ingress_thread = ingress_service.run(
+            builder_sender.clone(),
+            recorder_sender.clone(),
+            cancellation_token.clone(),
+        );
+        let recorder_thread =
+            recorder_service.run(ingress_sender.clone(), cancellation_token.clone());
+        let builder_thread = builder_service.run(cancellation_token.clone());
 
-        // Spawn HookExecutor thread with a new cancellation token
-        // Note: This will be cancelled when the parent process terminates
-        let hook_cancellation = tokio_util::sync::CancellationToken::new();
-        let hook_thread = Some(tokio::spawn(async move {
-            hook_executor.run(hook_cancellation).await;
-        }));
+        let hook_thread = Some(hook_executor.run(cancellation_token));
 
         Ok(Self {
             db_service,
@@ -164,5 +163,19 @@ impl SchedulerService {
     /// Get the Prometheus metrics registry for exposing via HTTP
     pub fn metrics_registry(&self) -> Arc<Registry> {
         self.metrics_registry.clone()
+    }
+
+    /// Wait for all internal service threads to complete.
+    /// Should be called after the cancellation token has been cancelled.
+    pub async fn shutdown(self) {
+        let _ = tokio::join!(
+            self.ingress_thread,
+            self.builder_thread,
+            self.recorder_thread,
+        );
+        if let Some(hook_thread) = self.hook_thread {
+            let _ = hook_thread.await;
+        }
+        tracing::info!("SchedulerService shutdown gracefully");
     }
 }
