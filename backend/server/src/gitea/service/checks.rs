@@ -465,6 +465,9 @@ pub(super) async fn handle_create_failure_check_run(
         crate::github::JobDifference::Removed => {
             format!("Job '{}' was removed from the build set", job_attr_name)
         },
+        crate::github::JobDifference::Unchanged => {
+            format!("Job '{}' is unchanged", job_attr_name)
+        },
     };
 
     let check_name = format!("eka-ci/build/{}", job_attr_name);

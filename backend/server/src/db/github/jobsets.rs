@@ -119,11 +119,9 @@ pub async fn create_jobs_for_jobset(
         .map(|job| {
             let drv_id = DrvId::from_str(&job.drv_path)?;
 
-            // Compute difference: New (0), Changed (1), or Unchanged (defaults to New if no base)
+            // Compute difference: New (0), Changed (1), or Unchanged (3)
             let difference = match base_map.get(job.attr.as_str()) {
-                Some(base_drv_path) if *base_drv_path == job.drv_path => 0, /* Unchanged (same */
-                // drv) - mark as
-                // New
+                Some(base_drv_path) if *base_drv_path == job.drv_path => 3, // Unchanged (same drv)
                 Some(_) => 1, // Changed (different drv for same attr)
                 None => 0,    // New (attr doesn't exist in base)
             };
@@ -156,6 +154,34 @@ pub async fn create_jobs_for_jobset(
     tx.commit().await?;
 
     Ok(())
+}
+
+/// Get all new or changed jobs in a jobset (difference = New or Changed).
+/// Returns (drv_path, attr_name, difference) for each matching job.
+pub async fn get_new_and_changed_jobs_for_jobset(
+    jobset_id: i64,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<(DrvId, String, crate::github::JobDifference)>> {
+    use std::str::FromStr;
+
+    let rows = sqlx::query_as::<_, (String, String, crate::github::JobDifference)>(
+        r#"
+        SELECT d.drv_path, j.name, j.difference
+        FROM Job j
+        INNER JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE j.jobset = ? AND j.difference IN (0, 1)
+        "#,
+    )
+    .bind(jobset_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|(drv_path, name, difference)| {
+            let drv_id = DrvId::from_str(&drv_path)?;
+            Ok((drv_id, name, difference))
+        })
+        .collect()
 }
 
 /// Get job information for a specific drv

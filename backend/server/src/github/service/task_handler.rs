@@ -184,6 +184,13 @@ impl GitHubService {
                 self.handle_check_auto_merge(owner, repo_name, *pr_number)
                     .await?;
             },
+            GitHubTask::CreateDrvCheckRuns {
+                ci_check_info,
+                jobset_id,
+            } => {
+                self.handle_create_drv_check_runs(ci_check_info, *jobset_id)
+                    .await?;
+            },
             GitHubTask::CreateDependencyChangesGate {
                 ci_check_info,
                 jobset_id,

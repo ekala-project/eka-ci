@@ -39,11 +39,13 @@ impl GitHubService {
         // This is only relevant on PRs, missing a base commit denotes that
         // this jobset creation is done for a base_commit
         if let Some(base_commit) = ci_check_info.base_commit.as_ref() {
-            // Job differences are now computed during insertion, so we just need
-            // to query them for downstream tasks (no UPDATE needed)
-
-            // Note: We no longer create check_runs eagerly here
-            // Check_runs will be created lazily when jobs fail
+            // Eagerly create GitHub check runs for new/changed drvs
+            self.github_sender
+                .send(GitHubTask::CreateDrvCheckRuns {
+                    ci_check_info: std::sync::Arc::clone(ci_check_info),
+                    jobset_id,
+                })
+                .await?;
 
             // Queue dependency changes gate creation
             // This needs the base jobset ID to compare dependencies

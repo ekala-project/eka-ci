@@ -95,7 +95,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let metrics_registry = Arc::new(Registry::new());
 
     // Create GraphService for in-memory build state tracking
-    let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
+    let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(50_000);
 
     // Create GraphMetrics and register with shared registry
     let graph_metrics =

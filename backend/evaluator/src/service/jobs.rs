@@ -223,6 +223,21 @@ where
         .spawn()
         .context("failed to spawn nix-eval-jobs")?;
 
+    // Drain stderr concurrently with stdout to prevent a deadlock:
+    // if the child fills the stderr pipe buffer (64 KB) while we only
+    // read stdout, both pipes stall and the process hangs.
+    let stderr_handle = {
+        let mut stderr = cmd
+            .stderr
+            .take()
+            .context("nix-eval-jobs stderr was not captured")?;
+        tokio::spawn(async move {
+            let mut buf = String::new();
+            let _ = stderr.read_to_string(&mut buf).await;
+            buf
+        })
+    };
+
     let outcome = {
         let stdout = cmd
             .stdout
@@ -238,6 +253,12 @@ where
         .await
     };
 
+    // Collect stderr now that stdout is fully consumed.
+    let stderr_output = stderr_handle.await.unwrap_or_default();
+    if !stderr_output.is_empty() {
+        debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
+    }
+
     if outcome.truncation != Truncation::None {
         // Kill + reap the child to avoid zombies / writing forever
         // into a closed pipe. If the child already exited on its
@@ -248,16 +269,6 @@ where
                 "nix-eval-jobs child kill failed (may already be dead): {:?}",
                 e
             );
-        }
-
-        // Read stderr before waiting to capture any diagnostic output
-        if let Some(mut stderr) = cmd.stderr.take() {
-            let mut stderr_output = String::new();
-            if let Err(e) = stderr.read_to_string(&mut stderr_output).await {
-                debug!("Failed to read nix-eval-jobs stderr: {:?}", e);
-            } else if !stderr_output.is_empty() {
-                debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
-            }
         }
 
         if let Err(e) = cmd.wait().await {
@@ -284,16 +295,6 @@ where
             outcome.bytes_read,
         );
     } else {
-        // Read stderr before waiting to capture any diagnostic output
-        if let Some(mut stderr) = cmd.stderr.take() {
-            let mut stderr_output = String::new();
-            if let Err(e) = stderr.read_to_string(&mut stderr_output).await {
-                debug!("Failed to read nix-eval-jobs stderr: {:?}", e);
-            } else if !stderr_output.is_empty() {
-                debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
-            }
-        }
-
         // Reap the child on the clean path too.
         if let Err(e) = cmd.wait().await {
             warn!("nix-eval-jobs child wait failed on clean path: {:?}", e);

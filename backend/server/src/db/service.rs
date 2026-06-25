@@ -158,6 +158,13 @@ impl DbService {
         Ok(jobset_id)
     }
 
+    pub async fn get_new_and_changed_jobs_for_jobset(
+        &self,
+        jobset_id: i64,
+    ) -> anyhow::Result<Vec<(DrvId, String, crate::github::JobDifference)>> {
+        github::get_new_and_changed_jobs_for_jobset(jobset_id, &self.pool).await
+    }
+
     pub async fn get_job_config_for_drv(&self, drv_id: &DrvId) -> anyhow::Result<Option<String>> {
         github::get_job_config_for_drv(drv_id, &self.pool).await
     }

@@ -159,6 +159,67 @@ impl GitHubService {
         Ok(())
     }
 
+    /// Eagerly create GitHub check runs for each new/changed drv in a jobset.
+    pub(super) async fn handle_create_drv_check_runs(
+        &self,
+        ci_check_info: &std::sync::Arc<CICheckInfo>,
+        jobset_id: i64,
+    ) -> Result<()> {
+        let jobs = self
+            .db_service
+            .get_new_and_changed_jobs_for_jobset(jobset_id)
+            .await?;
+
+        if jobs.is_empty() {
+            debug!("No new/changed jobs in jobset {}, skipping check run creation", jobset_id);
+            return Ok(());
+        }
+
+        let jobset_info = self.db_service.get_jobset_info(jobset_id).await?;
+        let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+
+        debug!(
+            "Creating {} check runs for new/changed drvs in jobset {} ({})",
+            jobs.len(),
+            jobset_id,
+            &jobset_info.job
+        );
+
+        for (drv_id, attr_name, difference) in &jobs {
+            let initial_state = DrvBuildState::Queued;
+            match ci_check_info
+                .create_gh_check_run(&octocrab, &jobset_info.job, attr_name, initial_state, difference)
+                .await
+            {
+                Ok(check_run) => {
+                    if let Err(e) = self
+                        .db_service
+                        .insert_check_run_info(
+                            check_run.id.0 as i64,
+                            drv_id,
+                            &ci_check_info.repo_name,
+                            &ci_check_info.owner,
+                        )
+                        .await
+                    {
+                        warn!(
+                            "Failed to store check run info for {} ({:?}): {:?}",
+                            attr_name, drv_id, e
+                        );
+                    }
+                },
+                Err(e) => {
+                    warn!(
+                        "Failed to create check run for {} ({:?}): {:?}",
+                        attr_name, drv_id, e
+                    );
+                },
+            }
+        }
+
+        Ok(())
+    }
+
     /// Create or update a GitHub check run for a release channel promotion.
     ///
     /// The check run name is `release/{channel_name}` and displays the

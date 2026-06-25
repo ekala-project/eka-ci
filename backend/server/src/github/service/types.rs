@@ -18,6 +18,7 @@ pub enum JobDifference {
     New,
     Changed,
     Removed,
+    Unchanged,
 }
 
 impl fmt::Display for JobDifference {
@@ -26,6 +27,7 @@ impl fmt::Display for JobDifference {
             JobDifference::New => write!(f, "New"),
             JobDifference::Changed => write!(f, "Changed"),
             JobDifference::Removed => write!(f, "Removed"),
+            JobDifference::Unchanged => write!(f, "Unchanged"),
         }
     }
 }
@@ -42,6 +44,7 @@ mod job_difference_encoding {
         New = 0,
         Changed = 1,
         Removed = 2,
+        Unchanged = 3,
     }
 
     impl From<&JobDifference> for JobDifferenceRepr {
@@ -50,6 +53,7 @@ mod job_difference_encoding {
                 JobDifference::New => Self::New,
                 JobDifference::Changed => Self::Changed,
                 JobDifference::Removed => Self::Removed,
+                JobDifference::Unchanged => Self::Unchanged,
             }
         }
     }
@@ -60,6 +64,7 @@ mod job_difference_encoding {
                 JobDifferenceRepr::New => Self::New,
                 JobDifferenceRepr::Changed => Self::Changed,
                 JobDifferenceRepr::Removed => Self::Removed,
+                JobDifferenceRepr::Unchanged => Self::Unchanged,
             }
         }
     }
@@ -262,6 +267,11 @@ pub enum GitHubTask {
         owner: String,
         repo_name: String,
         pr_number: i64,
+    },
+    /// Eagerly create GitHub check runs for each new/changed drv in a jobset.
+    CreateDrvCheckRuns {
+        ci_check_info: Arc<CICheckInfo>,
+        jobset_id: i64,
     },
     CreateDependencyChangesGate {
         ci_check_info: Arc<CICheckInfo>,
