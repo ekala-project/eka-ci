@@ -15,6 +15,7 @@
   sqlite,
   dev-server,
   fenix,
+  gh,
 }:
 
 mkShell {
@@ -33,6 +34,7 @@ mkShell {
     elmPackages.elm
     dev-server
     sqlite
+    gh
   ]
   ++ lib.optionals stdenv.isLinux [
     # Broken in nixpkgs for darwin?
