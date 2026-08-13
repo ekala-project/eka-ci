@@ -74,8 +74,6 @@ impl AsyncService<GitTask> for GitService {
                     .fetch_remote_repo(&pr_base_repo, &pr.base.ref_field)
                     .await?;
                 base_repo.create_worktree().await?;
-                let base_task = RepoTask::Read(base_repo.worktree_path());
-                self.repo_sender.send(base_task).await?;
 
                 // do the same thing but for the head commit
                 let repo = GitWorkspace::from_git_repo(pr_base_repo, &pr.head.sha);

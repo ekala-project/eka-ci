@@ -12,6 +12,14 @@ use crate::github::service::{CHANGE_SUMMARY_DEBOUNCE, CICheckInfo, GitHubTask, a
 use crate::nix::NixEvalDrv;
 
 impl GitHubService {
+    /// Threshold for per-package check_run creation. When the number of
+    /// new or changed packages is below this value, individual check_runs
+    /// are created eagerly so each package is visible as a separate CI
+    /// gate. At or above this threshold, individual check_runs are
+    /// omitted (the eval gate serves as the summary) and only build
+    /// failures produce per-package check_runs lazily.
+    const EAGER_CHECK_RUN_THRESHOLD: usize = 500;
+
     pub(super) async fn create_job_set(
         &self,
         ci_check_info: &std::sync::Arc<CICheckInfo>,
@@ -39,11 +47,9 @@ impl GitHubService {
         // This is only relevant on PRs, missing a base commit denotes that
         // this jobset creation is done for a base_commit
         if let Some(base_commit) = ci_check_info.base_commit.as_ref() {
-            // Job differences are now computed during insertion, so we just need
-            // to query them for downstream tasks (no UPDATE needed)
-
-            // Note: We no longer create check_runs eagerly here
-            // Check_runs will be created lazily when jobs fail
+            // Create per-package check_runs eagerly for small rebuild sets
+            self.create_eager_check_runs(ci_check_info, name, jobset_id)
+                .await?;
 
             // Queue dependency changes gate creation
             // This needs the base jobset ID to compare dependencies
@@ -74,6 +80,61 @@ impl GitHubService {
                 self.spawn_change_summary_debounce(Arc::clone(ci_check_info), name.to_string());
             }
         }
+        Ok(())
+    }
+
+    /// Create per-package check_runs eagerly for new/changed packages
+    /// when the count is below `EAGER_CHECK_RUN_THRESHOLD`. For larger
+    /// sets, the eval gate itself acts as the summary and individual
+    /// check_runs are only created lazily on build failure.
+    async fn create_eager_check_runs(
+        &self,
+        ci_check_info: &std::sync::Arc<CICheckInfo>,
+        job_name: &str,
+        jobset_id: i64,
+    ) -> Result<()> {
+        let changed_jobs = self.db_service.get_new_or_changed_jobs(jobset_id).await?;
+
+        if changed_jobs.is_empty() || changed_jobs.len() >= Self::EAGER_CHECK_RUN_THRESHOLD {
+            if changed_jobs.len() >= Self::EAGER_CHECK_RUN_THRESHOLD {
+                debug!(
+                    "Skipping eager check_run creation for {} new/changed packages (threshold {})",
+                    changed_jobs.len(),
+                    Self::EAGER_CHECK_RUN_THRESHOLD,
+                );
+            }
+            return Ok(());
+        }
+
+        debug!(
+            "Creating {} eager check_runs for new/changed packages in jobset {}",
+            changed_jobs.len(),
+            job_name,
+        );
+
+        let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+
+        for job in &changed_jobs {
+            let check_run = ci_check_info
+                .create_gh_check_run(
+                    &octocrab,
+                    job_name,
+                    &job.name,
+                    job.build_state.clone(),
+                    &job.difference,
+                )
+                .await?;
+
+            self.db_service
+                .insert_check_run_info(
+                    check_run.id.0 as i64,
+                    &job.drv_path,
+                    &ci_check_info.repo_name,
+                    &ci_check_info.owner,
+                )
+                .await?;
+        }
+
         Ok(())
     }
 

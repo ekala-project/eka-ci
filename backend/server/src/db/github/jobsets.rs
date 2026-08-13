@@ -4,7 +4,7 @@ use anyhow::Result;
 use sqlx::{Pool, Sqlite};
 
 use super::super::model::DrvId;
-use super::types::{BaseJob, JobInfo, JobSetInfo};
+use super::types::{BaseJob, JobInfo, JobSetInfo, NewOrChangedJob};
 use crate::github::JobDifference;
 use crate::nix::NixEvalDrv;
 
@@ -108,50 +108,58 @@ pub async fn create_jobs_for_jobset(
         .iter()
         .map(|bj| (bj.name.as_str(), bj.drv_path.as_str()))
         .collect();
-
     // Using a transaction should allow for the pool to batch statements
     // better than individual insertions + pool flush
     let mut tx = pool.begin().await?;
 
-    // Convert all drv_paths to DrvIds first, collecting any errors
+    // Convert drv_paths to DrvIds and compute difference vs base.
+    // Unchanged packages (same attr AND same drv_path) are excluded
+    // entirely — only New and Changed packages get Job rows.
+    // Note: base_map drv_paths are DrvId format (hash-name.drv) while
+    // NixEvalDrv.drv_path is a full store path (/nix/store/...).
+    // We parse job.drv_path into a DrvId for consistent comparison.
     let job_data: Vec<(DrvId, &str, i64)> = jobs
         .iter()
-        .map(|job| {
-            let drv_id = DrvId::from_str(&job.drv_path)?;
+        .filter_map(|job| {
+            let drv_id = DrvId::from_str(&job.drv_path).ok()?;
+            let drv_id_str = drv_id.to_string();
 
-            // Compute difference: New (0), Changed (1), or Unchanged (defaults to New if no base)
             let difference = match base_map.get(job.attr.as_str()) {
-                Some(base_drv_path) if *base_drv_path == job.drv_path => 0, /* Unchanged (same */
-                // drv) - mark as
-                // New
+                Some(base_drv_path) if *base_drv_path == drv_id_str => return None, // Unchanged
                 Some(_) => 1, // Changed (different drv for same attr)
                 None => 0,    // New (attr doesn't exist in base)
             };
 
-            Ok((drv_id, job.attr.as_str(), difference))
+            Some((drv_id, job.attr.as_str(), difference))
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect();
 
-    // Use QueryBuilder for batch insert with subqueries
-    let mut query_builder =
-        sqlx::QueryBuilder::new("INSERT INTO Job (jobset, drv_id, name, difference) VALUES ");
+    // Each row uses 4 bind variables (jobset, drv_path, attr, difference).
+    // SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999, so we chunk at
+    // 200 rows per INSERT to stay safely under the limit.
+    const CHUNK_SIZE: usize = 200;
 
-    for (i, (drv_id, attr, difference)) in job_data.iter().enumerate() {
-        if i > 0 {
+    for chunk in job_data.chunks(CHUNK_SIZE) {
+        let mut query_builder =
+            sqlx::QueryBuilder::new("INSERT INTO Job (jobset, drv_id, name, difference) VALUES ");
+
+        for (i, (drv_id, attr, difference)) in chunk.iter().enumerate() {
+            if i > 0 {
+                query_builder.push(", ");
+            }
+            query_builder.push("(");
+            query_builder.push_bind(jobset_id);
+            query_builder.push(", (SELECT rowid FROM Drv WHERE drv_path = ");
+            query_builder.push_bind(drv_id);
+            query_builder.push(" LIMIT 1), ");
+            query_builder.push_bind(attr);
             query_builder.push(", ");
+            query_builder.push_bind(difference);
+            query_builder.push(")");
         }
-        query_builder.push("(");
-        query_builder.push_bind(jobset_id);
-        query_builder.push(", (SELECT rowid FROM Drv WHERE drv_path = ");
-        query_builder.push_bind(drv_id);
-        query_builder.push(" LIMIT 1), ");
-        query_builder.push_bind(attr);
-        query_builder.push(", ");
-        query_builder.push_bind(difference);
-        query_builder.push(")");
-    }
 
-    query_builder.build().execute(&mut *tx).await?;
+        query_builder.build().execute(&mut *tx).await?;
+    }
 
     tx.commit().await?;
 
@@ -266,6 +274,29 @@ pub async fn get_jobset_by_id(
     .await?;
 
     Ok(jobset)
+}
+
+/// Get new or changed jobs for a jobset (difference = New or Changed).
+/// Returns job info with the drv_id needed to create check_runs.
+pub async fn get_new_or_changed_jobs(
+    jobset_id: i64,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<NewOrChangedJob>> {
+    let jobs = sqlx::query_as(
+        r#"
+        SELECT j.name, j.difference, d.drv_path, d.build_state
+        FROM Job j
+        JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE j.jobset = ? AND j.difference IN (?, ?)
+        "#,
+    )
+    .bind(jobset_id)
+    .bind(JobDifference::New)
+    .bind(JobDifference::Changed)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(jobs)
 }
 
 pub async fn get_jobset_info(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<JobSetInfo> {
