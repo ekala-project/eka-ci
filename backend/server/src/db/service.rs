@@ -131,14 +131,42 @@ impl DbService {
             None
         };
 
+        // Ensure all evaluated drv paths exist in the Drv table before
+        // inserting Job rows (which reference Drv via a subquery).
+        // For head commits, deep_traverse already inserted these. For
+        // base-commit evals (traverse=false), the drvs may not yet
+        // exist, causing a NOT NULL constraint violation on Job.drv_id.
+        let eval_drvs: Vec<drv::Drv> = jobs
+            .iter()
+            .filter_map(|job| {
+                let drv_id = DrvId::from_str(&job.drv_path).ok()?;
+                Some(drv::Drv {
+                    drv_path: drv_id,
+                    system: job.system.clone(),
+                    prefer_local_build: false,
+                    required_system_features: None,
+                    is_fod: false,
+                    build_state: crate::db::model::build_event::DrvBuildState::Queued,
+                    output_size: None,
+                    closure_size: None,
+                    pname: job.pname_or_heuristic().into(),
+                    version: job.version_or_heuristic(),
+                    license_json: None,
+                    maintainers_json: None,
+                    meta_position: None,
+                    broken: None,
+                    insecure: None,
+                })
+            })
+            .collect();
+        drv::insert_drvs_and_references(&self.pool, &eval_drvs, &[]).await?;
+
         github::create_jobs_for_jobset(jobset_id, jobs, base_jobset_jobs.as_deref(), &self.pool)
             .await?;
 
         // Persist package metadata derived from `nix-eval-jobs --meta` onto
-        // the `Drv` rows that were created earlier in the eval pipeline.
-        // The Job FK to Drv has already passed at this point, so we know
-        // the rows exist. We tolerate per-drv DrvId parse failures by
-        // logging and dropping (consistent with the existing eval path).
+        // the `Drv` rows that were created/ensured above. We tolerate per-drv DrvId parse failures
+        // by logging and dropping (consistent with the existing eval path).
         let metadata_items: Vec<(DrvId, _)> = jobs
             .iter()
             .filter_map(|job| match DrvId::from_str(&job.drv_path) {
@@ -214,6 +242,13 @@ impl DbService {
 
     pub async fn jobset_has_new_or_changed_failures(&self, jobset_id: i64) -> anyhow::Result<bool> {
         github::jobset_has_new_or_changed_failures(jobset_id, &self.pool).await
+    }
+
+    pub async fn get_new_or_changed_jobs(
+        &self,
+        jobset_id: i64,
+    ) -> anyhow::Result<Vec<github::NewOrChangedJob>> {
+        github::get_new_or_changed_jobs(jobset_id, &self.pool).await
     }
 
     pub async fn get_jobset_info(&self, jobset_id: i64) -> anyhow::Result<github::JobSetInfo> {

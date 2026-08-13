@@ -6,9 +6,17 @@ use tracing::warn;
 use crate::nix::{NixEvalDrv, NixEvalError};
 
 impl super::EvalService {
+    /// Run nix-eval-jobs and optionally traverse all evaluated drvs to
+    /// populate the dependency graph and ingress queue.
+    ///
+    /// `traverse` should be `true` for head-commit (PR) evaluations
+    /// that feed into the build scheduler, and `false` for base-commit
+    /// evaluations that only need the evaluated attr/drv list for
+    /// jobset diff computation.
     pub async fn run_nix_eval_jobs(
         &self,
         file_path: &str,
+        traverse: bool,
     ) -> Result<(Vec<NixEvalDrv>, Vec<NixEvalError>)> {
         // Create a metrics adapter if metrics are available
         let metrics: Option<&dyn evaluator::traits::EvalMetricsCollector> = self
@@ -31,10 +39,14 @@ impl super::EvalService {
         let (jobs, errors) =
             evaluator::service::run_nix_eval_jobs(file_path, metrics, Some(traverse_fn)).await?;
 
-        // Traverse after full parse
-        for drv in &jobs {
-            if let Err(e) = self.traverse_drvs(&drv.drv_path, &drv.input_drvs).await {
-                warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
+        // Traverse after full parse — only when building (head commit).
+        // Base-commit evals skip this since they only need attr/drv
+        // data for jobset diff computation, not dependency graphs.
+        if traverse {
+            for drv in &jobs {
+                if let Err(e) = self.traverse_drvs(&drv.drv_path, &drv.input_drvs).await {
+                    warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
+                }
             }
         }
 

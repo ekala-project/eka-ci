@@ -30,6 +30,15 @@ pub struct JobInfo {
     pub difference: JobDifference,
 }
 
+/// A new or changed job in a jobset, used for eager check_run creation.
+#[derive(Debug, FromRow)]
+pub struct NewOrChangedJob {
+    pub name: String,
+    pub difference: JobDifference,
+    pub drv_path: DrvId,
+    pub build_state: DrvBuildState,
+}
+
 /// Get the jobset name and commit for a jobset ID
 #[derive(Debug, FromRow)]
 pub struct JobSetInfo {
