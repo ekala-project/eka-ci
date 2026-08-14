@@ -49,8 +49,7 @@ impl RecorderWorker {
                 // Queued → Completed(Success) without passing through
                 // Building, so we skip expensive nix path-info calls
                 // for those (outputs aren't guaranteed to be local).
-                let was_built_locally =
-                    matches!(old_state, DBS::Buildable | DBS::Building | DBS::FailedRetry);
+                let was_built_locally = matches!(old_state, DBS::Building);
 
                 if was_built_locally {
                     // Execute post-build hooks if configured

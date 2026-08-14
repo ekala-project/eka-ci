@@ -79,7 +79,7 @@ impl RecorderService {
         >,
         channel_sender: Option<mpsc::Sender<ChannelTask>>,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
-        let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
+        let (recorder_sender, recorder_receiver) = mpsc::channel(50_000);
 
         let res = Self {
             db_service,
