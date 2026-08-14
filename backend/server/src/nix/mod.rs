@@ -183,6 +183,122 @@ impl EvalService {
         }
     }
 
+    /// Traverse all evaluated drvs in a single batch: collect
+    /// requisites, insert into DB and graph in one shot, then update
+    /// the LRU cache. This avoids per-drv graph channel sends which
+    /// contend with the ingress cascade.
+    async fn batch_traverse(&self, jobs: &[NixEvalDrv]) -> Result<()> {
+        use tokio::task::JoinSet;
+
+        let mut all_new_drvs = Vec::new();
+        let mut all_drv_refs: Vec<(DrvId, DrvId)> = Vec::new();
+
+        for job in jobs {
+            let drv_id = match std::str::FromStr::from_str(&job.drv_path) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            if self.already_visited_drv(&drv_id).await {
+                continue;
+            }
+
+            debug!("Traversing drv tree for {}", &job.drv_path);
+            let drvs: Vec<DrvId> = match drv_requisites_as_ids(&job.drv_path).await {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!("Issue while traversing {} drv: {:?}", &job.drv_path, e);
+                    continue;
+                },
+            };
+
+            let mut drv_map = self.drv_map.lock().await;
+            let new_drvids: Vec<DrvId> = drvs
+                .into_iter()
+                .filter(|x| drv_map.get(x).is_none())
+                .collect();
+            drop(drv_map);
+
+            for drvs_chunk in new_drvids.chunks(150) {
+                let mut info_set: JoinSet<Result<Drv, anyhow::Error>> = JoinSet::new();
+                let mut ref_set: JoinSet<Result<Vec<(Referrer, Reference)>, anyhow::Error>> =
+                    JoinSet::new();
+
+                for drv in drvs_chunk {
+                    let drv_to_fetch = drv.store_path();
+                    let db_service = self.db_service.clone();
+                    info_set
+                        .spawn(async move { Drv::fetch_info(&drv_to_fetch, &db_service).await });
+                    let drv_clone = drv.clone();
+                    ref_set.spawn(async move { drv_clone.reference_pairs().await });
+                }
+                let fetched_drvs = info_set.join_all().await;
+                let new_drv_refs = ref_set.join_all().await;
+
+                let successful_fetches = fetched_drvs.into_iter().flatten().collect::<Vec<_>>();
+                let successful_refs = new_drv_refs
+                    .into_iter()
+                    .flat_map(|x| x.into_iter().flatten())
+                    .collect::<Vec<(DrvId, DrvId)>>();
+
+                all_new_drvs.extend(successful_fetches);
+                all_drv_refs.extend(successful_refs);
+            }
+        }
+
+        if all_new_drvs.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            "Batch traverse: {} new drvs, {} refs",
+            all_new_drvs.len(),
+            all_drv_refs.len()
+        );
+
+        // Single DB insert for all drvs
+        self.db_service
+            .insert_drvs_and_references(&all_new_drvs, &all_drv_refs)
+            .await?;
+
+        // Single graph insert with all drvs and refs. Use a bounded
+        // wait: the graph processes 30k drvs in ~2 min. If it takes
+        // longer, proceed anyway — the ingress cascade will eventually
+        // pick up the remaining drvs when the graph finishes.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = GraphCommand::InsertDrvs {
+            drvs: crate::graph_compat::to_shared_drvs(&all_new_drvs)?,
+            refs: all_drv_refs
+                .into_iter()
+                .map(|(r, d)| {
+                    Ok((
+                        crate::graph_compat::to_shared_drv_id(&r)?,
+                        crate::graph_compat::to_shared_drv_id(&d)?,
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            response: tx,
+        };
+        self.graph_command_sender.send(cmd).await?;
+        // Wait up to 5 minutes for the graph to process the insert.
+        // This ensures the shared_view has dependency edges before the
+        // ingress starts checking buildability. If it times out, the
+        // cascade will still work once the graph finishes.
+        match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+            Ok(Ok(())) => info!("Graph InsertDrvs completed for batch traverse"),
+            Ok(Err(_)) => warn!("Graph InsertDrvs oneshot dropped"),
+            Err(_) => warn!("Graph InsertDrvs timed out after 5 minutes, proceeding anyway"),
+        }
+
+        // Update LRU cache
+        let mut drv_map = self.drv_map.lock().await;
+        for drv in all_new_drvs {
+            drv_map.put(drv.drv_path.clone(), drv);
+        }
+        drop(drv_map);
+
+        Ok(())
+    }
+
     /// Given a drv, traverse all direct drv dependencies
     async fn traverse_drvs(
         &self,
@@ -274,12 +390,12 @@ impl EvalService {
             .await?;
 
         // Insert into graph for fast in-memory access.
-        // Best-effort: the graph channel is shared with the ingress
-        // cascade (UpdateState, CheckBuildable) which can saturate it
-        // during large traversals. Drvs are already persisted to the
-        // DB above; the graph will pick them up on restart or when
-        // the cascade settles. Awaiting the oneshot response here
-        // deadlocks when the channel is full.
+        // Use send().await which applies back-pressure if the graph
+        // channel is full. This is safe from deadlock because:
+        // - The graph channel is 50k capacity
+        // - deep_traverse sends ~33 InsertDrvs (one per eval'd drv)
+        // - The cascade sends UpdateState/CheckBuildable but those come from the ingress/recorder,
+        //   not from this task
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::InsertDrvs {
             drvs: crate::graph_compat::to_shared_drvs(&new_drvs)?,
@@ -295,15 +411,7 @@ impl EvalService {
                 .collect::<anyhow::Result<Vec<_>>>()?,
             response: tx,
         };
-        // Use try_send: if the graph channel is saturated by the
-        // ingress cascade, skip this insert rather than blocking.
-        // The drvs are in the DB and will be loaded on next restart.
-        if self.graph_command_sender.try_send(cmd).is_err() {
-            debug!(
-                "Graph channel full, skipping InsertDrvs for {} drvs",
-                new_drvs.len()
-            );
-        }
+        self.graph_command_sender.send(cmd).await?;
 
         // Then acquire lock once and batch update the cache
         let mut drv_map = self.drv_map.lock().await;

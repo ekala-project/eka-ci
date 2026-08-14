@@ -1,7 +1,6 @@
 // Thin wrapper around evaluator::service::jobs that adds server-specific logic
 
 use anyhow::Result;
-use tracing::warn;
 
 use crate::nix::{NixEvalDrv, NixEvalError};
 
@@ -43,11 +42,7 @@ impl super::EvalService {
         // Base-commit evals skip this since they only need attr/drv
         // data for jobset diff computation, not dependency graphs.
         if traverse {
-            for drv in &jobs {
-                if let Err(e) = self.traverse_drvs(&drv.drv_path, &drv.input_drvs).await {
-                    warn!("Issue while traversing {} drv: {:?}", &drv.drv_path, e);
-                }
-            }
+            self.batch_traverse(&jobs).await?;
         }
 
         Ok((jobs, errors))

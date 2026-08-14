@@ -176,7 +176,7 @@ impl GitHubService {
             );
         }
 
-        let (github_sender, github_receiver) = mpsc::channel(100);
+        let (github_sender, github_receiver) = mpsc::channel(10_000);
         Ok(Self {
             db_service,
             octocrab,
