@@ -43,31 +43,38 @@ impl RecorderWorker {
                 self.update_and_broadcast(drv, &old_state, &task.result)
                     .await?;
 
-                // Execute post-build hooks if configured
-                if let Err(e) = self.execute_hooks_for_drv(drv).await {
-                    warn!("Failed to execute hooks for {}: {}", drv.store_path(), e);
-                    // Don't fail the build if hooks fail - they run asynchronously
-                }
+                // Only run post-build hooks, size checks, and runtime
+                // reference capture when the output was actually built
+                // locally. Substitution cache-hits go directly from
+                // Queued → Completed(Success) without passing through
+                // Building, so we skip expensive nix path-info calls
+                // for those (outputs aren't guaranteed to be local).
+                let was_built_locally =
+                    matches!(old_state, DBS::Buildable | DBS::Building | DBS::FailedRetry);
 
-                // Capture runtime references for dependency tracking first so
-                // that subsequent per-output size updates have rows to land on.
-                if let Err(e) = self.capture_runtime_references(drv, &job_infos).await {
-                    warn!(
-                        "Failed to capture runtime references for {}: {}",
-                        drv.store_path(),
-                        e
-                    );
-                    // Don't fail the build if runtime ref capture fails
-                }
+                if was_built_locally {
+                    // Execute post-build hooks if configured
+                    if let Err(e) = self.execute_hooks_for_drv(drv).await {
+                        warn!("Failed to execute hooks for {}: {}", drv.store_path(), e);
+                    }
 
-                // Calculate and check output size if configured
-                if let Err(e) = self.check_output_size(drv, &job_infos).await {
-                    warn!(
-                        "Failed to check output size for {}: {}",
-                        drv.store_path(),
-                        e
-                    );
-                    // Don't fail the build if size check fails
+                    // Capture runtime references for dependency tracking
+                    if let Err(e) = self.capture_runtime_references(drv, &job_infos).await {
+                        warn!(
+                            "Failed to capture runtime references for {}: {}",
+                            drv.store_path(),
+                            e
+                        );
+                    }
+
+                    // Calculate and check output size if configured
+                    if let Err(e) = self.check_output_size(drv, &job_infos).await {
+                        warn!(
+                            "Failed to check output size for {}: {}",
+                            drv.store_path(),
+                            e
+                        );
+                    }
                 }
 
                 // TODO: closure size will be a future feature

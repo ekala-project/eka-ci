@@ -47,8 +47,9 @@ impl GitHubService {
         // This is only relevant on PRs, missing a base commit denotes that
         // this jobset creation is done for a base_commit
         if let Some(base_commit) = ci_check_info.base_commit.as_ref() {
-            // Create per-package check_runs eagerly for small rebuild sets
-            self.create_eager_check_runs(ci_check_info, name, jobset_id)
+            // Create per-package check_runs and dispatch builds for
+            // new/changed packages.
+            self.create_eager_check_runs_and_dispatch_builds(ci_check_info, name, jobset_id)
                 .await?;
 
             // Queue dependency changes gate creation
@@ -83,11 +84,17 @@ impl GitHubService {
         Ok(())
     }
 
-    /// Create per-package check_runs eagerly for new/changed packages
-    /// when the count is below `EAGER_CHECK_RUN_THRESHOLD`. For larger
-    /// sets, the eval gate itself acts as the summary and individual
-    /// check_runs are only created lazily on build failure.
-    async fn create_eager_check_runs(
+    /// Create per-package check_runs for new/changed packages and
+    /// dispatch build requests to the ingress service.
+    ///
+    /// Check_runs are created eagerly when the count is below
+    /// `EAGER_CHECK_RUN_THRESHOLD`. For larger sets, the eval gate
+    /// serves as the summary and only build failures produce
+    /// per-package check_runs lazily.
+    ///
+    /// Build requests are always dispatched for all new/changed
+    /// packages regardless of the check_run threshold.
+    async fn create_eager_check_runs_and_dispatch_builds(
         &self,
         ci_check_info: &std::sync::Arc<CICheckInfo>,
         job_name: &str,
@@ -95,44 +102,64 @@ impl GitHubService {
     ) -> Result<()> {
         let changed_jobs = self.db_service.get_new_or_changed_jobs(jobset_id).await?;
 
-        if changed_jobs.is_empty() || changed_jobs.len() >= Self::EAGER_CHECK_RUN_THRESHOLD {
-            if changed_jobs.len() >= Self::EAGER_CHECK_RUN_THRESHOLD {
-                debug!(
-                    "Skipping eager check_run creation for {} new/changed packages (threshold {})",
-                    changed_jobs.len(),
-                    Self::EAGER_CHECK_RUN_THRESHOLD,
-                );
+        // Create per-package check_runs only below the threshold
+        if !changed_jobs.is_empty() && changed_jobs.len() < Self::EAGER_CHECK_RUN_THRESHOLD {
+            debug!(
+                "Creating {} eager check_runs for new/changed packages in jobset {}",
+                changed_jobs.len(),
+                job_name,
+            );
+
+            let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
+
+            for job in &changed_jobs {
+                let check_run = ci_check_info
+                    .create_gh_check_run(
+                        &octocrab,
+                        job_name,
+                        &job.name,
+                        job.build_state.clone(),
+                        &job.difference,
+                    )
+                    .await?;
+
+                self.db_service
+                    .insert_check_run_info(
+                        check_run.id.0 as i64,
+                        &job.drv_path,
+                        &ci_check_info.repo_name,
+                        &ci_check_info.owner,
+                    )
+                    .await?;
             }
-            return Ok(());
+        } else if changed_jobs.len() >= Self::EAGER_CHECK_RUN_THRESHOLD {
+            debug!(
+                "Skipping eager check_run creation for {} new/changed packages (threshold {})",
+                changed_jobs.len(),
+                Self::EAGER_CHECK_RUN_THRESHOLD,
+            );
         }
 
-        debug!(
-            "Creating {} eager check_runs for new/changed packages in jobset {}",
-            changed_jobs.len(),
-            job_name,
-        );
-
-        let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-
-        for job in &changed_jobs {
-            let check_run = ci_check_info
-                .create_gh_check_run(
-                    &octocrab,
-                    job_name,
-                    &job.name,
-                    job.build_state.clone(),
-                    &job.difference,
-                )
-                .await?;
-
-            self.db_service
-                .insert_check_run_info(
-                    check_run.id.0 as i64,
-                    &job.drv_path,
-                    &ci_check_info.repo_name,
-                    &ci_check_info.owner,
-                )
-                .await?;
+        // Dispatch build requests for all new/changed packages
+        if let Some(ingress_sender) = &self.ingress_sender {
+            debug!(
+                "Dispatching {} ingress EvalRequests for new/changed packages",
+                changed_jobs.len(),
+            );
+            for job in &changed_jobs {
+                let drv_id = std::sync::Arc::new(job.drv_path.clone());
+                if let Err(e) = ingress_sender
+                    .send(crate::scheduler::IngressTask::EvalRequest(drv_id))
+                    .await
+                {
+                    warn!(
+                        "Failed to send IngressTask for {}: {:?}",
+                        job.drv_path.store_path(),
+                        e
+                    );
+                    break;
+                }
+            }
         }
 
         Ok(())

@@ -13,6 +13,7 @@ use tracing::{debug, error, info, warn};
 use crate::db::DbService;
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
+use crate::scheduler::IngressTask;
 use crate::services::AsyncService;
 
 /// Debounce window before the aggregated change-summary check is posted.
@@ -49,6 +50,8 @@ pub struct GitHubService {
     graph_handle: GraphServiceHandle,
     /// Optional metrics for change-summary pipeline observability.
     change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
+    /// Ingress sender for dispatching build requests after jobset diff.
+    ingress_sender: Option<mpsc::Sender<IngressTask>>,
 }
 
 impl GitHubService {
@@ -57,6 +60,7 @@ impl GitHubService {
         octocrab: Octocrab,
         graph_handle: GraphServiceHandle,
         change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
+        ingress_sender: Option<mpsc::Sender<IngressTask>>,
     ) -> anyhow::Result<Self> {
         use futures::stream::TryStreamExt;
         use tokio::pin;
@@ -185,6 +189,7 @@ impl GitHubService {
             change_summary_pending: Mutex::new(HashSet::new()),
             graph_handle,
             change_summary_metrics,
+            ingress_sender,
         })
     }
 

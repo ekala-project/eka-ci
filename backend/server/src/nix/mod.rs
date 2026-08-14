@@ -34,7 +34,6 @@ use crate::db::model::{Reference, Referrer};
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::graph::GraphCommand;
 use crate::metrics::NixEvalMetrics;
-use crate::scheduler::IngressTask;
 
 #[derive(Debug)]
 pub struct EvalJob {
@@ -56,8 +55,6 @@ pub struct EvalService {
     db_service: DbService,
     eval_sender: mpsc::Sender<EvalTask>,
     eval_receiver: Option<mpsc::Receiver<EvalTask>>,
-    /// Used to request scheduler to determine if it should build a drv
-    scheduler_sender: mpsc::Sender<IngressTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
     drv_map: Mutex<LruCache<DrvId, Drv>>,
@@ -72,7 +69,6 @@ impl EvalService {
         sender: mpsc::Sender<EvalTask>,
         receiver: mpsc::Receiver<EvalTask>,
         db_service: DbService,
-        scheduler_sender: mpsc::Sender<IngressTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
@@ -81,7 +77,6 @@ impl EvalService {
             db_service,
             eval_sender: sender,
             eval_receiver: Some(receiver),
-            scheduler_sender,
             github_sender,
             graph_command_sender,
             drv_map: Mutex::new(LruCache::new(NonZeroUsize::new(5000).unwrap())),
@@ -146,23 +141,14 @@ impl EvalService {
                     let gh_task = GitHubTask::CreateJobSet {
                         ci_check_info: ci_info,
                         name: eval_job.name.to_string(),
-                        jobs: jobs.clone(),
+                        jobs,
                         config_json: eval_job.config_json.clone(),
                     };
                     gh_sender.send(gh_task).await?;
 
-                    // Queue each evaluated drv for build scheduling.
-                    // Only head commits (with base_commit) need builds;
-                    // base-commit evals only populate the jobset for diffs.
-                    if is_head {
-                        for job in &jobs {
-                            if let Ok(drv_id) = std::str::FromStr::from_str(&job.drv_path) {
-                                self.scheduler_sender
-                                    .send(IngressTask::EvalRequest(std::sync::Arc::new(drv_id)))
-                                    .await?;
-                            }
-                        }
-                    }
+                    // Build scheduling is dispatched by the GitHub
+                    // service after CreateJobSet computes the diff —
+                    // only new/changed packages enter the ingress queue.
 
                     // The eval gate will remain InProgress until all jobs are concluded
                     // It will be completed by the recorder when the last job finishes
@@ -288,10 +274,12 @@ impl EvalService {
             .await?;
 
         // Insert into graph for fast in-memory access.
-        // Fire-and-forget: awaiting the oneshot response here
-        // deadlocks when the graph channel is saturated by
-        // concurrent IngressTask::EvalRequest processing from
-        // earlier traversals.
+        // Best-effort: the graph channel is shared with the ingress
+        // cascade (UpdateState, CheckBuildable) which can saturate it
+        // during large traversals. Drvs are already persisted to the
+        // DB above; the graph will pick them up on restart or when
+        // the cascade settles. Awaiting the oneshot response here
+        // deadlocks when the channel is full.
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::InsertDrvs {
             drvs: crate::graph_compat::to_shared_drvs(&new_drvs)?,
@@ -307,16 +295,15 @@ impl EvalService {
                 .collect::<anyhow::Result<Vec<_>>>()?,
             response: tx,
         };
-        self.graph_command_sender.send(cmd).await?;
-
-        // NOTE: ingress EvalRequests are NOT sent from deep_traverse.
-        // Sending 12k+ EvalRequests here saturates the ingress channel
-        // and deadlocks the eval service (ingress → recorder → github
-        // back-pressure prevents the channel from draining while the
-        // eval service is blocked trying to send more). Instead, the
-        // GithubJobPR handler sends EvalRequests after the jobset is
-        // created via CreateJobSet, which is the correct place since
-        // only drvs with job entries need ingress processing.
+        // Use try_send: if the graph channel is saturated by the
+        // ingress cascade, skip this insert rather than blocking.
+        // The drvs are in the DB and will be loaded on next restart.
+        if self.graph_command_sender.try_send(cmd).is_err() {
+            debug!(
+                "Graph channel full, skipping InsertDrvs for {} drvs",
+                new_drvs.len()
+            );
+        }
 
         // Then acquire lock once and batch update the cache
         let mut drv_map = self.drv_map.lock().await;
