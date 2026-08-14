@@ -95,7 +95,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let metrics_registry = Arc::new(Registry::new());
 
     // Create GraphService for in-memory build state tracking
-    let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(1000);
+    let (graph_command_sender, graph_command_receiver) = channel::<GraphCommand>(50_000);
 
     // Create GraphMetrics and register with shared registry
     let graph_metrics =
@@ -116,6 +116,12 @@ pub async fn start_services(config: Config) -> Result<()> {
     let change_summary_metrics = ChangeSummaryMetrics::new(&metrics_registry)
         .context("failed to register change-summary metrics")?;
 
+    // Create a standalone ingress channel for the GitHub service to
+    // dispatch build requests after computing jobset diffs. The receiver
+    // side is forwarded into the scheduler's ingress service below.
+    let (github_ingress_sender, github_ingress_receiver) =
+        channel::<crate::scheduler::IngressTask>(1000);
+
     // Create GitHubService
     let maybe_github_service = if let Some(ref octocrab) = maybe_octocrab {
         Some(
@@ -124,6 +130,7 @@ pub async fn start_services(config: Config) -> Result<()> {
                 octocrab.clone(),
                 graph_handle.clone(),
                 Some(change_summary_metrics.clone()),
+                Some(github_ingress_sender),
             )
             .await?,
         )
@@ -199,6 +206,24 @@ pub async fn start_services(config: Config) -> Result<()> {
         cancellation_token.clone(),
     )
     .await?;
+
+    // Forward GitHub service ingress requests to the scheduler's
+    // ingress service. This bridge lets the GitHub service dispatch
+    // build requests for new/changed packages after jobset diff
+    // without holding a direct reference to the scheduler.
+    {
+        let ingress_fwd = scheduler_service.ingress_request_sender();
+        let cancel = cancellation_token.clone();
+        tokio::spawn(async move {
+            let mut rx = github_ingress_receiver;
+            while let Some(task) = cancel.run_until_cancelled(rx.recv()).await.flatten() {
+                if ingress_fwd.send(task).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
     // M4: register nix-eval-jobs observability metrics on the shared
@@ -211,7 +236,6 @@ pub async fn start_services(config: Config) -> Result<()> {
         eval_sender.clone(),
         eval_receiver,
         db_service.clone(),
-        scheduler_service.ingress_request_sender(),
         maybe_github_sender.clone(),
         graph_command_sender.clone(),
         Some(nix_eval_metrics),
