@@ -234,74 +234,60 @@ impl IngressWorker {
             report.will_fetch.len()
         );
 
-        // Collect the root + all transitively-cached requisites. We walk
-        // `nix-store --query --requisites` (which returns the root plus all
-        // transitive deps) and keep only the ones NOT marked as
-        // "will be built", since those are the cache hits.
-        let mut cache_hits: Vec<drv_id::DrvId> = Vec::new();
-        match crate::nix::drv_requisites_as_ids(&drv_id.store_path()).await {
-            Ok(requisites) => {
-                for req in requisites {
-                    if !report.will_build.contains(&req.store_path()) {
-                        cache_hits.push(req);
-                    }
-                }
-            },
-            Err(e) => {
-                // If we can't enumerate requisites, fall back to marking just
-                // the root drv. The dependents-cascade in the recorder will
-                // still correctly re-trigger child evaluation via existing
-                // CheckBuildable flow.
-                warn!(
-                    "failed to enumerate requisites for {} (marking root only): {:?}",
-                    drv_id.store_path(),
-                    e
-                );
-                cache_hits.push(drv_id.clone());
-            },
-        }
+        // Mark the root + all transitive cached deps as Completed.
+        // BFS through the in-memory graph (populated by batch_traverse)
+        // instead of spawning nix-store per drv.
+        let shared_root = graph_compat::to_shared_drv_id(drv_id)?;
+        let mut queue = std::collections::VecDeque::new();
+        let mut visited = std::collections::HashSet::new();
+        queue.push_back(shared_root);
 
-        // Always include the root, in case it wasn't returned by --requisites
-        // (defensive — the requisites query normally includes the root, but
-        // we protect against any future behavior change).
-        if !cache_hits.iter().any(|d| d == drv_id) {
-            cache_hits.push(drv_id.clone());
-        }
-
-        // For each cache hit, only emit a recorder task if the current state
-        // is not already terminal AND not currently building. This avoids
-        // racing with an in-flight build or clobbering a previously recorded
-        // success/failure.
-        for hit in cache_hits {
-            let hit_shared = graph_compat::to_shared_drv_id(&hit)?;
-            let current = self.graph_handle.get_build_state(&hit_shared);
-            let safe_to_mark = match &current {
-                None => true, // not in graph yet; recorder will reject if no DB row
-                Some(state) => {
-                    // Convert back to server type for comparison
-                    let server_state = crate::db::graph_impl::convert_build_state_back(state);
-                    !matches!(server_state, DrvBuildState::Building) && !server_state.is_terminal()
-                },
-            };
-            if !safe_to_mark {
-                debug!(
-                    "skipping cache-hit mark for {} (state: {:?})",
-                    hit.store_path(),
-                    current
-                );
+        while let Some(shared_id) = queue.pop_front() {
+            if !visited.insert(shared_id.clone()) {
                 continue;
             }
 
-            let task = RecorderTask {
-                derivation: Arc::new(hit),
-                result: DrvBuildState::Completed(DrvBuildResult::Success),
-            };
-            // If recorder is gone we can't make progress; surface the error.
-            self.recorder_sender
-                .send(task)
-                .await
-                .context("recorder channel closed while recording cache hits")?;
+            // Skip if this drv needs building (not cached)
+            if report.will_build.contains(&shared_id.store_path()) {
+                continue;
+            }
+
+            // Skip if already terminal
+            if let Some(state) = self.graph_handle.get_build_state(&shared_id) {
+                let server_state = crate::db::graph_impl::convert_build_state_back(&state);
+                if server_state.is_terminal() || matches!(server_state, DrvBuildState::Building) {
+                    continue;
+                }
+            }
+
+            // Mark as cached
+            if let Ok(server_id) = graph_compat::to_server_drv_id(&shared_id) {
+                let task = RecorderTask {
+                    derivation: Arc::new(server_id),
+                    result: DrvBuildState::Completed(DrvBuildResult::Success),
+                };
+                self.recorder_sender
+                    .send(task)
+                    .await
+                    .context("recorder channel closed while recording cache hit")?;
+            }
+
+            // Enqueue direct deps for BFS
+            if let Some(node) = self.graph_handle.get_node(&shared_id) {
+                for dep_id in node.dependencies.iter() {
+                    if !visited.contains(dep_id) {
+                        queue.push_back(dep_id.clone());
+                    }
+                }
+            }
         }
+
+        debug!(
+            "substitution BFS for {}: visited {} drvs, marked {} as cached",
+            drv_id.store_path(),
+            visited.len(),
+            visited.len(), // all visited are either cached or skipped
+        );
 
         Ok(true)
     }

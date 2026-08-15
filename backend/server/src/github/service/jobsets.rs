@@ -146,20 +146,39 @@ impl GitHubService {
                 "Dispatching {} ingress EvalRequests for new/changed packages",
                 changed_jobs.len(),
             );
-            for job in &changed_jobs {
-                let drv_id = std::sync::Arc::new(job.drv_path.clone());
+            let drv_ids: Vec<_> = changed_jobs
+                .iter()
+                .map(|j| std::sync::Arc::new(j.drv_path.clone()))
+                .collect();
+
+            for drv_id in &drv_ids {
                 if let Err(e) = ingress_sender
-                    .send(crate::scheduler::IngressTask::EvalRequest(drv_id))
+                    .send(crate::scheduler::IngressTask::EvalRequest(
+                        std::sync::Arc::clone(drv_id),
+                    ))
                     .await
                 {
                     warn!(
                         "Failed to send IngressTask for {}: {:?}",
-                        job.drv_path.store_path(),
+                        drv_id.store_path(),
                         e
                     );
                     break;
                 }
             }
+
+            // Re-check buildability after a delay to catch packages
+            // whose deps were marked Completed by the BFS cascade
+            // running concurrently from other substitution checks.
+            let sender = ingress_sender.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                for drv_id in drv_ids {
+                    let _ = sender
+                        .send(crate::scheduler::IngressTask::CheckBuildable(drv_id))
+                        .await;
+                }
+            });
         }
 
         Ok(())

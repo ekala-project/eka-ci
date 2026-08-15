@@ -200,17 +200,27 @@ impl RecorderWorker {
                 }
             }
 
-            // Send update for existing check_runs
-            let github_task = GitHubTask::UpdateBuildStatus {
-                drv_id: Arc::clone(drv),
-                status: task.result.clone(),
-            };
-            if let Err(e) = github_sender.send(github_task).await {
-                warn!(
-                    "Failed to send GitHub update for {}: {:?}",
-                    drv.store_path(),
-                    e
-                );
+            // Only send UpdateBuildStatus if the drv has check_runs.
+            // Dependency drvs (from the BFS cascade) rarely have
+            // check_runs — skipping them avoids flooding the GitHub
+            // service channel with no-op tasks.
+            let has_check_runs = !self
+                .db_service
+                .check_runs_for_drv_path(drv)
+                .await?
+                .is_empty();
+            if has_check_runs {
+                let github_task = GitHubTask::UpdateBuildStatus {
+                    drv_id: Arc::clone(drv),
+                    status: task.result.clone(),
+                };
+                if let Err(e) = github_sender.send(github_task).await {
+                    warn!(
+                        "Failed to send GitHub update for {}: {:?}",
+                        drv.store_path(),
+                        e
+                    );
+                }
             }
 
             // Check if this drv completion concludes any jobsets
