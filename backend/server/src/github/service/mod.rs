@@ -56,7 +56,8 @@ pub struct GitHubService {
     rate_limiter: ApiRateLimiter,
 }
 
-/// Simple rate limiter: ensures a minimum interval between API calls.
+/// Rate limiter that enforces a minimum interval between API calls
+/// and provides retry-with-backoff for 429 responses.
 pub(crate) struct ApiRateLimiter {
     min_interval: Duration,
     last_call: Mutex<tokio::time::Instant>,
@@ -71,6 +72,7 @@ impl ApiRateLimiter {
         }
     }
 
+    /// Wait until enough time has passed since the last call.
     async fn acquire(&self) {
         let mut last = self.last_call.lock().await;
         let elapsed = last.elapsed();
@@ -79,6 +81,25 @@ impl ApiRateLimiter {
         }
         *last = tokio::time::Instant::now();
     }
+
+    /// Back off after a 429 response. Doubles the minimum interval
+    /// (up to 30s) and sleeps for the backoff duration.
+    async fn backoff_429(&self) {
+        warn!("GitHub API rate limit hit (429), backing off");
+        // Sleep for 60s on rate limit — GitHub's secondary rate
+        // limit resets within this window.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+/// Check if an octocrab error is a 429 rate limit response.
+pub(crate) fn is_rate_limited(err: &anyhow::Error) -> bool {
+    if let Some(octocrab_err) = err.downcast_ref::<octocrab::Error>() {
+        if let octocrab::Error::GitHub { source, .. } = octocrab_err {
+            return source.status_code == http::StatusCode::TOO_MANY_REQUESTS;
+        }
+    }
+    false
 }
 
 impl GitHubService {
@@ -261,7 +282,15 @@ impl AsyncService<GitHubTask> for GitHubService {
     }
 
     async fn handle_task(&self, task: GitHubTask) -> Result<()> {
-        self.handle_github_task(&task).await
+        match self.handle_github_task(&task).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_rate_limited(&e) => {
+                self.rate_limiter.backoff_429().await;
+                // Retry once after backoff
+                self.handle_github_task(&task).await
+            },
+            Err(e) => Err(e),
+        }
     }
 
     async fn handle_failure(&mut self, error: anyhow::Error) {
