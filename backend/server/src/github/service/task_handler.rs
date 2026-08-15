@@ -16,6 +16,7 @@ impl GitHubService {
 
                 for check_run in check_runs {
                     debug!("Updating checkrun status of {}", &check_run.check_run_id);
+                    self.rate_limiter.acquire().await;
                     let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
                     check_run.send_gh_update(&octocrab, status).await?;
                 }

@@ -52,6 +52,33 @@ pub struct GitHubService {
     change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
     /// Ingress sender for dispatching build requests after jobset diff.
     ingress_sender: Option<mpsc::Sender<IngressTask>>,
+    /// Rate limiter to avoid flooding the GitHub API endpoint.
+    rate_limiter: ApiRateLimiter,
+}
+
+/// Simple rate limiter: ensures a minimum interval between API calls.
+pub(crate) struct ApiRateLimiter {
+    min_interval: Duration,
+    last_call: Mutex<tokio::time::Instant>,
+}
+
+impl ApiRateLimiter {
+    fn new(requests_per_second: f64) -> Self {
+        let min_interval = Duration::from_secs_f64(1.0 / requests_per_second);
+        Self {
+            min_interval,
+            last_call: Mutex::new(tokio::time::Instant::now()),
+        }
+    }
+
+    async fn acquire(&self) {
+        let mut last = self.last_call.lock().await;
+        let elapsed = last.elapsed();
+        if elapsed < self.min_interval {
+            tokio::time::sleep(self.min_interval - elapsed).await;
+        }
+        *last = tokio::time::Instant::now();
+    }
 }
 
 impl GitHubService {
@@ -176,7 +203,7 @@ impl GitHubService {
             );
         }
 
-        let (github_sender, github_receiver) = mpsc::channel(10_000);
+        let (github_sender, github_receiver) = mpsc::channel(1_000);
         Ok(Self {
             db_service,
             octocrab,
@@ -190,6 +217,9 @@ impl GitHubService {
             graph_handle,
             change_summary_metrics,
             ingress_sender,
+            // ~10 req/sec keeps well under GitHub's 5000/hr app limit
+            // while still being responsive for check_run updates.
+            rate_limiter: ApiRateLimiter::new(10.0),
         })
     }
 
