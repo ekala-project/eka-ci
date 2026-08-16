@@ -82,17 +82,26 @@ impl RecorderWorker {
         drv_id: &drv_id::DrvId,
         new_state: build_event::DrvBuildState,
     ) -> anyhow::Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
         let shared_drv_id = crate::graph_compat::to_shared_drv_id(drv_id)?;
         let shared_state = crate::db::graph_impl::convert_build_state(&new_state);
+
+        // Update shared_view directly for immediate visibility to
+        // is_buildable checks running on other tasks.
+        if let Some(mut entry) = self.graph_handle.shared_view().get_mut(&shared_drv_id) {
+            entry.build_state = shared_state.clone();
+        }
+
+        // Best-effort update of graph internal indices. The shared_view
+        // update above is the source of truth for is_buildable checks.
+        // Use try_send to avoid blocking the recorder pipeline when
+        // the graph channel is saturated by the BFS cascade.
+        let (tx, _rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::UpdateState {
             drv_id: shared_drv_id,
             new_state: shared_state,
             response: tx,
         };
-
-        self.graph_command_sender.send(cmd).await?;
-        rx.await?;
+        let _ = self.graph_command_sender.try_send(cmd);
         Ok(())
     }
 

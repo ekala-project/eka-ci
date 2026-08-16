@@ -95,16 +95,22 @@ impl RecorderWorker {
                 // Re-queue drvs that were unblocked
                 for unblocked_drv in unblocked_drvs {
                     let task = IngressTask::CheckBuildable(std::sync::Arc::new(unblocked_drv));
-                    self.ingress_sender.send(task).await?;
+                    // Non-blocking to prevent recorder ↔ ingress deadlock
+                    let _ = self.ingress_sender.try_send(task);
                 }
 
-                // Check direct referrers for buildability
+                // Check direct referrers for buildability.
+                // Uses the shared_view directly instead of the graph
+                // command channel to avoid blocking when the channel
+                // is saturated by the BFS cascade.
                 let shared_drv_id = crate::graph_compat::to_shared_drv_id(drv)?;
-                let referrers = self.graph_handle.get_dependents(&shared_drv_id).await?;
+                let referrers = self.graph_handle.get_dependents_from_view(&shared_drv_id);
                 for referrer in referrers {
                     let server_referrer = crate::graph_compat::to_server_drv_id(&referrer)?;
                     let task = IngressTask::CheckBuildable(std::sync::Arc::new(server_referrer));
-                    self.ingress_sender.send(task).await?;
+                    // Non-blocking: if ingress is full, the delayed
+                    // re-check from the GitHub service will catch it.
+                    let _ = self.ingress_sender.try_send(task);
                 }
             },
             DBS::Completed(DBR::Failure) => {

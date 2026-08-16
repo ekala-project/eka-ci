@@ -151,6 +151,36 @@ impl GitHubService {
                 .map(|j| std::sync::Arc::new(j.drv_path.clone()))
                 .collect();
 
+            // First dispatch deps of changed packages for substitution
+            // checking. These were inserted into the graph by batch_traverse
+            // but their state is still Queued — the ingress needs to check
+            // if they're cached so is_buildable works for the changed packages.
+            let mut dispatched_deps = std::collections::HashSet::new();
+            for drv_id in &drv_ids {
+                let shared_id = match crate::graph_compat::to_shared_drv_id(drv_id) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                if let Some(node) = self.graph_handle.get_node(&shared_id) {
+                    for dep in node.dependencies.iter() {
+                        if dispatched_deps.insert(dep.clone()) {
+                            if let Ok(server_dep) = crate::graph_compat::to_server_drv_id(dep) {
+                                let _ = ingress_sender
+                                    .send(crate::scheduler::IngressTask::EvalRequest(
+                                        std::sync::Arc::new(server_dep),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+            debug!(
+                "Dispatched {} unique dep EvalRequests for changed packages",
+                dispatched_deps.len(),
+            );
+
+            // Then dispatch the changed packages themselves
             for drv_id in &drv_ids {
                 if let Err(e) = ingress_sender
                     .send(crate::scheduler::IngressTask::EvalRequest(
@@ -168,11 +198,10 @@ impl GitHubService {
             }
 
             // Re-check buildability after a delay to catch packages
-            // whose deps were marked Completed by the BFS cascade
-            // running concurrently from other substitution checks.
+            // whose deps were marked Completed by the BFS cascade.
             let sender = ingress_sender.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 for drv_id in drv_ids {
                     let _ = sender
                         .send(crate::scheduler::IngressTask::CheckBuildable(drv_id))
