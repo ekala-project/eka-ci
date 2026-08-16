@@ -203,8 +203,8 @@ impl GitHubService {
             // available deps from completed builds.
             let sender = ingress_sender.clone();
             tokio::spawn(async move {
-                for round in 0..10 {
-                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                for round in 0..30 {
+                    tokio::time::sleep(std::time::Duration::from_secs(180)).await;
                     let mut any_queued = false;
                     for drv_id in &drv_ids {
                         // EvalRequest re-runs dry_run_realise which
