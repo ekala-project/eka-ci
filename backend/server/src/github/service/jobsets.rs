@@ -197,15 +197,36 @@ impl GitHubService {
                 }
             }
 
-            // Re-check buildability after a delay to catch packages
-            // whose deps were marked Completed by the BFS cascade.
+            // Periodically re-dispatch changed packages to catch
+            // those whose deps complete progressively through builds.
+            // Each round re-runs dry_run_realise which detects newly
+            // available deps from completed builds.
             let sender = ingress_sender.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                for drv_id in drv_ids {
-                    let _ = sender
-                        .send(crate::scheduler::IngressTask::CheckBuildable(drv_id))
-                        .await;
+                for round in 0..10 {
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                    let mut any_queued = false;
+                    for drv_id in &drv_ids {
+                        // EvalRequest re-runs dry_run_realise which
+                        // picks up newly available deps from builds
+                        if sender
+                            .send(crate::scheduler::IngressTask::EvalRequest(
+                                std::sync::Arc::clone(drv_id),
+                            ))
+                            .await
+                            .is_ok()
+                        {
+                            any_queued = true;
+                        }
+                    }
+                    if !any_queued {
+                        break;
+                    }
+                    tracing::debug!(
+                        "Re-dispatch round {} for {} changed packages",
+                        round + 1,
+                        drv_ids.len()
+                    );
                 }
             });
         }
