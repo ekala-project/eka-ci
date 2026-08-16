@@ -71,6 +71,25 @@ impl GraphServiceHandle {
         Ok(rx.await?)
     }
 
+    /// Return deps that are NOT in Completed(Success) state.
+    /// Used for debugging why a drv is not buildable.
+    pub fn blocking_deps(&self, drv_id: &DrvId) -> Vec<(DrvId, Option<DrvBuildState>)> {
+        let Some(node) = self.shared_view.get(drv_id) else {
+            return vec![];
+        };
+        node.dependencies
+            .iter()
+            .filter_map(|dep_id| {
+                let state = self.shared_view.get(dep_id).map(|d| d.build_state.clone());
+                if state.as_ref() != Some(&DrvBuildState::Completed(DrvBuildResult::Success)) {
+                    Some((dep_id.clone(), state))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Get direct dependents (reverse deps) of a drv by scanning the
     /// shared_view. This is O(n) in the graph size but avoids the
     /// graph command channel, preventing deadlocks when the channel

@@ -143,7 +143,18 @@ impl IngressWorker {
         let shared_id = graph_compat::to_shared_drv_id(drv_id)?;
         if self.graph_handle.is_buildable(&shared_id) {
             debug!("{:?} is now buildable", drv_id);
-
+        } else {
+            let blockers = self.graph_handle.blocking_deps(&shared_id);
+            if !blockers.is_empty() && blockers.len() <= 5 {
+                debug!(
+                    "{:?} not buildable: {} blocking deps, first: {:?}",
+                    drv_id,
+                    blockers.len(),
+                    &blockers[..blockers.len().min(3)]
+                );
+            }
+        }
+        if self.graph_handle.is_buildable(&shared_id) {
             let cached_node = self
                 .graph_handle
                 .get_node(&shared_id)
@@ -187,27 +198,62 @@ impl IngressWorker {
             }
         }
 
-        // Try to short-circuit via substitution before queuing a real build.
-        // A successful cache hit marks this drv (and any cached requisites) as
-        // Completed(Success) via the recorder, which will fan out CheckBuildable
-        // to dependents — no need to fall through.
-        match self.handle_check_substitution_task(drv_id).await {
-            Ok(true) => {
-                debug!("{} short-circuited via substitution", drv_id.store_path());
-                return Ok(());
-            },
-            Ok(false) => { /* not cached; fall through */ },
+        // Check if the drv is cached or if all its deps are available.
+        let report = match crate::nix::dry_run_realise(drv_id).await {
+            Ok(report) => report,
             Err(e) => {
-                // Best-effort optimization — log and proceed to build.
                 warn!(
-                    "substitution check errored for {} (falling back to build): {:?}",
+                    "substitution check errored for {} (falling back to graph): {:?}",
                     drv_id.store_path(),
                     e
                 );
+                self.handle_check_buildable_task(drv_id).await?;
+                return Ok(());
             },
+        };
+
+        if report.is_cached(drv_id) {
+            // Fully cached — mark as completed via recorder.
+            debug!("substitution hit for {}", drv_id.store_path());
+            self.handle_check_substitution_task_with_report(drv_id, &report)
+                .await?;
+            debug!("{} short-circuited via substitution", drv_id.store_path());
+            return Ok(());
         }
 
-        self.handle_check_buildable_task(drv_id).await?;
+        // Not fully cached. Check if all deps are available (only
+        // this drv needs building). Trust nix's dry-run assessment
+        // rather than the in-memory graph (which may be incomplete).
+        if report.will_build.len() == 1 && report.will_build.contains(&drv_id.store_path()) {
+            debug!(
+                "{} needs building but all deps available, sending to builder",
+                drv_id.store_path()
+            );
+
+            // Send directly to builder — bypass graph buildability
+            // check since nix confirmed all deps are available.
+            let shared_id = graph_compat::to_shared_drv_id(drv_id)?;
+            if let Some(cached_node) = self.graph_handle.get_node(&shared_id) {
+                let shared_buildable =
+                    crate::db::graph_impl::convert_build_state(&DrvBuildState::Buildable);
+                if let Some(mut entry) = self.graph_handle.shared_view().get_mut(&shared_id) {
+                    entry.build_state = shared_buildable;
+                }
+                let shared_drv = cached_node.to_drv();
+                let server_drv = graph_compat::to_server_drv(&shared_drv)?;
+                self.buildable_sender.send(BuildRequest(server_drv)).await?;
+            } else {
+                // Drv not in graph — fall back to graph-based check
+                self.handle_check_buildable_task(drv_id).await?;
+            }
+        } else {
+            debug!(
+                "{} needs {} drvs built, checking graph buildability",
+                drv_id.store_path(),
+                report.will_build.len()
+            );
+            self.handle_check_buildable_task(drv_id).await?;
+        }
 
         Ok(())
     }
@@ -221,19 +267,20 @@ impl IngressWorker {
     /// should skip queuing a real build).
     async fn handle_check_substitution_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<bool> {
         let report = crate::nix::dry_run_realise(drv_id).await?;
-
-        // Root must be cached (i.e. NOT in will_build) to short-circuit.
         if !report.is_cached(drv_id) {
             return Ok(false);
         }
+        self.handle_check_substitution_task_with_report(drv_id, &report)
+            .await?;
+        Ok(true)
+    }
 
-        debug!(
-            "substitution hit for {} ({} requisites would be built, {} fetched)",
-            drv_id.store_path(),
-            report.will_build.len(),
-            report.will_fetch.len()
-        );
-
+    /// Mark cached deps as Completed using a pre-computed dry-run report.
+    async fn handle_check_substitution_task_with_report(
+        &self,
+        drv_id: &drv_id::DrvId,
+        report: &crate::nix::DryRunReport,
+    ) -> anyhow::Result<()> {
         // Mark the root + all transitive cached deps as Completed.
         // BFS through the in-memory graph (populated by batch_traverse)
         // instead of spawning nix-store per drv.
@@ -289,7 +336,7 @@ impl IngressWorker {
             visited.len(), // all visited are either cached or skipped
         );
 
-        Ok(true)
+        Ok(())
     }
 
     /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking.
