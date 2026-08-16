@@ -17,6 +17,11 @@ pub struct GraphServiceHandle {
 }
 
 impl GraphServiceHandle {
+    /// Access the shared view for direct reads/writes.
+    pub fn shared_view(&self) -> &Arc<DashMap<DrvId, CachedNode>> {
+        &self.shared_view
+    }
+
     /// Fast lockfree check if a drv is buildable.
     ///
     /// This is the critical hot path — no message passing, no async. The
@@ -64,6 +69,20 @@ impl GraphServiceHandle {
             })
             .await?;
         Ok(rx.await?)
+    }
+
+    /// Get direct dependents (reverse deps) of a drv by scanning the
+    /// shared_view. This is O(n) in the graph size but avoids the
+    /// graph command channel, preventing deadlocks when the channel
+    /// is saturated by the BFS cascade.
+    pub fn get_dependents_from_view(&self, drv_id: &DrvId) -> Vec<DrvId> {
+        let mut dependents = Vec::new();
+        for entry in self.shared_view.iter() {
+            if entry.value().dependencies.iter().any(|dep| dep == drv_id) {
+                dependents.push(entry.key().clone());
+            }
+        }
+        dependents
     }
 
     /// Get direct dependencies of a drv
