@@ -229,6 +229,32 @@ impl RecorderWorker {
                 }
             }
 
+            // When a drv with check_runs completes, re-dispatch
+            // other queued drvs in the same jobset(s) for build
+            // re-evaluation. This handles the cascade when icu78
+            // completes and its dependents become buildable.
+            if has_check_runs && task.result == DBS::Completed(DBR::Success) {
+                for job_info in &job_infos {
+                    let queued_jobs = self
+                        .db_service
+                        .get_new_or_changed_jobs(job_info.jobset_id)
+                        .await?;
+                    for queued_job in queued_jobs {
+                        // Only re-dispatch drvs that are still queued
+                        if let Some(drv_entry) =
+                            self.db_service.get_drv(&queued_job.drv_path).await?
+                        {
+                            if matches!(drv_entry.build_state, DBS::Queued) {
+                                let drv_id = Arc::new(queued_job.drv_path);
+                                let _ = self
+                                    .ingress_sender
+                                    .try_send(IngressTask::EvalRequest(drv_id));
+                            }
+                        }
+                    }
+                }
+            }
+
             // Check if this drv completion concludes any jobsets
             // Only check if we've reached a terminal state
             if task.result.is_terminal() {
