@@ -231,7 +231,7 @@ impl GitHubService {
                 owner: owner.to_string(),
                 repo_name: repo_name.to_string(),
                 comment_id: cmr.comment_id,
-                content: "confused",
+                content: "confused".to_string(),
             })
             .await
         {
@@ -308,7 +308,7 @@ impl GitHubService {
                             owner: owner.to_string(),
                             repo_name: repo_name.to_string(),
                             comment_id,
-                            content: "rocket",
+                            content: "rocket".to_string(),
                         })
                         .await
                     {

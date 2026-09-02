@@ -9,23 +9,26 @@ use crate::checks::executor::execute_check;
 use crate::checks::types::{CheckResultMessage, CheckTask};
 use crate::db::DbService;
 use crate::github::GitHubTask;
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
 pub struct ChecksExecutor {
     check_sender: mpsc::Sender<CheckTask>,
     check_receiver: Option<mpsc::Receiver<CheckTask>>,
     db_service: DbService,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    journal: TaskJournal<CheckTask>,
 }
 
 impl ChecksExecutor {
     pub fn new(db_service: DbService, github_sender: Option<mpsc::Sender<GitHubTask>>) -> Self {
         let (check_sender, check_receiver) = mpsc::channel(1000);
+        let pool = db_service.pool.clone();
         Self {
             check_sender,
             check_receiver: Some(check_receiver),
             db_service,
             github_sender,
+            journal: TaskJournal::new(pool, "checks"),
         }
     }
 
@@ -167,6 +170,10 @@ impl AsyncService<CheckTask> for ChecksExecutor {
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<CheckTask>> {
         self.check_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<CheckTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: CheckTask) -> Result<()> {

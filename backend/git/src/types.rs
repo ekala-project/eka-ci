@@ -87,7 +87,7 @@ pub fn workspace_root() -> Result<PathBuf> {
     Ok(dirs.get_data_home().join("repos"))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum GitProtocol {
     Https,
     // Supported by `protocol_prefix`, but no construction site yet.
@@ -112,7 +112,7 @@ impl GitProtocol {
 }
 
 /// Information to checkout a repository and a specific branch or commit
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GitRepo {
     pub protocol: GitProtocol,
     pub domain: String,
@@ -165,7 +165,7 @@ impl GitRepo {
 /// To quicken checkout performance, we use a single "origin" to keep
 /// a running heap of git objects, then we can just use worktrees to create
 /// cheap per-commit directories
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GitWorkspace {
     repo: GitRepo,
     /// Branch, tag, or commit
