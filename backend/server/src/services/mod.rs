@@ -30,6 +30,9 @@ pub use async_service::AsyncService;
 pub mod task_journal;
 pub use task_journal::TaskJournal;
 
+pub mod spawn;
+pub use spawn::spawn_logged;
+
 mod checks;
 
 pub mod websocket;
@@ -217,7 +220,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     {
         let ingress_fwd = scheduler_service.ingress_request_sender();
         let cancel = cancellation_token.clone();
-        tokio::spawn(async move {
+        spawn_logged("github-ingress-forwarder", async move {
             let mut rx = github_ingress_receiver;
             while let Some(task) = cancel.run_until_cancelled(rx.recv()).await.flatten() {
                 if ingress_fwd.send(task).await.is_err() {

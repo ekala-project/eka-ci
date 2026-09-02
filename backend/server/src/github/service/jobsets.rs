@@ -202,7 +202,7 @@ impl GitHubService {
             // Each round re-runs dry_run_realise which detects newly
             // available deps from completed builds.
             let sender = ingress_sender.clone();
-            tokio::spawn(async move {
+            crate::services::spawn_logged("re-dispatch-loop", async move {
                 for round in 0..30 {
                     tokio::time::sleep(std::time::Duration::from_secs(180)).await;
                     let mut any_queued = false;
@@ -241,7 +241,7 @@ impl GitHubService {
         job: String,
     ) {
         let sender = self.github_sender.clone();
-        tokio::spawn(async move {
+        crate::services::spawn_logged("change-summary-debounce", async move {
             tokio::time::sleep(CHANGE_SUMMARY_DEBOUNCE).await;
             if let Err(e) = sender
                 .send(GitHubTask::CreateChangeSummaryCheck { ci_check_info, job })

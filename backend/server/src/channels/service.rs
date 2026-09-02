@@ -120,7 +120,7 @@ impl ChannelService {
         };
 
         let sender = github_sender.clone();
-        tokio::spawn(async move {
+        crate::services::spawn_logged("channel-promotion-check", async move {
             if let Err(e) = sender.send(task).await {
                 warn!("Failed to send CreateChannelPromotionCheck task: {:?}", e);
             }
