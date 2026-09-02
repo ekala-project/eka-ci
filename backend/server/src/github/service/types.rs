@@ -6,14 +6,63 @@ use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::PullRequest;
 use octocrab::params::checks::{CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::checks::types::CheckResultMessage;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::nix::{NixEvalDrv, NixEvalError};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Serde-friendly mirror of `octocrab::params::checks::CheckRunConclusion`.
+///
+/// The upstream type only derives `Serialize`; we need `Deserialize` for
+/// journal round-tripping. The helper converts to/from the octocrab type
+/// at the service boundary.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerdeCheckRunConclusion {
+    ActionRequired,
+    Cancelled,
+    Failure,
+    Neutral,
+    Success,
+    Skipped,
+    Stale,
+    TimedOut,
+}
+
+impl From<octocrab::params::checks::CheckRunConclusion> for SerdeCheckRunConclusion {
+    fn from(c: octocrab::params::checks::CheckRunConclusion) -> Self {
+        use octocrab::params::checks::CheckRunConclusion as C;
+        match c {
+            C::ActionRequired => Self::ActionRequired,
+            C::Cancelled => Self::Cancelled,
+            C::Failure => Self::Failure,
+            C::Neutral => Self::Neutral,
+            C::Success => Self::Success,
+            C::Skipped => Self::Skipped,
+            C::Stale => Self::Stale,
+            C::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
+impl From<SerdeCheckRunConclusion> for octocrab::params::checks::CheckRunConclusion {
+    fn from(c: SerdeCheckRunConclusion) -> Self {
+        match c {
+            SerdeCheckRunConclusion::ActionRequired => Self::ActionRequired,
+            SerdeCheckRunConclusion::Cancelled => Self::Cancelled,
+            SerdeCheckRunConclusion::Failure => Self::Failure,
+            SerdeCheckRunConclusion::Neutral => Self::Neutral,
+            SerdeCheckRunConclusion::Success => Self::Success,
+            SerdeCheckRunConclusion::Skipped => Self::Skipped,
+            SerdeCheckRunConclusion::Stale => Self::Stale,
+            SerdeCheckRunConclusion::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobDifference {
     New,
     Changed,
@@ -96,7 +145,7 @@ mod job_difference_encoding {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 /// Information needed to create a CI check run gate
 pub struct CICheckInfo {
     pub commit: String,
@@ -196,7 +245,7 @@ impl CICheckInfo {
 /// (e.g. the recorder's per-jobset loop or the ingress path creating multiple
 /// check-runs per commit) can `Arc::clone` refcount bumps instead of cloning
 /// the inner `DrvId` string or the 4-String `CICheckInfo`.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum GitHubTask {
     UpdateBuildStatus {
         drv_id: Arc<DrvId>,
@@ -229,7 +278,7 @@ pub enum GitHubTask {
     CompleteCIEvalJob {
         ci_check_info: Arc<CICheckInfo>,
         job_name: String,
-        conclusion: octocrab::params::checks::CheckRunConclusion,
+        conclusion: SerdeCheckRunConclusion,
     },
     CancelCheckRunsForCommit {
         ci_check_info: Arc<CICheckInfo>,
@@ -318,7 +367,7 @@ pub enum GitHubTask {
         comment_id: i64,
         /// GitHub reaction content string: `+1` | `-1` | `laugh` |
         /// `confused` | `heart` | `hooray` | `rocket` | `eyes`.
-        content: &'static str,
+        content: String,
     },
     /// Post an issue/PR comment. Currently unused; kept for future call
     /// sites (e.g., queued merge-failure explanations).

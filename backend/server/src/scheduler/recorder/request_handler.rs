@@ -291,7 +291,7 @@ impl RecorderWorker {
                                 repo_name: jobset_info.repo_name.clone(),
                             }),
                             job_name: jobset_info.job.clone(),
-                            conclusion,
+                            conclusion: conclusion.into(),
                         };
 
                         if let Err(e) = github_sender.send(complete_task).await {

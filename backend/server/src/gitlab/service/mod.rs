@@ -20,7 +20,7 @@ use crate::gitlab::GitLabClient;
 use crate::gitlab::types::GitLabTask;
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
 /// GitLabService handles CI integration with GitLab instances
 ///
@@ -42,6 +42,7 @@ pub struct GitLabService {
     change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
     /// GitLab API clients per domain (self-hosted instances)
     gitlab_clients: Mutex<HashMap<String, Arc<GitLabClient>>>,
+    journal: TaskJournal<GitLabTask>,
 }
 
 impl GitLabService {
@@ -77,6 +78,7 @@ impl GitLabService {
             );
         }
 
+        let pool = db_service.pool.clone();
         Ok(Self {
             db_service,
             gitlab_sender,
@@ -87,6 +89,7 @@ impl GitLabService {
             graph_handle,
             change_summary_metrics,
             gitlab_clients: Mutex::new(gitlab_clients),
+            journal: TaskJournal::new(pool, "gitlab"),
         })
     }
 
@@ -374,6 +377,10 @@ impl AsyncService<GitLabTask> for GitLabService {
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitLabTask>> {
         self.gitlab_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<GitLabTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: GitLabTask) -> Result<()> {

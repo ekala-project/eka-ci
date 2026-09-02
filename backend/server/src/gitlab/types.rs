@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
@@ -8,7 +8,7 @@ use crate::github::JobDifference; // Reuse from GitHub
 use crate::nix::{NixEvalDrv, NixEvalError};
 
 /// Information needed to create a CI commit status for GitLab
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitLabCIInfo {
     pub commit: String,
     pub base_commit: Option<String>,
@@ -20,7 +20,7 @@ pub struct GitLabCIInfo {
 
 /// Task messages for GitLabService
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GitLabTask {
     UpdateBuildStatus {
         drv_id: Arc<DrvId>,
@@ -107,7 +107,7 @@ pub enum GitLabTask {
 }
 
 /// GitLab commit status states
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GitLabStatusState {
     Pending,

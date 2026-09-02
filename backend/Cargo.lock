@@ -1550,6 +1550,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "octocrab",
+ "serde",
  "shared",
  "tempfile",
  "tokio",

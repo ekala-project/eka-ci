@@ -27,6 +27,9 @@ use crate::web::WebService;
 mod async_service;
 pub use async_service::AsyncService;
 
+pub mod task_journal;
+pub use task_journal::TaskJournal;
+
 mod checks;
 
 pub mod websocket;
@@ -254,7 +257,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     )?;
     let repo_sender = repo_service.get_sender();
 
-    let git_service = GitService::new(repo_sender.clone())?;
+    let git_service = GitService::new(repo_sender.clone(), db_service.pool.clone())?;
 
     // Create JWT service and OAuth config for authentication.
     // M2: the JWT secret is stored as `Redacted<String>` so that it

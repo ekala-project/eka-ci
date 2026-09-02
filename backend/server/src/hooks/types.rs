@@ -19,7 +19,7 @@ pub struct PostBuildHook {
 }
 
 /// Task sent to the HookExecutor service
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct HookTask {
     /// Path to the derivation that was built
     pub drv_path: String,
@@ -33,12 +33,15 @@ pub struct HookTask {
     /// Additional context about the build
     pub context: HookContext,
 
-    /// Optional channel to send hook results back
+    /// Optional channel to send hook results back.
+    /// Skipped during serialization — on replay the results are not
+    /// forwarded, but the hooks themselves are re-executed.
+    #[serde(skip)]
     pub result_sender: Option<mpsc::Sender<HookResult>>,
 }
 
 /// Context information provided to hooks
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookContext {
     /// Name of the job from config
     pub job_name: String,
@@ -60,7 +63,7 @@ pub struct HookContext {
 }
 
 /// Result of executing a hook
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookResult {
     /// Name of the hook that was executed
     pub hook_name: String,

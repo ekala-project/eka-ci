@@ -7,6 +7,7 @@ edition = "2021"
 shared = { workspace = true }
 anyhow = { workspace = true }
 octocrab = "0.41.2"
+serde = { workspace = true }
 tokio = { version = "1.41.0", features = ["process"] }
 tracing = { workspace = true }
 xdg = { workspace = true }

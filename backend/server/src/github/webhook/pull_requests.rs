@@ -170,7 +170,7 @@ pub(super) async fn check_comment_merge_drift(
             owner: owner.clone(),
             repo_name: repo_name.clone(),
             comment_id: pending.comment_id,
-            content: "confused",
+            content: "confused".to_string(),
         })
         .await
     {

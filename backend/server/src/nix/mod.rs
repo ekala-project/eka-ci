@@ -35,7 +35,7 @@ use crate::github::{CICheckInfo, GitHubTask};
 use crate::graph::GraphCommand;
 use crate::metrics::NixEvalMetrics;
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct EvalJob {
     pub file_path: String,
     pub name: String,
@@ -44,7 +44,7 @@ pub struct EvalJob {
                                       * TODO: support arguments */
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum EvalTask {
     Job(EvalJob),
     GithubJobPR((EvalJob, CICheckInfo)),
@@ -62,6 +62,7 @@ pub struct EvalService {
     /// events. Optional so unit/integration tests that don't care
     /// about observability can pass `None`.
     pub(crate) nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
+    journal: crate::services::TaskJournal<EvalTask>,
 }
 
 impl EvalService {
@@ -73,6 +74,7 @@ impl EvalService {
         graph_command_sender: mpsc::Sender<GraphCommand>,
         nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
     ) -> EvalService {
+        let pool = db_service.pool.clone();
         EvalService {
             db_service,
             eval_sender: sender,
@@ -81,6 +83,7 @@ impl EvalService {
             graph_command_sender,
             drv_map: Mutex::new(LruCache::new(NonZeroUsize::new(5000).unwrap())),
             nix_eval_metrics,
+            journal: crate::services::TaskJournal::new(pool, "eval"),
         }
     }
 
@@ -432,6 +435,10 @@ impl crate::services::AsyncService<EvalTask> for EvalService {
     #[allow(dead_code)] // Called via AsyncService trait dispatch
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<EvalTask>> {
         self.eval_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&crate::services::TaskJournal<EvalTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: EvalTask) -> Result<()> {

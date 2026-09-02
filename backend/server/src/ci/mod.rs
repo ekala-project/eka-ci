@@ -13,9 +13,9 @@ use crate::checks::types::CheckTask;
 use crate::db::DbService;
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::nix::{EvalJob, EvalTask};
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RepoTask {
     Read(PathBuf),
     ReadGitHub {
@@ -40,6 +40,7 @@ pub struct RepoReader {
     check_sender: Option<mpsc::Sender<CheckTask>>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     db_service: DbService,
+    journal: TaskJournal<RepoTask>,
 }
 
 impl RepoReader {
@@ -50,6 +51,7 @@ impl RepoReader {
         db_service: DbService,
     ) -> anyhow::Result<Self> {
         let (repo_sender, repo_receiver) = mpsc::channel(1000);
+        let pool = db_service.pool.clone();
 
         Ok(Self {
             repo_sender,
@@ -58,6 +60,7 @@ impl RepoReader {
             check_sender,
             github_sender,
             db_service,
+            journal: TaskJournal::new(pool, "repo"),
         })
     }
 
@@ -294,6 +297,10 @@ impl AsyncService<RepoTask> for RepoReader {
     #[allow(dead_code)] // Called via AsyncService trait dispatch
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<RepoTask>> {
         self.repo_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<RepoTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: RepoTask) -> anyhow::Result<()> {

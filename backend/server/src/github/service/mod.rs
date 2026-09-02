@@ -14,7 +14,7 @@ use crate::db::DbService;
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
 use crate::scheduler::IngressTask;
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
 /// Debounce window before the aggregated change-summary check is posted.
 pub(crate) const CHANGE_SUMMARY_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
@@ -54,6 +54,7 @@ pub struct GitHubService {
     ingress_sender: Option<mpsc::Sender<IngressTask>>,
     /// Rate limiter to avoid flooding the GitHub API endpoint.
     rate_limiter: ApiRateLimiter,
+    journal: TaskJournal<GitHubTask>,
 }
 
 /// Rate limiter that enforces a minimum interval between API calls
@@ -224,6 +225,7 @@ impl GitHubService {
             );
         }
 
+        let pool = db_service.pool.clone();
         let (github_sender, github_receiver) = mpsc::channel(1_000);
         Ok(Self {
             db_service,
@@ -241,6 +243,7 @@ impl GitHubService {
             // ~10 req/sec keeps well under GitHub's 5000/hr app limit
             // while still being responsive for check_run updates.
             rate_limiter: ApiRateLimiter::new(10.0),
+            journal: TaskJournal::new(pool, "github"),
         })
     }
 
@@ -279,6 +282,10 @@ impl AsyncService<GitHubTask> for GitHubService {
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitHubTask>> {
         self.github_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<GitHubTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: GitHubTask) -> Result<()> {

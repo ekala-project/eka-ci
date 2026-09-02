@@ -12,6 +12,7 @@ use crate::graph::GraphServiceHandle;
 use crate::graph_compat;
 use crate::scheduler::build::BuildRequest;
 use crate::scheduler::recorder::RecorderTask;
+use crate::services::TaskJournal;
 
 /// This acts as the service which filters incoming drv build requests
 /// and determines if the drv is "buildable", already successful,
@@ -30,12 +31,13 @@ pub struct IngressWorker {
     /// going through the builder thread.
     recorder_sender: mpsc::Sender<RecorderTask>,
     graph_handle: GraphServiceHandle,
+    journal: TaskJournal<IngressTask>,
 }
 
 /// Variants carry `Arc<DrvId>` so fan-out senders (recorder, webhooks,
 /// nix eval) can `Arc::clone` instead of cloning the inner `String`
 /// when the same drv crosses multiple channel hops.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum IngressTask {
     /// This is a Drv which was determined by an evaluation
     /// The actual status is unknown. Could be new, or could have already completed.
@@ -77,12 +79,14 @@ impl IngressService {
         buildable_sender: mpsc::Sender<BuildRequest>,
         recorder_sender: mpsc::Sender<RecorderTask>,
         cancellation_token: CancellationToken,
+        pool: sqlx::SqlitePool,
     ) -> JoinHandle<()> {
         let worker = IngressWorker {
             request_receiver: self.request_receiver,
             buildable_sender,
             recorder_sender,
             graph_handle: self.graph_handle,
+            journal: TaskJournal::new(pool, "ingress"),
         };
         tokio::spawn(async move {
             worker.ingest_requests(cancellation_token).await;
@@ -92,6 +96,24 @@ impl IngressService {
 
 impl IngressWorker {
     async fn ingest_requests(mut self, cancellation_token: CancellationToken) {
+        // Replay un-acknowledged tasks from a previous crash.
+        match self.journal.recover().await {
+            Ok(recovered) => {
+                for (jid, task) in recovered {
+                    info!("replaying recovered ingress task: {:?}", &task);
+                    if let Err(e) = self.handle_ingress_request(&task).await {
+                        warn!(
+                            "Failed to handle recovered ingress request {:?}: {:?}",
+                            &task, e
+                        );
+                    } else if let Err(e) = self.journal.acknowledge(jid).await {
+                        warn!("failed to ack recovered ingress journal entry: {:?}", e);
+                    }
+                }
+            },
+            Err(e) => warn!("failed to recover ingress journal: {:?}", e),
+        }
+
         while let Some(request) = cancellation_token
             .run_until_cancelled(self.request_receiver.recv())
             .await
@@ -103,8 +125,21 @@ impl IngressWorker {
                     break;
                 },
             };
+
+            let jid = match self.journal.persist(&task).await {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    warn!("failed to journal ingress task {:?}: {:?}", &task, e);
+                    None
+                },
+            };
+
             if let Err(e) = self.handle_ingress_request(&task).await {
                 warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
+            } else if let Some(id) = jid {
+                if let Err(e) = self.journal.acknowledge(id).await {
+                    warn!("failed to ack ingress journal entry: {:?}", e);
+                }
             }
         }
 

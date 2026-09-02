@@ -102,7 +102,7 @@ impl GitHubService {
                     ci_check_info,
                     check_run_id,
                     CheckRunStatus::Completed,
-                    *conclusion,
+                    (*conclusion).into(),
                 )
                 .await?;
             },

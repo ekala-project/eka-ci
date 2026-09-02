@@ -18,7 +18,7 @@ use crate::db::model::build_event::DrvBuildState;
 /// variants for "job set completed" (delivered by the recorder), CLI
 /// triggers, and an admin "force re-evaluate" path.
 #[allow(dead_code)] // variants are constructed by producers in PR 4
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ChannelTask {
     /// A push to the channel's tracking-branch was observed at `sha`.
     ///
@@ -53,7 +53,7 @@ pub enum ChannelTask {
 /// Numeric status as written to the `ChannelPromotion.status` column.
 ///
 /// The discriminants are part of the storage contract — never reorder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i64)]
 pub enum PromotionStatus {
     /// In-flight: still waiting for required / packages jobs.

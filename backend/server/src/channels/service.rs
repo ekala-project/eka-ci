@@ -29,7 +29,7 @@ use crate::config::{ChannelConfig, ChannelForge};
 use crate::db::DbService;
 use crate::db::model::build_event::DrvBuildState;
 use crate::github::GitHubTask;
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
 /// Capacity of the inbound mpsc channel. Matches other AsyncServices
 /// (GitService, EvalService) so backpressure characteristics are
@@ -65,6 +65,7 @@ pub struct ChannelService {
     /// display promotion status in the GitHub UI. `None` when GitHub
     /// integration is disabled.
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    journal: TaskJournal<ChannelTask>,
 }
 
 impl ChannelService {
@@ -75,6 +76,7 @@ impl ChannelService {
         github_sender: Option<mpsc::Sender<GitHubTask>>,
     ) -> Self {
         let (task_sender, task_receiver) = mpsc::channel(CHANNEL_TASK_BUFFER);
+        let pool = db.pool.clone();
         Self {
             task_sender,
             task_receiver: Some(task_receiver),
@@ -83,6 +85,7 @@ impl ChannelService {
             channels,
             octocrab,
             github_sender,
+            journal: TaskJournal::new(pool, "channels"),
         }
     }
 
@@ -718,6 +721,10 @@ impl AsyncService<ChannelTask> for ChannelService {
     #[allow(dead_code)] // dispatched via AsyncService::run
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<ChannelTask>> {
         self.task_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<ChannelTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: ChannelTask) -> Result<()> {

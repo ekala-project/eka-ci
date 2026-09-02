@@ -79,8 +79,12 @@ impl SchedulerService {
         metrics_registry.register(Box::new(process_collector))?;
 
         // Initialize HookExecutor service
-        let hook_executor =
-            HookExecutor::new(logs_dir.clone(), max_hook_timeout_seconds, audit_hooks);
+        let hook_executor = HookExecutor::new(
+            logs_dir.clone(),
+            max_hook_timeout_seconds,
+            audit_hooks,
+            db_service.pool.clone(),
+        );
         let hook_sender = hook_executor.get_sender();
 
         let (ingress_service, ingress_sender) = IngressService::init(graph_handle.clone());
@@ -135,6 +139,7 @@ impl SchedulerService {
             builder_sender.clone(),
             recorder_sender.clone(),
             cancellation_token.clone(),
+            db_service.pool.clone(),
         );
         let recorder_thread =
             recorder_service.run(ingress_sender.clone(), cancellation_token.clone());
