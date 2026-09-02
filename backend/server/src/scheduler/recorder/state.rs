@@ -104,11 +104,17 @@ impl RecorderWorker {
         // the graph channel is saturated by the BFS cascade.
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::UpdateState {
-            drv_id: shared_drv_id,
+            drv_id: shared_drv_id.clone(),
             new_state: shared_state,
             response: tx,
         };
-        let _ = self.graph_command_sender.try_send(cmd);
+        if let Err(e) = self.graph_command_sender.try_send(cmd) {
+            tracing::warn!(
+                "graph command queue full, deferred UpdateState for {}: {}",
+                shared_drv_id.store_path(),
+                e
+            );
+        }
         Ok(())
     }
 

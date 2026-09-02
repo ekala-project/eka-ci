@@ -94,10 +94,17 @@ impl RecorderWorker {
                 let unblocked_drvs = self.clear_graph_failure(drv).await?;
 
                 // Re-queue drvs that were unblocked
-                for unblocked_drv in unblocked_drvs {
-                    let task = IngressTask::CheckBuildable(std::sync::Arc::new(unblocked_drv));
-                    // Non-blocking to prevent recorder ↔ ingress deadlock
-                    let _ = self.ingress_sender.try_send(task);
+                for unblocked_drv in &unblocked_drvs {
+                    let task =
+                        IngressTask::CheckBuildable(std::sync::Arc::new(unblocked_drv.clone()));
+                    // Non-blocking to prevent recorder ↔ ingress deadlock.
+                    if let Err(e) = self.ingress_sender.try_send(task) {
+                        warn!(
+                            "ingress queue full, dropped CheckBuildable for {}: {}",
+                            unblocked_drv.store_path(),
+                            e
+                        );
+                    }
                 }
 
                 // Check direct referrers for buildability.
@@ -111,7 +118,12 @@ impl RecorderWorker {
                     let task = IngressTask::CheckBuildable(std::sync::Arc::new(server_referrer));
                     // Non-blocking: if ingress is full, the delayed
                     // re-check from the GitHub service will catch it.
-                    let _ = self.ingress_sender.try_send(task);
+                    if let Err(e) = self.ingress_sender.try_send(task) {
+                        warn!(
+                            "ingress queue full, dropped CheckBuildable for referrer: {}",
+                            e
+                        );
+                    }
                 }
             },
             DBS::Completed(DBR::Failure) => {
@@ -253,9 +265,15 @@ impl RecorderWorker {
                         {
                             if matches!(drv_entry.build_state, DBS::Queued) {
                                 let drv_id = Arc::new(queued_job.drv_path);
-                                let _ = self
+                                if let Err(e) = self
                                     .ingress_sender
-                                    .try_send(IngressTask::EvalRequest(drv_id));
+                                    .try_send(IngressTask::EvalRequest(drv_id))
+                                {
+                                    warn!(
+                                        "ingress queue full, dropped EvalRequest re-dispatch: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                     }

@@ -209,7 +209,7 @@ impl RecorderWorker {
         // Spawn task to receive and store hook results
         let db_service = self.db_service.clone();
         let drv_path_for_task = drv_id.store_path().to_string();
-        tokio::spawn(async move {
+        crate::services::spawn_logged("hook-result-persistence", async move {
             while let Some(result) = result_receiver.recv().await {
                 debug!(
                     "Received hook result for '{}' on drv {}",
