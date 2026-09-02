@@ -129,12 +129,16 @@ impl ChecksExecutor {
             .to_str()
             .with_context(|| format!("checkout path contains non-UTF-8 bytes: {:?}", path))?;
 
-        // Clone the repository
-        let clone_output = Command::new("git")
-            .args(["clone", clone_url, path_str])
-            .output()
-            .await
-            .context("failed to execute git clone")?;
+        // Clone the repository (5-minute timeout for large repos)
+        let clone_output = tokio::time::timeout(
+            std::time::Duration::from_secs(5 * 60),
+            Command::new("git")
+                .args(["clone", clone_url, path_str])
+                .output(),
+        )
+        .await
+        .context("git clone timed out after 5 minutes")?
+        .context("failed to execute git clone")?;
 
         if !clone_output.status.success() {
             anyhow::bail!(
@@ -145,12 +149,16 @@ impl ChecksExecutor {
 
         // Checkout the specific SHA
         debug!("Checking out SHA {} in {:?}", sha, path);
-        let checkout_output = Command::new("git")
-            .current_dir(path)
-            .args(["checkout", sha])
-            .output()
-            .await
-            .context("failed to execute git checkout")?;
+        let checkout_output = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            Command::new("git")
+                .current_dir(path)
+                .args(["checkout", sha])
+                .output(),
+        )
+        .await
+        .context("git checkout timed out after 60 seconds")?
+        .context("failed to execute git checkout")?;
 
         if !checkout_output.status.success() {
             anyhow::bail!(

@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::sync::mpsc::{self, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+
+/// Timeout for quick nix operations (store ping, config show).
+const NIX_QUICK_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::builder_thread::BuilderThread;
 use super::{BuildRequest, Platform};
@@ -80,17 +84,22 @@ impl Builder {
             return true;
         }
 
-        Command::new("nix")
-            .args([
-                "store",
-                "ping",
-                "--store",
-                self.remote_uri.as_ref().unwrap(),
-            ])
-            .output()
-            .await
-            .map(|x| x.status.success())
-            .unwrap_or(false)
+        tokio::time::timeout(
+            NIX_QUICK_TIMEOUT,
+            Command::new("nix")
+                .args([
+                    "store",
+                    "ping",
+                    "--store",
+                    self.remote_uri.as_ref().unwrap(),
+                ])
+                .output(),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|x| x.status.success())
+        .unwrap_or(false)
     }
 
     pub fn run(self, cancellation_token: CancellationToken) -> mpsc::Sender<BuildRequest> {
@@ -228,10 +237,13 @@ impl Builder {
 /// Nix conf value merging is actually quite complex with user and system
 /// settings. Just read the output from the 'nix config show' command to deterimne values
 async fn local_platforms() -> Result<Vec<String>> {
-    let config_output = Command::new("nix")
-        .args(["config", "show"])
-        .output()
-        .await?;
+    let config_output = tokio::time::timeout(
+        NIX_QUICK_TIMEOUT,
+        Command::new("nix").args(["config", "show"]).output(),
+    )
+    .await
+    .context("nix config show timed out")?
+    .context("failed to run nix config show")?;
 
     let config_str = String::from_utf8(config_output.stdout)?;
 
@@ -254,10 +266,13 @@ async fn local_platforms() -> Result<Vec<String>> {
 /// These are features like kvm, nixos-test, big-parallel, benchmark that
 /// the local system supports
 async fn local_system_features() -> Result<Vec<String>> {
-    let config_output = Command::new("nix")
-        .args(["config", "show"])
-        .output()
-        .await?;
+    let config_output = tokio::time::timeout(
+        NIX_QUICK_TIMEOUT,
+        Command::new("nix").args(["config", "show"]).output(),
+    )
+    .await
+    .context("nix config show timed out")?
+    .context("failed to run nix config show")?;
 
     let config_str = String::from_utf8(config_output.stdout)?;
 

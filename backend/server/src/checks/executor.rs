@@ -178,18 +178,22 @@ async fn get_nix_shell_env(
 
         debug!("Running nix develop {} --command env", flake_ref);
 
-        let output = tokio::process::Command::new("nix")
-            .env_clear() // Start with empty environment
-            .current_dir(checkout_path) // Run in the checkout directory
-            .arg("develop")
-            .arg(&flake_ref)
-            .arg("--command")
-            .arg("env")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("Failed to execute nix develop")?;
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(5 * 60),
+            tokio::process::Command::new("nix")
+                .env_clear() // Start with empty environment
+                .current_dir(checkout_path) // Run in the checkout directory
+                .arg("develop")
+                .arg(&flake_ref)
+                .arg("--command")
+                .arg("env")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output(),
+        )
+        .await
+        .context("nix develop timed out after 5 minutes")?
+        .context("Failed to execute nix develop")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

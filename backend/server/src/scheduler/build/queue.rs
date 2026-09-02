@@ -249,12 +249,16 @@ fn classify_and_enqueue(
 async fn default_platform() -> anyhow::Result<Platform> {
     use anyhow::Context;
 
-    let output = Command::new("nix-instantiate")
-        .args(["--eval", "--raw", "-E", "builtins.currentSystem"])
-        .output()
-        .await
-        .context("failed to run nix-instantiate to determine default platform")?
-        .stdout;
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        Command::new("nix-instantiate")
+            .args(["--eval", "--raw", "-E", "builtins.currentSystem"])
+            .output(),
+    )
+    .await
+    .context("nix-instantiate timed out determining default platform")?
+    .context("failed to run nix-instantiate to determine default platform")?
+    .stdout;
     let platform = String::from_utf8(output)
         .context("nix-instantiate emitted non-UTF-8 output for default platform")?;
     debug!("Using {} as default platform", &platform);
