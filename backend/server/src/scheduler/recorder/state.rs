@@ -58,18 +58,25 @@ impl RecorderWorker {
         }
     }
 
-    /// Update drv status in both graph and database, then broadcast the change
+    /// Update drv status in both database and graph, then broadcast the change.
+    ///
+    /// The database is written first because it is the source of truth on
+    /// restart: the in-memory graph is rebuilt from DB state during startup.
+    /// If the graph update fails after a successful DB write, the
+    /// inconsistency self-heals on the next restart. Writing the graph
+    /// first would leave the opposite problem — the graph shows state the
+    /// DB doesn't know about, and a crash silently reverts the transition.
     pub(super) async fn update_and_broadcast(
         &self,
         drv: &drv_id::DrvId,
         old_state: &build_event::DrvBuildState,
         new_state: &build_event::DrvBuildState,
     ) -> anyhow::Result<()> {
-        // Update graph first (fast in-memory operation)
-        self.update_graph_state(drv, new_state.clone()).await?;
-
-        // Then update database (for persistence)
+        // Persist to database first (source of truth for crash recovery)
         self.db_service.update_drv_status(drv, new_state).await?;
+
+        // Then update in-memory graph (fast, self-heals on restart if this fails)
+        self.update_graph_state(drv, new_state.clone()).await?;
 
         // Finally broadcast to websocket clients
         self.broadcast_state_change(drv, old_state, new_state);
