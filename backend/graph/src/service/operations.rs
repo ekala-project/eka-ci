@@ -56,10 +56,22 @@ pub(super) async fn ensure_loaded(
 
     // Insert the node and track potential eviction
     let now = Instant::now();
-    if let Some((evicted_id, _evicted_node)) = graph.insert_node(drv) {
+    if let Some((evicted_id, evicted_node)) = graph.insert_node(drv) {
         // Record eviction metric
         if let Some(metrics) = metrics {
             metrics.increment_evictions();
+        }
+
+        // Decrement ref_counts for each dependency of the evicted node.
+        // Without this, ref_counts grows unbounded with stale entries
+        // for deps whose only referrer was the evicted node.
+        for dep_id in &evicted_node.dependencies {
+            if let Some(count) = ref_counts.get_mut(dep_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 && !graph.nodes.contains(dep_id) {
+                    ref_counts.remove(dep_id);
+                }
+            }
         }
 
         // Clean up tracking data for evicted node
@@ -137,10 +149,21 @@ pub(super) async fn insert_drvs(
         let drv_id = drv.drv_path.clone();
 
         // Insert node and track evictions
-        if let Some((evicted_id, _evicted_node)) = graph.insert_node(drv) {
+        if let Some((evicted_id, evicted_node)) = graph.insert_node(drv) {
             // Record eviction metric
             if let Some(metrics) = metrics {
                 metrics.increment_evictions();
+            }
+
+            // Decrement ref_counts for each dependency of the evicted
+            // node to prevent unbounded growth of the tracking map.
+            for dep_id in &evicted_node.dependencies {
+                if let Some(count) = ref_counts.get_mut(dep_id) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 && !graph.nodes.contains(dep_id) {
+                        ref_counts.remove(dep_id);
+                    }
+                }
             }
 
             // Clean up tracking data for evicted node

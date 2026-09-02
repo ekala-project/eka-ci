@@ -380,10 +380,17 @@ impl NixBuild {
 /// Retrieve build logs from nix's log storage
 /// This is particularly useful for substituted derivations where we don't build locally
 async fn get_nix_log(drv_id: &DrvId) -> anyhow::Result<String> {
-    let output = Command::new("nix")
-        .args(["log", &drv_id.store_path()])
-        .output()
-        .await?;
+    use anyhow::Context;
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Command::new("nix")
+            .args(["log", &drv_id.store_path()])
+            .output(),
+    )
+    .await
+    .context("nix log timed out")?
+    .context("failed to run nix log")?;
 
     if !output.status.success() {
         anyhow::bail!("nix log command failed with status: {}", output.status);
