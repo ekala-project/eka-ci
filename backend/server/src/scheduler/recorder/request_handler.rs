@@ -86,11 +86,12 @@ impl RecorderWorker {
                 //     // Don't fail the build if closure size check fails
                 // }
 
-                // Clear any transitive failures in graph (fast in-memory operation)
-                let unblocked_drvs = self.clear_graph_failure(drv).await?;
-
-                // Also clear in database for persistence
+                // Clear transitive failures in database first (source of
+                // truth for crash recovery), then update the in-memory
+                // graph. This order ensures the DB is never behind the
+                // graph — if the graph update fails, restart self-heals.
                 self.db_service.clear_transitive_failures(drv).await?;
+                let unblocked_drvs = self.clear_graph_failure(drv).await?;
 
                 // Re-queue drvs that were unblocked
                 for unblocked_drv in unblocked_drvs {
@@ -151,10 +152,16 @@ impl RecorderWorker {
                         self.update_and_broadcast(drv, &old_state, &task.result)
                             .await?;
 
-                        // Propagate failure in graph (fast in-memory BFS traversal)
+                        // Propagate failure: graph first to discover
+                        // blocked drvs, then persist to DB. The graph
+                        // BFS is the only way to find transitively
+                        // blocked nodes, so it must run first here.
+                        // The DB insert that follows persists the
+                        // result; if it fails, the graph and DB diverge
+                        // but restart will re-propagate from the
+                        // terminal failure state stored in DB.
                         let blocked_drvs = self.propagate_graph_failure(drv).await?;
 
-                        // Also propagate in database for persistence
                         if !blocked_drvs.is_empty() {
                             self.db_service
                                 .insert_transitive_failures(drv, &blocked_drvs)
