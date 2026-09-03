@@ -10,7 +10,7 @@ use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::drv_id;
 use crate::graph::GraphServiceHandle;
 use crate::graph_compat;
-use crate::scheduler::build::BuildRequest;
+use crate::scheduler::build::{BuildRequest, BuilderFeatureSnapshot};
 use crate::scheduler::recorder::RecorderTask;
 use crate::services::TaskJournal;
 
@@ -32,6 +32,7 @@ pub struct IngressWorker {
     recorder_sender: mpsc::Sender<RecorderTask>,
     graph_handle: GraphServiceHandle,
     journal: TaskJournal<IngressTask>,
+    builder_features: BuilderFeatureSnapshot,
 }
 
 /// Variants carry `Arc<DrvId>` so fan-out senders (recorder, webhooks,
@@ -80,6 +81,7 @@ impl IngressService {
         recorder_sender: mpsc::Sender<RecorderTask>,
         cancellation_token: CancellationToken,
         pool: sqlx::SqlitePool,
+        builder_features: BuilderFeatureSnapshot,
     ) -> JoinHandle<()> {
         let worker = IngressWorker {
             request_receiver: self.request_receiver,
@@ -87,6 +89,7 @@ impl IngressService {
             recorder_sender,
             graph_handle: self.graph_handle,
             journal: TaskJournal::new(pool, "ingress"),
+            builder_features,
         };
         tokio::spawn(async move {
             worker.ingest_requests(cancellation_token).await;
@@ -216,27 +219,31 @@ impl IngressWorker {
     }
 
     async fn handle_check_buildable_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
-        debug!("checking if {:?} is buildable", drv_id);
-
         let shared_id = graph_compat::to_shared_drv_id(drv_id)?;
-        if self.graph_handle.is_buildable(&shared_id) {
-            debug!("{:?} is now buildable", drv_id);
-        } else {
-            let blockers = self.graph_handle.blocking_deps(&shared_id);
-            if !blockers.is_empty() && blockers.len() <= 5 {
-                debug!(
-                    "{:?} not buildable: {} blocking deps, first: {:?}",
-                    drv_id,
-                    blockers.len(),
-                    &blockers[..blockers.len().min(3)]
-                );
-            }
-        }
         if self.graph_handle.is_buildable(&shared_id) {
             let cached_node = self
                 .graph_handle
                 .get_node(&shared_id)
                 .context("drv is missing from graph")?;
+
+            // Early rejection: if no builder can handle this drv's required
+            // system features, mark as UnsatisfiableRequirements immediately
+            // instead of sending it through the build queue.
+            if !self
+                .builder_features
+                .can_build(&cached_node.required_system_features)
+            {
+                warn!(
+                    "{:?} requires features {:?} that no builder provides",
+                    drv_id, cached_node.required_system_features
+                );
+                let task = RecorderTask {
+                    derivation: Arc::new(drv_id.clone()),
+                    result: DrvBuildState::UnsatisfiableRequirements,
+                };
+                self.recorder_sender.send(task).await?;
+                return Ok(());
+            }
 
             // FailedRetry must be preserved so the recorder can detect second failures.
             let shared_failed_retry =
@@ -291,11 +298,9 @@ impl IngressWorker {
         };
 
         if report.is_cached(drv_id) {
-            // Fully cached — mark as completed via recorder.
             debug!("substitution hit for {}", drv_id.store_path());
             self.handle_check_substitution_task_with_report(drv_id, &report)
                 .await?;
-            debug!("{} short-circuited via substitution", drv_id.store_path());
             return Ok(());
         }
 
@@ -408,12 +413,10 @@ impl IngressWorker {
         }
 
         debug!(
-            "substitution BFS for {}: visited {} drvs, marked {} as cached",
+            "substitution BFS for {}: visited {} drvs",
             drv_id.store_path(),
-            visited.len(),
-            visited.len(), // all visited are either cached or skipped
+            visited.len()
         );
-
         Ok(())
     }
 

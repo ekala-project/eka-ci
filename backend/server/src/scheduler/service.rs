@@ -133,6 +133,14 @@ impl SchedulerService {
             }
         }
 
+        // Capture builder feature capabilities before builders are consumed
+        let feature_entries: Vec<_> = builders
+            .iter()
+            .chain(fod_builders.iter())
+            .map(|b| (b.supported_features.clone(), b.mandatory_features.clone()))
+            .collect();
+        let builder_features = super::build::BuilderFeatureSnapshot::new(feature_entries);
+
         let (builder_service, builder_sender) =
             BuildQueue::init(builders, fod_builders, build_metrics).await;
         // Ingress now needs the recorder channel as well, so it can short-circuit
@@ -143,6 +151,7 @@ impl SchedulerService {
             recorder_sender.clone(),
             cancellation_token.clone(),
             db_service.pool.clone(),
+            builder_features,
         );
         let recorder_thread =
             recorder_service.run(ingress_sender.clone(), cancellation_token.clone());
