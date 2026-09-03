@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 
 use super::{BuildRequest, Platform};
 use crate::db::model::{DrvId, build_event};
+use crate::graph::GraphServiceHandle;
 use crate::metrics::BuildMetrics;
 use crate::scheduler::recorder::RecorderTask;
 
@@ -27,6 +28,7 @@ pub struct BuilderThread {
     no_output_timeout_seconds: u64,
     /// M5: absolute wall-clock cap per build; does not reset on output.
     max_duration_seconds: u64,
+    graph_handle: GraphServiceHandle,
 }
 
 impl BuilderThread {
@@ -40,6 +42,7 @@ impl BuilderThread {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
     ) -> Self {
         Self {
             build_args,
@@ -50,6 +53,7 @@ impl BuilderThread {
             metrics,
             no_output_timeout_seconds,
             max_duration_seconds,
+            graph_handle,
         }
     }
 
@@ -89,6 +93,23 @@ impl BuilderThread {
                 result = build_receiver.recv() => {
                     match result {
                         Some(build_request) => {
+                            // Skip builds whose drv is already in a terminal state
+                            // (e.g. cache-hit marked Completed(Success) by the recorder
+                            // while the build request was queued).
+                            let drv_id = &build_request.0.drv_path;
+                            if let Ok(shared_id) = crate::graph_compat::to_shared_drv_id(drv_id) {
+                                if let Some(state) = self.graph_handle.get_build_state(&shared_id) {
+                                    if state.is_terminal() {
+                                        debug!(
+                                            "skipping build for {} (already {:?})",
+                                            drv_id.store_path(),
+                                            state
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
                             let new_build = self.create_build(build_request.0.drv_path);
                             build_set.spawn(async move { new_build.attempt_build().await });
                             // Update active builds metric after starting a new build
@@ -228,11 +249,10 @@ impl NixBuild {
             tokio::select! {
                 result = stdout_reader.read_until(b'\n', &mut stdout_buf) => {
                     match result {
-                        Ok(0) => {}, // EOF
+                        Ok(0) => {},
                         Ok(_) => {
                             log_writer.write_all(&stdout_buf).await?;
                             stdout_buf.clear();
-                            // Reset no-output timeout only; absolute deadline is fixed.
                             timeout.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
                         },
                         Err(e) => warn!("Error reading stdout: {}", e),
@@ -240,51 +260,23 @@ impl NixBuild {
                 },
                 result = stderr_reader.read_until(b'\n', &mut stderr_buf) => {
                     match result {
-                        Ok(0) => {}, // EOF
+                        Ok(0) => {},
                         Ok(_) => {
                             log_writer.write_all(&stderr_buf).await?;
                             stderr_buf.clear();
-                            // Reset no-output timeout only; absolute deadline is fixed.
                             timeout.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
                         },
                         Err(e) => warn!("Error reading stderr: {}", e),
                     }
                 },
                 _ = &mut timeout => {
-                    // No-output timeout occurred - kill the process
-                    warn!("Build timed out after {} seconds of no output, killing process", self.no_output_timeout_seconds);
-                    if let Err(e) = child.kill().await {
-                        warn!("Failed to kill build child on no-output timeout (may already be dead): {:?}", e);
-                    }
-                    // Reap to avoid zombies and release file descriptors
-                    if let Err(e) = child.wait().await {
-                        warn!("Failed to reap build child on no-output timeout: {:?}", e);
-                    }
-
-                    // Flush and close log file
-                    log_writer.flush().await?;
-                    let log_file = log_writer.into_inner();
-                    log_file.sync_all().await?;
-
+                    warn!("Build timed out after {}s of no output", self.no_output_timeout_seconds);
+                    Self::kill_and_flush(&mut child, log_writer).await?;
                     return Ok(BuildOutcome::Timeout);
                 },
                 _ = &mut absolute_timeout => {
-                    // M5: absolute wall-clock cap reached
-                    warn!(
-                        "Build exceeded wall-clock cap of {} seconds, killing process",
-                        self.max_duration_seconds,
-                    );
-                    if let Err(e) = child.kill().await {
-                        warn!("Failed to kill build child on absolute timeout (may already be dead): {:?}", e);
-                    }
-                    if let Err(e) = child.wait().await {
-                        warn!("Failed to reap build child on absolute timeout: {:?}", e);
-                    }
-
-                    log_writer.flush().await?;
-                    let log_file = log_writer.into_inner();
-                    log_file.sync_all().await?;
-
+                    warn!("Build exceeded wall-clock cap of {}s", self.max_duration_seconds);
+                    Self::kill_and_flush(&mut child, log_writer).await?;
                     return Ok(BuildOutcome::AbsoluteTimeout);
                 },
             }
@@ -317,32 +309,16 @@ impl NixBuild {
         );
 
         if status.success() {
-            // For successful builds, try to get logs from `nix log`
-            // This captures logs from substituted derivations
+            // Try to replace build log with `nix log` output (richer for substituted drvs)
             match get_nix_log(&self.drv_id).await {
-                Ok(nix_log_output) if !nix_log_output.is_empty() => {
-                    // Replace log file with nix log output
-                    debug!(
-                        "Replacing build log with nix log output for {}",
-                        self.drv_id.store_path()
-                    );
-                    tokio::fs::write(&log_path, nix_log_output).await?;
+                Ok(nix_log) if !nix_log.is_empty() => {
+                    tokio::fs::write(&log_path, nix_log).await?;
                 },
-                Ok(_) => {
-                    // nix log returned empty, keep the streamed build output
-                    debug!(
-                        "nix log returned empty for {}, keeping streamed output",
-                        self.drv_id.store_path()
-                    );
-                },
-                Err(e) => {
-                    // nix log failed, keep the streamed build output
-                    debug!(
-                        "nix log failed for {}: {}, keeping streamed output",
-                        self.drv_id.store_path(),
-                        e
-                    );
-                },
+                Ok(_) => debug!(
+                    "nix log empty for {}, keeping build output",
+                    self.drv_id.store_path()
+                ),
+                Err(e) => debug!("nix log failed for {}: {}", self.drv_id.store_path(), e),
             }
             Ok(BuildOutcome::Success)
         } else {
@@ -350,27 +326,31 @@ impl NixBuild {
         }
     }
 
+    async fn kill_and_flush(
+        child: &mut tokio::process::Child,
+        log_writer: BufWriter<File>,
+    ) -> anyhow::Result<()> {
+        if let Err(e) = child.kill().await {
+            warn!("Failed to kill build child (may already be dead): {:?}", e);
+        }
+        if let Err(e) = child.wait().await {
+            warn!("Failed to reap build child: {:?}", e);
+        }
+        let mut lw = log_writer;
+        lw.flush().await?;
+        lw.into_inner().sync_all().await?;
+        Ok(())
+    }
+
     async fn attempt_build(self) -> anyhow::Result<()> {
-        // use build_event::{DrvBuildEvent, DrvBuildState};
-        // let build_id = DrvBuildId {
-        //     derivation: drv.drv_path.clone(),
-        //     // TODO: build_attempt seems like something we should query
-        //     build_attempt: std::num::NonZeroU32::new(1).unwrap(),
-        // };
-
-        // let buildable_event = DrvBuildEvent::for_insert(build_id, DrvBuildState::Building);
-        // db_service.new_drv_build_event(buildable_event).await?;
-
         let build_state = self.perform_build().await;
 
-        // To avoid the state of the build not pushing the result to other potential
-        // drvs, we let the recorder deal with updating the build_event task
-        // and determining if other drv's now can be queued
+        // Let the recorder deal with updating build state and
+        // determining if downstream drvs are now buildable.
         let recorder_task = RecorderTask {
             derivation: std::sync::Arc::new(self.drv_id),
-            result: build_state.clone(),
+            result: build_state,
         };
-
         self.recorder_sender.send(recorder_task).await?;
 
         Ok(())
