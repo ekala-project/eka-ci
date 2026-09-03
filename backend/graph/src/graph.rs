@@ -443,7 +443,7 @@ impl BuildGraph {
     }
 
     /// Initialize the graph from database on startup
-    /// Normalizes transient states to Queued and recomputes transitive failures
+    /// Normalizes transient states and recomputes transitive failures
     pub async fn from_database(
         db: &dyn crate::traits::GraphDatabase,
         capacity: usize,
@@ -453,14 +453,15 @@ impl BuildGraph {
 
         let mut graph = BuildGraph::new(capacity);
 
-        // Insert all nodes, normalizing transient states
+        // Normalize transient states for crash recovery. FailedRetry is
+        // preserved so that the retry budget is not reset — a drv that
+        // already used its first attempt keeps that history across restarts.
         for mut drv in drvs {
-            // Normalize transient states to Queued
             drv.build_state = match drv.build_state {
-                DrvBuildState::Building
-                | DrvBuildState::Buildable
-                | DrvBuildState::Queued
-                | DrvBuildState::FailedRetry => DrvBuildState::Queued,
+                DrvBuildState::Building | DrvBuildState::Buildable | DrvBuildState::Queued => {
+                    DrvBuildState::Queued
+                },
+                DrvBuildState::FailedRetry => DrvBuildState::FailedRetry,
                 terminal => terminal,
             };
 
