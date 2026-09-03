@@ -114,36 +114,79 @@ impl IngressWorker {
             Err(e) => warn!("failed to recover ingress journal: {:?}", e),
         }
 
-        while let Some(request) = cancellation_token
-            .run_until_cancelled(self.request_receiver.recv())
-            .await
-        {
-            let task = match request {
-                Some(task) => task,
-                None => {
-                    warn!("Ingress receiver channel closed, shutting down");
+        // Periodic sweep interval to catch drvs whose CheckBuildable
+        // messages were dropped by try_send (see todo-spec-items #4, #7).
+        let mut sweep_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        // Don't pile up ticks while we're busy processing tasks.
+        sweep_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Skip the immediate first tick.
+        sweep_interval.tick().await;
+
+        loop {
+            tokio::select! {
+                request = self.request_receiver.recv() => {
+                    let task = match request {
+                        Some(task) => task,
+                        None => {
+                            warn!("Ingress receiver channel closed, shutting down");
+                            break;
+                        },
+                    };
+
+                    let jid = match self.journal.persist(&task).await {
+                        Ok(id) => Some(id),
+                        Err(e) => {
+                            warn!("failed to journal ingress task {:?}: {:?}", &task, e);
+                            None
+                        },
+                    };
+
+                    if let Err(e) = self.handle_ingress_request(&task).await {
+                        warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
+                    } else if let Some(id) = jid {
+                        if let Err(e) = self.journal.acknowledge(id).await {
+                            warn!("failed to ack ingress journal entry: {:?}", e);
+                        }
+                    }
+                },
+                _ = sweep_interval.tick() => {
+                    self.sweep_buildable_drvs().await;
+                },
+                _ = cancellation_token.cancelled() => {
                     break;
                 },
-            };
-
-            let jid = match self.journal.persist(&task).await {
-                Ok(id) => Some(id),
-                Err(e) => {
-                    warn!("failed to journal ingress task {:?}: {:?}", &task, e);
-                    None
-                },
-            };
-
-            if let Err(e) = self.handle_ingress_request(&task).await {
-                warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
-            } else if let Some(id) = jid {
-                if let Err(e) = self.journal.acknowledge(id).await {
-                    warn!("failed to ack ingress journal entry: {:?}", e);
-                }
             }
         }
 
         info!("IngressWorker service shutdown gracefully");
+    }
+
+    /// Periodic sweep: find Queued drvs whose deps are all Completed(Success)
+    /// but were never re-enqueued because a try_send was dropped.
+    async fn sweep_buildable_drvs(&self) {
+        let mut swept = 0u32;
+        let queued_buildable: Vec<_> = self
+            .graph_handle
+            .shared_view()
+            .iter()
+            .filter(|e| {
+                e.value().build_state == shared::types::DrvBuildState::Queued
+                    && self.graph_handle.is_buildable(e.key())
+            })
+            .map(|e| e.key().clone())
+            .collect();
+
+        for shared_id in queued_buildable {
+            if let Ok(server_id) = graph_compat::to_server_drv_id(&shared_id) {
+                match self.handle_check_buildable_task(&server_id).await {
+                    Ok(()) => swept += 1,
+                    Err(e) => warn!("sweep: {}: {:?}", server_id.store_path(), e),
+                }
+            }
+        }
+        if swept > 0 {
+            info!("buildability sweep re-queued {} stuck drvs", swept);
+        }
     }
 
     async fn handle_ingress_request(&self, task: &IngressTask) -> anyhow::Result<()> {
