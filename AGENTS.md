@@ -99,6 +99,43 @@ if let Err(e) = some_function_returning_result() {    // ✅ Handle error
 - Update architectural docs when adding message types
 - Use inline documentation for complex algorithms
 
+## Formal Specification (Quint)
+
+The build state machine, scheduler pipeline, and failure propagation logic
+are formally specified in `spec/ekaci.qnt`. This spec must stay in sync
+with the Rust implementation.
+
+### When to Update the Spec
+
+Any change to the following **requires** a corresponding spec update:
+
+- Build state transitions (`DrvBuildState` variants or transitions)
+- Scheduler pipeline logic (ingress, build queue, recorder)
+- Failure propagation or retry logic
+- Dependency graph operations (buildability checks, transitive failure/clear)
+- Crash recovery normalization
+
+### Spec-First Workflow
+
+When making behavioral changes to the above areas:
+
+1. **Update `spec/ekaci.qnt` first** to reflect the intended new behavior
+2. **Typecheck**: `quint typecheck spec/ekaci.qnt`
+3. **Run tests**: `quint test spec/ekaci.qnt --main ekaci_test --match ".*_test"`
+4. **Verify invariants** (at minimum):
+   ```bash
+   quint run spec/ekaci.qnt --main ekaci --invariant "inv_building_implies_deps_done" --max-steps 50 --max-samples 1000
+   quint run spec/ekaci.qnt --main ekaci --invariant "inv_transitive_failure_has_blocker" --max-steps 50 --max-samples 1000
+   quint run spec/ekaci.qnt --main ekaci --invariant "inv_max_two_attempts" --max-steps 50 --max-samples 1000
+   quint run spec/ekaci.qnt --main ekaci --invariant "inv_build_queue_not_terminal" --max-steps 50 --max-samples 1000
+   ```
+5. **Only after the spec passes**, proceed with Rust code changes
+
+### Adding Tests
+
+When adding new behavior, add a `run` test in the `ekaci_test` module that
+exercises the new state transitions end-to-end.
+
 ## Quick Reference
 
 **Pre-commit Checklist:**
@@ -109,6 +146,7 @@ if let Err(e) = some_function_returning_result() {    // ✅ Handle error
 - [ ] Functions are < 50 lines
 - [ ] All errors are properly handled
 - [ ] Tests pass (`cargo test`)
+- [ ] If behavior changed: `spec/ekaci.qnt` updated, typechecked, tested, and invariants verified
 
 ---
 
