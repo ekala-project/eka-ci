@@ -14,6 +14,7 @@ const NIX_QUICK_TIMEOUT: Duration = Duration::from_secs(30);
 use super::builder_thread::BuilderThread;
 use super::{BuildRequest, Platform};
 use crate::config::RemoteBuilder;
+use crate::graph::GraphServiceHandle;
 use crate::metrics::BuildMetrics;
 use crate::scheduler::recorder::RecorderTask;
 
@@ -34,6 +35,7 @@ pub struct Builder {
     metrics: Arc<BuildMetrics>,
     no_output_timeout_seconds: u64,
     max_duration_seconds: u64,
+    graph_handle: GraphServiceHandle,
 }
 
 impl Builder {
@@ -51,6 +53,7 @@ impl Builder {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
     ) -> Self {
         Self {
             is_local,
@@ -65,6 +68,7 @@ impl Builder {
             metrics,
             no_output_timeout_seconds,
             max_duration_seconds,
+            graph_handle,
         }
     }
 
@@ -112,6 +116,7 @@ impl Builder {
             self.metrics.clone(),
             self.no_output_timeout_seconds,
             self.max_duration_seconds,
+            self.graph_handle.clone(),
         );
 
         thread.run(cancellation_token)
@@ -123,6 +128,7 @@ impl Builder {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -149,6 +155,7 @@ impl Builder {
                     metrics.clone(),
                     no_output_timeout_seconds,
                     max_duration_seconds,
+                    graph_handle.clone(),
                 )
             })
             .collect();
@@ -162,6 +169,7 @@ impl Builder {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -187,6 +195,7 @@ impl Builder {
                     metrics.clone(),
                     no_output_timeout_seconds,
                     max_duration_seconds,
+                    graph_handle.clone(),
                 )
             })
             .collect();
@@ -203,6 +212,7 @@ impl Builder {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
     ) -> Self {
         Self::new_inner(
             false,
@@ -221,6 +231,7 @@ impl Builder {
             metrics,
             no_output_timeout_seconds,
             max_duration_seconds,
+            graph_handle,
         )
     }
 

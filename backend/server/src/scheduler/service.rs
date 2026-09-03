@@ -105,6 +105,7 @@ impl SchedulerService {
             build_metrics.clone(),
             build_no_output_timeout_seconds,
             build_max_duration_seconds,
+            graph_handle.clone(),
         )
         .await?;
         let fod_builders = Builder::local_from_env_fod(
@@ -113,6 +114,7 @@ impl SchedulerService {
             build_metrics.clone(),
             build_no_output_timeout_seconds,
             build_max_duration_seconds,
+            graph_handle.clone(),
         )
         .await?;
         for remote in remote_builders {
@@ -125,6 +127,7 @@ impl SchedulerService {
                     build_metrics.clone(),
                     build_no_output_timeout_seconds,
                     build_max_duration_seconds,
+                    graph_handle.clone(),
                 );
                 builders.push(remote_builder);
             }
