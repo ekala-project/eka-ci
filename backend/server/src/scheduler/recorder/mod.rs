@@ -18,6 +18,7 @@ use crate::services::TaskJournal;
 use crate::services::websocket::events::ServerEvent;
 
 // Sub-modules
+mod forge_notify;
 mod hooks;
 mod references;
 mod request_handler;
