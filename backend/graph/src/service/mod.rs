@@ -140,6 +140,10 @@ impl GraphService {
             // inserted as a node).
             if command_count % 5000 == 0 {
                 self.prune_stale_tracking_entries();
+                let evicted = self.graph.evict_stale_failures();
+                if evicted > 0 {
+                    info!("Evicted {} stale failure tracking entries", evicted);
+                }
             }
         }
 
