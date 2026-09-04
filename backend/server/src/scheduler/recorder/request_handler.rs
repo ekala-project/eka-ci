@@ -271,11 +271,6 @@ impl RecorderWorker {
                 }
             },
             DBS::UnsatisfiableRequirements => {
-                debug!(
-                    "Recording unsatisfiable requirements for {}",
-                    build_id.derivation.store_path()
-                );
-
                 let old_state = self
                     .db_service
                     .get_drv(drv)
@@ -283,14 +278,22 @@ impl RecorderWorker {
                     .map(|d| d.build_state)
                     .unwrap_or(DBS::Queued);
 
-                self.update_and_broadcast(drv, &old_state, &task.result)
-                    .await?;
-
-                let blocked_drvs = self.propagate_graph_failure(drv).await?;
-                if !blocked_drvs.is_empty() {
-                    self.db_service
-                        .insert_transitive_failures(drv, &blocked_drvs)
+                if old_state.is_terminal() {
+                    debug!(
+                        "Ignoring stale UnsatisfiableRequirements for {} (already {:?})",
+                        drv.store_path(),
+                        old_state
+                    );
+                } else {
+                    self.update_and_broadcast(drv, &old_state, &task.result)
                         .await?;
+
+                    let blocked_drvs = self.propagate_graph_failure(drv).await?;
+                    if !blocked_drvs.is_empty() {
+                        self.db_service
+                            .insert_transitive_failures(drv, &blocked_drvs)
+                            .await?;
+                    }
                 }
             },
             _ => {
