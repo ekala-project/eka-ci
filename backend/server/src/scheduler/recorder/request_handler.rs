@@ -137,7 +137,7 @@ impl RecorderWorker {
                     .ok_or_else(|| anyhow::anyhow!("Drv not found: {}", drv.store_path()))?;
 
                 match current_drv.build_state {
-                    DBS::Buildable => {
+                    DBS::Building => {
                         // First failure - transition to FailedRetry and re-queue immediately
                         debug!(
                             "First failure for {}, transitioning to FailedRetry",
@@ -177,41 +177,46 @@ impl RecorderWorker {
                                 .await?;
                         }
                     },
+                    _ if current_drv.build_state.is_terminal() => {
+                        // Stale recorder event — drv already reached a terminal state.
+                        // Skip to avoid reverting a finalized state.
+                        debug!(
+                            "Ignoring stale failure for {} (already {:?})",
+                            drv.store_path(),
+                            current_drv.build_state
+                        );
+                    },
                     _ => {
-                        // Unexpected state - log warning but still record failure
                         warn!(
                             "Unexpected state {:?} when recording failure for {}",
                             current_drv.build_state,
                             drv.store_path()
                         );
-                        let old_state = current_drv.build_state.clone();
-                        self.update_and_broadcast(drv, &old_state, &task.result)
-                            .await?;
                     },
                 }
             },
             DBS::Interrupted(ref kind) => {
-                debug!(
-                    "Attempting to record interrupted build of {} ({:?})",
-                    build_id.derivation.store_path(),
-                    kind
-                );
-
                 let current_drv = self
                     .db_service
                     .get_drv(drv)
                     .await?
                     .ok_or_else(|| anyhow::anyhow!("Drv not found: {}", drv.store_path()))?;
-                let old_state = current_drv.build_state.clone();
 
-                if kind.is_retryable() {
+                // Guard: skip stale events for drvs already in terminal state.
+                if current_drv.build_state.is_terminal() {
+                    debug!(
+                        "Ignoring stale interruption for {} (already {:?})",
+                        drv.store_path(),
+                        current_drv.build_state
+                    );
+                } else if kind.is_retryable() {
+                    let old_state = current_drv.build_state.clone();
                     // Retryable interruption (Timeout, OOM, ProcessDeath).
-                    // Use the same two-attempt budget as Completed(Failure):
+                    // Same two-attempt budget as Completed(Failure):
                     //   Building -> first interrupt  -> FailedRetry (re-queue)
                     //   FailedRetry -> second interrupt -> Completed(Failure) + propagate
                     match current_drv.build_state {
                         DBS::FailedRetry => {
-                            // Second attempt also interrupted — treat as permanent failure
                             debug!(
                                 "Second interruption ({:?}) for {}, marking as permanent failure",
                                 kind,
@@ -232,7 +237,6 @@ impl RecorderWorker {
                             }
                         },
                         _ => {
-                            // First interruption — transition to FailedRetry and re-queue
                             debug!(
                                 "Retryable interruption ({:?}) for {}, transitioning to \
                                  FailedRetry",
@@ -247,11 +251,11 @@ impl RecorderWorker {
                         },
                     }
                 } else {
+                    let old_state = current_drv.build_state.clone();
                     // Non-retryable interruption (Cancelled, SchedulerDeath).
-                    // Record the interrupted state and propagate Blocked to dependents.
+                    // Record interrupted state and propagate TransitiveFailure.
                     debug!(
-                        "Non-retryable interruption ({:?}) for {}, propagating Blocked to \
-                         dependents",
+                        "Non-retryable interruption ({:?}) for {}, propagating TransitiveFailure",
                         kind,
                         drv.store_path()
                     );
