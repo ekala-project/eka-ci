@@ -6,8 +6,12 @@
 //   - No drv builds before all dependencies succeed
 //   - Transitive failures propagate correctly
 //   - Retry logic: exactly one automatic retry before permanent failure
+//     (applies to both Completed(Failure) and retryable interruptions)
 //   - Clearing a failure unblocks dependents iff no other blockers remain
 //   - Terminal states are never re-entered
+//   - Non-retryable interruptions (Cancelled, SchedulerDeath) propagate
+//     TransitiveFailure to dependents immediately
+//   - FailedRetry is preserved through crash recovery (retry budget not reset)
 
 module ekaci {
 
@@ -62,11 +66,23 @@ module ekaci {
 
   // ─── Pure Helpers ────────────────────────────────────────────────────
 
+  // Whether an interruption kind is transient and should be retried.
+  // Timeout, OOM, ProcessDeath → retryable (up to 2 attempts).
+  // Cancelled, SchedulerDeath → non-retryable (propagate immediately).
+  pure def is_retryable(k: InterruptKind): bool = match k {
+    | OutOfMemory => true
+    | Timeout => true
+    | ProcessDeath => true
+    | Cancelled => false
+    | SchedulerDeath => false
+  }
+
   // Whether a state is terminal for scheduling purposes.
-  // TransitiveFailure IS terminal for ingress (don't re-schedule).
+  // Terminal states are never re-entered by the scheduler.
   pure def is_terminal(s: BuildState): bool = match s {
     | Completed(_) => true
     | TransitiveFailure => true
+    | Interrupted(_) => true
     | UnsatisfiableRequirements => true
     | _ => false
   }
@@ -218,6 +234,25 @@ module ekaci {
     }
   }
 
+  // Periodic sweep: find Queued drvs whose deps are all Completed(Success)
+  // and re-enqueue them to ingress. Catches drvs stuck because a try_send
+  // (CheckBuildable) was dropped when the ingress channel was full.
+  action sweep_buildable(drv: DrvId): bool = all {
+    nodes.keys().contains(drv),
+    nodes.get(drv).state == Queued,
+    is_buildable(drv, deps, nodes),
+    not(ingress_queue.contains(drv)),
+    not(build_queue.contains(drv)),
+    ingress_queue' = ingress_queue.union(Set(drv)),
+    nodes' = nodes,
+    deps' = deps,
+    referrers' = referrers,
+    failed_drvs' = failed_drvs,
+    transitive_failure_map' = transitive_failure_map,
+    build_queue' = build_queue,
+    recorder_queue' = recorder_queue,
+  }
+
   // Builder picks up a drv and starts building it.
   // Guards against stale build_queue entries (drv may have been
   // transitively failed or completed via cache since enqueue).
@@ -363,6 +398,7 @@ module ekaci {
   action record_failure_permanent(drv: DrvId): bool = all {
     recorder_queue.contains((drv, Completed(Failure))),
     nodes.keys().contains(drv),
+    not(is_terminal(nodes.get(drv).state)),
     nodes.get(drv).build_attempts >= 1,
     val cur = nodes.get(drv)
     val blocked = transitive_dependents(drv, referrers)
@@ -386,6 +422,109 @@ module ekaci {
       failed_drvs' = failed_drvs.union(Set(drv)),
       transitive_failure_map' = transitive_failure_map.put(drv, blocked),
       recorder_queue' = recorder_queue.exclude(Set((drv, Completed(Failure)))),
+      deps' = deps,
+      referrers' = referrers,
+      ingress_queue' = ingress_queue,
+      build_queue' = build_queue,
+    }
+  }
+
+  // ── Interrupted build handling ───────────────────────────────────────
+  //
+  // Retryable interruptions (Timeout, OOM, ProcessDeath) use the same
+  // two-attempt retry budget as Completed(Failure):
+  //   - First attempt  → FailedRetry, re-queue via ingress
+  //   - Second attempt → Completed(Failure) + propagate TransitiveFailure
+  //
+  // Non-retryable interruptions (Cancelled, SchedulerDeath) record the
+  // Interrupted state on the drv and immediately propagate
+  // TransitiveFailure to all transitive dependents.
+
+  // Retryable interruption, first attempt → FailedRetry + re-queue.
+  action record_interrupted_retryable_first(drv: DrvId, kind: InterruptKind): bool = all {
+    recorder_queue.contains((drv, Interrupted(kind))),
+    nodes.keys().contains(drv),
+    is_retryable(kind),
+    not(is_terminal(nodes.get(drv).state)),
+    nodes.get(drv).build_attempts < 1,
+    nodes' = nodes.put(drv, {
+      ...nodes.get(drv),
+      state: FailedRetry,
+      build_attempts: nodes.get(drv).build_attempts + 1,
+    }),
+    ingress_queue' = ingress_queue.union(Set(drv)),
+    recorder_queue' = recorder_queue.exclude(Set((drv, Interrupted(kind)))),
+    deps' = deps,
+    referrers' = referrers,
+    failed_drvs' = failed_drvs,
+    transitive_failure_map' = transitive_failure_map,
+    build_queue' = build_queue,
+  }
+
+  // Retryable interruption, second attempt → Completed(Failure) + propagate.
+  action record_interrupted_retryable_permanent(drv: DrvId, kind: InterruptKind): bool = all {
+    recorder_queue.contains((drv, Interrupted(kind))),
+    nodes.keys().contains(drv),
+    is_retryable(kind),
+    not(is_terminal(nodes.get(drv).state)),
+    nodes.get(drv).build_attempts >= 1,
+    val cur = nodes.get(drv)
+    val blocked = transitive_dependents(drv, referrers)
+    val blocked_nodes = blocked.fold(
+      nodes.put(drv, { ...cur, state: Completed(Failure), build_attempts: cur.build_attempts + 1 }),
+      (acc, blocked_id) =>
+        if (acc.keys().contains(blocked_id)) {
+          val bnode = acc.get(blocked_id)
+          if (not(is_propagation_immune(bnode.state)))
+            acc.put(blocked_id, {
+              ...bnode,
+              state: TransitiveFailure,
+              blocking_failures: bnode.blocking_failures.union(Set(drv)),
+            })
+          else acc
+        }
+        else acc
+    )
+    all {
+      nodes' = blocked_nodes,
+      failed_drvs' = failed_drvs.union(Set(drv)),
+      transitive_failure_map' = transitive_failure_map.put(drv, blocked),
+      recorder_queue' = recorder_queue.exclude(Set((drv, Interrupted(kind)))),
+      deps' = deps,
+      referrers' = referrers,
+      ingress_queue' = ingress_queue,
+      build_queue' = build_queue,
+    }
+  }
+
+  // Non-retryable interruption → Interrupted(kind) + propagate TransitiveFailure.
+  action record_interrupted_non_retryable(drv: DrvId, kind: InterruptKind): bool = all {
+    recorder_queue.contains((drv, Interrupted(kind))),
+    nodes.keys().contains(drv),
+    not(is_retryable(kind)),
+    not(is_terminal(nodes.get(drv).state)),
+    val cur = nodes.get(drv)
+    val blocked = transitive_dependents(drv, referrers)
+    val blocked_nodes = blocked.fold(
+      nodes.put(drv, { ...cur, state: Interrupted(kind) }),
+      (acc, blocked_id) =>
+        if (acc.keys().contains(blocked_id)) {
+          val bnode = acc.get(blocked_id)
+          if (not(is_propagation_immune(bnode.state)))
+            acc.put(blocked_id, {
+              ...bnode,
+              state: TransitiveFailure,
+              blocking_failures: bnode.blocking_failures.union(Set(drv)),
+            })
+          else acc
+        }
+        else acc
+    )
+    all {
+      nodes' = blocked_nodes,
+      failed_drvs' = failed_drvs.union(Set(drv)),
+      transitive_failure_map' = transitive_failure_map.put(drv, blocked),
+      recorder_queue' = recorder_queue.exclude(Set((drv, Interrupted(kind)))),
       deps' = deps,
       referrers' = referrers,
       ingress_queue' = ingress_queue,
@@ -447,19 +586,25 @@ module ekaci {
     }
   }
 
-  // Crash recovery: normalize transient states to Queued.
+  // Crash recovery: normalize transient states. FailedRetry is preserved
+  // so the retry budget is not reset across restarts. Building and
+  // Buildable are transient and reset to Queued.
   action crash_recovery: bool = {
-    val transient_drvs = nodes.keys().filter(d =>
+    val building_drvs = nodes.keys().filter(d =>
       val s = nodes.get(d).state
-      or(s == Building, s == Buildable, s == FailedRetry)
+      or(s == Building, s == Buildable)
     )
+    val failed_retry_drvs = nodes.keys().filter(d =>
+      nodes.get(d).state == FailedRetry
+    )
+    val all_transient = building_drvs.union(failed_retry_drvs)
     all {
-      transient_drvs.size() > 0,
-      nodes' = transient_drvs.fold(nodes, (acc, d) =>
+      all_transient.size() > 0,
+      nodes' = building_drvs.fold(nodes, (acc, d) =>
         val n = acc.get(d)
-        acc.put(d, { ...n, state: Queued, build_attempts: 0 })
+        acc.put(d, { ...n, state: Queued })
       ),
-      ingress_queue' = ingress_queue.union(transient_drvs),
+      ingress_queue' = ingress_queue.union(all_transient),
       build_queue' = Set(),
       recorder_queue' = Set(),
       deps' = deps,
@@ -489,7 +634,7 @@ module ekaci {
     nondet drv = oneOf(build_queue)
     start_build(drv),
 
-    // Drop stale build_queue entries
+    // Drop stale build_queue entries (cache hit, transitive failure, etc.)
     nondet drv = oneOf(build_queue)
     drop_stale_build(drv),
 
@@ -499,8 +644,22 @@ module ekaci {
     nondet drv = oneOf(nodes.keys().filter(d => nodes.get(d).state == Building))
     build_complete(drv, Failure),
 
+    // Retryable interruptions
     nondet drv = oneOf(nodes.keys().filter(d => nodes.get(d).state == Building))
     build_interrupted(drv, Timeout),
+
+    nondet drv = oneOf(nodes.keys().filter(d => nodes.get(d).state == Building))
+    build_interrupted(drv, OutOfMemory),
+
+    nondet drv = oneOf(nodes.keys().filter(d => nodes.get(d).state == Building))
+    build_interrupted(drv, ProcessDeath),
+
+    // Non-retryable interruptions
+    nondet drv = oneOf(nodes.keys().filter(d => nodes.get(d).state == Building))
+    build_interrupted(drv, Cancelled),
+
+    nondet drv = oneOf(nodes.keys().filter(d => nodes.get(d).state == Building))
+    build_interrupted(drv, SchedulerDeath),
 
     nondet drv = oneOf(recorder_queue.map(pair => pair._1))
     record_success(drv),
@@ -511,11 +670,32 @@ module ekaci {
     nondet drv = oneOf(recorder_queue.map(pair => pair._1))
     record_failure_permanent(drv),
 
+    // Retryable interrupted — first attempt
+    nondet drv = oneOf(recorder_queue.map(pair => pair._1))
+    nondet kind = oneOf(Set(Timeout, OutOfMemory, ProcessDeath))
+    record_interrupted_retryable_first(drv, kind),
+
+    // Retryable interrupted — second attempt (permanent)
+    nondet drv = oneOf(recorder_queue.map(pair => pair._1))
+    nondet kind = oneOf(Set(Timeout, OutOfMemory, ProcessDeath))
+    record_interrupted_retryable_permanent(drv, kind),
+
+    // Non-retryable interrupted
+    nondet drv = oneOf(recorder_queue.map(pair => pair._1))
+    nondet kind = oneOf(Set(Cancelled, SchedulerDeath))
+    record_interrupted_non_retryable(drv, kind),
+
     nondet drv = oneOf(nodes.keys().filter(d => not(is_terminal(nodes.get(d).state))))
     substitution_hit(drv),
 
     nondet drv = oneOf(failed_drvs)
     rebuild_failed(drv),
+
+    // Periodic buildability sweep
+    nondet drv = oneOf(nodes.keys().filter(d =>
+      nodes.get(d).state == Queued and is_buildable(d, deps, nodes)
+    ))
+    sweep_buildable(drv),
 
     crash_recovery,
   }
@@ -573,6 +753,26 @@ module ekaci {
       deps.get(d).forall(dep =>
         referrers.keys().contains(dep) and referrers.get(dep).contains(d)
       )
+    )
+
+  // INV8: Non-retryable interrupted drvs are in the failed_drvs set.
+  val inv_non_retryable_interrupted_tracked: bool =
+    nodes.keys().forall(d =>
+      match nodes.get(d).state {
+        | Interrupted(kind) =>
+          if (not(is_retryable(kind))) failed_drvs.contains(d)
+          else true
+        | _ => true
+      }
+    )
+
+  // INV9: FailedRetry drvs have build_attempts >= 1
+  // (the retry budget was consumed at least once).
+  val inv_failed_retry_has_attempts: bool =
+    nodes.keys().forall(d =>
+      if (nodes.get(d).state == FailedRetry)
+        nodes.get(d).build_attempts >= 1
+      else true
     )
 }
 
@@ -698,7 +898,7 @@ module ekaci_test {
     })
   }
 
-  // Test: Crash recovery normalizes transient states
+  // Test: Crash recovery preserves FailedRetry state and build_attempts
   run crash_recovery_test = {
     init
     .then(eval_discover_leaf("c1", "x86_64-linux", false))
@@ -706,10 +906,24 @@ module ekaci_test {
     .then(ingress_process("c1"))
     .then(ingress_process("c2"))
     .then(start_build("c1"))
+    // c1 fails once -> FailedRetry
+    .then(build_complete("c1", Failure))
+    .then(record_failure_first("c1"))
+    .then(all {
+      assert(nodes.get("c1").state == FailedRetry),
+      assert(nodes.get("c1").build_attempts == 1),
+      unchanged,
+    })
+    // Crash! FailedRetry is preserved, Building/Buildable reset to Queued.
     .then(crash_recovery)
     .then(all {
-      assert(nodes.get("c1").state == Queued),
+      // c1 stays FailedRetry (retry budget preserved)
+      assert(nodes.get("c1").state == FailedRetry),
+      assert(nodes.get("c1").build_attempts == 1),
+      // c2 was Buildable -> Queued
+      assert(nodes.get("c2").state == Queued),
       assert(ingress_queue.contains("c1")),
+      assert(ingress_queue.contains("c2")),
       assert(build_queue.size() == 0),
       unchanged,
     })
@@ -760,6 +974,118 @@ module ekaci_test {
     .then(all {
       assert(nodes.get("child").state == Queued),
       assert(nodes.get("child").blocking_failures.size() == 0),
+      unchanged,
+    })
+  }
+
+  // Test: Retryable interruption (Timeout) → FailedRetry → retry → success
+  run retryable_interrupt_recovery_test = {
+    init
+    .then(eval_discover_leaf("t1", "x86_64-linux", false))
+    .then(ingress_process("t1"))
+    .then(start_build("t1"))
+    .then(build_interrupted("t1", Timeout))
+    .then(record_interrupted_retryable_first("t1", Timeout))
+    .then(all {
+      assert(nodes.get("t1").state == FailedRetry),
+      assert(nodes.get("t1").build_attempts == 1),
+      assert(ingress_queue.contains("t1")),
+      unchanged,
+    })
+    .then(ingress_process("t1"))
+    .then(start_build("t1"))
+    .then(build_complete("t1", Success))
+    .then(record_success("t1"))
+    .then(all {
+      assert(nodes.get("t1").state == Completed(Success)),
+      unchanged,
+    })
+  }
+
+  // Test: Retryable interruption exhausts retries → permanent failure
+  run retryable_interrupt_exhausted_test = {
+    init
+    .then(eval_discover_leaf("t2", "x86_64-linux", false))
+    .then(eval_discover("dep_of_t2", "x86_64-linux", false, Set("t2")))
+    .then(ingress_process("t2"))
+    .then(start_build("t2"))
+    .then(build_interrupted("t2", OutOfMemory))
+    .then(record_interrupted_retryable_first("t2", OutOfMemory))
+    .then(all {
+      assert(nodes.get("t2").state == FailedRetry),
+      assert(nodes.get("t2").build_attempts == 1),
+      unchanged,
+    })
+    .then(ingress_process("t2"))
+    .then(start_build("t2"))
+    .then(build_interrupted("t2", OutOfMemory))
+    .then(record_interrupted_retryable_permanent("t2", OutOfMemory))
+    .then(all {
+      assert(nodes.get("t2").state == Completed(Failure)),
+      assert(nodes.get("t2").build_attempts == 2),
+      assert(failed_drvs.contains("t2")),
+      assert(nodes.get("dep_of_t2").state == TransitiveFailure),
+      unchanged,
+    })
+  }
+
+  // Test: Non-retryable interruption → Interrupted + TransitiveFailure propagation
+  run non_retryable_interrupt_test = {
+    init
+    .then(eval_discover_leaf("nr1", "x86_64-linux", false))
+    .then(eval_discover("nr_child", "x86_64-linux", false, Set("nr1")))
+    .then(ingress_process("nr1"))
+    .then(start_build("nr1"))
+    .then(build_interrupted("nr1", Cancelled))
+    .then(record_interrupted_non_retryable("nr1", Cancelled))
+    .then(all {
+      assert(nodes.get("nr1").state == Interrupted(Cancelled)),
+      assert(failed_drvs.contains("nr1")),
+      assert(nodes.get("nr_child").state == TransitiveFailure),
+      assert(nodes.get("nr_child").blocking_failures.contains("nr1")),
+      unchanged,
+    })
+  }
+
+  // Test: Periodic sweep re-queues stuck Queued drv
+  run sweep_buildable_test = {
+    init
+    .then(eval_discover_leaf("dep_s", "x86_64-linux", false))
+    .then(eval_discover("stuck", "x86_64-linux", false, Set("dep_s")))
+    .then(ingress_process("stuck"))
+    .then(all {
+      // stuck is not buildable yet (dep_s not built)
+      assert(not(build_queue.contains("stuck"))),
+      unchanged,
+    })
+    .then(ingress_process("dep_s"))
+    .then(start_build("dep_s"))
+    .then(build_complete("dep_s", Success))
+    .then(record_success("dep_s"))
+    // Simulate: stuck was dequeued from ingress earlier and the
+    // CheckBuildable try_send was dropped. It's still Queued but
+    // all deps are done. The sweep catches it.
+    .then(all {
+      // stuck might already be in ingress from record_success referrer check,
+      // but if not, sweep would catch it. Remove from ingress to simulate drop.
+      ingress_queue' = ingress_queue.exclude(Set("stuck")),
+      nodes' = nodes,
+      deps' = deps,
+      referrers' = referrers,
+      failed_drvs' = failed_drvs,
+      transitive_failure_map' = transitive_failure_map,
+      build_queue' = build_queue,
+      recorder_queue' = recorder_queue,
+    })
+    .then(sweep_buildable("stuck"))
+    .then(all {
+      assert(ingress_queue.contains("stuck")),
+      unchanged,
+    })
+    .then(ingress_process("stuck"))
+    .then(all {
+      assert(build_queue.contains("stuck")),
+      assert(nodes.get("stuck").state == Buildable),
       unchanged,
     })
   }
