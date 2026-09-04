@@ -425,7 +425,8 @@ module ekaci {
       deps' = deps,
       referrers' = referrers,
       ingress_queue' = ingress_queue,
-      build_queue' = build_queue,
+      // Remove failed drv + blocked drvs from build queue
+      build_queue' = build_queue.exclude(blocked).exclude(Set(drv)),
     }
   }
 
@@ -493,7 +494,7 @@ module ekaci {
       deps' = deps,
       referrers' = referrers,
       ingress_queue' = ingress_queue,
-      build_queue' = build_queue,
+      build_queue' = build_queue.exclude(blocked).exclude(Set(drv)),
     }
   }
 
@@ -528,7 +529,7 @@ module ekaci {
       deps' = deps,
       referrers' = referrers,
       ingress_queue' = ingress_queue,
-      build_queue' = build_queue,
+      build_queue' = build_queue.exclude(blocked).exclude(Set(drv)),
     }
   }
 
