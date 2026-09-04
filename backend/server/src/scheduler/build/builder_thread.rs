@@ -108,6 +108,33 @@ impl BuilderThread {
                                         continue;
                                     }
                                 }
+
+                                // Transition to Building before spawning the build task.
+                                // This matches the spec's start_build action and ensures
+                                // the recorder sees Building state when processing results.
+                                let shared_building =
+                                    crate::db::graph_impl::convert_build_state(
+                                        &build_event::DrvBuildState::Building,
+                                    );
+                                if let Some(mut entry) =
+                                    self.graph_handle.shared_view().get_mut(&shared_id)
+                                {
+                                    entry.build_state = shared_building.clone();
+                                }
+                                // Best-effort graph + DB update via command channel.
+                                let (tx, _rx) = tokio::sync::oneshot::channel();
+                                let cmd = crate::graph::GraphCommand::UpdateState {
+                                    drv_id: shared_id,
+                                    new_state: shared_building,
+                                    response: tx,
+                                };
+                                if let Err(e) = self.graph_handle.command_sender().try_send(cmd) {
+                                    warn!(
+                                        "graph command queue full, deferred Building state for {}: {}",
+                                        drv_id.store_path(),
+                                        e
+                                    );
+                                }
                             }
 
                             let new_build = self.create_build(build_request.0.drv_path);
@@ -154,9 +181,7 @@ struct NixBuild {
 enum BuildOutcome {
     Success,
     Failure,
-    /// Resettable "no-output" timeout elapsed.
     Timeout,
-    /// M5: absolute wall-clock cap elapsed regardless of output.
     AbsoluteTimeout,
 }
 
@@ -166,14 +191,8 @@ impl NixBuild {
 
         let drv_path = self.drv_id.store_path();
         match self.build_drv_with_logging().await {
-            Ok(BuildOutcome::Success) => {
-                debug!("Successfully built {:?}", drv_path);
-                DrvBuildState::Completed(DrvBuildResult::Success)
-            },
-            Ok(BuildOutcome::Failure) => {
-                debug!("Build failed for {:?}", drv_path);
-                DrvBuildState::Completed(DrvBuildResult::Failure)
-            },
+            Ok(BuildOutcome::Success) => DrvBuildState::Completed(DrvBuildResult::Success),
+            Ok(BuildOutcome::Failure) => DrvBuildState::Completed(DrvBuildResult::Failure),
             Ok(BuildOutcome::Timeout) => {
                 warn!(
                     "Build timed out for {:?} (no output for {} seconds)",
@@ -381,14 +400,8 @@ async fn get_nix_log(drv_id: &DrvId) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    //! M5: regression tests for the dual-deadline pattern that drives
-    //! `build_drv_with_logging`. The real function spawns `nix-build`
-    //! which is unavailable in unit tests, so these tests mirror the
-    //! inner `select!` shape using `tokio::time::pause()` to drive
-    //! virtual time. Any future change that accidentally resets the
-    //! absolute deadline on output will flip the first test from
-    //! passing (absolute fires) to panicking (no-output fires), which
-    //! is the exact regression M5 protects against.
+    //! M5: regression tests for the dual-deadline pattern in `build_drv_with_logging`.
+    //! Uses `tokio::time::pause()` to drive virtual time since real `nix-build` is unavailable.
     use std::pin::Pin;
     use std::time::Duration;
 
@@ -401,8 +414,7 @@ mod tests {
         NoOutput,
         Absolute,
     }
-    /// Mirror of the production `select!` block: two pinned sleeps +
-    /// reset the no-output sleep whenever the caller reports output.
+
     async fn race_deadlines<F>(
         no_output_seconds: u64,
         max_duration_seconds: u64,

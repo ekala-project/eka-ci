@@ -22,6 +22,11 @@ impl GraphServiceHandle {
         &self.shared_view
     }
 
+    /// Access the command sender for sending graph commands directly.
+    pub fn command_sender(&self) -> &mpsc::Sender<GraphCommand> {
+        &self.command_sender
+    }
+
     /// Fast lockfree check if a drv is buildable.
     ///
     /// This is the critical hot path — no message passing, no async. The
