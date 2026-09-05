@@ -126,14 +126,15 @@ impl GitHubService {
             )
             .await?;
 
-        self.db_service
-            .insert_check_run_info(
-                check_run.id.0 as i64,
-                drv_id,
-                &jobset_info.repo_name,
-                &jobset_info.owner,
-            )
-            .await?;
+        crate::db::github::insert_check_run_info_with_node_id(
+            check_run.id.0 as i64,
+            drv_id,
+            &jobset_info.repo_name,
+            &jobset_info.owner,
+            Some(&check_run.node_id),
+            &self.db_service.pool,
+        )
+        .await?;
         Ok(())
     }
 
@@ -273,5 +274,147 @@ impl GitHubService {
         );
 
         Ok(())
+    }
+
+    /// Re-push all check run states for a commit to GitHub.
+    /// Uses GraphQL batching when node_ids are available, falls back to REST.
+    pub(super) async fn handle_resync_check_runs(&self, sha: &str) -> Result<()> {
+        let check_runs: Vec<crate::db::github::CheckRun> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT c.check_run_id, c.repo_name, c.repo_owner, d.build_state, d.drv_path, c.node_id
+            FROM GitHubCheckRuns c
+            INNER JOIN Drv d ON c.drv_id = d.ROWID
+            INNER JOIN Job j ON j.drv_id = d.ROWID
+            INNER JOIN GitHubJobSets g ON j.jobset = g.ROWID
+            WHERE g.sha = ?
+            "#,
+        )
+        .bind(sha)
+        .fetch_all(&self.db_service.pool)
+        .await?;
+
+        let total = check_runs.len();
+        let mut batched = 0u32;
+        let mut rest_updated = 0u32;
+        let mut failed = 0u32;
+
+        for check_run in &check_runs {
+            let (gql_status, gql_conclusion) =
+                crate::github::service::graphql_batch::build_state_to_graphql(
+                    &check_run.build_state,
+                );
+
+            // Prefer GraphQL batcher when node_id is available
+            if let Some(node_id) = &check_run.node_id {
+                let repo_node_id = self
+                    .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
+                    .await;
+                if let Some(repo_node_id) = repo_node_id {
+                    self.batcher
+                        .queue_update(
+                            &check_run.repo_owner,
+                            &repo_node_id,
+                            node_id,
+                            gql_status,
+                            gql_conclusion,
+                        )
+                        .await;
+                    batched += 1;
+                    continue;
+                }
+            }
+
+            // Fallback: REST API
+            self.rate_limiter.acquire().await;
+            let octocrab = match self.octocrab_for_owner(&check_run.repo_owner) {
+                Ok(o) => o,
+                Err(e) => {
+                    warn!(
+                        "No installation for owner {} (check_run {}): {:?}",
+                        check_run.repo_owner, check_run.check_run_id, e
+                    );
+                    failed += 1;
+                    continue;
+                },
+            };
+            match check_run
+                .send_gh_update(&octocrab, &check_run.build_state)
+                .await
+            {
+                Ok(_) => rest_updated += 1,
+                Err(e) => {
+                    failed += 1;
+                    warn!(
+                        "Failed to resync check_run {}: {:?}",
+                        check_run.check_run_id, e
+                    );
+                },
+            }
+        }
+
+        tracing::info!(
+            "Resynced {} check runs for commit {} ({} batched, {} REST, {} failed)",
+            total, sha, batched, rest_updated, failed
+        );
+        Ok(())
+    }
+
+    /// Look up the GraphQL node_id for a repository.
+    pub(super) async fn get_repo_node_id(&self, owner: &str, repo: &str) -> Option<String> {
+        // Check DB first
+        let result: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT node_id FROM GitHubInstallationRepositories WHERE repo_owner = ? AND repo_name = ?",
+        )
+        .bind(owner)
+        .bind(repo)
+        .fetch_optional(&self.db_service.pool)
+        .await
+        .ok()?;
+
+        if let Some(Some(node_id)) = result {
+            if !node_id.is_empty() {
+                return Some(node_id);
+            }
+        }
+
+        // Fetch from API and cache
+        let octocrab = self.octocrab_for_owner(owner).ok()?;
+        let repo_info: serde_json::Value = octocrab
+            .get(format!("/repos/{}/{}", owner, repo), None::<&()>)
+            .await
+            .ok()?;
+        let node_id = repo_info.get("node_id")?.as_str()?.to_string();
+
+        // Cache in DB
+        let _ = sqlx::query(
+            "UPDATE GitHubInstallationRepositories SET node_id = ? WHERE repo_owner = ? AND repo_name = ?",
+        )
+        .bind(&node_id)
+        .bind(owner)
+        .bind(repo)
+        .execute(&self.db_service.pool)
+        .await;
+
+        Some(node_id)
+    }
+
+    /// Fetch the last N lines of a build log for a drv.
+    /// Returns None if the log is unavailable.
+    pub(super) async fn fetch_log_tail(&self, drv_id: &DrvId, lines: usize) -> Option<String> {
+        let hash = drv_id.drv_hash();
+        let dirs = shared::dirs::eka_dirs().ok()?;
+        let log_path = dirs
+            .get_data_home()
+            .join("build-logs")
+            .join(hash)
+            .join("build.log");
+
+        let content = tokio::fs::read_to_string(&log_path).await.ok()?;
+        let all_lines: Vec<&str> = content.lines().collect();
+        if all_lines.is_empty() {
+            return None;
+        }
+        let start = all_lines.len().saturating_sub(lines);
+        Some(all_lines[start..].join("\n"))
     }
 }

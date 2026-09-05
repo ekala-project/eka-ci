@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = { workspace = true }
 birdcage = "0.8.1"
+reqwest = { version = "0.12", features = ["json"] }
 ci_config = { path = "../ci_config" }
 clap = {workspace = true}
 colored = "2"

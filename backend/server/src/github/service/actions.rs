@@ -128,6 +128,37 @@ pub async fn update_ci_eval_job(
     Ok(())
 }
 
+/// Look up a check run by name for a given commit SHA.
+/// Used as a fallback when the in-memory check run ID map is empty (after restart).
+pub async fn find_check_run_by_name(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    check_name: &str,
+) -> Result<Option<CheckRunId>> {
+    let route = format!(
+        "/repos/{}/{}/commits/{}/check-runs?per_page=100",
+        owner, repo, sha
+    );
+
+    let response: serde_json::Value = octocrab.get(route, None::<&()>).await?;
+
+    if let Some(check_runs) = response.get("check_runs").and_then(|v| v.as_array()) {
+        for cr in check_runs {
+            if let Some(name) = cr.get("name").and_then(|v| v.as_str()) {
+                if name == check_name {
+                    if let Some(id) = cr.get("id").and_then(|v| v.as_u64()) {
+                        return Ok(Some(CheckRunId(id)));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 /// Create a neutral check run indicating that approval is required before builds can run
 pub async fn create_approval_required_check_run(
     octocrab: &Octocrab,

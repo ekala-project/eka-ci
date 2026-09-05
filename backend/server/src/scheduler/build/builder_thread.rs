@@ -16,6 +16,7 @@ use super::{BuildRequest, Platform};
 use crate::db::model::{DrvId, build_event};
 use crate::graph::GraphServiceHandle;
 use crate::metrics::BuildMetrics;
+use crate::nix::reconstitute::ReconstitutionTracker;
 use crate::scheduler::recorder::RecorderTask;
 
 pub struct BuilderThread {
@@ -29,6 +30,8 @@ pub struct BuilderThread {
     /// M5: absolute wall-clock cap per build; does not reset on output.
     max_duration_seconds: u64,
     graph_handle: GraphServiceHandle,
+    db_pool: sqlx::SqlitePool,
+    reconstitution_tracker: Arc<ReconstitutionTracker>,
 }
 
 impl BuilderThread {
@@ -43,6 +46,8 @@ impl BuilderThread {
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
         graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Self {
         Self {
             build_args,
@@ -54,6 +59,8 @@ impl BuilderThread {
             no_output_timeout_seconds,
             max_duration_seconds,
             graph_handle,
+            db_pool,
+            reconstitution_tracker,
         }
     }
 
@@ -165,6 +172,8 @@ impl BuilderThread {
             drv_id,
             no_output_timeout_seconds: self.no_output_timeout_seconds,
             max_duration_seconds: self.max_duration_seconds,
+            db_pool: self.db_pool.clone(),
+            reconstitution_tracker: self.reconstitution_tracker.clone(),
         }
     }
 }
@@ -176,6 +185,8 @@ struct NixBuild {
     drv_id: DrvId,
     no_output_timeout_seconds: u64,
     max_duration_seconds: u64,
+    db_pool: sqlx::SqlitePool,
+    reconstitution_tracker: Arc<ReconstitutionTracker>,
 }
 
 enum BuildOutcome {
@@ -190,6 +201,34 @@ impl NixBuild {
         use build_event::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
 
         let drv_path = self.drv_id.store_path();
+
+        // Guard: verify the .drv file still exists before building.
+        // If it was garbage collected, attempt to reconstitute it by
+        // re-evaluating the nix expression that originally produced it.
+        if !crate::nix::reconstitute::drv_store_path_exists(&drv_path).await {
+            warn!(
+                "drv {} was garbage collected, attempting reconstitution",
+                drv_path
+            );
+            match crate::nix::reconstitute::reconstitute_drv(
+                &self.drv_id,
+                &self.db_pool,
+                &self.reconstitution_tracker,
+            )
+            .await
+            {
+                Ok(true) => info!("reconstituted {}", drv_path),
+                Ok(false) => {
+                    warn!("could not reconstitute {}", drv_path);
+                    return DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath);
+                },
+                Err(e) => {
+                    warn!("reconstitution failed for {}: {:?}", drv_path, e);
+                    return DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath);
+                },
+            }
+        }
+
         match self.build_drv_with_logging().await {
             Ok(BuildOutcome::Success) => DrvBuildState::Completed(DrvBuildResult::Success),
             Ok(BuildOutcome::Failure) => DrvBuildState::Completed(DrvBuildResult::Failure),

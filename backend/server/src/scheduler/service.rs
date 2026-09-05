@@ -99,6 +99,12 @@ impl SchedulerService {
             channel_sender,
         );
 
+        // Shared reconstitution tracker prevents duplicate nix-eval-jobs
+        // invocations when many GC'd drvs from the same eval are rebuilt
+        // concurrently.
+        let reconstitution_tracker =
+            Arc::new(crate::nix::reconstitute::ReconstitutionTracker::new());
+
         let mut builders = Builder::local_from_env(
             logs_dir.clone(),
             recorder_sender.clone(),
@@ -106,6 +112,8 @@ impl SchedulerService {
             build_no_output_timeout_seconds,
             build_max_duration_seconds,
             graph_handle.clone(),
+            db_service.pool.clone(),
+            reconstitution_tracker.clone(),
         )
         .await?;
         let fod_builders = Builder::local_from_env_fod(
@@ -115,6 +123,8 @@ impl SchedulerService {
             build_no_output_timeout_seconds,
             build_max_duration_seconds,
             graph_handle.clone(),
+            db_service.pool.clone(),
+            reconstitution_tracker.clone(),
         )
         .await?;
         for remote in remote_builders {
@@ -128,6 +138,8 @@ impl SchedulerService {
                     build_no_output_timeout_seconds,
                     build_max_duration_seconds,
                     graph_handle.clone(),
+                    db_service.pool.clone(),
+                    reconstitution_tracker.clone(),
                 );
                 builders.push(remote_builder);
             }

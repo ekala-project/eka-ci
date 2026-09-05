@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 use crate::ci::RepoTask;
 use crate::db::DbService;
 use crate::git::{GitTask, GitWorkspace};
+use crate::github::GitHubTask;
 use crate::nix::EvalTask;
 use crate::scheduler::IngressTask;
 
@@ -30,6 +31,7 @@ struct DispatchChannels {
     repo_sender: Sender<RepoTask>,
     git_sender: Sender<GitTask>,
     ingress_sender: Sender<IngressTask>,
+    github_sender: Option<Sender<GitHubTask>>,
     db_service: DbService,
 }
 
@@ -41,6 +43,7 @@ impl UnixService {
         db_service: DbService,
         git_sender: Sender<GitTask>,
         ingress_sender: Sender<IngressTask>,
+        github_sender: Option<Sender<GitHubTask>>,
     ) -> Result<Self> {
         prepare_path(socket_path)?;
 
@@ -50,6 +53,7 @@ impl UnixService {
             repo_sender,
             git_sender,
             ingress_sender,
+            github_sender,
             db_service,
         };
 
@@ -396,6 +400,84 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 in_flight,
                 recent_promotions,
             }))
+        },
+        req::ResyncChecks(resync_req) => {
+            if let Some(gh_sender) = &dispatch.github_sender {
+                // Resync per-drv check runs
+                let task = GitHubTask::ResyncCheckRuns {
+                    sha: resync_req.sha.clone(),
+                };
+                gh_sender
+                    .send(task)
+                    .await
+                    .expect("Failed to send resync task");
+
+                // Also check if any jobsets for this SHA are fully concluded
+                // and send CompleteCIEvalJob if so (handles the eval gate
+                // that wasn't updated due to server restarts).
+                let jobset_ids: Vec<i64> = sqlx::query_scalar(
+                    "SELECT ROWID FROM GitHubJobSets WHERE sha = ?",
+                )
+                .bind(&resync_req.sha)
+                .fetch_all(&dispatch.db_service.pool)
+                .await
+                .unwrap_or_default();
+
+                for jobset_id in jobset_ids {
+                    let all_concluded = crate::db::github::all_jobs_concluded(
+                        jobset_id,
+                        &dispatch.db_service.pool,
+                    )
+                    .await
+                    .unwrap_or(false);
+
+                    if all_concluded {
+                        let has_failures = crate::db::github::jobset_has_new_or_changed_failures(
+                            jobset_id,
+                            &dispatch.db_service.pool,
+                        )
+                        .await
+                        .unwrap_or(true);
+
+                        let conclusion = if has_failures {
+                            octocrab::params::checks::CheckRunConclusion::Failure
+                        } else {
+                            octocrab::params::checks::CheckRunConclusion::Success
+                        };
+
+                        if let Ok(jobset_info) = crate::db::github::get_jobset_info(
+                            jobset_id,
+                            &dispatch.db_service.pool,
+                        )
+                        .await
+                        {
+                            let complete_task = GitHubTask::CompleteCIEvalJob {
+                                ci_check_info: std::sync::Arc::new(
+                                    crate::github::CICheckInfo {
+                                        commit: jobset_info.sha.clone(),
+                                        base_commit: None,
+                                        owner: jobset_info.owner.clone(),
+                                        repo_name: jobset_info.repo_name.clone(),
+                                    },
+                                ),
+                                job_name: jobset_info.job.clone(),
+                                conclusion: conclusion.into(),
+                            };
+                            let _ = gh_sender.send(complete_task).await;
+                            info!(
+                                "Sent CompleteCIEvalJob for jobset {} (conclusion: {:?})",
+                                jobset_id,
+                                if has_failures { "failure" } else { "success" }
+                            );
+                        }
+                    }
+                }
+
+                resp::Ack(true)
+            } else {
+                error!("GitHub service not configured, cannot resync check runs");
+                resp::Ack(false)
+            }
         },
     }
 }

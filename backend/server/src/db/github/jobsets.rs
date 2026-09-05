@@ -308,3 +308,59 @@ pub async fn get_jobset_info(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::Res
 
     Ok(info)
 }
+
+/// Given a drv_path, find the jobset context needed to reconstitute it
+/// after garbage collection. Returns the (sha, job, owner, repo_name)
+/// for the first matching jobset that contains this drv as a direct job member.
+pub async fn get_reconstitution_context(
+    drv_id: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<JobSetInfo>> {
+    let info = sqlx::query_as(
+        r#"
+        SELECT g.sha, g.job, g.owner, g.repo_name
+        FROM Job j
+        JOIN GitHubJobSets g ON j.jobset = g.ROWID
+        JOIN Drv d ON d.ROWID = j.drv_id
+        WHERE d.drv_path = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(info)
+}
+
+/// Given a drv_path for a transitive dependency (not directly in any Job),
+/// walk the DrvRefs graph upward until we find an ancestor that IS in a
+/// Job table, then return its jobset context. Re-evaluating that jobset's
+/// nix file will reconstitute the entire dependency closure including the
+/// target drv.
+pub async fn get_reconstitution_context_transitive(
+    drv_id: &DrvId,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<JobSetInfo>> {
+    let info = sqlx::query_as(
+        r#"
+        WITH RECURSIVE ancestors(drv_path) AS (
+            SELECT ?1
+            UNION
+            SELECT dr.referrer FROM DrvRefs dr
+            JOIN ancestors a ON dr.reference = a.drv_path
+        )
+        SELECT g.sha, g.job, g.owner, g.repo_name
+        FROM ancestors a
+        JOIN Drv d ON d.drv_path = a.drv_path
+        JOIN Job j ON j.drv_id = d.ROWID
+        JOIN GitHubJobSets g ON j.jobset = g.ROWID
+        LIMIT 1
+        "#,
+    )
+    .bind(drv_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(info)
+}

@@ -255,6 +255,23 @@ impl DbService {
         github::get_jobset_info(jobset_id, &self.pool).await
     }
 
+    /// Find the jobset context for a drv so it can be reconstituted after GC.
+    pub async fn get_reconstitution_context(
+        &self,
+        drv_id: &crate::db::model::DrvId,
+    ) -> anyhow::Result<Option<github::JobSetInfo>> {
+        github::get_reconstitution_context(drv_id, &self.pool).await
+    }
+
+    /// Like `get_reconstitution_context` but walks the DrvRefs graph upward
+    /// to find a jobset for transitive dependencies not directly in any Job.
+    pub async fn get_reconstitution_context_transitive(
+        &self,
+        drv_id: &crate::db::model::DrvId,
+    ) -> anyhow::Result<Option<github::JobSetInfo>> {
+        github::get_reconstitution_context_transitive(drv_id, &self.pool).await
+    }
+
     // Approved users methods
     pub async fn is_user_approved(&self, username: &str, user_id: i64) -> anyhow::Result<bool> {
         approved_users::is_user_approved(username, user_id, &self.pool).await

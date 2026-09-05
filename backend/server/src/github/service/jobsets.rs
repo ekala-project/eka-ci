@@ -123,14 +123,15 @@ impl GitHubService {
                     )
                     .await?;
 
-                self.db_service
-                    .insert_check_run_info(
-                        check_run.id.0 as i64,
-                        &job.drv_path,
-                        &ci_check_info.repo_name,
-                        &ci_check_info.owner,
-                    )
-                    .await?;
+                crate::db::github::insert_check_run_info_with_node_id(
+                    check_run.id.0 as i64,
+                    &job.drv_path,
+                    &ci_check_info.repo_name,
+                    &ci_check_info.owner,
+                    Some(&check_run.node_id),
+                    &self.db_service.pool,
+                )
+                .await?;
             }
         } else if changed_jobs.len() >= Self::EAGER_CHECK_RUN_THRESHOLD {
             debug!(

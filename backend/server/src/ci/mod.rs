@@ -445,7 +445,7 @@ pub fn load_repo_ci_config(domain: &str, owner: &str, repo: &str, sha: &str) -> 
 /// 2. `fs::canonicalize` of the joined path, asserted to still be a descendant of the canonicalized
 ///    `repo_root`. This also catches symlinks that were committed to the PR branch and point
 ///    outside the worktree.
-fn resolve_file_path(
+pub(crate) fn resolve_file_path(
     repo_root: PathBuf,
     _file_path_to_config: PathBuf,
     file_path_in_config: PathBuf,
