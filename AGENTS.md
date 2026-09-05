@@ -147,6 +147,7 @@ exercises the new state transitions end-to-end.
 - [ ] All errors are properly handled
 - [ ] Tests pass (`cargo test`)
 - [ ] If behavior changed: `spec/ekaci.qnt` updated, typechecked, tested, and invariants verified
+- [ ] If behavior changed: add an entry to `CHANGELOG.md`
 
 ---
 
