@@ -138,7 +138,7 @@ impl GraphService {
             // were not cleaned up during normal eviction (e.g. deps
             // whose referrer was evicted but the dep itself was never
             // inserted as a node).
-            if command_count % 5000 == 0 {
+            if command_count.is_multiple_of(5000) {
                 self.prune_stale_tracking_entries();
                 let evicted = self.graph.evict_stale_failures();
                 if evicted > 0 {

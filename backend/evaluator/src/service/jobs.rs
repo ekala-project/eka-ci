@@ -7,22 +7,23 @@ use tracing::{debug, warn};
 
 use crate::types::nix_eval_jobs::{NixEvalDrv, NixEvalError, NixEvalItem};
 
-/// This file is meant to handle the evaluation of a "job" which is similar
-/// to the "jobset" by hydra, in particular:
-/// - You pass the file path of a nix file
-/// - You can optionally pass arguments to the file, which should be structured as a function which
-///   receives an attrset of inputs
-/// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
-///
-/// M4: the output consumer bounds every growth axis so an adversarial
-/// or accidentally-huge flake cannot OOM the server:
-///   - `NIX_EVAL_JOBS_MAX_ENTRIES` caps total parsed items (drvs + errors).
-///   - `NIX_EVAL_JOBS_MAX_STDOUT_BYTES` caps total bytes read from nix-eval-jobs stdout.
-///   - `NIX_EVAL_JOBS_MAX_LINE_BYTES` caps the length of any single JSONL line (prevents a
-///     newline-less adversarial stream from growing the line buffer without bound).
-/// On any cap hit, the child is killed and reaped, the caller receives
-/// an error, and a `NixEvalMetrics::truncated_total` counter is
-/// incremented with the trigger reason.
+// This file is meant to handle the evaluation of a "job" which is similar
+// to the "jobset" by hydra, in particular:
+// - You pass the file path of a nix file
+// - You can optionally pass arguments to the file, which should be structured as a function which
+//   receives an attrset of inputs
+// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
+//
+// M4: the output consumer bounds every growth axis so an adversarial
+// or accidentally-huge flake cannot OOM the server:
+//   - `NIX_EVAL_JOBS_MAX_ENTRIES` caps total parsed items (drvs + errors).
+//   - `NIX_EVAL_JOBS_MAX_STDOUT_BYTES` caps total bytes read from nix-eval-jobs stdout.
+//   - `NIX_EVAL_JOBS_MAX_LINE_BYTES` caps the length of any single JSONL line (prevents a
+//     newline-less adversarial stream from growing the line buffer without bound).
+//
+// On any cap hit, the child is killed and reaped, the caller receives
+// an error, and a `NixEvalMetrics::truncated_total` counter is
+// incremented with the trigger reason.
 
 /// Maximum number of parsed output entries (drvs + errors combined)
 /// accepted from a single nix-eval-jobs invocation.

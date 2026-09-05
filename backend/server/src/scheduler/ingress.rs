@@ -468,7 +468,7 @@ impl IngressWorker {
                     .await?;
                 for dep in &failed_deps {
                     // Convert shared dep back to server type for recursive call
-                    let server_dep = graph_compat::to_server_drv_id(&dep)?;
+                    let server_dep = graph_compat::to_server_drv_id(dep)?;
                     debug!(
                         "{:?} has failed dependency {:?}, rebuilding it first",
                         drv_id, server_dep

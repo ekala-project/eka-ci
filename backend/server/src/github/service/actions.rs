@@ -54,7 +54,7 @@ pub async fn update_ci_configure_gate(
         check_run_id,
         status,
         conclusion,
-        &String::new(),
+        "",
     )
     .await
 }

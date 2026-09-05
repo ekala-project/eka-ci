@@ -55,7 +55,7 @@ pub(crate) async fn handle_process_merge_command(
                 note_id,
                 requester_id,
                 requester_username,
-                method.as_ref().map(|m| m.as_str()),
+                method.as_deref(),
                 note_created_at,
                 db_pool,
                 gitlab_sender,

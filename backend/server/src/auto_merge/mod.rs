@@ -1,8 +1,8 @@
-///! Shared auto-merge eligibility logic.
-///!
-///! This module contains platform-agnostic rules for when a PR/MR is eligible
-///! for auto-merge. Platform services (GitHub, GitLab, Gitea) use these
-///! functions to evaluate eligibility, then handle platform-specific API calls.
+//! Shared auto-merge eligibility logic.
+//!
+//! This module contains platform-agnostic rules for when a PR/MR is eligible
+//! for auto-merge. Platform services (GitHub, GitLab, Gitea) use these
+//! functions to evaluate eligibility, then handle platform-specific API calls.
 
 /// Represents the state of a merge request's auto-merge eligibility.
 #[allow(dead_code)]

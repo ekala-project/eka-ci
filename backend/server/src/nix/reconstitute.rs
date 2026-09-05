@@ -8,7 +8,7 @@
 //! all top-level attrs AND their transitive dependency closures.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -31,11 +31,17 @@ pub struct ReconstitutionTracker {
     in_flight: Mutex<HashSet<String>>,
 }
 
-impl ReconstitutionTracker {
-    pub fn new() -> Self {
+impl Default for ReconstitutionTracker {
+    fn default() -> Self {
         Self {
             in_flight: Mutex::new(HashSet::new()),
         }
+    }
+}
+
+impl ReconstitutionTracker {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     fn key(sha: &str, job: &str) -> String {
@@ -145,12 +151,9 @@ async fn do_reconstitute(context: &JobSetInfo, drv_id: &DrvId) -> Result<bool> {
         .with_context(|| format!("job '{}' not found in .ekaci/config.json", context.job))?;
 
     // Step 5: Resolve the nix file path
-    let file_path = crate::ci::resolve_file_path(
-        worktree_path.clone(),
-        config_path,
-        job_config.file.clone(),
-    )
-    .context("failed to resolve nix file path for reconstitution")?;
+    let file_path =
+        crate::ci::resolve_file_path(worktree_path.clone(), config_path, job_config.file.clone())
+            .context("failed to resolve nix file path for reconstitution")?;
 
     // Step 6: Run nix-eval-jobs to repopulate the nix store with .drv files
     run_nix_eval_jobs_for_reconstitution(&file_path).await?;
@@ -172,7 +175,7 @@ async fn do_reconstitute(context: &JobSetInfo, drv_id: &DrvId) -> Result<bool> {
 /// Run `nix-eval-jobs` purely to repopulate `.drv` files in the store.
 /// We discard the output — we only care about the side effect of
 /// `.drv` files being created during evaluation.
-async fn run_nix_eval_jobs_for_reconstitution(file_path: &PathBuf) -> Result<()> {
+async fn run_nix_eval_jobs_for_reconstitution(file_path: &Path) -> Result<()> {
     let file_path_str = file_path.to_string_lossy();
     debug!(
         "running nix-eval-jobs for reconstitution: {}",

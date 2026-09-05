@@ -1,8 +1,8 @@
-///! GitLab API action wrappers for commit status operations.
-///!
-///! This module provides high-level functions for interacting with the GitLab API
-///! to create and update commit statuses. It follows the same pattern as the GitHub
-///! actions module but uses GitLab's Commit Status API instead of Check Runs.
+//! GitLab API action wrappers for commit status operations.
+//!
+//! This module provides high-level functions for interacting with the GitLab API
+//! to create and update commit statuses. It follows the same pattern as the GitHub
+//! actions module but uses GitLab's Commit Status API instead of Check Runs.
 use anyhow::{Context, Result};
 use tracing::debug;
 

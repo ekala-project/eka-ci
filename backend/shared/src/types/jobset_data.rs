@@ -1,8 +1,8 @@
-///! Platform-agnostic jobset data abstraction.
-///!
-///! This module provides a shared representation of jobset metadata that
-///! platform services (GitHub, GitLab, Gitea) populate from their respective
-///! database tables before passing to shared logic like change_summary.
+//! Platform-agnostic jobset data abstraction.
+//!
+//! This module provides a shared representation of jobset metadata that
+//! platform services (GitHub, GitLab, Gitea) populate from their respective
+//! database tables before passing to shared logic like change_summary.
 
 /// Platform-agnostic jobset metadata.
 ///

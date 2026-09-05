@@ -39,11 +39,17 @@ pub struct CheckRunBatcher {
     pending: Mutex<Vec<PendingUpdate>>,
 }
 
-impl CheckRunBatcher {
-    pub fn new() -> Self {
+impl Default for CheckRunBatcher {
+    fn default() -> Self {
         Self {
             pending: Mutex::new(Vec::new()),
         }
+    }
+}
+
+impl CheckRunBatcher {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Queue a check run update for batched GraphQL flush.
@@ -55,8 +61,15 @@ impl CheckRunBatcher {
         status: &'static str,
         conclusion: Option<&'static str>,
     ) {
-        self.queue_update_with_log(owner, repo_node_id, check_run_node_id, status, conclusion, None)
-            .await;
+        self.queue_update_with_log(
+            owner,
+            repo_node_id,
+            check_run_node_id,
+            status,
+            conclusion,
+            None,
+        )
+        .await;
     }
 
     /// Queue a check run update with optional build log tail.
@@ -193,13 +206,10 @@ async fn send_batch(octocrab: &Octocrab, updates: &[PendingUpdate]) -> Result<us
                     .replace('"', "\\\"")
                     .replace('\n', "\\n");
                 let title = match &u.output_title {
-                    Some(t) => {
-                        let t_escaped = t
-                            .replace('\\', "\\\\")
-                            .replace('"', "\\\"")
-                            .replace('\n', "\\n");
-                        t_escaped
-                    },
+                    Some(t) => t
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace('\n', "\\n"),
                     None => "Build failed".to_string(),
                 };
                 // Coalesced gates pass markdown directly; failure logs
@@ -229,10 +239,7 @@ async fn send_batch(octocrab: &Octocrab, updates: &[PendingUpdate]) -> Result<us
 
     let query = format!("mutation {{\n  {}\n}}", mutations.join("\n  "));
 
-    debug!(
-        "Sending GraphQL batch with {} mutations",
-        updates.len()
-    );
+    debug!("Sending GraphQL batch with {} mutations", updates.len());
 
     let payload = serde_json::json!({ "query": query });
     let response: serde_json::Value = octocrab

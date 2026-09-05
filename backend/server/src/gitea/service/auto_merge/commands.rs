@@ -59,7 +59,7 @@ pub(in crate::gitea::service) async fn handle_process_merge_command(
                 comment_id,
                 requester_id,
                 requester_login,
-                method.as_ref().map(|m| m.as_str()),
+                method.as_deref(),
                 comment_created_at,
                 db_service,
                 gitea_sender,

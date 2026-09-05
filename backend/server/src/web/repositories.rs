@@ -253,8 +253,7 @@ pub(super) async fn get_package_changes_handler(
     let max_listed = query
         .max_packages_listed
         .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
-        .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
-        .max(1);
+        .clamp(1, DEFAULT_MAX_PACKAGES_LISTED * 10);
 
     match build_package_changes_response(
         &state.db_service.pool,
@@ -307,8 +306,7 @@ pub(super) async fn get_rebuild_impact_handler(
     let top_k = query
         .max_top_blast_radius
         .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
-        .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
-        .max(1);
+        .clamp(1, DEFAULT_MAX_TOP_BLAST_RADIUS * 10);
 
     // TODO: Pass actual metrics when change_summary crate supports server's metrics type
     match build_rebuild_impact_response_cached(
@@ -374,13 +372,11 @@ pub(super) async fn get_change_summary_handler(
         max_packages_listed: query
             .max_packages_listed
             .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
-            .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
-            .max(1),
+            .clamp(1, DEFAULT_MAX_PACKAGES_LISTED * 10),
         max_top_blast_radius: query
             .max_top_blast_radius
             .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
-            .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
-            .max(1),
+            .clamp(1, DEFAULT_MAX_TOP_BLAST_RADIUS * 10),
         ..base_opts
     };
 
@@ -436,13 +432,11 @@ pub(super) async fn get_change_summary_markdown_handler(
         max_packages_listed: query
             .max_packages_listed
             .unwrap_or(DEFAULT_MAX_PACKAGES_LISTED)
-            .min(DEFAULT_MAX_PACKAGES_LISTED * 10)
-            .max(1),
+            .clamp(1, DEFAULT_MAX_PACKAGES_LISTED * 10),
         max_top_blast_radius: query
             .max_top_blast_radius
             .unwrap_or(DEFAULT_MAX_TOP_BLAST_RADIUS)
-            .min(DEFAULT_MAX_TOP_BLAST_RADIUS * 10)
-            .max(1),
+            .clamp(1, DEFAULT_MAX_TOP_BLAST_RADIUS * 10),
         ..base_opts
     };
 

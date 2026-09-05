@@ -1,8 +1,8 @@
-///! Database helper functions for Gitea platform operations.
-///!
-///! This module provides Gitea-specific database operations for check runs,
-///! pull requests, and related data. Gitea supports both Check Runs (newer versions)
-///! and Commit Statuses (older versions) for CI feedback.
+//! Database helper functions for Gitea platform operations.
+//!
+//! This module provides Gitea-specific database operations for check runs,
+//! pull requests, and related data. Gitea supports both Check Runs (newer versions)
+//! and Commit Statuses (older versions) for CI feedback.
 use anyhow::Result;
 use sqlx::{FromRow, Pool, Sqlite};
 
