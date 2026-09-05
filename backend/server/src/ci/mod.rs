@@ -395,9 +395,7 @@ impl AsyncService<RepoTask> for RepoReader {
                     .context("GitHub app was not instantiated")?;
                 github_sender.send(configure_task).await?;
 
-                let summary = self
-                    .process_github_repo_config(repo_path, &ci_info)
-                    .await?;
+                let summary = self.process_github_repo_config(repo_path, &ci_info).await?;
 
                 let finish_configure_task = GitHubTask::CompleteCIConfigureGate {
                     ci_check_info: ci_info,

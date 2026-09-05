@@ -161,13 +161,12 @@ impl GitHubService {
                     .fold(JobDifference::Removed, |acc, d| {
                         crate::github::service::jobsets::worst_difference_pub(&acc, d)
                     });
-                let worst_state =
-                    crate::github::service::jobsets::aggregate_build_state(
-                        &group_jobs
-                            .iter()
-                            .map(|j| j.build_state.clone())
-                            .collect::<Vec<_>>(),
-                    );
+                let worst_state = crate::github::service::jobsets::aggregate_build_state(
+                    &group_jobs
+                        .iter()
+                        .map(|j| j.build_state.clone())
+                        .collect::<Vec<_>>(),
+                );
 
                 let summary_variants: Vec<&crate::db::github::NewOrChangedJob> =
                     group_jobs.iter().collect();
@@ -407,13 +406,14 @@ impl GitHubService {
             let is_coalesced = variant_states.len() > 1;
 
             if is_coalesced {
-                let states: Vec<_> = variant_states.iter().map(|v| v.build_state.clone()).collect();
-                let agg_state =
-                    crate::github::service::jobsets::aggregate_build_state(&states);
-                let summary =
-                    crate::github::service::jobsets::build_variant_summary_from_states(
-                        &variant_states,
-                    );
+                let states: Vec<_> = variant_states
+                    .iter()
+                    .map(|v| v.build_state.clone())
+                    .collect();
+                let agg_state = crate::github::service::jobsets::aggregate_build_state(&states);
+                let summary = crate::github::service::jobsets::build_variant_summary_from_states(
+                    &variant_states,
+                );
                 let (gql_status, gql_conclusion) =
                     crate::github::service::graphql_batch::build_state_to_graphql(&agg_state);
 
@@ -526,7 +526,11 @@ impl GitHubService {
 
         tracing::info!(
             "Resynced {} check runs for commit {} ({} batched, {} REST, {} failed)",
-            total, sha, batched, rest_updated, failed
+            total,
+            sha,
+            batched,
+            rest_updated,
+            failed
         );
         Ok(())
     }
@@ -535,7 +539,8 @@ impl GitHubService {
     pub(super) async fn get_repo_node_id(&self, owner: &str, repo: &str) -> Option<String> {
         // Check DB first
         let result: Option<Option<String>> = sqlx::query_scalar(
-            "SELECT node_id FROM GitHubInstallationRepositories WHERE repo_owner = ? AND repo_name = ?",
+            "SELECT node_id FROM GitHubInstallationRepositories WHERE repo_owner = ? AND \
+             repo_name = ?",
         )
         .bind(owner)
         .bind(repo)
@@ -559,7 +564,8 @@ impl GitHubService {
 
         // Cache in DB
         let _ = sqlx::query(
-            "UPDATE GitHubInstallationRepositories SET node_id = ? WHERE repo_owner = ? AND repo_name = ?",
+            "UPDATE GitHubInstallationRepositories SET node_id = ? WHERE repo_owner = ? AND \
+             repo_name = ?",
         )
         .bind(&node_id)
         .bind(owner)

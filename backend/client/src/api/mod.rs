@@ -132,10 +132,7 @@ fn is_failure_state(state: &serde_json::Value) -> bool {
     let s = format_state(state);
     matches!(
         s.as_str(),
-        "Completed(Failure)"
-            | "TransitiveFailure"
-            | "FailedRetry"
-            | "UnsatisfiableRequirements"
+        "Completed(Failure)" | "TransitiveFailure" | "FailedRetry" | "UnsatisfiableRequirements"
     ) || s.starts_with("Interrupted")
 }
 
@@ -219,10 +216,7 @@ impl ApiClient {
                     pr.title,
                     pr.author.dimmed()
                 );
-                println!(
-                    "  SHA: {}",
-                    &pr.head_sha[..12.min(pr.head_sha.len())]
-                );
+                println!("  SHA: {}", &pr.head_sha[..12.min(pr.head_sha.len())]);
                 self.print_pr_stats(
                     pr.completed_success_drvs,
                     pr.completed_failure_drvs,
@@ -249,11 +243,7 @@ impl ApiClient {
     }
 
     fn print_pr_stats(&self, success: i64, failure: i64, retry: i64, total: i64) {
-        println!(
-            "  {} / {} passing",
-            success.to_string().green(),
-            total
-        );
+        println!("  {} / {} passing", success.to_string().green(), total);
         if failure > 0 {
             println!("  {} failures", failure.to_string().red());
         }
@@ -287,11 +277,7 @@ impl ApiClient {
         Ok(())
     }
 
-    pub async fn list_jobs(
-        &self,
-        owner: Option<&str>,
-        repo: Option<&str>,
-    ) -> Result<()> {
+    pub async fn list_jobs(&self, owner: Option<&str>, repo: Option<&str>) -> Result<()> {
         let active: ActiveBuilds = self.get_json("/builds/active").await?;
 
         let jobs: Vec<&JobSetDetails> = if let (Some(o), Some(r)) = (owner, repo) {
@@ -349,9 +335,7 @@ impl ApiClient {
         state_filter: Option<&str>,
         failures_only: bool,
     ) -> Result<()> {
-        let details: JobSetDetails = self
-            .get_json(&format!("/jobs/{}", jobset_id))
-            .await?;
+        let details: JobSetDetails = self.get_json(&format!("/jobs/{}", jobset_id)).await?;
 
         println!(
             "{} {} ({}/{})",
@@ -366,7 +350,8 @@ impl ApiClient {
             details.total_drvs
         );
         println!(
-            "  {} success  {} failure  {} transitive  {} retry  {} building  {} queued  {} buildable  {} interrupted",
+            "  {} success  {} failure  {} transitive  {} retry  {} building  {} queued  {} \
+             buildable  {} interrupted",
             details.completed_success_drvs.to_string().green(),
             details.completed_failure_drvs.to_string().red(),
             details.transitive_failure_drvs.to_string().red(),
@@ -397,11 +382,7 @@ impl ApiClient {
         if filtered.is_empty() && (failures_only || state_filter.is_some()) {
             println!("\n  No matching derivations");
         } else if !filtered.is_empty() {
-            println!(
-                "\n{} ({} shown):",
-                "Derivations".bold(),
-                filtered.len()
-            );
+            println!("\n{} ({} shown):", "Derivations".bold(), filtered.len());
             for d in &filtered {
                 println!(
                     "  {:<16} {:<40} {}",
@@ -449,11 +430,7 @@ impl ApiClient {
         if blockers.is_empty() {
             println!("  {} All dependencies satisfied", "✓".green());
         } else {
-            println!(
-                "\n{} ({}):",
-                "Blockers".red().bold(),
-                blockers.len()
-            );
+            println!("\n{} ({}):", "Blockers".red().bold(), blockers.len());
             for d in &blockers {
                 println!(
                     "  {} {}",

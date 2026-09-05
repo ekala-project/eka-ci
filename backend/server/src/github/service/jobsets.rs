@@ -9,9 +9,7 @@ use tracing::{debug, warn};
 use super::GitHubService;
 use crate::db::github::NewOrChangedJob;
 use crate::db::model::DrvId;
-use crate::db::model::build_event::{
-    DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState,
-};
+use crate::db::model::build_event::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
 use crate::github::service::types::JobDifference;
 use crate::github::service::{CHANGE_SUMMARY_DEBOUNCE, CICheckInfo, GitHubTask, actions};
 use crate::nix::NixEvalDrv;
@@ -127,7 +125,8 @@ impl GitHubService {
                 .await?;
         } else if effective_gate_count >= Self::EAGER_CHECK_RUN_THRESHOLD {
             debug!(
-                "Skipping eager check_run creation for {} packages ({} effective gates, threshold {})",
+                "Skipping eager check_run creation for {} packages ({} effective gates, threshold \
+                 {})",
                 changed_jobs.len(),
                 effective_gate_count,
                 Self::EAGER_CHECK_RUN_THRESHOLD,
@@ -509,9 +508,7 @@ fn variant_suffix(attr_name: &str) -> &str {
 
 /// Build a markdown summary table of variant statuses for the check run output.
 /// Public entry point for the lazy failure path which has owned `NewOrChangedJob` refs.
-pub(crate) fn build_variant_summary_for_new_or_changed(
-    variants: &[&NewOrChangedJob],
-) -> String {
+pub(crate) fn build_variant_summary_for_new_or_changed(variants: &[&NewOrChangedJob]) -> String {
     build_variant_summary(variants)
 }
 
@@ -603,11 +600,7 @@ mod tests {
         use DrvBuildState::*;
 
         assert_eq!(
-            aggregate_build_state(&[
-                Completed(DrvBuildResult::Success),
-                Building,
-                Queued,
-            ]),
+            aggregate_build_state(&[Completed(DrvBuildResult::Success), Building, Queued,]),
             Building,
         );
 
