@@ -48,18 +48,55 @@ pub async fn update_ci_configure_gate(
     status: octocrab::params::checks::CheckRunStatus,
     conclusion: CheckRunConclusion,
 ) -> Result<()> {
+    update_ci_configure_gate_with_summary(
+        octocrab,
+        ci_check_info,
+        check_run_id,
+        status,
+        conclusion,
+        &String::new(),
+    )
+    .await
+}
+
+pub async fn update_ci_configure_gate_with_summary(
+    octocrab: &Octocrab,
+    ci_check_info: &CICheckInfo,
+    check_run_id: CheckRunId,
+    status: octocrab::params::checks::CheckRunStatus,
+    conclusion: CheckRunConclusion,
+    summary: &str,
+) -> Result<()> {
     debug!(
         "Updating CI configure gate check run {} with status {:?}",
         check_run_id, status
     );
 
-    octocrab
-        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
-        .update_check_run(check_run_id)
-        .status(status)
-        .conclusion(conclusion)
-        .send()
-        .await?;
+    let checks = octocrab.checks(&ci_check_info.owner, &ci_check_info.repo_name);
+
+    if !summary.is_empty() {
+        let output = octocrab::params::checks::CheckRunOutput {
+            title: "Configuration".to_string(),
+            summary: summary.to_string(),
+            text: None,
+            annotations: vec![],
+            images: vec![],
+        };
+        checks
+            .update_check_run(check_run_id)
+            .status(status)
+            .conclusion(conclusion)
+            .output(output)
+            .send()
+            .await?;
+    } else {
+        checks
+            .update_check_run(check_run_id)
+            .status(status)
+            .conclusion(conclusion)
+            .send()
+            .await?;
+    }
 
     debug!(
         "Successfully updated CI configure gate check run {}",
