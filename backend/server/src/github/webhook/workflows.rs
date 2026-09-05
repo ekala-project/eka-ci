@@ -35,7 +35,7 @@ async fn handle_github_workflow_requested(
             .get(pr_number.number)
             .await?;
         // Workflow was approved by maintainer, send the PR for checkout
-        let git_task = GitTask::GitHubCheckout(pull_request);
+        let git_task = GitTask::GitHubCheckout(Box::new(pull_request));
         git_sender.send(git_task).await?;
     }
 

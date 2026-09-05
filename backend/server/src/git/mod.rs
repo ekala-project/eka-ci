@@ -12,7 +12,7 @@ use crate::services::{AsyncService, TaskJournal};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum GitTask {
     Checkout(GitWorkspace),
-    GitHubCheckout(PullRequest),
+    GitHubCheckout(Box<PullRequest>),
 }
 
 pub struct GitService {
