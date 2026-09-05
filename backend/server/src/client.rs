@@ -412,9 +412,9 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                     .await
                     .expect("Failed to send resync task");
 
-                // Also check if any jobsets for this SHA are fully concluded
-                // and send CompleteCIEvalJob if so (handles the eval gate
-                // that wasn't updated due to server restarts).
+                // Also complete any eval gates that are still pending.
+                // The eval gate means "evaluation succeeded" — if a
+                // jobset exists, evaluation succeeded, so always Success.
                 let jobset_ids: Vec<i64> = sqlx::query_scalar(
                     "SELECT ROWID FROM GitHubJobSets WHERE sha = ?",
                 )
@@ -424,52 +424,30 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 .unwrap_or_default();
 
                 for jobset_id in jobset_ids {
-                    let all_concluded = crate::db::github::all_jobs_concluded(
+                    if let Ok(jobset_info) = crate::db::github::get_jobset_info(
                         jobset_id,
                         &dispatch.db_service.pool,
                     )
                     .await
-                    .unwrap_or(false);
-
-                    if all_concluded {
-                        let has_failures = crate::db::github::jobset_has_new_or_changed_failures(
-                            jobset_id,
-                            &dispatch.db_service.pool,
-                        )
-                        .await
-                        .unwrap_or(true);
-
-                        let conclusion = if has_failures {
-                            octocrab::params::checks::CheckRunConclusion::Failure
-                        } else {
-                            octocrab::params::checks::CheckRunConclusion::Success
+                    {
+                        let complete_task = GitHubTask::CompleteCIEvalJob {
+                            ci_check_info: std::sync::Arc::new(
+                                crate::github::CICheckInfo {
+                                    commit: jobset_info.sha.clone(),
+                                    base_commit: None,
+                                    owner: jobset_info.owner.clone(),
+                                    repo_name: jobset_info.repo_name.clone(),
+                                },
+                            ),
+                            job_name: jobset_info.job.clone(),
+                            conclusion:
+                                octocrab::params::checks::CheckRunConclusion::Success.into(),
                         };
-
-                        if let Ok(jobset_info) = crate::db::github::get_jobset_info(
+                        let _ = gh_sender.send(complete_task).await;
+                        info!(
+                            "Sent CompleteCIEvalJob (success) for jobset {}",
                             jobset_id,
-                            &dispatch.db_service.pool,
-                        )
-                        .await
-                        {
-                            let complete_task = GitHubTask::CompleteCIEvalJob {
-                                ci_check_info: std::sync::Arc::new(
-                                    crate::github::CICheckInfo {
-                                        commit: jobset_info.sha.clone(),
-                                        base_commit: None,
-                                        owner: jobset_info.owner.clone(),
-                                        repo_name: jobset_info.repo_name.clone(),
-                                    },
-                                ),
-                                job_name: jobset_info.job.clone(),
-                                conclusion: conclusion.into(),
-                            };
-                            let _ = gh_sender.send(complete_task).await;
-                            info!(
-                                "Sent CompleteCIEvalJob for jobset {} (conclusion: {:?})",
-                                jobset_id,
-                                if has_failures { "failure" } else { "success" }
-                            );
-                        }
+                        );
                     }
                 }
 

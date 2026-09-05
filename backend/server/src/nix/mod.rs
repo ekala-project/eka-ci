@@ -144,7 +144,7 @@ impl EvalService {
                     gh_sender.send(create_task).await?;
 
                     let gh_task = GitHubTask::CreateJobSet {
-                        ci_check_info: ci_info,
+                        ci_check_info: std::sync::Arc::clone(&ci_info),
                         name: eval_job.name.to_string(),
                         jobs,
                         config_json: eval_job.config_json.clone(),
@@ -155,8 +155,16 @@ impl EvalService {
                     // service after CreateJobSet computes the diff —
                     // only new/changed packages enter the ingress queue.
 
-                    // The eval gate will remain InProgress until all jobs are concluded
-                    // It will be completed by the recorder when the last job finishes
+                    // Complete the eval gate immediately — evaluation
+                    // succeeded and all per-package check runs were
+                    // emitted. Individual build results are tracked by
+                    // their own check runs.
+                    let complete_task = GitHubTask::CompleteCIEvalJob {
+                        ci_check_info: ci_info,
+                        job_name: eval_job.name.clone(),
+                        conclusion: octocrab::params::checks::CheckRunConclusion::Success.into(),
+                    };
+                    gh_sender.send(complete_task).await?;
                 } else {
                     warn!("GitHub service was never initialized, skipping task to create a jobset")
                 }
