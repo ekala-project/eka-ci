@@ -73,7 +73,7 @@ fn spawn_change_summary_debounce(
     job: String,
 ) {
     let sender = gitea_sender.clone();
-    tokio::spawn(async move {
+    crate::services::spawn_logged("gitea-change-summary-debounce", async move {
         tokio::time::sleep(CHANGE_SUMMARY_DEBOUNCE).await;
         if let Err(e) = sender
             .send(GiteaTask::CreateChangeSummaryCheck { ci_info, job })

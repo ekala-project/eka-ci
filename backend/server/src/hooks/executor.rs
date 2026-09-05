@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use super::types::{HookContext, HookResult, HookTask, PostBuildHook};
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
 /// Maximum expanded command arg length. Guards against pathological
 /// substitutions (e.g. an attacker-controlled env value exploding a
@@ -29,10 +29,16 @@ pub struct HookExecutor {
     logs_dir: PathBuf,
     max_hook_timeout: Duration,
     audit_enabled: bool,
+    journal: TaskJournal<HookTask>,
 }
 
 impl HookExecutor {
-    pub fn new(logs_dir: PathBuf, max_hook_timeout_seconds: u64, audit_enabled: bool) -> Self {
+    pub fn new(
+        logs_dir: PathBuf,
+        max_hook_timeout_seconds: u64,
+        audit_enabled: bool,
+        pool: sqlx::SqlitePool,
+    ) -> Self {
         let (hook_sender, hook_receiver) = mpsc::channel(1000);
         Self {
             hook_sender,
@@ -40,6 +46,7 @@ impl HookExecutor {
             logs_dir,
             max_hook_timeout: Duration::from_secs(max_hook_timeout_seconds),
             audit_enabled,
+            journal: TaskJournal::new(pool, "hooks"),
         }
     }
 
@@ -298,6 +305,10 @@ impl AsyncService<HookTask> for HookExecutor {
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<HookTask>> {
         self.hook_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<HookTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: HookTask) -> Result<()> {

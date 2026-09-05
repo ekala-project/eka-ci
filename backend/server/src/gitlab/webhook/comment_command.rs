@@ -1,6 +1,6 @@
-///! Comment command parsing for GitLab webhook comments.
-///!
-///! This module parses `@eka-ci` commands from merge request comments.
+//! Comment command parsing for GitLab webhook comments.
+//!
+//! This module parses `@eka-ci` commands from merge request comments.
 
 /// Comment command parsed from MR notes
 #[derive(Debug, Clone, PartialEq, Eq)]

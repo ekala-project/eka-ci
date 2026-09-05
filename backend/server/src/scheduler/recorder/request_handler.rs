@@ -5,10 +5,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use super::{RecorderTask, RecorderWorker};
-use crate::channels::types::ChannelTask;
-use crate::config::ChannelForge;
 use crate::db::model::build_event;
-use crate::github::GitHubTask;
 use crate::scheduler::ingress::IngressTask;
 
 impl RecorderWorker {
@@ -17,11 +14,18 @@ impl RecorderWorker {
         use {DrvBuildResult as DBR, DrvBuildState as DBS};
 
         let drv = &task.derivation;
+
+        // Derive build_attempt from current state: FailedRetry means this
+        // is the second attempt, everything else is the first.
+        let current_state = self.db_service.get_drv(drv).await?.map(|d| d.build_state);
+        let attempt = match &current_state {
+            Some(DBS::FailedRetry) => std::num::NonZeroU32::new(2).unwrap(),
+            _ => std::num::NonZeroU32::new(1).unwrap(),
+        };
+
         let build_id = crate::db::model::build::DrvBuildId {
-            // `DrvBuildId` stores an owned `DrvId`; Arc deref + clone.
             derivation: (**drv).clone(),
-            // TODO: build_attempt seems like something we should query
-            build_attempt: std::num::NonZeroU32::new(1).unwrap(),
+            build_attempt: attempt,
         };
 
         let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
@@ -32,42 +36,42 @@ impl RecorderWorker {
                     "Attempting to record successful build of {}",
                     build_id.derivation.store_path()
                 );
-                // Get old state before updating
-                let old_state = self
-                    .db_service
-                    .get_drv(drv)
-                    .await?
-                    .map(|d| d.build_state)
-                    .unwrap_or(DBS::Queued);
+                let old_state = current_state.clone().unwrap_or(DBS::Queued);
 
                 self.update_and_broadcast(drv, &old_state, &task.result)
                     .await?;
 
-                // Execute post-build hooks if configured
-                if let Err(e) = self.execute_hooks_for_drv(drv).await {
-                    warn!("Failed to execute hooks for {}: {}", drv.store_path(), e);
-                    // Don't fail the build if hooks fail - they run asynchronously
-                }
+                // Only run post-build hooks, size checks, and runtime
+                // reference capture when the output was actually built
+                // locally. Substitution cache-hits go directly from
+                // Queued → Completed(Success) without passing through
+                // Building, so we skip expensive nix path-info calls
+                // for those (outputs aren't guaranteed to be local).
+                let was_built_locally = matches!(old_state, DBS::Building);
 
-                // Capture runtime references for dependency tracking first so
-                // that subsequent per-output size updates have rows to land on.
-                if let Err(e) = self.capture_runtime_references(drv, &job_infos).await {
-                    warn!(
-                        "Failed to capture runtime references for {}: {}",
-                        drv.store_path(),
-                        e
-                    );
-                    // Don't fail the build if runtime ref capture fails
-                }
+                if was_built_locally {
+                    // Execute post-build hooks if configured
+                    if let Err(e) = self.execute_hooks_for_drv(drv).await {
+                        warn!("Failed to execute hooks for {}: {}", drv.store_path(), e);
+                    }
 
-                // Calculate and check output size if configured
-                if let Err(e) = self.check_output_size(drv, &job_infos).await {
-                    warn!(
-                        "Failed to check output size for {}: {}",
-                        drv.store_path(),
-                        e
-                    );
-                    // Don't fail the build if size check fails
+                    // Capture runtime references for dependency tracking
+                    if let Err(e) = self.capture_runtime_references(drv, &job_infos).await {
+                        warn!(
+                            "Failed to capture runtime references for {}: {}",
+                            drv.store_path(),
+                            e
+                        );
+                    }
+
+                    // Calculate and check output size if configured
+                    if let Err(e) = self.check_output_size(drv, &job_infos).await {
+                        warn!(
+                            "Failed to check output size for {}: {}",
+                            drv.store_path(),
+                            e
+                        );
+                    }
                 }
 
                 // TODO: closure size will be a future feature
@@ -80,25 +84,44 @@ impl RecorderWorker {
                 //     // Don't fail the build if closure size check fails
                 // }
 
-                // Clear any transitive failures in graph (fast in-memory operation)
+                // Clear transitive failures in database first (source of
+                // truth for crash recovery), then update the in-memory
+                // graph. This order ensures the DB is never behind the
+                // graph — if the graph update fails, restart self-heals.
+                self.db_service.clear_transitive_failures(drv).await?;
                 let unblocked_drvs = self.clear_graph_failure(drv).await?;
 
-                // Also clear in database for persistence
-                self.db_service.clear_transitive_failures(drv).await?;
-
                 // Re-queue drvs that were unblocked
-                for unblocked_drv in unblocked_drvs {
-                    let task = IngressTask::CheckBuildable(std::sync::Arc::new(unblocked_drv));
-                    self.ingress_sender.send(task).await?;
+                for unblocked_drv in &unblocked_drvs {
+                    let task =
+                        IngressTask::CheckBuildable(std::sync::Arc::new(unblocked_drv.clone()));
+                    // Non-blocking to prevent recorder ↔ ingress deadlock.
+                    if let Err(e) = self.ingress_sender.try_send(task) {
+                        warn!(
+                            "ingress queue full, dropped CheckBuildable for {}: {}",
+                            unblocked_drv.store_path(),
+                            e
+                        );
+                    }
                 }
 
-                // Check direct referrers for buildability
+                // Check direct referrers for buildability.
+                // Uses the shared_view directly instead of the graph
+                // command channel to avoid blocking when the channel
+                // is saturated by the BFS cascade.
                 let shared_drv_id = crate::graph_compat::to_shared_drv_id(drv)?;
-                let referrers = self.graph_handle.get_dependents(&shared_drv_id).await?;
+                let referrers = self.graph_handle.get_dependents_from_view(&shared_drv_id);
                 for referrer in referrers {
                     let server_referrer = crate::graph_compat::to_server_drv_id(&referrer)?;
                     let task = IngressTask::CheckBuildable(std::sync::Arc::new(server_referrer));
-                    self.ingress_sender.send(task).await?;
+                    // Non-blocking: if ingress is full, the delayed
+                    // re-check from the GitHub service will catch it.
+                    if let Err(e) = self.ingress_sender.try_send(task) {
+                        warn!(
+                            "ingress queue full, dropped CheckBuildable for referrer: {}",
+                            e
+                        );
+                    }
                 }
             },
             DBS::Completed(DBR::Failure) => {
@@ -115,7 +138,7 @@ impl RecorderWorker {
                     .ok_or_else(|| anyhow::anyhow!("Drv not found: {}", drv.store_path()))?;
 
                 match current_drv.build_state {
-                    DBS::Buildable => {
+                    DBS::Building => {
                         // First failure - transition to FailedRetry and re-queue immediately
                         debug!(
                             "First failure for {}, transitioning to FailedRetry",
@@ -139,196 +162,152 @@ impl RecorderWorker {
                         self.update_and_broadcast(drv, &old_state, &task.result)
                             .await?;
 
-                        // Propagate failure in graph (fast in-memory BFS traversal)
+                        // Propagate failure: graph first to discover
+                        // blocked drvs, then persist to DB. The graph
+                        // BFS is the only way to find transitively
+                        // blocked nodes, so it must run first here.
+                        // The DB insert that follows persists the
+                        // result; if it fails, the graph and DB diverge
+                        // but restart will re-propagate from the
+                        // terminal failure state stored in DB.
                         let blocked_drvs = self.propagate_graph_failure(drv).await?;
 
-                        // Also propagate in database for persistence
                         if !blocked_drvs.is_empty() {
                             self.db_service
                                 .insert_transitive_failures(drv, &blocked_drvs)
                                 .await?;
                         }
                     },
+                    _ if current_drv.build_state.is_terminal() => {
+                        // Stale recorder event — drv already reached a terminal state.
+                        // Skip to avoid reverting a finalized state.
+                        debug!(
+                            "Ignoring stale failure for {} (already {:?})",
+                            drv.store_path(),
+                            current_drv.build_state
+                        );
+                    },
                     _ => {
-                        // Unexpected state - log warning but still record failure
                         warn!(
                             "Unexpected state {:?} when recording failure for {}",
                             current_drv.build_state,
                             drv.store_path()
                         );
-                        let old_state = current_drv.build_state.clone();
-                        self.update_and_broadcast(drv, &old_state, &task.result)
-                            .await?;
                     },
                 }
             },
-            _ => {},
-        }
+            DBS::Interrupted(ref kind) => {
+                let current_drv = self
+                    .db_service
+                    .get_drv(drv)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Drv not found: {}", drv.store_path()))?;
 
-        if let Some(github_sender) = &self.github_sender {
-            // Check if we need to create check_runs for failures
-            // Only create check_runs if the build failed and no check_run exists yet
-            if task.result.is_failure() {
-                let existing_check_runs = self.db_service.check_runs_for_drv_path(drv).await?;
-
-                if existing_check_runs.is_empty() {
-                    // No check_run exists, we need to create one
-                    // Get job info to know which jobsets this drv belongs to
-                    let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
-
-                    for job_info in job_infos {
-                        let create_task = GitHubTask::CreateFailureCheckRun {
-                            drv_id: Arc::clone(drv),
-                            jobset_id: job_info.jobset_id,
-                            job_attr_name: job_info.name.clone(),
-                            difference: job_info.difference,
-                        };
-                        if let Err(e) = github_sender.send(create_task).await {
-                            warn!(
-                                "Failed to send CreateFailureCheckRun for {}: {:?}",
-                                drv.store_path(),
-                                e
+                // Guard: skip stale events for drvs already in terminal state.
+                if current_drv.build_state.is_terminal() {
+                    debug!(
+                        "Ignoring stale interruption for {} (already {:?})",
+                        drv.store_path(),
+                        current_drv.build_state
+                    );
+                } else if kind.is_retryable() {
+                    let old_state = current_drv.build_state.clone();
+                    // Retryable interruption (Timeout, OOM, ProcessDeath).
+                    // Same two-attempt budget as Completed(Failure):
+                    //   Building -> first interrupt  -> FailedRetry (re-queue)
+                    //   FailedRetry -> second interrupt -> Completed(Failure) + propagate
+                    match current_drv.build_state {
+                        DBS::FailedRetry => {
+                            debug!(
+                                "Second interruption ({:?}) for {}, marking as permanent failure",
+                                kind,
+                                drv.store_path()
                             );
-                        }
-                    }
-                }
-            }
-
-            // Send update for existing check_runs
-            let github_task = GitHubTask::UpdateBuildStatus {
-                drv_id: Arc::clone(drv),
-                status: task.result.clone(),
-            };
-            if let Err(e) = github_sender.send(github_task).await {
-                warn!(
-                    "Failed to send GitHub update for {}: {:?}",
-                    drv.store_path(),
-                    e
-                );
-            }
-
-            // Check if this drv completion concludes any jobsets
-            // Only check if we've reached a terminal state
-            if task.result.is_terminal() {
-                let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
-
-                for job_info in job_infos {
-                    // Check if all jobs in this jobset are concluded
-                    if self
-                        .db_service
-                        .all_jobs_concluded(job_info.jobset_id)
-                        .await?
-                    {
-                        // Determine conclusion based on new/changed job failures
-                        let has_failures = self
-                            .db_service
-                            .jobset_has_new_or_changed_failures(job_info.jobset_id)
+                            self.update_and_broadcast(
+                                drv,
+                                &old_state,
+                                &DBS::Completed(DBR::Failure),
+                            )
                             .await?;
 
-                        let conclusion = if has_failures {
-                            octocrab::params::checks::CheckRunConclusion::Failure
-                        } else {
-                            octocrab::params::checks::CheckRunConclusion::Success
-                        };
-
-                        // Get jobset info to get the job name
-                        let jobset_info =
-                            self.db_service.get_jobset_info(job_info.jobset_id).await?;
-
-                        let complete_task = GitHubTask::CompleteCIEvalJob {
-                            ci_check_info: Arc::new(crate::github::CICheckInfo {
-                                commit: jobset_info.sha.clone(),
-                                base_commit: None,
-                                owner: jobset_info.owner.clone(),
-                                repo_name: jobset_info.repo_name.clone(),
-                            }),
-                            job_name: jobset_info.job.clone(),
-                            conclusion,
-                        };
-
-                        if let Err(e) = github_sender.send(complete_task).await {
-                            warn!(
-                                "Failed to send CompleteCIEvalJob for jobset {}: {:?}",
-                                job_info.jobset_id, e
+                            let blocked_drvs = self.propagate_graph_failure(drv).await?;
+                            if !blocked_drvs.is_empty() {
+                                self.db_service
+                                    .insert_transitive_failures(drv, &blocked_drvs)
+                                    .await?;
+                            }
+                        },
+                        _ => {
+                            debug!(
+                                "Retryable interruption ({:?}) for {}, transitioning to \
+                                 FailedRetry",
+                                kind,
+                                drv.store_path()
                             );
-                        }
+                            self.update_and_broadcast(drv, &old_state, &DBS::FailedRetry)
+                                .await?;
 
-                        // Notify ChannelService that this jobset has
-                        // concluded. The recorder cannot know which
-                        // release channels (if any) care about this
-                        // commit, so it always emits; ChannelService
-                        // filters by matching `(forge, owner, repo)`
-                        // against its registry and discards
-                        // jobset_complete events for which no
-                        // in-flight Evaluating row exists.
-                        //
-                        // Today the recorder only sees GitHub-backed
-                        // jobsets (the eval service is the sole
-                        // producer and is GitHub-only), so the forge
-                        // is hard-coded to GitHub. PR 4 will broaden
-                        // this when GitLab/Gitea start producing
-                        // jobsets.
-                        if let Some(channel_sender) = &self.channel_sender {
-                            let channel_task = ChannelTask::JobsetComplete {
-                                forge: ChannelForge::GitHub,
-                                owner: jobset_info.owner.clone(),
-                                repo: jobset_info.repo_name.clone(),
-                                sha: jobset_info.sha.clone(),
-                            };
-                            if let Err(e) = channel_sender.send(channel_task).await {
-                                warn!(
-                                    "Failed to send ChannelTask::JobsetComplete for jobset {}: \
-                                     {:?}",
-                                    job_info.jobset_id, e
-                                );
-                            }
-                        }
+                            let task = IngressTask::CheckBuildable(Arc::clone(drv));
+                            self.ingress_sender.send(task).await?;
+                        },
+                    }
+                } else {
+                    let old_state = current_drv.build_state.clone();
+                    // Non-retryable interruption (Cancelled, SchedulerDeath).
+                    // Record interrupted state and propagate TransitiveFailure.
+                    debug!(
+                        "Non-retryable interruption ({:?}) for {}, propagating TransitiveFailure",
+                        kind,
+                        drv.store_path()
+                    );
+                    self.update_and_broadcast(drv, &old_state, &task.result)
+                        .await?;
 
-                        // Check if this is a PR that should be auto-merged
-                        if !has_failures {
-                            // Try to find a PR for this commit
-                            if let Ok(Some(pr)) = crate::db::github::get_pr_by_head_sha(
-                                &jobset_info.sha,
-                                &jobset_info.owner,
-                                &jobset_info.repo_name,
-                                &self.db_service.pool,
-                            )
-                            .await
-                            {
-                                // Fire CheckAutoMerge if UI auto-merge is on or a
-                                // comment-merge is pending. The handler re-validates
-                                // all gates (SHA-drift included), so over-triggering
-                                // is safe — drifted requests cancel cleanly.
-                                let has_pending_comment_merge = pr.comment_merge_sha.is_some();
-                                let is_open = pr.state == "open";
-                                if is_open && (pr.auto_merge_enabled || has_pending_comment_merge) {
-                                    debug!(
-                                        "PR #{} eligible for auto-merge check (auto_merge={}, \
-                                         comment_merge_pending={}), scheduling",
-                                        pr.pr_number,
-                                        pr.auto_merge_enabled,
-                                        has_pending_comment_merge
-                                    );
-
-                                    let auto_merge_task = GitHubTask::CheckAutoMerge {
-                                        owner: jobset_info.owner.clone(),
-                                        repo_name: jobset_info.repo_name.clone(),
-                                        pr_number: pr.pr_number,
-                                    };
-
-                                    if let Err(e) = github_sender.send(auto_merge_task).await {
-                                        warn!(
-                                            "Failed to send CheckAutoMerge for PR #{}: {:?}",
-                                            pr.pr_number, e
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                    let blocked_drvs = self.propagate_graph_failure(drv).await?;
+                    if !blocked_drvs.is_empty() {
+                        self.db_service
+                            .insert_transitive_failures(drv, &blocked_drvs)
+                            .await?;
                     }
                 }
-            }
+            },
+            DBS::UnsatisfiableRequirements => {
+                let old_state = self
+                    .db_service
+                    .get_drv(drv)
+                    .await?
+                    .map(|d| d.build_state)
+                    .unwrap_or(DBS::Queued);
+
+                if old_state.is_terminal() {
+                    debug!(
+                        "Ignoring stale UnsatisfiableRequirements for {} (already {:?})",
+                        drv.store_path(),
+                        old_state
+                    );
+                } else {
+                    self.update_and_broadcast(drv, &old_state, &task.result)
+                        .await?;
+
+                    let blocked_drvs = self.propagate_graph_failure(drv).await?;
+                    if !blocked_drvs.is_empty() {
+                        self.db_service
+                            .insert_transitive_failures(drv, &blocked_drvs)
+                            .await?;
+                    }
+                }
+            },
+            _ => {
+                warn!(
+                    "Unexpected recorder task state {:?} for {}",
+                    task.result,
+                    drv.store_path()
+                );
+            },
         }
+
+        self.notify_forge_and_channels(drv, task, &job_infos)
+            .await?;
 
         // Broadcast job stats updates for all affected jobs
         for job_info in job_infos {

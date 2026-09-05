@@ -14,6 +14,9 @@ pub struct CheckRun {
     pub repo_owner: String,
     pub build_state: DrvBuildState,
     pub drv_path: DrvId,
+    /// GraphQL node ID (e.g. "CR_kwDO..."). Used for batched GraphQL
+    /// mutations. `None` for check runs created before this column existed.
+    pub node_id: Option<String>,
 }
 
 /// Helper structure to represent a job from the base commit
@@ -23,11 +26,29 @@ pub struct BaseJob {
     pub drv_path: String,
 }
 
+/// Build state of a single variant within a coalesced gate.
+/// Used to compute aggregate status and render the variant summary.
+#[derive(Debug, FromRow)]
+pub struct VariantBuildState {
+    pub drv_path: DrvId,
+    pub name: String,
+    pub build_state: DrvBuildState,
+}
+
 #[derive(Debug, FromRow)]
 pub struct JobInfo {
     pub jobset_id: i64,
     pub name: String,
     pub difference: JobDifference,
+}
+
+/// A new or changed job in a jobset, used for eager check_run creation.
+#[derive(Debug, FromRow)]
+pub struct NewOrChangedJob {
+    pub name: String,
+    pub difference: JobDifference,
+    pub drv_path: DrvId,
+    pub build_state: DrvBuildState,
 }
 
 /// Get the jobset name and commit for a jobset ID

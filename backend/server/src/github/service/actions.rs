@@ -48,18 +48,55 @@ pub async fn update_ci_configure_gate(
     status: octocrab::params::checks::CheckRunStatus,
     conclusion: CheckRunConclusion,
 ) -> Result<()> {
+    update_ci_configure_gate_with_summary(
+        octocrab,
+        ci_check_info,
+        check_run_id,
+        status,
+        conclusion,
+        "",
+    )
+    .await
+}
+
+pub async fn update_ci_configure_gate_with_summary(
+    octocrab: &Octocrab,
+    ci_check_info: &CICheckInfo,
+    check_run_id: CheckRunId,
+    status: octocrab::params::checks::CheckRunStatus,
+    conclusion: CheckRunConclusion,
+    summary: &str,
+) -> Result<()> {
     debug!(
         "Updating CI configure gate check run {} with status {:?}",
         check_run_id, status
     );
 
-    octocrab
-        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
-        .update_check_run(check_run_id)
-        .status(status)
-        .conclusion(conclusion)
-        .send()
-        .await?;
+    let checks = octocrab.checks(&ci_check_info.owner, &ci_check_info.repo_name);
+
+    if !summary.is_empty() {
+        let output = octocrab::params::checks::CheckRunOutput {
+            title: "Configuration".to_string(),
+            summary: summary.to_string(),
+            text: None,
+            annotations: vec![],
+            images: vec![],
+        };
+        checks
+            .update_check_run(check_run_id)
+            .status(status)
+            .conclusion(conclusion)
+            .output(output)
+            .send()
+            .await?;
+    } else {
+        checks
+            .update_check_run(check_run_id)
+            .status(status)
+            .conclusion(conclusion)
+            .send()
+            .await?;
+    }
 
     debug!(
         "Successfully updated CI configure gate check run {}",
@@ -126,6 +163,37 @@ pub async fn update_ci_eval_job(
     );
 
     Ok(())
+}
+
+/// Look up a check run by name for a given commit SHA.
+/// Used as a fallback when the in-memory check run ID map is empty (after restart).
+pub async fn find_check_run_by_name(
+    octocrab: &Octocrab,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    check_name: &str,
+) -> Result<Option<CheckRunId>> {
+    let route = format!(
+        "/repos/{}/{}/commits/{}/check-runs?per_page=100",
+        owner, repo, sha
+    );
+
+    let response: serde_json::Value = octocrab.get(route, None::<&()>).await?;
+
+    if let Some(check_runs) = response.get("check_runs").and_then(|v| v.as_array()) {
+        for cr in check_runs {
+            if let Some(name) = cr.get("name").and_then(|v| v.as_str()) {
+                if name == check_name {
+                    if let Some(id) = cr.get("id").and_then(|v| v.as_u64()) {
+                        return Ok(Some(CheckRunId(id)));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Create a neutral check run indicating that approval is required before builds can run

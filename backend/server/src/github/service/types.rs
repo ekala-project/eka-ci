@@ -6,14 +6,63 @@ use octocrab::Octocrab;
 use octocrab::models::checks::CheckRun;
 use octocrab::models::pulls::PullRequest;
 use octocrab::params::checks::{CheckRunConclusion as GHConclusion, CheckRunStatus as GHStatus};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::checks::types::CheckResultMessage;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::nix::{NixEvalDrv, NixEvalError};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Serde-friendly mirror of `octocrab::params::checks::CheckRunConclusion`.
+///
+/// The upstream type only derives `Serialize`; we need `Deserialize` for
+/// journal round-tripping. The helper converts to/from the octocrab type
+/// at the service boundary.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerdeCheckRunConclusion {
+    ActionRequired,
+    Cancelled,
+    Failure,
+    Neutral,
+    Success,
+    Skipped,
+    Stale,
+    TimedOut,
+}
+
+impl From<octocrab::params::checks::CheckRunConclusion> for SerdeCheckRunConclusion {
+    fn from(c: octocrab::params::checks::CheckRunConclusion) -> Self {
+        use octocrab::params::checks::CheckRunConclusion as C;
+        match c {
+            C::ActionRequired => Self::ActionRequired,
+            C::Cancelled => Self::Cancelled,
+            C::Failure => Self::Failure,
+            C::Neutral => Self::Neutral,
+            C::Success => Self::Success,
+            C::Skipped => Self::Skipped,
+            C::Stale => Self::Stale,
+            C::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
+impl From<SerdeCheckRunConclusion> for octocrab::params::checks::CheckRunConclusion {
+    fn from(c: SerdeCheckRunConclusion) -> Self {
+        match c {
+            SerdeCheckRunConclusion::ActionRequired => Self::ActionRequired,
+            SerdeCheckRunConclusion::Cancelled => Self::Cancelled,
+            SerdeCheckRunConclusion::Failure => Self::Failure,
+            SerdeCheckRunConclusion::Neutral => Self::Neutral,
+            SerdeCheckRunConclusion::Success => Self::Success,
+            SerdeCheckRunConclusion::Skipped => Self::Skipped,
+            SerdeCheckRunConclusion::Stale => Self::Stale,
+            SerdeCheckRunConclusion::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobDifference {
     New,
     Changed,
@@ -96,7 +145,7 @@ mod job_difference_encoding {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 /// Information needed to create a CI check run gate
 pub struct CICheckInfo {
     pub commit: String,
@@ -171,12 +220,48 @@ impl CICheckInfo {
             .await
     }
 
+    /// Create a coalesced check run that represents multiple variants of
+    /// a package group. The `summary_markdown` is shown in the check run's
+    /// output body with a per-variant status table.
+    pub async fn create_coalesced_gh_check_run(
+        &self,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        group_name: &str,
+        worst_build_state: DrvBuildState,
+        worst_difference: &JobDifference,
+        summary_markdown: &str,
+    ) -> Result<CheckRun> {
+        let title = format!("{} / {} ({})", group_name, worst_difference, jobset_name);
+        let (gh_status, gh_conclusion) = worst_build_state.as_gh_checkrun_state();
+        self.inner_gh_check_run_with_output(
+            octocrab,
+            &title,
+            gh_status,
+            gh_conclusion,
+            Some(summary_markdown),
+        )
+        .await
+    }
+
     async fn inner_gh_check_run(
         &self,
         octocrab: &Octocrab,
         title: &str,
         gh_status: GHStatus,
         gh_conclusion: Option<GHConclusion>,
+    ) -> Result<CheckRun> {
+        self.inner_gh_check_run_with_output(octocrab, title, gh_status, gh_conclusion, None)
+            .await
+    }
+
+    async fn inner_gh_check_run_with_output(
+        &self,
+        octocrab: &Octocrab,
+        title: &str,
+        gh_status: GHStatus,
+        gh_conclusion: Option<GHConclusion>,
+        summary: Option<&str>,
     ) -> Result<CheckRun> {
         let check_builder = octocrab.checks(&self.owner, &self.repo_name);
         let mut create_check_run = check_builder
@@ -185,6 +270,17 @@ impl CICheckInfo {
 
         if let Some(conclusion) = gh_conclusion {
             create_check_run = create_check_run.conclusion(conclusion);
+        }
+
+        if let Some(summary_text) = summary {
+            let output = octocrab::params::checks::CheckRunOutput {
+                title: title.to_string(),
+                summary: summary_text.to_string(),
+                text: None,
+                annotations: vec![],
+                images: vec![],
+            };
+            create_check_run = create_check_run.output(output);
         }
 
         let check_run = create_check_run.send().await?;
@@ -196,7 +292,7 @@ impl CICheckInfo {
 /// (e.g. the recorder's per-jobset loop or the ingress path creating multiple
 /// check-runs per commit) can `Arc::clone` refcount bumps instead of cloning
 /// the inner `DrvId` string or the 4-String `CICheckInfo`.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum GitHubTask {
     UpdateBuildStatus {
         drv_id: Arc<DrvId>,
@@ -221,6 +317,8 @@ pub enum GitHubTask {
     },
     CompleteCIConfigureGate {
         ci_check_info: Arc<CICheckInfo>,
+        /// Markdown summary of what was configured (jobs, checks, flake).
+        summary: String,
     },
     CreateCIEvalJob {
         ci_check_info: Arc<CICheckInfo>,
@@ -229,7 +327,7 @@ pub enum GitHubTask {
     CompleteCIEvalJob {
         ci_check_info: Arc<CICheckInfo>,
         job_name: String,
-        conclusion: octocrab::params::checks::CheckRunConclusion,
+        conclusion: SerdeCheckRunConclusion,
     },
     CancelCheckRunsForCommit {
         ci_check_info: Arc<CICheckInfo>,
@@ -318,7 +416,7 @@ pub enum GitHubTask {
         comment_id: i64,
         /// GitHub reaction content string: `+1` | `-1` | `laugh` |
         /// `confused` | `heart` | `hooray` | `rocket` | `eyes`.
-        content: &'static str,
+        content: String,
     },
     /// Post an issue/PR comment. Currently unused; kept for future call
     /// sites (e.g., queued merge-failure explanations).
@@ -328,6 +426,11 @@ pub enum GitHubTask {
         repo_name: String,
         issue_number: i64,
         body: String,
+    },
+    /// Re-push all check run states for a commit to GitHub.
+    /// Fixes stale "pending" checks after server restarts.
+    ResyncCheckRuns {
+        sha: String,
     },
 }
 

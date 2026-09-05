@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
+use std::time::Instant;
 
 use lru::LruCache;
 use shared::types::{Drv, DrvBuildResult, DrvBuildState, DrvId};
@@ -48,25 +49,33 @@ pub struct BuildGraph {
     /// Index of drvs by their build state for fast queries
     by_state: HashMap<DrvBuildState, HashSet<DrvId>>,
 
-    /// Set of drvs that have permanently failed
-    failed_drvs: HashSet<DrvId>,
+    /// Drvs that have permanently failed, with insertion timestamp for TTL eviction.
+    failed_drvs: HashMap<DrvId, Instant>,
 
     /// Map from failed drv to all drvs transitively blocked by it
     transitive_failure_map: HashMap<DrvId, HashSet<DrvId>>,
+
+    /// TTL for failure tracking entries. Entries older than this are evicted
+    /// during periodic pruning to prevent unbounded growth.
+    failure_ttl: std::time::Duration,
 
     /// Set of pinned nodes that should never be evicted (non-terminal states)
     pinned: HashSet<DrvId>,
 }
 
 impl BuildGraph {
+    /// Default TTL for failure tracking entries (24 hours).
+    const DEFAULT_FAILURE_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
     /// Create a new empty build graph with LRU cache
     pub fn new(capacity: usize) -> Self {
         Self {
             nodes: LruCache::new(NonZeroUsize::new(capacity).unwrap()),
             by_state: HashMap::new(),
-            failed_drvs: HashSet::new(),
+            failed_drvs: HashMap::new(),
             transitive_failure_map: HashMap::new(),
             pinned: HashSet::new(),
+            failure_ttl: Self::DEFAULT_FAILURE_TTL,
         }
     }
 
@@ -93,9 +102,9 @@ impl BuildGraph {
             .or_default()
             .insert(drv_id.clone());
 
-        // Track if failed
+        // Track if failed (with timestamp for TTL eviction)
         if state == DrvBuildState::Completed(DrvBuildResult::Failure) {
-            self.failed_drvs.insert(drv_id.clone());
+            self.failed_drvs.insert(drv_id.clone(), Instant::now());
         }
 
         // Pin non-terminal states to prevent eviction
@@ -164,7 +173,7 @@ impl BuildGraph {
         // Update failed tracking
         match new_state {
             DrvBuildState::Completed(DrvBuildResult::Failure) => {
-                self.failed_drvs.insert(drv_id.clone());
+                self.failed_drvs.insert(drv_id.clone(), Instant::now());
             },
             DrvBuildState::Completed(DrvBuildResult::Success) => {
                 self.failed_drvs.remove(drv_id);
@@ -442,8 +451,27 @@ impl BuildGraph {
         total
     }
 
+    /// Evict failure tracking entries older than `failure_ttl`.
+    /// Returns the number of evicted entries.
+    pub fn evict_stale_failures(&mut self) -> usize {
+        let cutoff = Instant::now() - self.failure_ttl;
+        let stale: Vec<DrvId> = self
+            .failed_drvs
+            .iter()
+            .filter(|(_, ts)| **ts < cutoff)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let count = stale.len();
+        for id in &stale {
+            self.failed_drvs.remove(id);
+            self.transitive_failure_map.remove(id);
+        }
+        count
+    }
+
     /// Initialize the graph from database on startup
-    /// Normalizes transient states to Queued and recomputes transitive failures
+    /// Normalizes transient states and recomputes transitive failures
     pub async fn from_database(
         db: &dyn crate::traits::GraphDatabase,
         capacity: usize,
@@ -453,14 +481,15 @@ impl BuildGraph {
 
         let mut graph = BuildGraph::new(capacity);
 
-        // Insert all nodes, normalizing transient states
+        // Normalize transient states for crash recovery. FailedRetry is
+        // preserved so that the retry budget is not reset — a drv that
+        // already used its first attempt keeps that history across restarts.
         for mut drv in drvs {
-            // Normalize transient states to Queued
             drv.build_state = match drv.build_state {
-                DrvBuildState::Building
-                | DrvBuildState::Buildable
-                | DrvBuildState::Queued
-                | DrvBuildState::FailedRetry => DrvBuildState::Queued,
+                DrvBuildState::Building | DrvBuildState::Buildable | DrvBuildState::Queued => {
+                    DrvBuildState::Queued
+                },
+                DrvBuildState::FailedRetry => DrvBuildState::FailedRetry,
                 terminal => terminal,
             };
 
@@ -478,7 +507,7 @@ impl BuildGraph {
         }
 
         // Recompute transitive failures from permanent failures
-        let failed_drvs: Vec<DrvId> = graph.failed_drvs.iter().cloned().collect();
+        let failed_drvs: Vec<DrvId> = graph.failed_drvs.keys().cloned().collect();
         for failed_drv in failed_drvs {
             graph.propagate_failure(&failed_drv);
         }

@@ -58,18 +58,25 @@ impl RecorderWorker {
         }
     }
 
-    /// Update drv status in both graph and database, then broadcast the change
+    /// Update drv status in both database and graph, then broadcast the change.
+    ///
+    /// The database is written first because it is the source of truth on
+    /// restart: the in-memory graph is rebuilt from DB state during startup.
+    /// If the graph update fails after a successful DB write, the
+    /// inconsistency self-heals on the next restart. Writing the graph
+    /// first would leave the opposite problem — the graph shows state the
+    /// DB doesn't know about, and a crash silently reverts the transition.
     pub(super) async fn update_and_broadcast(
         &self,
         drv: &drv_id::DrvId,
         old_state: &build_event::DrvBuildState,
         new_state: &build_event::DrvBuildState,
     ) -> anyhow::Result<()> {
-        // Update graph first (fast in-memory operation)
-        self.update_graph_state(drv, new_state.clone()).await?;
-
-        // Then update database (for persistence)
+        // Persist to database first (source of truth for crash recovery)
         self.db_service.update_drv_status(drv, new_state).await?;
+
+        // Then update in-memory graph (fast, self-heals on restart if this fails)
+        self.update_graph_state(drv, new_state.clone()).await?;
 
         // Finally broadcast to websocket clients
         self.broadcast_state_change(drv, old_state, new_state);
@@ -82,17 +89,32 @@ impl RecorderWorker {
         drv_id: &drv_id::DrvId,
         new_state: build_event::DrvBuildState,
     ) -> anyhow::Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
         let shared_drv_id = crate::graph_compat::to_shared_drv_id(drv_id)?;
         let shared_state = crate::db::graph_impl::convert_build_state(&new_state);
+
+        // Update shared_view directly for immediate visibility to
+        // is_buildable checks running on other tasks.
+        if let Some(mut entry) = self.graph_handle.shared_view().get_mut(&shared_drv_id) {
+            entry.build_state = shared_state.clone();
+        }
+
+        // Best-effort update of graph internal indices. The shared_view
+        // update above is the source of truth for is_buildable checks.
+        // Use try_send to avoid blocking the recorder pipeline when
+        // the graph channel is saturated by the BFS cascade.
+        let (tx, _rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::UpdateState {
-            drv_id: shared_drv_id,
+            drv_id: shared_drv_id.clone(),
             new_state: shared_state,
             response: tx,
         };
-
-        self.graph_command_sender.send(cmd).await?;
-        rx.await?;
+        if let Err(e) = self.graph_command_sender.try_send(cmd) {
+            tracing::warn!(
+                "graph command queue full, deferred UpdateState for {}: {}",
+                shared_drv_id.store_path(),
+                e
+            );
+        }
         Ok(())
     }
 

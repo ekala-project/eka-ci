@@ -16,6 +16,8 @@ pub use evaluator::utils::{pname_from_name, version_from_name};
 // Server-specific wrapper for eval jobs
 mod jobs;
 
+pub mod reconstitute;
+
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -34,9 +36,8 @@ use crate::db::model::{Reference, Referrer};
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::graph::GraphCommand;
 use crate::metrics::NixEvalMetrics;
-use crate::scheduler::IngressTask;
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct EvalJob {
     pub file_path: String,
     pub name: String,
@@ -45,7 +46,7 @@ pub struct EvalJob {
                                       * TODO: support arguments */
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum EvalTask {
     Job(EvalJob),
     GithubJobPR((EvalJob, CICheckInfo)),
@@ -56,8 +57,6 @@ pub struct EvalService {
     db_service: DbService,
     eval_sender: mpsc::Sender<EvalTask>,
     eval_receiver: Option<mpsc::Receiver<EvalTask>>,
-    /// Used to request scheduler to determine if it should build a drv
-    scheduler_sender: mpsc::Sender<IngressTask>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
     drv_map: Mutex<LruCache<DrvId, Drv>>,
@@ -65,6 +64,7 @@ pub struct EvalService {
     /// events. Optional so unit/integration tests that don't care
     /// about observability can pass `None`.
     pub(crate) nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
+    journal: crate::services::TaskJournal<EvalTask>,
 }
 
 impl EvalService {
@@ -72,20 +72,20 @@ impl EvalService {
         sender: mpsc::Sender<EvalTask>,
         receiver: mpsc::Receiver<EvalTask>,
         db_service: DbService,
-        scheduler_sender: mpsc::Sender<IngressTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
     ) -> EvalService {
+        let pool = db_service.pool.clone();
         EvalService {
             db_service,
             eval_sender: sender,
             eval_receiver: Some(receiver),
-            scheduler_sender,
             github_sender,
             graph_command_sender,
             drv_map: Mutex::new(LruCache::new(NonZeroUsize::new(5000).unwrap())),
             nix_eval_metrics,
+            journal: crate::services::TaskJournal::new(pool, "eval"),
         }
     }
 
@@ -97,7 +97,7 @@ impl EvalService {
         match &task {
             EvalTask::Job(drv) => {
                 debug!("Processing Job task for: {}", drv.file_path);
-                let (_jobs, _errors) = self.run_nix_eval_jobs(&drv.file_path).await?;
+                let (_jobs, _errors) = self.run_nix_eval_jobs(&drv.file_path, true).await?;
             },
             EvalTask::TraverseDrv(drv) => {
                 debug!("Processing TraverseDrv task for: {}", drv);
@@ -105,7 +105,13 @@ impl EvalService {
             },
             EvalTask::GithubJobPR((eval_job, ci_info)) => {
                 if self.github_sender.is_some() {
-                    let (jobs, errors) = self.run_nix_eval_jobs(&eval_job.file_path).await?;
+                    // Only traverse drvs for head commits (base_commit is
+                    // Some). Base-commit evals only need the attr/drv list
+                    // for jobset diff computation — no graph population or
+                    // build scheduling required.
+                    let is_head = ci_info.base_commit.is_some();
+                    let (jobs, errors) =
+                        self.run_nix_eval_jobs(&eval_job.file_path, is_head).await?;
                     let gh_sender = self
                         .github_sender
                         .as_ref()
@@ -138,15 +144,27 @@ impl EvalService {
                     gh_sender.send(create_task).await?;
 
                     let gh_task = GitHubTask::CreateJobSet {
-                        ci_check_info: ci_info,
+                        ci_check_info: std::sync::Arc::clone(&ci_info),
                         name: eval_job.name.to_string(),
                         jobs,
                         config_json: eval_job.config_json.clone(),
                     };
                     gh_sender.send(gh_task).await?;
 
-                    // The eval gate will remain InProgress until all jobs are concluded
-                    // It will be completed by the recorder when the last job finishes
+                    // Build scheduling is dispatched by the GitHub
+                    // service after CreateJobSet computes the diff —
+                    // only new/changed packages enter the ingress queue.
+
+                    // Complete the eval gate immediately — evaluation
+                    // succeeded and all per-package check runs were
+                    // emitted. Individual build results are tracked by
+                    // their own check runs.
+                    let complete_task = GitHubTask::CompleteCIEvalJob {
+                        ci_check_info: ci_info,
+                        job_name: eval_job.name.clone(),
+                        conclusion: octocrab::params::checks::CheckRunConclusion::Success.into(),
+                    };
+                    gh_sender.send(complete_task).await?;
                 } else {
                     warn!("GitHub service was never initialized, skipping task to create a jobset")
                 }
@@ -176,6 +194,122 @@ impl EvalService {
             },
             _ => false,
         }
+    }
+
+    /// Traverse all evaluated drvs in a single batch: collect
+    /// requisites, insert into DB and graph in one shot, then update
+    /// the LRU cache. This avoids per-drv graph channel sends which
+    /// contend with the ingress cascade.
+    async fn batch_traverse(&self, jobs: &[NixEvalDrv]) -> Result<()> {
+        use tokio::task::JoinSet;
+
+        let mut all_new_drvs = Vec::new();
+        let mut all_drv_refs: Vec<(DrvId, DrvId)> = Vec::new();
+
+        for job in jobs {
+            let drv_id = match std::str::FromStr::from_str(&job.drv_path) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            if self.already_visited_drv(&drv_id).await {
+                continue;
+            }
+
+            debug!("Traversing drv tree for {}", &job.drv_path);
+            let drvs: Vec<DrvId> = match drv_requisites_as_ids(&job.drv_path).await {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!("Issue while traversing {} drv: {:?}", &job.drv_path, e);
+                    continue;
+                },
+            };
+
+            let mut drv_map = self.drv_map.lock().await;
+            let new_drvids: Vec<DrvId> = drvs
+                .into_iter()
+                .filter(|x| drv_map.get(x).is_none())
+                .collect();
+            drop(drv_map);
+
+            for drvs_chunk in new_drvids.chunks(150) {
+                let mut info_set: JoinSet<Result<Drv, anyhow::Error>> = JoinSet::new();
+                let mut ref_set: JoinSet<Result<Vec<(Referrer, Reference)>, anyhow::Error>> =
+                    JoinSet::new();
+
+                for drv in drvs_chunk {
+                    let drv_to_fetch = drv.store_path();
+                    let db_service = self.db_service.clone();
+                    info_set
+                        .spawn(async move { Drv::fetch_info(&drv_to_fetch, &db_service).await });
+                    let drv_clone = drv.clone();
+                    ref_set.spawn(async move { drv_clone.reference_pairs().await });
+                }
+                let fetched_drvs = info_set.join_all().await;
+                let new_drv_refs = ref_set.join_all().await;
+
+                let successful_fetches = fetched_drvs.into_iter().flatten().collect::<Vec<_>>();
+                let successful_refs = new_drv_refs
+                    .into_iter()
+                    .flat_map(|x| x.into_iter().flatten())
+                    .collect::<Vec<(DrvId, DrvId)>>();
+
+                all_new_drvs.extend(successful_fetches);
+                all_drv_refs.extend(successful_refs);
+            }
+        }
+
+        if all_new_drvs.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            "Batch traverse: {} new drvs, {} refs",
+            all_new_drvs.len(),
+            all_drv_refs.len()
+        );
+
+        // Single DB insert for all drvs
+        self.db_service
+            .insert_drvs_and_references(&all_new_drvs, &all_drv_refs)
+            .await?;
+
+        // Single graph insert with all drvs and refs. Use a bounded
+        // wait: the graph processes 30k drvs in ~2 min. If it takes
+        // longer, proceed anyway — the ingress cascade will eventually
+        // pick up the remaining drvs when the graph finishes.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = GraphCommand::InsertDrvs {
+            drvs: crate::graph_compat::to_shared_drvs(&all_new_drvs)?,
+            refs: all_drv_refs
+                .into_iter()
+                .map(|(r, d)| {
+                    Ok((
+                        crate::graph_compat::to_shared_drv_id(&r)?,
+                        crate::graph_compat::to_shared_drv_id(&d)?,
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            response: tx,
+        };
+        self.graph_command_sender.send(cmd).await?;
+        // Wait up to 5 minutes for the graph to process the insert.
+        // This ensures the shared_view has dependency edges before the
+        // ingress starts checking buildability. If it times out, the
+        // cascade will still work once the graph finishes.
+        match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+            Ok(Ok(())) => info!("Graph InsertDrvs completed for batch traverse"),
+            Ok(Err(_)) => warn!("Graph InsertDrvs oneshot dropped"),
+            Err(_) => warn!("Graph InsertDrvs timed out after 5 minutes, proceeding anyway"),
+        }
+
+        // Update LRU cache
+        let mut drv_map = self.drv_map.lock().await;
+        for drv in all_new_drvs {
+            drv_map.put(drv.drv_path.clone(), drv);
+        }
+        drop(drv_map);
+
+        Ok(())
     }
 
     /// Given a drv, traverse all direct drv dependencies
@@ -268,8 +402,14 @@ impl EvalService {
             .insert_drvs_and_references(&new_drvs, &drv_refs)
             .await?;
 
-        // Insert into graph for fast in-memory access
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Insert into graph for fast in-memory access.
+        // Use send().await which applies back-pressure if the graph
+        // channel is full. This is safe from deadlock because:
+        // - The graph channel is 50k capacity
+        // - deep_traverse sends ~33 InsertDrvs (one per eval'd drv)
+        // - The cascade sends UpdateState/CheckBuildable but those come from the ingress/recorder,
+        //   not from this task
+        let (tx, _rx) = tokio::sync::oneshot::channel();
         let cmd = GraphCommand::InsertDrvs {
             drvs: crate::graph_compat::to_shared_drvs(&new_drvs)?,
             refs: drv_refs
@@ -285,15 +425,6 @@ impl EvalService {
             response: tx,
         };
         self.graph_command_sender.send(cmd).await?;
-        rx.await?;
-
-        // Send all eval requests to scheduler first (no locks held)
-        for drv in &new_drvs {
-            let drv_id = std::sync::Arc::new(drv.drv_path.clone());
-            self.scheduler_sender
-                .send(IngressTask::EvalRequest(drv_id))
-                .await?;
-        }
 
         // Then acquire lock once and batch update the cache
         let mut drv_map = self.drv_map.lock().await;
@@ -314,6 +445,10 @@ impl crate::services::AsyncService<EvalTask> for EvalService {
     #[allow(dead_code)] // Called via AsyncService trait dispatch
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<EvalTask>> {
         self.eval_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&crate::services::TaskJournal<EvalTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: EvalTask) -> Result<()> {

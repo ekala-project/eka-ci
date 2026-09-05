@@ -167,3 +167,17 @@ pub enum DrvBuildInterruptionKind {
     /// starting.
     SchedulerDeath,
 }
+
+impl DrvBuildInterruptionKind {
+    /// Whether this interruption kind is transient and the build should be
+    /// retried automatically. Non-retryable interruptions (Cancelled,
+    /// SchedulerDeath) propagate `Blocked` to dependents immediately.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            DrvBuildInterruptionKind::OutOfMemory
+                | DrvBuildInterruptionKind::Timeout
+                | DrvBuildInterruptionKind::ProcessDeath
+        )
+    }
+}

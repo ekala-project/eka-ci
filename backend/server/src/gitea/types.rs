@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
@@ -10,7 +10,7 @@ use crate::nix::{NixEvalDrv, NixEvalError};
 /// Information needed to create a CI check for Gitea
 /// Gitea uses a GitHub-compatible API, so this is similar to GitHub's CICheckInfo
 /// but includes domain for self-hosted instances
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GiteaCIInfo {
     pub commit: String,
     pub base_commit: Option<String>,
@@ -21,7 +21,7 @@ pub struct GiteaCIInfo {
 
 /// Task messages for GiteaService
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GiteaTask {
     UpdateBuildStatus {
         drv_id: Arc<DrvId>,
@@ -112,7 +112,7 @@ pub enum GiteaTask {
 }
 
 /// Gitea check run conclusions (GitHub-compatible)
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GiteaCheckConclusion {
     Success,
@@ -127,7 +127,7 @@ pub enum GiteaCheckConclusion {
 
 /// Gitea check run status (GitHub-compatible)
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GiteaCheckStatus {
     Queued,
@@ -137,7 +137,7 @@ pub enum GiteaCheckStatus {
 
 /// Gitea commit status states (fallback for older instances)
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GiteaStatusState {
     Pending,

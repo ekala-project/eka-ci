@@ -17,6 +17,16 @@ pub struct GraphServiceHandle {
 }
 
 impl GraphServiceHandle {
+    /// Access the shared view for direct reads/writes.
+    pub fn shared_view(&self) -> &Arc<DashMap<DrvId, CachedNode>> {
+        &self.shared_view
+    }
+
+    /// Access the command sender for sending graph commands directly.
+    pub fn command_sender(&self) -> &mpsc::Sender<GraphCommand> {
+        &self.command_sender
+    }
+
     /// Fast lockfree check if a drv is buildable.
     ///
     /// This is the critical hot path — no message passing, no async. The
@@ -64,6 +74,39 @@ impl GraphServiceHandle {
             })
             .await?;
         Ok(rx.await?)
+    }
+
+    /// Return deps that are NOT in Completed(Success) state.
+    /// Used for debugging why a drv is not buildable.
+    pub fn blocking_deps(&self, drv_id: &DrvId) -> Vec<(DrvId, Option<DrvBuildState>)> {
+        let Some(node) = self.shared_view.get(drv_id) else {
+            return vec![];
+        };
+        node.dependencies
+            .iter()
+            .filter_map(|dep_id| {
+                let state = self.shared_view.get(dep_id).map(|d| d.build_state.clone());
+                if state.as_ref() != Some(&DrvBuildState::Completed(DrvBuildResult::Success)) {
+                    Some((dep_id.clone(), state))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get direct dependents (reverse deps) of a drv by scanning the
+    /// shared_view. This is O(n) in the graph size but avoids the
+    /// graph command channel, preventing deadlocks when the channel
+    /// is saturated by the BFS cascade.
+    pub fn get_dependents_from_view(&self, drv_id: &DrvId) -> Vec<DrvId> {
+        let mut dependents = Vec::new();
+        for entry in self.shared_view.iter() {
+            if entry.value().dependencies.iter().any(|dep| dep == drv_id) {
+                dependents.push(entry.key().clone());
+            }
+        }
+        dependents
     }
 
     /// Get direct dependencies of a drv

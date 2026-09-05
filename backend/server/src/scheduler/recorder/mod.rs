@@ -14,9 +14,11 @@ use crate::github::GitHubTask;
 use crate::graph::{GraphCommand, GraphServiceHandle};
 use crate::hooks::types::HookTask;
 use crate::scheduler::ingress::IngressTask;
+use crate::services::TaskJournal;
 use crate::services::websocket::events::ServerEvent;
 
 // Sub-modules
+mod forge_notify;
 mod hooks;
 mod references;
 mod request_handler;
@@ -26,7 +28,7 @@ mod state;
 /// `derivation` is `Arc<DrvId>` so `handle_recorder_request` can fan out the
 /// drv id into multiple downstream tasks (ingress requeue, github status,
 /// websocket event) via cheap `Arc::clone` refcount bumps.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecorderTask {
     pub derivation: Arc<drv_id::DrvId>,
     pub result: build_event::DrvBuildState,
@@ -64,6 +66,7 @@ pub(super) struct RecorderWorker {
     hook_sender: Option<mpsc::Sender<HookTask>>,
     cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
     channel_sender: Option<mpsc::Sender<ChannelTask>>,
+    journal: TaskJournal<RecorderTask>,
 }
 
 impl RecorderService {
@@ -79,7 +82,7 @@ impl RecorderService {
         >,
         channel_sender: Option<mpsc::Sender<ChannelTask>>,
     ) -> (Self, mpsc::Sender<RecorderTask>) {
-        let (recorder_sender, recorder_receiver) = mpsc::channel(1000);
+        let (recorder_sender, recorder_receiver) = mpsc::channel(1_000);
 
         let res = Self {
             db_service,
@@ -101,6 +104,7 @@ impl RecorderService {
         ingress_sender: mpsc::Sender<IngressTask>,
         cancellation_token: CancellationToken,
     ) -> JoinHandle<()> {
+        let pool = self.db_service.pool.clone();
         let worker = RecorderWorker::new(
             self.db_service.clone(),
             ingress_sender,
@@ -112,6 +116,7 @@ impl RecorderService {
             self.hook_sender,
             self.cache_configs,
             self.channel_sender,
+            pool,
         );
 
         tokio::spawn(async move {
@@ -135,6 +140,7 @@ impl RecorderWorker {
             std::collections::HashMap<String, crate::config::CacheConfig>,
         >,
         channel_sender: Option<mpsc::Sender<ChannelTask>>,
+        pool: sqlx::SqlitePool,
     ) -> Self {
         Self {
             db_service,
@@ -147,10 +153,29 @@ impl RecorderWorker {
             hook_sender,
             cache_configs,
             channel_sender,
+            journal: TaskJournal::new(pool, "recorder"),
         }
     }
 
     async fn ingest_requests(mut self, cancellation_token: CancellationToken) {
+        // Replay un-acknowledged tasks from a previous crash.
+        match self.journal.recover().await {
+            Ok(recovered) => {
+                for (jid, task) in recovered {
+                    info!("replaying recovered recorder task: {:?}", &task);
+                    if let Err(e) = self.handle_recorder_request(&task).await {
+                        warn!(
+                            "Failed to handle recovered recorder request {:?}: {:?}",
+                            &task, e
+                        );
+                    } else if let Err(e) = self.journal.acknowledge(jid).await {
+                        warn!("failed to ack recovered recorder journal entry: {:?}", e);
+                    }
+                }
+            },
+            Err(e) => warn!("failed to recover recorder journal: {:?}", e),
+        }
+
         while let Some(request) = cancellation_token
             .run_until_cancelled(self.recorder_receiver.recv())
             .await
@@ -163,8 +188,21 @@ impl RecorderWorker {
                 },
             };
             debug!("Received recorder task {:?}", &task);
+
+            let jid = match self.journal.persist(&task).await {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    warn!("failed to journal recorder task {:?}: {:?}", &task, e);
+                    None
+                },
+            };
+
             if let Err(e) = self.handle_recorder_request(&task).await {
-                warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
+                warn!("Failed to handle recorder request {:?}: {:?}", &task, e);
+            } else if let Some(id) = jid {
+                if let Err(e) = self.journal.acknowledge(id).await {
+                    warn!("failed to ack recorder journal entry: {:?}", e);
+                }
             }
         }
 

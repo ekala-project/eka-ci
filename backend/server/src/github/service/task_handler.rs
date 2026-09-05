@@ -14,10 +14,119 @@ impl GitHubService {
             GitHubTask::UpdateBuildStatus { drv_id, status } => {
                 let check_runs = self.db_service.check_runs_for_drv_path(drv_id).await?;
 
+                // For failures, fetch the last 25 lines of the build log
+                let log_tail = if status.is_failure() {
+                    self.fetch_log_tail(drv_id, 25).await
+                } else {
+                    None
+                };
+
                 for check_run in check_runs {
-                    debug!("Updating checkrun status of {}", &check_run.check_run_id);
-                    let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
-                    check_run.send_gh_update(&octocrab, status).await?;
+                    // Check if this is a coalesced gate by querying variant count
+                    let variant_states = self
+                        .db_service
+                        .variant_states_for_check_run(check_run.check_run_id)
+                        .await?;
+
+                    let is_coalesced = variant_states.len() > 1;
+
+                    if is_coalesced {
+                        // Coalesced gate: compute aggregate status across all
+                        // variants, using the incoming status for the drv that
+                        // triggered this update (DB may not reflect it yet).
+                        let states: Vec<_> = variant_states
+                            .iter()
+                            .map(|v| {
+                                if v.drv_path == **drv_id {
+                                    status.clone()
+                                } else {
+                                    v.build_state.clone()
+                                }
+                            })
+                            .collect();
+                        let agg_state =
+                            crate::github::service::jobsets::aggregate_build_state(&states);
+                        let summary =
+                            crate::github::service::jobsets::build_variant_summary_from_states(
+                                &variant_states,
+                            );
+
+                        let (gql_status, gql_conclusion) =
+                            crate::github::service::graphql_batch::build_state_to_graphql(
+                                &agg_state,
+                            );
+
+                        if let Some(node_id) = &check_run.node_id {
+                            let repo_node_id = self
+                                .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
+                                .await;
+                            if let Some(repo_node_id) = repo_node_id {
+                                self.batcher
+                                    .queue_update_with_output(
+                                        &check_run.repo_owner,
+                                        &repo_node_id,
+                                        node_id,
+                                        gql_status,
+                                        gql_conclusion,
+                                        "Variant Status".to_string(),
+                                        summary,
+                                    )
+                                    .await;
+                                continue;
+                            }
+                        }
+
+                        // REST fallback for coalesced gate
+                        debug!(
+                            "Updating coalesced checkrun {} (REST fallback)",
+                            &check_run.check_run_id
+                        );
+                        self.rate_limiter.acquire().await;
+                        let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
+                        check_run
+                            .send_gh_update_with_summary(
+                                &octocrab,
+                                &agg_state,
+                                "Variant Status",
+                                &crate::github::service::jobsets::build_variant_summary_from_states(
+                                    &variant_states,
+                                ),
+                            )
+                            .await?;
+                    } else {
+                        // Non-coalesced: update directly as before
+                        let (gql_status, gql_conclusion) =
+                            crate::github::service::graphql_batch::build_state_to_graphql(status);
+
+                        if let Some(node_id) = &check_run.node_id {
+                            let repo_node_id = self
+                                .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
+                                .await;
+                            if let Some(repo_node_id) = repo_node_id {
+                                self.batcher
+                                    .queue_update_with_log(
+                                        &check_run.repo_owner,
+                                        &repo_node_id,
+                                        node_id,
+                                        gql_status,
+                                        gql_conclusion,
+                                        log_tail.clone(),
+                                    )
+                                    .await;
+                                continue;
+                            }
+                        }
+                        // Fallback: REST API for check runs without node_id
+                        debug!(
+                            "Updating checkrun status of {} (REST fallback)",
+                            &check_run.check_run_id
+                        );
+                        self.rate_limiter.acquire().await;
+                        let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
+                        check_run
+                            .send_gh_update_with_log(&octocrab, status, log_tail.as_deref())
+                            .await?;
+                    }
                 }
             },
             GitHubTask::UpdateBuildStatusWithSizeWarning {
@@ -55,7 +164,10 @@ impl GitHubService {
                     .await
                     .insert(ci_check_info.commit.clone(), check_run.id);
             },
-            GitHubTask::CompleteCIConfigureGate { ci_check_info } => {
+            GitHubTask::CompleteCIConfigureGate {
+                ci_check_info,
+                summary,
+            } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run_id = self
                     .github_configure_checks
@@ -63,12 +175,13 @@ impl GitHubService {
                     .await
                     .remove(&ci_check_info.commit)
                     .context("No configure gate check run found for commit")?;
-                actions::update_ci_configure_gate(
+                actions::update_ci_configure_gate_with_summary(
                     &octocrab,
                     ci_check_info,
                     check_run_id,
                     CheckRunStatus::Completed,
                     CheckRunConclusion::Success,
+                    summary,
                 )
                 .await?;
             },
@@ -90,18 +203,51 @@ impl GitHubService {
                 conclusion,
             } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-                let check_run_id = self
+                // Try in-memory map first, then fall back to GitHub API lookup
+                // (the map is empty after server restarts)
+                let check_run_id = match self
                     .github_eval_checks
                     .lock()
                     .await
                     .remove(&(ci_check_info.commit.clone(), job_name.clone()))
-                    .context("No eval job check run found for commit")?;
+                {
+                    Some(id) => id,
+                    None => {
+                        // Look up the check run by name from GitHub API
+                        let check_name = format!("EkaCI: Evaluate Job ({})", job_name);
+                        match actions::find_check_run_by_name(
+                            &octocrab,
+                            &ci_check_info.owner,
+                            &ci_check_info.repo_name,
+                            &ci_check_info.commit,
+                            &check_name,
+                        )
+                        .await
+                        {
+                            Ok(Some(id)) => id,
+                            Ok(None) => {
+                                warn!(
+                                    "No eval gate check run found for {}/{} commit {} job {}",
+                                    ci_check_info.owner,
+                                    ci_check_info.repo_name,
+                                    ci_check_info.commit,
+                                    job_name
+                                );
+                                return Ok(());
+                            },
+                            Err(e) => {
+                                warn!("Failed to look up eval gate check run: {:?}", e);
+                                return Ok(());
+                            },
+                        }
+                    },
+                };
                 actions::update_ci_eval_job(
                     &octocrab,
                     ci_check_info,
                     check_run_id,
                     CheckRunStatus::Completed,
-                    *conclusion,
+                    (*conclusion).into(),
                 )
                 .await?;
             },
@@ -291,6 +437,9 @@ impl GitHubService {
                         owner, repo_name, issue_number, e
                     );
                 }
+            },
+            GitHubTask::ResyncCheckRuns { sha } => {
+                self.handle_resync_check_runs(sha).await?;
             },
         }
         Ok(())

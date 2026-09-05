@@ -9,23 +9,26 @@ use crate::checks::executor::execute_check;
 use crate::checks::types::{CheckResultMessage, CheckTask};
 use crate::db::DbService;
 use crate::github::GitHubTask;
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
 pub struct ChecksExecutor {
     check_sender: mpsc::Sender<CheckTask>,
     check_receiver: Option<mpsc::Receiver<CheckTask>>,
     db_service: DbService,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    journal: TaskJournal<CheckTask>,
 }
 
 impl ChecksExecutor {
     pub fn new(db_service: DbService, github_sender: Option<mpsc::Sender<GitHubTask>>) -> Self {
         let (check_sender, check_receiver) = mpsc::channel(1000);
+        let pool = db_service.pool.clone();
         Self {
             check_sender,
             check_receiver: Some(check_receiver),
             db_service,
             github_sender,
+            journal: TaskJournal::new(pool, "checks"),
         }
     }
 
@@ -126,12 +129,16 @@ impl ChecksExecutor {
             .to_str()
             .with_context(|| format!("checkout path contains non-UTF-8 bytes: {:?}", path))?;
 
-        // Clone the repository
-        let clone_output = Command::new("git")
-            .args(["clone", clone_url, path_str])
-            .output()
-            .await
-            .context("failed to execute git clone")?;
+        // Clone the repository (5-minute timeout for large repos)
+        let clone_output = tokio::time::timeout(
+            std::time::Duration::from_secs(5 * 60),
+            Command::new("git")
+                .args(["clone", clone_url, path_str])
+                .output(),
+        )
+        .await
+        .context("git clone timed out after 5 minutes")?
+        .context("failed to execute git clone")?;
 
         if !clone_output.status.success() {
             anyhow::bail!(
@@ -142,12 +149,16 @@ impl ChecksExecutor {
 
         // Checkout the specific SHA
         debug!("Checking out SHA {} in {:?}", sha, path);
-        let checkout_output = Command::new("git")
-            .current_dir(path)
-            .args(["checkout", sha])
-            .output()
-            .await
-            .context("failed to execute git checkout")?;
+        let checkout_output = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            Command::new("git")
+                .current_dir(path)
+                .args(["checkout", sha])
+                .output(),
+        )
+        .await
+        .context("git checkout timed out after 60 seconds")?
+        .context("failed to execute git checkout")?;
 
         if !checkout_output.status.success() {
             anyhow::bail!(
@@ -167,6 +178,10 @@ impl AsyncService<CheckTask> for ChecksExecutor {
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<CheckTask>> {
         self.check_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<CheckTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: CheckTask) -> Result<()> {

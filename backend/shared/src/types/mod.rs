@@ -23,9 +23,14 @@ pub enum ClientRequest {
     Job(JobRequest),
     Repo(RepoRequest),
     Git(GitRequest),
-    GitHub { pr: GitHubPrRequest },
+    GitHub {
+        pr: GitHubPrRequest,
+    },
     DrvStatus(DrvStatusRequest),
     ChannelStatus(ChannelStatusRequest),
+    /// Re-push all check run states for a commit SHA to GitHub.
+    /// Used to resync stale check runs after server restarts.
+    ResyncChecks(ResyncChecksRequest),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -64,6 +69,12 @@ pub struct GitHubPrRequest {
     pub owner: String,
     pub repo: String,
     pub pr: u64,
+}
+
+#[derive(Serialize, Parser, Deserialize, Debug)]
+pub struct ResyncChecksRequest {
+    /// Git commit SHA whose check runs should be re-synced
+    pub sha: String,
 }
 
 #[derive(Serialize, Parser, Deserialize, Debug)]

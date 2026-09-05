@@ -10,8 +10,9 @@ use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::model::drv_id;
 use crate::graph::GraphServiceHandle;
 use crate::graph_compat;
-use crate::scheduler::build::BuildRequest;
+use crate::scheduler::build::{BuildRequest, BuilderFeatureSnapshot};
 use crate::scheduler::recorder::RecorderTask;
+use crate::services::TaskJournal;
 
 /// This acts as the service which filters incoming drv build requests
 /// and determines if the drv is "buildable", already successful,
@@ -30,12 +31,14 @@ pub struct IngressWorker {
     /// going through the builder thread.
     recorder_sender: mpsc::Sender<RecorderTask>,
     graph_handle: GraphServiceHandle,
+    journal: TaskJournal<IngressTask>,
+    builder_features: BuilderFeatureSnapshot,
 }
 
 /// Variants carry `Arc<DrvId>` so fan-out senders (recorder, webhooks,
 /// nix eval) can `Arc::clone` instead of cloning the inner `String`
 /// when the same drv crosses multiple channel hops.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum IngressTask {
     /// This is a Drv which was determined by an evaluation
     /// The actual status is unknown. Could be new, or could have already completed.
@@ -62,7 +65,7 @@ pub enum IngressTask {
 
 impl IngressService {
     pub fn init(graph_handle: GraphServiceHandle) -> (Self, mpsc::Sender<IngressTask>) {
-        let (request_sender, request_receiver) = mpsc::channel(1000);
+        let (request_sender, request_receiver) = mpsc::channel(50_000);
 
         let res = Self {
             graph_handle,
@@ -77,12 +80,16 @@ impl IngressService {
         buildable_sender: mpsc::Sender<BuildRequest>,
         recorder_sender: mpsc::Sender<RecorderTask>,
         cancellation_token: CancellationToken,
+        pool: sqlx::SqlitePool,
+        builder_features: BuilderFeatureSnapshot,
     ) -> JoinHandle<()> {
         let worker = IngressWorker {
             request_receiver: self.request_receiver,
             buildable_sender,
             recorder_sender,
             graph_handle: self.graph_handle,
+            journal: TaskJournal::new(pool, "ingress"),
+            builder_features,
         };
         tokio::spawn(async move {
             worker.ingest_requests(cancellation_token).await;
@@ -92,23 +99,105 @@ impl IngressService {
 
 impl IngressWorker {
     async fn ingest_requests(mut self, cancellation_token: CancellationToken) {
-        while let Some(request) = cancellation_token
-            .run_until_cancelled(self.request_receiver.recv())
-            .await
-        {
-            let task = match request {
-                Some(task) => task,
-                None => {
-                    warn!("Ingress receiver channel closed, shutting down");
+        // Replay un-acknowledged tasks from a previous crash.
+        match self.journal.recover().await {
+            Ok(recovered) => {
+                for (jid, task) in recovered {
+                    info!("replaying recovered ingress task: {:?}", &task);
+                    if let Err(e) = self.handle_ingress_request(&task).await {
+                        warn!(
+                            "Failed to handle recovered ingress request {:?}: {:?}",
+                            &task, e
+                        );
+                    } else if let Err(e) = self.journal.acknowledge(jid).await {
+                        warn!("failed to ack recovered ingress journal entry: {:?}", e);
+                    }
+                }
+            },
+            Err(e) => warn!("failed to recover ingress journal: {:?}", e),
+        }
+
+        // Periodic sweep interval to catch drvs whose CheckBuildable
+        // messages were dropped by try_send (see todo-spec-items #4, #7).
+        let mut sweep_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        // Don't pile up ticks while we're busy processing tasks.
+        sweep_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Skip the immediate first tick.
+        sweep_interval.tick().await;
+
+        loop {
+            tokio::select! {
+                request = self.request_receiver.recv() => {
+                    let task = match request {
+                        Some(task) => task,
+                        None => {
+                            warn!("Ingress receiver channel closed, shutting down");
+                            break;
+                        },
+                    };
+
+                    let jid = match self.journal.persist(&task).await {
+                        Ok(id) => Some(id),
+                        Err(e) => {
+                            warn!("failed to journal ingress task {:?}: {:?}", &task, e);
+                            None
+                        },
+                    };
+
+                    if let Err(e) = self.handle_ingress_request(&task).await {
+                        warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
+                    } else if let Some(id) = jid {
+                        if let Err(e) = self.journal.acknowledge(id).await {
+                            warn!("failed to ack ingress journal entry: {:?}", e);
+                        }
+                    }
+                },
+                _ = sweep_interval.tick() => {
+                    self.sweep_buildable_drvs().await;
+                },
+                _ = cancellation_token.cancelled() => {
                     break;
                 },
-            };
-            if let Err(e) = self.handle_ingress_request(&task).await {
-                warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
             }
         }
 
         info!("IngressWorker service shutdown gracefully");
+    }
+
+    /// Periodic sweep: find Queued/Buildable drvs whose deps are all
+    /// Completed(Success) and re-send them to the builder. Catches drvs
+    /// that were deferred because the builder channel was full, or whose
+    /// CheckBuildable messages were dropped.
+    async fn sweep_buildable_drvs(&self) {
+        let mut swept = 0u32;
+        let shared_buildable =
+            crate::db::graph_impl::convert_build_state(&DrvBuildState::Buildable);
+        let candidates: Vec<_> = self
+            .graph_handle
+            .shared_view()
+            .iter()
+            .filter(|e| {
+                let state = &e.value().build_state;
+                // Sweep both Queued (deps just completed) and Buildable
+                // (deferred because builder channel was full)
+                (*state == shared::types::DrvBuildState::Queued
+                    && self.graph_handle.is_buildable(e.key()))
+                    || *state == shared_buildable
+            })
+            .map(|e| e.key().clone())
+            .collect();
+
+        for shared_id in candidates {
+            if let Ok(server_id) = graph_compat::to_server_drv_id(&shared_id) {
+                match self.handle_check_buildable_task(&server_id).await {
+                    Ok(()) => swept += 1,
+                    Err(e) => warn!("sweep: {}: {:?}", server_id.store_path(), e),
+                }
+            }
+        }
+        if swept > 0 {
+            info!("buildability sweep re-queued {} stuck drvs", swept);
+        }
     }
 
     async fn handle_ingress_request(&self, task: &IngressTask) -> anyhow::Result<()> {
@@ -138,16 +227,31 @@ impl IngressWorker {
     }
 
     async fn handle_check_buildable_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<()> {
-        debug!("checking if {:?} is buildable", drv_id);
-
         let shared_id = graph_compat::to_shared_drv_id(drv_id)?;
         if self.graph_handle.is_buildable(&shared_id) {
-            debug!("{:?} is now buildable", drv_id);
-
             let cached_node = self
                 .graph_handle
                 .get_node(&shared_id)
                 .context("drv is missing from graph")?;
+
+            // Early rejection: if no builder can handle this drv's required
+            // system features, mark as UnsatisfiableRequirements immediately
+            // instead of sending it through the build queue.
+            if !self
+                .builder_features
+                .can_build(&cached_node.required_system_features)
+            {
+                warn!(
+                    "{:?} requires features {:?} that no builder provides",
+                    drv_id, cached_node.required_system_features
+                );
+                let task = RecorderTask {
+                    derivation: Arc::new(drv_id.clone()),
+                    result: DrvBuildState::UnsatisfiableRequirements,
+                };
+                self.recorder_sender.send(task).await?;
+                return Ok(());
+            }
 
             // FailedRetry must be preserved so the recorder can detect second failures.
             let shared_failed_retry =
@@ -162,7 +266,16 @@ impl IngressWorker {
 
             let shared_drv = cached_node.to_drv();
             let server_drv = graph_compat::to_server_drv(&shared_drv)?;
-            self.buildable_sender.send(BuildRequest(server_drv)).await?;
+            // Use try_send to avoid blocking the ingress when the
+            // builder channel is full. The periodic sweep will
+            // re-discover Buildable drvs that couldn't be sent.
+            if let Err(e) = self.buildable_sender.try_send(BuildRequest(server_drv)) {
+                debug!(
+                    "builder channel full, deferring build for {}: {}",
+                    drv_id.store_path(),
+                    e
+                );
+            }
         }
 
         Ok(())
@@ -187,27 +300,60 @@ impl IngressWorker {
             }
         }
 
-        // Try to short-circuit via substitution before queuing a real build.
-        // A successful cache hit marks this drv (and any cached requisites) as
-        // Completed(Success) via the recorder, which will fan out CheckBuildable
-        // to dependents — no need to fall through.
-        match self.handle_check_substitution_task(drv_id).await {
-            Ok(true) => {
-                debug!("{} short-circuited via substitution", drv_id.store_path());
-                return Ok(());
-            },
-            Ok(false) => { /* not cached; fall through */ },
+        // Check if the drv is cached or if all its deps are available.
+        let report = match crate::nix::dry_run_realise(drv_id).await {
+            Ok(report) => report,
             Err(e) => {
-                // Best-effort optimization — log and proceed to build.
                 warn!(
-                    "substitution check errored for {} (falling back to build): {:?}",
+                    "substitution check errored for {} (falling back to graph): {:?}",
                     drv_id.store_path(),
                     e
                 );
+                self.handle_check_buildable_task(drv_id).await?;
+                return Ok(());
             },
+        };
+
+        if report.is_cached(drv_id) {
+            debug!("substitution hit for {}", drv_id.store_path());
+            self.handle_check_substitution_task_with_report(drv_id, &report)
+                .await?;
+            return Ok(());
         }
 
-        self.handle_check_buildable_task(drv_id).await?;
+        // Not fully cached. Check if all deps are available (only
+        // this drv needs building). Trust nix's dry-run assessment
+        // rather than the in-memory graph (which may be incomplete).
+        if report.will_build.len() == 1 && report.will_build.contains(&drv_id.store_path()) {
+            debug!(
+                "{} needs building but all deps available, sending to builder",
+                drv_id.store_path()
+            );
+
+            // Send directly to builder — bypass graph buildability
+            // check since nix confirmed all deps are available.
+            let shared_id = graph_compat::to_shared_drv_id(drv_id)?;
+            if let Some(cached_node) = self.graph_handle.get_node(&shared_id) {
+                let shared_buildable =
+                    crate::db::graph_impl::convert_build_state(&DrvBuildState::Buildable);
+                if let Some(mut entry) = self.graph_handle.shared_view().get_mut(&shared_id) {
+                    entry.build_state = shared_buildable;
+                }
+                let shared_drv = cached_node.to_drv();
+                let server_drv = graph_compat::to_server_drv(&shared_drv)?;
+                self.buildable_sender.send(BuildRequest(server_drv)).await?;
+            } else {
+                // Drv not in graph — fall back to graph-based check
+                self.handle_check_buildable_task(drv_id).await?;
+            }
+        } else {
+            debug!(
+                "{} needs {} drvs built, checking graph buildability",
+                drv_id.store_path(),
+                report.will_build.len()
+            );
+            self.handle_check_buildable_task(drv_id).await?;
+        }
 
         Ok(())
     }
@@ -221,89 +367,74 @@ impl IngressWorker {
     /// should skip queuing a real build).
     async fn handle_check_substitution_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<bool> {
         let report = crate::nix::dry_run_realise(drv_id).await?;
-
-        // Root must be cached (i.e. NOT in will_build) to short-circuit.
         if !report.is_cached(drv_id) {
             return Ok(false);
         }
+        self.handle_check_substitution_task_with_report(drv_id, &report)
+            .await?;
+        Ok(true)
+    }
 
-        debug!(
-            "substitution hit for {} ({} requisites would be built, {} fetched)",
-            drv_id.store_path(),
-            report.will_build.len(),
-            report.will_fetch.len()
-        );
+    /// Mark cached deps as Completed using a pre-computed dry-run report.
+    async fn handle_check_substitution_task_with_report(
+        &self,
+        drv_id: &drv_id::DrvId,
+        report: &crate::nix::DryRunReport,
+    ) -> anyhow::Result<()> {
+        // Mark the root + all transitive cached deps as Completed.
+        // BFS through the in-memory graph (populated by batch_traverse)
+        // instead of spawning nix-store per drv.
+        let shared_root = graph_compat::to_shared_drv_id(drv_id)?;
+        let mut queue = std::collections::VecDeque::new();
+        let mut visited = std::collections::HashSet::new();
+        queue.push_back(shared_root);
 
-        // Collect the root + all transitively-cached requisites. We walk
-        // `nix-store --query --requisites` (which returns the root plus all
-        // transitive deps) and keep only the ones NOT marked as
-        // "will be built", since those are the cache hits.
-        let mut cache_hits: Vec<drv_id::DrvId> = Vec::new();
-        match crate::nix::drv_requisites_as_ids(&drv_id.store_path()).await {
-            Ok(requisites) => {
-                for req in requisites {
-                    if !report.will_build.contains(&req.store_path()) {
-                        cache_hits.push(req);
-                    }
-                }
-            },
-            Err(e) => {
-                // If we can't enumerate requisites, fall back to marking just
-                // the root drv. The dependents-cascade in the recorder will
-                // still correctly re-trigger child evaluation via existing
-                // CheckBuildable flow.
-                warn!(
-                    "failed to enumerate requisites for {} (marking root only): {:?}",
-                    drv_id.store_path(),
-                    e
-                );
-                cache_hits.push(drv_id.clone());
-            },
-        }
-
-        // Always include the root, in case it wasn't returned by --requisites
-        // (defensive — the requisites query normally includes the root, but
-        // we protect against any future behavior change).
-        if !cache_hits.iter().any(|d| d == drv_id) {
-            cache_hits.push(drv_id.clone());
-        }
-
-        // For each cache hit, only emit a recorder task if the current state
-        // is not already terminal AND not currently building. This avoids
-        // racing with an in-flight build or clobbering a previously recorded
-        // success/failure.
-        for hit in cache_hits {
-            let hit_shared = graph_compat::to_shared_drv_id(&hit)?;
-            let current = self.graph_handle.get_build_state(&hit_shared);
-            let safe_to_mark = match &current {
-                None => true, // not in graph yet; recorder will reject if no DB row
-                Some(state) => {
-                    // Convert back to server type for comparison
-                    let server_state = crate::db::graph_impl::convert_build_state_back(state);
-                    !matches!(server_state, DrvBuildState::Building) && !server_state.is_terminal()
-                },
-            };
-            if !safe_to_mark {
-                debug!(
-                    "skipping cache-hit mark for {} (state: {:?})",
-                    hit.store_path(),
-                    current
-                );
+        while let Some(shared_id) = queue.pop_front() {
+            if !visited.insert(shared_id.clone()) {
                 continue;
             }
 
-            let task = RecorderTask {
-                derivation: Arc::new(hit),
-                result: DrvBuildState::Completed(DrvBuildResult::Success),
-            };
-            // If recorder is gone we can't make progress; surface the error.
-            self.recorder_sender
-                .send(task)
-                .await
-                .context("recorder channel closed while recording cache hits")?;
+            // Skip if this drv needs building (not cached)
+            if report.will_build.contains(&shared_id.store_path()) {
+                continue;
+            }
+
+            // Skip if already terminal
+            if let Some(state) = self.graph_handle.get_build_state(&shared_id) {
+                let server_state = crate::db::graph_impl::convert_build_state_back(&state);
+                if server_state.is_terminal() || matches!(server_state, DrvBuildState::Building) {
+                    continue;
+                }
+            }
+
+            // Mark as cached
+            if let Ok(server_id) = graph_compat::to_server_drv_id(&shared_id) {
+                let task = RecorderTask {
+                    derivation: Arc::new(server_id),
+                    result: DrvBuildState::Completed(DrvBuildResult::Success),
+                };
+                self.recorder_sender
+                    .send(task)
+                    .await
+                    .context("recorder channel closed while recording cache hit")?;
+            }
+
+            // Enqueue direct deps for BFS
+            if let Some(node) = self.graph_handle.get_node(&shared_id) {
+                for dep_id in node.dependencies.iter() {
+                    if !visited.contains(dep_id) {
+                        queue.push_back(dep_id.clone());
+                    }
+                }
+            }
         }
 
-        Ok(true)
+        debug!(
+            "substitution BFS for {}: visited {} drvs",
+            drv_id.store_path(),
+            visited.len()
+        );
+        Ok(())
     }
 
     /// Rebuild a failed drv by resetting it to Queued and clearing failure tracking.
@@ -337,7 +468,7 @@ impl IngressWorker {
                     .await?;
                 for dep in &failed_deps {
                     // Convert shared dep back to server type for recursive call
-                    let server_dep = graph_compat::to_server_drv_id(&dep)?;
+                    let server_dep = graph_compat::to_server_drv_id(dep)?;
                     debug!(
                         "{:?} has failed dependency {:?}, rebuilding it first",
                         drv_id, server_dep

@@ -131,14 +131,42 @@ impl DbService {
             None
         };
 
+        // Ensure all evaluated drv paths exist in the Drv table before
+        // inserting Job rows (which reference Drv via a subquery).
+        // For head commits, deep_traverse already inserted these. For
+        // base-commit evals (traverse=false), the drvs may not yet
+        // exist, causing a NOT NULL constraint violation on Job.drv_id.
+        let eval_drvs: Vec<drv::Drv> = jobs
+            .iter()
+            .filter_map(|job| {
+                let drv_id = DrvId::from_str(&job.drv_path).ok()?;
+                Some(drv::Drv {
+                    drv_path: drv_id,
+                    system: job.system.clone(),
+                    prefer_local_build: false,
+                    required_system_features: None,
+                    is_fod: false,
+                    build_state: crate::db::model::build_event::DrvBuildState::Queued,
+                    output_size: None,
+                    closure_size: None,
+                    pname: job.pname_or_heuristic().into(),
+                    version: job.version_or_heuristic(),
+                    license_json: None,
+                    maintainers_json: None,
+                    meta_position: None,
+                    broken: None,
+                    insecure: None,
+                })
+            })
+            .collect();
+        drv::insert_drvs_and_references(&self.pool, &eval_drvs, &[]).await?;
+
         github::create_jobs_for_jobset(jobset_id, jobs, base_jobset_jobs.as_deref(), &self.pool)
             .await?;
 
         // Persist package metadata derived from `nix-eval-jobs --meta` onto
-        // the `Drv` rows that were created earlier in the eval pipeline.
-        // The Job FK to Drv has already passed at this point, so we know
-        // the rows exist. We tolerate per-drv DrvId parse failures by
-        // logging and dropping (consistent with the existing eval path).
+        // the `Drv` rows that were created/ensured above. We tolerate per-drv DrvId parse failures
+        // by logging and dropping (consistent with the existing eval path).
         let metadata_items: Vec<(DrvId, _)> = jobs
             .iter()
             .filter_map(|job| match DrvId::from_str(&job.drv_path) {
@@ -180,6 +208,29 @@ impl DbService {
         github::check_runs_for_commit(sha, &self.pool).await
     }
 
+    pub async fn variant_states_for_check_run(
+        &self,
+        check_run_id: i64,
+    ) -> anyhow::Result<Vec<github::VariantBuildState>> {
+        github::variant_states_for_check_run(check_run_id, &self.pool).await
+    }
+
+    pub async fn find_coalesced_check_run_for_group(
+        &self,
+        jobset_id: i64,
+        group_prefix: &str,
+    ) -> anyhow::Result<Option<(i64, Option<String>)>> {
+        github::find_coalesced_check_run_for_group(jobset_id, group_prefix, &self.pool).await
+    }
+
+    pub async fn get_group_jobs_in_jobset(
+        &self,
+        jobset_id: i64,
+        group_prefix: &str,
+    ) -> anyhow::Result<Vec<github::NewOrChangedJob>> {
+        github::get_group_jobs_in_jobset(jobset_id, group_prefix, &self.pool).await
+    }
+
     pub async fn insert_check_run_info(
         &self,
         check_run_id: i64,
@@ -216,8 +267,32 @@ impl DbService {
         github::jobset_has_new_or_changed_failures(jobset_id, &self.pool).await
     }
 
+    pub async fn get_new_or_changed_jobs(
+        &self,
+        jobset_id: i64,
+    ) -> anyhow::Result<Vec<github::NewOrChangedJob>> {
+        github::get_new_or_changed_jobs(jobset_id, &self.pool).await
+    }
+
     pub async fn get_jobset_info(&self, jobset_id: i64) -> anyhow::Result<github::JobSetInfo> {
         github::get_jobset_info(jobset_id, &self.pool).await
+    }
+
+    /// Find the jobset context for a drv so it can be reconstituted after GC.
+    pub async fn get_reconstitution_context(
+        &self,
+        drv_id: &crate::db::model::DrvId,
+    ) -> anyhow::Result<Option<github::JobSetInfo>> {
+        github::get_reconstitution_context(drv_id, &self.pool).await
+    }
+
+    /// Like `get_reconstitution_context` but walks the DrvRefs graph upward
+    /// to find a jobset for transitive dependencies not directly in any Job.
+    pub async fn get_reconstitution_context_transitive(
+        &self,
+        drv_id: &crate::db::model::DrvId,
+    ) -> anyhow::Result<Option<github::JobSetInfo>> {
+        github::get_reconstitution_context_transitive(drv_id, &self.pool).await
     }
 
     // Approved users methods

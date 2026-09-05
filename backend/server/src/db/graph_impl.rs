@@ -18,41 +18,9 @@ impl GraphDatabase for DbService {
         let local_drv = self.get_drv(&local_id).await?;
 
         // Convert db::model::Drv to shared::types::Drv
-        Ok(local_drv.map(|d| shared::types::Drv {
-            drv_path: d.drv_path.to_string().parse().unwrap(),
-            system: d.system,
-            prefer_local_build: d.prefer_local_build,
-            required_system_features: d.required_system_features,
-            is_fod: d.is_fod,
-            build_state: convert_build_state(&d.build_state),
-            output_size: d.output_size,
-            closure_size: d.closure_size,
-            pname: d.pname,
-            version: d.version,
-            license_json: d.license_json,
-            maintainers_json: d.maintainers_json,
-            meta_position: d.meta_position,
-            broken: d.broken,
-            insecure: d.insecure,
-        }))
-    }
-
-    async fn update_drv_status(
-        &self,
-        drv_id: &shared::types::DrvId,
-        state: &shared::types::DrvBuildState,
-    ) -> anyhow::Result<()> {
-        let local_id = drv_id.to_string().parse()?;
-        let local_state = convert_build_state_back(state);
-        self.update_drv_status(&local_id, &local_state).await
-    }
-
-    async fn get_all_drvs(&self) -> anyhow::Result<Vec<shared::types::Drv>> {
-        let local_drvs = self.get_all_drvs().await?;
-        Ok(local_drvs
-            .into_iter()
-            .map(|d| shared::types::Drv {
-                drv_path: d.drv_path.to_string().parse().unwrap(),
+        match local_drv {
+            Some(d) => Ok(Some(shared::types::Drv {
+                drv_path: d.drv_path.to_string().parse()?,
                 system: d.system,
                 prefer_local_build: d.prefer_local_build,
                 required_system_features: d.required_system_features,
@@ -67,8 +35,45 @@ impl GraphDatabase for DbService {
                 meta_position: d.meta_position,
                 broken: d.broken,
                 insecure: d.insecure,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    async fn update_drv_status(
+        &self,
+        drv_id: &shared::types::DrvId,
+        state: &shared::types::DrvBuildState,
+    ) -> anyhow::Result<()> {
+        let local_id = drv_id.to_string().parse()?;
+        let local_state = convert_build_state_back(state);
+        self.update_drv_status(&local_id, &local_state).await
+    }
+
+    async fn get_all_drvs(&self) -> anyhow::Result<Vec<shared::types::Drv>> {
+        let local_drvs = self.get_all_drvs().await?;
+        local_drvs
+            .into_iter()
+            .map(|d| {
+                Ok(shared::types::Drv {
+                    drv_path: d.drv_path.to_string().parse()?,
+                    system: d.system,
+                    prefer_local_build: d.prefer_local_build,
+                    required_system_features: d.required_system_features,
+                    is_fod: d.is_fod,
+                    build_state: convert_build_state(&d.build_state),
+                    output_size: d.output_size,
+                    closure_size: d.closure_size,
+                    pname: d.pname,
+                    version: d.version,
+                    license_json: d.license_json,
+                    maintainers_json: d.maintainers_json,
+                    meta_position: d.meta_position,
+                    broken: d.broken,
+                    insecure: d.insecure,
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn get_all_refs(

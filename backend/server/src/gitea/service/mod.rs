@@ -12,7 +12,7 @@ use crate::gitea::GiteaClient;
 use crate::gitea::types::GiteaTask;
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
 mod auto_merge;
 mod change_summary;
@@ -45,6 +45,7 @@ pub struct GiteaService {
     change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
     /// Gitea API clients per domain (self-hosted instances)
     gitea_clients: Mutex<HashMap<String, Arc<GiteaClient>>>,
+    journal: TaskJournal<GiteaTask>,
 }
 
 impl GiteaService {
@@ -84,6 +85,7 @@ impl GiteaService {
             );
         }
 
+        let pool = db_service.pool.clone();
         Ok(Self {
             db_service,
             gitea_sender,
@@ -95,6 +97,7 @@ impl GiteaService {
             graph_handle,
             change_summary_metrics,
             gitea_clients: Mutex::new(gitea_clients),
+            journal: TaskJournal::new(pool, "gitea"),
         })
     }
 
@@ -393,6 +396,10 @@ impl AsyncService<GiteaTask> for GiteaService {
 
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<GiteaTask>> {
         self.gitea_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<GiteaTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: GiteaTask) -> Result<()> {

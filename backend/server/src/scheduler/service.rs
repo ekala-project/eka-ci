@@ -79,8 +79,12 @@ impl SchedulerService {
         metrics_registry.register(Box::new(process_collector))?;
 
         // Initialize HookExecutor service
-        let hook_executor =
-            HookExecutor::new(logs_dir.clone(), max_hook_timeout_seconds, audit_hooks);
+        let hook_executor = HookExecutor::new(
+            logs_dir.clone(),
+            max_hook_timeout_seconds,
+            audit_hooks,
+            db_service.pool.clone(),
+        );
         let hook_sender = hook_executor.get_sender();
 
         let (ingress_service, ingress_sender) = IngressService::init(graph_handle.clone());
@@ -95,12 +99,21 @@ impl SchedulerService {
             channel_sender,
         );
 
+        // Shared reconstitution tracker prevents duplicate nix-eval-jobs
+        // invocations when many GC'd drvs from the same eval are rebuilt
+        // concurrently.
+        let reconstitution_tracker =
+            Arc::new(crate::nix::reconstitute::ReconstitutionTracker::new());
+
         let mut builders = Builder::local_from_env(
             logs_dir.clone(),
             recorder_sender.clone(),
             build_metrics.clone(),
             build_no_output_timeout_seconds,
             build_max_duration_seconds,
+            graph_handle.clone(),
+            db_service.pool.clone(),
+            reconstitution_tracker.clone(),
         )
         .await?;
         let fod_builders = Builder::local_from_env_fod(
@@ -109,6 +122,9 @@ impl SchedulerService {
             build_metrics.clone(),
             build_no_output_timeout_seconds,
             build_max_duration_seconds,
+            graph_handle.clone(),
+            db_service.pool.clone(),
+            reconstitution_tracker.clone(),
         )
         .await?;
         for remote in remote_builders {
@@ -121,10 +137,21 @@ impl SchedulerService {
                     build_metrics.clone(),
                     build_no_output_timeout_seconds,
                     build_max_duration_seconds,
+                    graph_handle.clone(),
+                    db_service.pool.clone(),
+                    reconstitution_tracker.clone(),
                 );
                 builders.push(remote_builder);
             }
         }
+
+        // Capture builder feature capabilities before builders are consumed
+        let feature_entries: Vec<_> = builders
+            .iter()
+            .chain(fod_builders.iter())
+            .map(|b| (b.supported_features.clone(), b.mandatory_features.clone()))
+            .collect();
+        let builder_features = super::build::BuilderFeatureSnapshot::new(feature_entries);
 
         let (builder_service, builder_sender) =
             BuildQueue::init(builders, fod_builders, build_metrics).await;
@@ -135,6 +162,8 @@ impl SchedulerService {
             builder_sender.clone(),
             recorder_sender.clone(),
             cancellation_token.clone(),
+            db_service.pool.clone(),
+            builder_features,
         );
         let recorder_thread =
             recorder_service.run(ingress_sender.clone(), cancellation_token.clone());

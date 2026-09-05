@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 use crate::ci::RepoTask;
 use crate::db::DbService;
 use crate::git::{GitTask, GitWorkspace};
+use crate::github::GitHubTask;
 use crate::nix::EvalTask;
 use crate::scheduler::IngressTask;
 
@@ -30,6 +31,7 @@ struct DispatchChannels {
     repo_sender: Sender<RepoTask>,
     git_sender: Sender<GitTask>,
     ingress_sender: Sender<IngressTask>,
+    github_sender: Option<Sender<GitHubTask>>,
     db_service: DbService,
 }
 
@@ -41,6 +43,7 @@ impl UnixService {
         db_service: DbService,
         git_sender: Sender<GitTask>,
         ingress_sender: Sender<IngressTask>,
+        github_sender: Option<Sender<GitHubTask>>,
     ) -> Result<Self> {
         prepare_path(socket_path)?;
 
@@ -50,6 +53,7 @@ impl UnixService {
             repo_sender,
             git_sender,
             ingress_sender,
+            github_sender,
             db_service,
         };
 
@@ -170,17 +174,20 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
             version: "0.1.0".to_string(),
         }),
         req::GitHub { pr } => {
-            let octocrab = Octocrab::builder()
-                .build()
-                .expect("failed to construct octocrab");
+            let octocrab = match Octocrab::builder().build() {
+                Ok(o) => o,
+                Err(e) => {
+                    error!("Failed to construct octocrab: {}", e);
+                    return resp::Ack(false);
+                },
+            };
             match octocrab.pulls(&pr.owner, &pr.repo).get(pr.pr).await {
                 Ok(github_pr) => {
-                    let task = GitTask::GitHubCheckout(github_pr);
-                    dispatch
-                        .git_sender
-                        .send(task)
-                        .await
-                        .expect("Failed to send github task");
+                    let task = GitTask::GitHubCheckout(Box::new(github_pr));
+                    if let Err(e) = dispatch.git_sender.send(task).await {
+                        error!("Failed to send github task: {}", e);
+                        return resp::Ack(false);
+                    }
                     resp::Ack(true)
                 },
                 Err(e) => {
@@ -194,20 +201,18 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
         },
         req::Git(git_info) => {
             let task = GitTask::Checkout(GitWorkspace::from_git_request(git_info));
-            dispatch
-                .git_sender
-                .send(task)
-                .await
-                .expect("Failed to send git task");
+            if let Err(e) = dispatch.git_sender.send(task).await {
+                error!("Failed to send git task: {}", e);
+                return resp::Ack(false);
+            }
             resp::Ack(true)
         },
         req::Repo(repo_info) => {
             let repo_request = RepoTask::Read(repo_info.file_path.into());
-            dispatch
-                .repo_sender
-                .send(repo_request)
-                .await
-                .expect("Failed to send repo task");
+            if let Err(e) = dispatch.repo_sender.send(repo_request).await {
+                error!("Failed to send repo task: {}", e);
+                return resp::Ack(false);
+            }
             resp::Ack(true)
         },
         req::Job(job_info) => {
@@ -218,11 +223,10 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 config_json: None, // No config for client-initiated jobs
             };
             let task = EvalTask::Job(job);
-            dispatch
-                .eval_sender
-                .send(task)
-                .await
-                .expect("Eval service is unhealthy");
+            if let Err(e) = dispatch.eval_sender.send(task).await {
+                error!("Failed to send eval task: {}", e);
+                return resp::Ack(false);
+            }
 
             resp::Ack(true)
         },
@@ -237,30 +241,27 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 if build_info.rebuild_all {
                     // Rebuild all failed drvs
                     let task = IngressTask::RebuildAllFailed;
-                    dispatch
-                        .ingress_sender
-                        .send(task)
-                        .await
-                        .expect("Ingress service is unhealthy");
+                    if let Err(e) = dispatch.ingress_sender.send(task).await {
+                        error!("Failed to send rebuild-all task: {}", e);
+                        return resp::Ack(false);
+                    }
                 } else {
                     // Rebuild specific drv
                     if let Ok(drv_id) = drv_id::DrvId::from_str(&build_info.drv_path) {
                         let task = IngressTask::RebuildFailed(std::sync::Arc::new(drv_id));
-                        dispatch
-                            .ingress_sender
-                            .send(task)
-                            .await
-                            .expect("Ingress service is unhealthy");
+                        if let Err(e) = dispatch.ingress_sender.send(task).await {
+                            error!("Failed to send rebuild task: {}", e);
+                            return resp::Ack(false);
+                        }
                     }
                 }
             } else {
                 // Normal build flow
                 let task = EvalTask::TraverseDrv(build_info.drv_path);
-                dispatch
-                    .eval_sender
-                    .send(task)
-                    .await
-                    .expect("Eval service is unhealthy");
+                if let Err(e) = dispatch.eval_sender.send(task).await {
+                    error!("Failed to send eval task: {}", e);
+                    return resp::Ack(false);
+                }
             }
 
             resp::Ack(true)
@@ -335,7 +336,10 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                     Ok(Some(row)) => {
                         // Convert unix timestamp to human-readable date
                         use chrono::{TimeZone, Utc};
-                        let dt = Utc.timestamp_opt(row.started_at, 0).unwrap();
+                        let dt = Utc
+                            .timestamp_opt(row.started_at, 0)
+                            .single()
+                            .unwrap_or_default();
 
                         Some(ChannelPromotion {
                             tracking_sha: row.tracking_sha,
@@ -379,7 +383,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 .into_iter()
                 .map(|(sha, branch, status, started, blocked)| {
                     use chrono::{TimeZone, Utc};
-                    let dt = Utc.timestamp_opt(started, 0).unwrap();
+                    let dt = Utc.timestamp_opt(started, 0).single().unwrap_or_default();
 
                     ChannelPromotion {
                         tracking_sha: sha,
@@ -396,6 +400,54 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 in_flight,
                 recent_promotions,
             }))
+        },
+        req::ResyncChecks(resync_req) => {
+            if let Some(gh_sender) = &dispatch.github_sender {
+                // Resync per-drv check runs
+                let task = GitHubTask::ResyncCheckRuns {
+                    sha: resync_req.sha.clone(),
+                };
+                if let Err(e) = gh_sender.send(task).await {
+                    error!("Failed to send resync task: {}", e);
+                    return resp::Ack(false);
+                }
+
+                // Also complete any eval gates that are still pending.
+                // The eval gate means "evaluation succeeded" — if a
+                // jobset exists, evaluation succeeded, so always Success.
+                let jobset_ids: Vec<i64> =
+                    sqlx::query_scalar("SELECT ROWID FROM GitHubJobSets WHERE sha = ?")
+                        .bind(&resync_req.sha)
+                        .fetch_all(&dispatch.db_service.pool)
+                        .await
+                        .unwrap_or_default();
+
+                for jobset_id in jobset_ids {
+                    if let Ok(jobset_info) =
+                        crate::db::github::get_jobset_info(jobset_id, &dispatch.db_service.pool)
+                            .await
+                    {
+                        let complete_task = GitHubTask::CompleteCIEvalJob {
+                            ci_check_info: std::sync::Arc::new(crate::github::CICheckInfo {
+                                commit: jobset_info.sha.clone(),
+                                base_commit: None,
+                                owner: jobset_info.owner.clone(),
+                                repo_name: jobset_info.repo_name.clone(),
+                            }),
+                            job_name: jobset_info.job.clone(),
+                            conclusion: octocrab::params::checks::CheckRunConclusion::Success
+                                .into(),
+                        };
+                        let _ = gh_sender.send(complete_task).await;
+                        info!("Sent CompleteCIEvalJob (success) for jobset {}", jobset_id,);
+                    }
+                }
+
+                resp::Ack(true)
+            } else {
+                error!("GitHub service not configured, cannot resync check runs");
+                resp::Ack(false)
+            }
         },
     }
 }

@@ -7,22 +7,23 @@ use tracing::{debug, warn};
 
 use crate::types::nix_eval_jobs::{NixEvalDrv, NixEvalError, NixEvalItem};
 
-/// This file is meant to handle the evaluation of a "job" which is similar
-/// to the "jobset" by hydra, in particular:
-/// - You pass the file path of a nix file
-/// - You can optionally pass arguments to the file, which should be structured as a function which
-///   receives an attrset of inputs
-/// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
-///
-/// M4: the output consumer bounds every growth axis so an adversarial
-/// or accidentally-huge flake cannot OOM the server:
-///   - `NIX_EVAL_JOBS_MAX_ENTRIES` caps total parsed items (drvs + errors).
-///   - `NIX_EVAL_JOBS_MAX_STDOUT_BYTES` caps total bytes read from nix-eval-jobs stdout.
-///   - `NIX_EVAL_JOBS_MAX_LINE_BYTES` caps the length of any single JSONL line (prevents a
-///     newline-less adversarial stream from growing the line buffer without bound).
-/// On any cap hit, the child is killed and reaped, the caller receives
-/// an error, and a `NixEvalMetrics::truncated_total` counter is
-/// incremented with the trigger reason.
+// This file is meant to handle the evaluation of a "job" which is similar
+// to the "jobset" by hydra, in particular:
+// - You pass the file path of a nix file
+// - You can optionally pass arguments to the file, which should be structured as a function which
+//   receives an attrset of inputs
+// - The file outputs an [deeply nested] attrset of attrset<attr_path, drv>
+//
+// M4: the output consumer bounds every growth axis so an adversarial
+// or accidentally-huge flake cannot OOM the server:
+//   - `NIX_EVAL_JOBS_MAX_ENTRIES` caps total parsed items (drvs + errors).
+//   - `NIX_EVAL_JOBS_MAX_STDOUT_BYTES` caps total bytes read from nix-eval-jobs stdout.
+//   - `NIX_EVAL_JOBS_MAX_LINE_BYTES` caps the length of any single JSONL line (prevents a
+//     newline-less adversarial stream from growing the line buffer without bound).
+//
+// On any cap hit, the child is killed and reaped, the caller receives
+// an error, and a `NixEvalMetrics::truncated_total` counter is
+// incremented with the trigger reason.
 
 /// Maximum number of parsed output entries (drvs + errors combined)
 /// accepted from a single nix-eval-jobs invocation.
@@ -223,6 +224,18 @@ where
         .spawn()
         .context("failed to spawn nix-eval-jobs")?;
 
+    // Drain stderr concurrently to prevent pipe deadlock: if the child
+    // fills the OS pipe buffer (~64 KB) for stderr while we're blocked
+    // reading stdout, both sides stall. Spawning a reader task keeps
+    // the stderr pipe drained.
+    let stderr_handle = cmd.stderr.take().map(|mut stderr| {
+        tokio::spawn(async move {
+            let mut buf = String::new();
+            let _ = stderr.read_to_string(&mut buf).await;
+            buf
+        })
+    });
+
     let outcome = {
         let stdout = cmd
             .stdout
@@ -238,26 +251,21 @@ where
         .await
     };
 
+    // Collect stderr output from the background drain task.
+    let stderr_output = match stderr_handle {
+        Some(handle) => handle.await.unwrap_or_default(),
+        None => String::new(),
+    };
+    if !stderr_output.is_empty() {
+        debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
+    }
+
     if outcome.truncation != Truncation::None {
-        // Kill + reap the child to avoid zombies / writing forever
-        // into a closed pipe. If the child already exited on its
-        // own, kill() may return ESRCH — not a correctness issue,
-        // but log in case it signals a deeper pipe / signal bug.
         if let Err(e) = cmd.kill().await {
             warn!(
                 "nix-eval-jobs child kill failed (may already be dead): {:?}",
                 e
             );
-        }
-
-        // Read stderr before waiting to capture any diagnostic output
-        if let Some(mut stderr) = cmd.stderr.take() {
-            let mut stderr_output = String::new();
-            if let Err(e) = stderr.read_to_string(&mut stderr_output).await {
-                debug!("Failed to read nix-eval-jobs stderr: {:?}", e);
-            } else if !stderr_output.is_empty() {
-                debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
-            }
         }
 
         if let Err(e) = cmd.wait().await {
@@ -284,16 +292,6 @@ where
             outcome.bytes_read,
         );
     } else {
-        // Read stderr before waiting to capture any diagnostic output
-        if let Some(mut stderr) = cmd.stderr.take() {
-            let mut stderr_output = String::new();
-            if let Err(e) = stderr.read_to_string(&mut stderr_output).await {
-                debug!("Failed to read nix-eval-jobs stderr: {:?}", e);
-            } else if !stderr_output.is_empty() {
-                debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
-            }
-        }
-
         // Reap the child on the clean path too.
         if let Err(e) = cmd.wait().await {
             warn!("nix-eval-jobs child wait failed on clean path: {:?}", e);

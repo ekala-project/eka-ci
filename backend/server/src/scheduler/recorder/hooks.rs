@@ -167,7 +167,7 @@ impl RecorderWorker {
             job_name: job_info.name.clone(),
             is_fod: drv_info.is_fod,
             system: drv_info.system.clone(),
-            pname: None, // TODO: Query pname from DrvInfo if needed
+            pname: drv_info.pname.clone(),
             build_log_path: format!("logs/{}/build.log", drv_id.store_path()), /* TODO: Use actual log path */
             commit_sha: jobset_info.sha.clone(),
         };
@@ -209,7 +209,7 @@ impl RecorderWorker {
         // Spawn task to receive and store hook results
         let db_service = self.db_service.clone();
         let drv_path_for_task = drv_id.store_path().to_string();
-        tokio::spawn(async move {
+        crate::services::spawn_logged("hook-result-persistence", async move {
             while let Some(result) = result_receiver.recv().await {
                 debug!(
                     "Received hook result for '{}' on drv {}",

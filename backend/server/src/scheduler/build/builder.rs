@@ -1,16 +1,22 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::sync::mpsc::{self, Sender};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+/// Timeout for quick nix operations (store ping, config show).
+const NIX_QUICK_TIMEOUT: Duration = Duration::from_secs(30);
+
 use super::builder_thread::BuilderThread;
 use super::{BuildRequest, Platform};
 use crate::config::RemoteBuilder;
+use crate::graph::GraphServiceHandle;
 use crate::metrics::BuildMetrics;
+use crate::nix::reconstitute::ReconstitutionTracker;
 use crate::scheduler::recorder::RecorderTask;
 
 /// This is meant to be an abstraction over both local and remote builders
@@ -30,6 +36,9 @@ pub struct Builder {
     metrics: Arc<BuildMetrics>,
     no_output_timeout_seconds: u64,
     max_duration_seconds: u64,
+    graph_handle: GraphServiceHandle,
+    db_pool: sqlx::SqlitePool,
+    reconstitution_tracker: Arc<ReconstitutionTracker>,
 }
 
 impl Builder {
@@ -47,6 +56,9 @@ impl Builder {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Self {
         Self {
             is_local,
@@ -61,6 +73,9 @@ impl Builder {
             metrics,
             no_output_timeout_seconds,
             max_duration_seconds,
+            graph_handle,
+            db_pool,
+            reconstitution_tracker,
         }
     }
 
@@ -80,17 +95,22 @@ impl Builder {
             return true;
         }
 
-        Command::new("nix")
-            .args([
-                "store",
-                "ping",
-                "--store",
-                self.remote_uri.as_ref().unwrap(),
-            ])
-            .output()
-            .await
-            .map(|x| x.status.success())
-            .unwrap_or(false)
+        let remote_uri = match &self.remote_uri {
+            Some(uri) => uri,
+            None => return false,
+        };
+
+        tokio::time::timeout(
+            NIX_QUICK_TIMEOUT,
+            Command::new("nix")
+                .args(["store", "ping", "--store", remote_uri])
+                .output(),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|x| x.status.success())
+        .unwrap_or(false)
     }
 
     pub fn run(self, cancellation_token: CancellationToken) -> mpsc::Sender<BuildRequest> {
@@ -103,6 +123,9 @@ impl Builder {
             self.metrics.clone(),
             self.no_output_timeout_seconds,
             self.max_duration_seconds,
+            self.graph_handle.clone(),
+            self.db_pool.clone(),
+            self.reconstitution_tracker.clone(),
         );
 
         thread.run(cancellation_token)
@@ -114,6 +137,9 @@ impl Builder {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -140,6 +166,9 @@ impl Builder {
                     metrics.clone(),
                     no_output_timeout_seconds,
                     max_duration_seconds,
+                    graph_handle.clone(),
+                    db_pool.clone(),
+                    reconstitution_tracker.clone(),
                 )
             })
             .collect();
@@ -153,6 +182,9 @@ impl Builder {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -178,6 +210,9 @@ impl Builder {
                     metrics.clone(),
                     no_output_timeout_seconds,
                     max_duration_seconds,
+                    graph_handle.clone(),
+                    db_pool.clone(),
+                    reconstitution_tracker.clone(),
                 )
             })
             .collect();
@@ -194,6 +229,9 @@ impl Builder {
         metrics: Arc<BuildMetrics>,
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
+        graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Self {
         Self::new_inner(
             false,
@@ -212,6 +250,9 @@ impl Builder {
             metrics,
             no_output_timeout_seconds,
             max_duration_seconds,
+            graph_handle,
+            db_pool,
+            reconstitution_tracker,
         )
     }
 
@@ -228,10 +269,13 @@ impl Builder {
 /// Nix conf value merging is actually quite complex with user and system
 /// settings. Just read the output from the 'nix config show' command to deterimne values
 async fn local_platforms() -> Result<Vec<String>> {
-    let config_output = Command::new("nix")
-        .args(["config", "show"])
-        .output()
-        .await?;
+    let config_output = tokio::time::timeout(
+        NIX_QUICK_TIMEOUT,
+        Command::new("nix").args(["config", "show"]).output(),
+    )
+    .await
+    .context("nix config show timed out")?
+    .context("failed to run nix config show")?;
 
     let config_str = String::from_utf8(config_output.stdout)?;
 
@@ -254,10 +298,13 @@ async fn local_platforms() -> Result<Vec<String>> {
 /// These are features like kvm, nixos-test, big-parallel, benchmark that
 /// the local system supports
 async fn local_system_features() -> Result<Vec<String>> {
-    let config_output = Command::new("nix")
-        .args(["config", "show"])
-        .output()
-        .await?;
+    let config_output = tokio::time::timeout(
+        NIX_QUICK_TIMEOUT,
+        Command::new("nix").args(["config", "show"]).output(),
+    )
+    .await
+    .context("nix config show timed out")?
+    .context("failed to run nix config show")?;
 
     let config_str = String::from_utf8(config_output.stdout)?;
 

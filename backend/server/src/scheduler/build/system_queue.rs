@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::{BuildRequest, Builder, Platform};
 use crate::metrics::BuildMetrics;
@@ -219,15 +219,18 @@ impl PlatformQueue {
                     // We can't await in a closure, so we spawn a task
                     let sender_clone = sender.clone();
                     let drv_path = work.0.drv_path.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = sender_clone.send(task).await {
-                            warn!(
-                                "Failed to report UnsatisfiableRequirements for {:?} to recorder: \
-                                 {:?}",
-                                drv_path, e
-                            );
-                        }
-                    });
+                    crate::services::spawn_logged(
+                        "report-unsatisfiable-requirements",
+                        async move {
+                            if let Err(e) = sender_clone.send(task).await {
+                                warn!(
+                                    "Failed to report UnsatisfiableRequirements for {:?} to \
+                                     recorder: {:?}",
+                                    drv_path, e
+                                );
+                            }
+                        },
+                    );
                 }
                 return true; // Is orphan
             }
@@ -248,20 +251,18 @@ impl PlatformQueue {
                 }
 
                 if work.0.is_fod {
-                    fod_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to FOD builder");
+                    if let Err(e) = fod_tx.send(work).await {
+                        error!("FOD builder channel closed: {:?}", e);
+                        break;
+                    }
                 } else if work.0.prefer_local_build {
-                    local_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to local builder");
-                } else {
-                    remote_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to remote builder pool");
+                    if let Err(e) = local_tx.send(work).await {
+                        error!("Local builder channel closed: {:?}", e);
+                        break;
+                    }
+                } else if let Err(e) = remote_tx.send(work).await {
+                    error!("Remote builder channel closed: {:?}", e);
+                    break;
                 }
             }
         }
@@ -279,15 +280,13 @@ impl PlatformQueue {
                 }
 
                 if work.0.is_fod {
-                    fod_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to FOD builder");
-                } else {
-                    local_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to local builder");
+                    if let Err(e) = fod_tx.send(work).await {
+                        error!("FOD builder channel closed: {:?}", e);
+                        break;
+                    }
+                } else if let Err(e) = local_tx.send(work).await {
+                    error!("Local builder channel closed: {:?}", e);
+                    break;
                 }
             }
         }
@@ -304,15 +303,13 @@ impl PlatformQueue {
                 }
 
                 if work.0.is_fod {
-                    fod_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to FOD builder");
-                } else {
-                    remote_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to remote builder pool");
+                    if let Err(e) = fod_tx.send(work).await {
+                        error!("FOD builder channel closed: {:?}", e);
+                        break;
+                    }
+                } else if let Err(e) = remote_tx.send(work).await {
+                    error!("Remote builder channel closed: {:?}", e);
+                    break;
                 }
             }
         }
@@ -329,15 +326,13 @@ impl PlatformQueue {
                 }
 
                 if work.0.prefer_local_build {
-                    local_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to local builder");
-                } else {
-                    remote_tx
-                        .send(work)
-                        .await
-                        .expect("Failed to send to remote builder pool");
+                    if let Err(e) = local_tx.send(work).await {
+                        error!("Local builder channel closed: {:?}", e);
+                        break;
+                    }
+                } else if let Err(e) = remote_tx.send(work).await {
+                    error!("Remote builder channel closed: {:?}", e);
+                    break;
                 }
             }
         }
@@ -351,15 +346,18 @@ impl PlatformQueue {
                     continue;
                 }
 
-                remote_tx
-                    .send(work)
-                    .await
-                    .expect("Failed to send to remote builder pool");
+                if let Err(e) = remote_tx.send(work).await {
+                    error!("Remote builder channel closed: {:?}", e);
+                    break;
+                }
             }
         }
         // Case 6: Local only
         else {
-            let local_tx = maybe_local_tx.expect("Failed to setup local builder");
+            let Some(local_tx) = maybe_local_tx else {
+                error!("No local builder available for local-only platform queue");
+                return;
+            };
             while let Some(Some(work)) = cancellation_token
                 .run_until_cancelled(receiver.recv())
                 .await
@@ -368,10 +366,10 @@ impl PlatformQueue {
                     continue;
                 }
 
-                local_tx
-                    .send(work)
-                    .await
-                    .expect("Failed to send to remote builder pool");
+                if let Err(e) = local_tx.send(work).await {
+                    error!("Local builder channel closed: {:?}", e);
+                    break;
+                }
             }
         }
 

@@ -13,7 +13,8 @@ use tracing::{debug, error, info, warn};
 use crate::db::DbService;
 use crate::graph::GraphServiceHandle;
 use crate::metrics::ChangeSummaryMetrics;
-use crate::services::AsyncService;
+use crate::scheduler::IngressTask;
+use crate::services::{AsyncService, TaskJournal};
 
 /// Debounce window before the aggregated change-summary check is posted.
 pub(crate) const CHANGE_SUMMARY_DEBOUNCE: Duration = Duration::from_secs(5 * 60);
@@ -23,6 +24,7 @@ pub mod actions;
 mod auto_merge;
 mod change_summary;
 mod checks;
+pub mod graphql_batch;
 mod jobsets;
 mod task_handler;
 mod types;
@@ -49,6 +51,57 @@ pub struct GitHubService {
     graph_handle: GraphServiceHandle,
     /// Optional metrics for change-summary pipeline observability.
     change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
+    /// Ingress sender for dispatching build requests after jobset diff.
+    ingress_sender: Option<mpsc::Sender<IngressTask>>,
+    /// Rate limiter to avoid flooding the GitHub API endpoint.
+    rate_limiter: ApiRateLimiter,
+    /// Batches check run updates for GraphQL flush (separate rate limit budget).
+    pub(crate) batcher: Arc<graphql_batch::CheckRunBatcher>,
+    journal: TaskJournal<GitHubTask>,
+}
+
+/// Rate limiter that enforces a minimum interval between API calls
+/// and provides retry-with-backoff for 429 responses.
+pub(crate) struct ApiRateLimiter {
+    min_interval: Duration,
+    last_call: Mutex<tokio::time::Instant>,
+}
+
+impl ApiRateLimiter {
+    fn new(requests_per_second: f64) -> Self {
+        let min_interval = Duration::from_secs_f64(1.0 / requests_per_second);
+        Self {
+            min_interval,
+            last_call: Mutex::new(tokio::time::Instant::now()),
+        }
+    }
+
+    /// Wait until enough time has passed since the last call.
+    async fn acquire(&self) {
+        let mut last = self.last_call.lock().await;
+        let elapsed = last.elapsed();
+        if elapsed < self.min_interval {
+            tokio::time::sleep(self.min_interval - elapsed).await;
+        }
+        *last = tokio::time::Instant::now();
+    }
+
+    /// Back off after a 429 response. Doubles the minimum interval
+    /// (up to 30s) and sleeps for the backoff duration.
+    async fn backoff_429(&self) {
+        warn!("GitHub API rate limit hit (429), backing off");
+        // Sleep for 60s on rate limit — GitHub's secondary rate
+        // limit resets within this window.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+/// Check if an octocrab error is a 429 rate limit response.
+pub(crate) fn is_rate_limited(err: &anyhow::Error) -> bool {
+    if let Some(octocrab::Error::GitHub { source, .. }) = err.downcast_ref::<octocrab::Error>() {
+        return source.status_code == http::StatusCode::TOO_MANY_REQUESTS;
+    }
+    false
 }
 
 impl GitHubService {
@@ -57,6 +110,7 @@ impl GitHubService {
         octocrab: Octocrab,
         graph_handle: GraphServiceHandle,
         change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
+        ingress_sender: Option<mpsc::Sender<IngressTask>>,
     ) -> anyhow::Result<Self> {
         use futures::stream::TryStreamExt;
         use tokio::pin;
@@ -172,7 +226,8 @@ impl GitHubService {
             );
         }
 
-        let (github_sender, github_receiver) = mpsc::channel(100);
+        let pool = db_service.pool.clone();
+        let (github_sender, github_receiver) = mpsc::channel(1_000);
         Ok(Self {
             db_service,
             octocrab,
@@ -185,6 +240,12 @@ impl GitHubService {
             change_summary_pending: Mutex::new(HashSet::new()),
             graph_handle,
             change_summary_metrics,
+            ingress_sender,
+            // ~10 req/sec keeps well under GitHub's 5000/hr app limit
+            // while still being responsive for check_run updates.
+            rate_limiter: ApiRateLimiter::new(10.0),
+            batcher: Arc::new(graphql_batch::CheckRunBatcher::new()),
+            journal: TaskJournal::new(pool, "github"),
         })
     }
 
@@ -225,8 +286,81 @@ impl AsyncService<GitHubTask> for GitHubService {
         self.github_receiver.take()
     }
 
+    fn task_journal(&self) -> Option<&TaskJournal<GitHubTask>> {
+        Some(&self.journal)
+    }
+
+    /// Override the default run() to spawn a GraphQL batch flush loop
+    /// alongside the task processing loop.
+    fn run(
+        mut self,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut receiver = self.take_receiver().expect("receiver was already taken");
+            self.replay_journal().await;
+
+            // Spawn the batcher flush loop
+            let batcher = self.batcher.clone();
+            let flush_cancel = cancel_token.clone();
+            let installations = self.installations.clone();
+            let octocrab = self.octocrab.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = flush_cancel.cancelled() => break,
+                        _ = interval.tick() => {
+                            let insts = installations.clone();
+                            let octo = octocrab.clone();
+                            batcher
+                                .flush(|owner| {
+                                    let inst = insts
+                                        .get(owner)
+                                        .context("No installation for owner")?;
+                                    octo.installation(inst.id)
+                                        .map_err(anyhow::Error::from)
+                                })
+                                .await;
+                        }
+                    }
+                }
+            });
+
+            // Task processing loop (same as default AsyncService::run)
+            loop {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        self.handle_closure().await;
+                        break;
+                    },
+                    maybe_task = receiver.recv() => {
+                        match maybe_task {
+                            Some(task) => {
+                                self.dispatch_with_journal(task).await;
+                            }
+                            None => {
+                                warn!("GitHub receiver was closed");
+                                break;
+                            }
+                        }
+                    },
+                }
+            }
+        })
+    }
+
     async fn handle_task(&self, task: GitHubTask) -> Result<()> {
-        self.handle_github_task(&task).await
+        match self.handle_github_task(&task).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_rate_limited(&e) => {
+                self.rate_limiter.backoff_429().await;
+                // Retry once after backoff
+                self.handle_github_task(&task).await
+            },
+            Err(e) => Err(e),
+        }
     }
 
     async fn handle_failure(&mut self, error: anyhow::Error) {

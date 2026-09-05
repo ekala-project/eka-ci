@@ -112,6 +112,8 @@ impl GraphService {
     pub async fn run(mut self, cancellation_token: CancellationToken) {
         info!("GraphService started");
 
+        let mut command_count: u64 = 0;
+
         while let Some(command) = cancellation_token
             .run_until_cancelled(self.command_receiver.recv())
             .await
@@ -121,6 +123,8 @@ impl GraphService {
                 error!("Error handling graph command: {:?}", e);
             }
 
+            command_count += 1;
+
             // Periodically check eviction candidates (dry-run mode)
             metrics::maybe_dry_run_eviction_check(
                 &self.graph,
@@ -129,9 +133,43 @@ impl GraphService {
                 &self.eviction_selector,
                 &mut self.last_dry_run_check,
             );
+
+            // Periodically prune orphaned tracking-map entries that
+            // were not cleaned up during normal eviction (e.g. deps
+            // whose referrer was evicted but the dep itself was never
+            // inserted as a node).
+            if command_count.is_multiple_of(5000) {
+                self.prune_stale_tracking_entries();
+                let evicted = self.graph.evict_stale_failures();
+                if evicted > 0 {
+                    info!("Evicted {} stale failure tracking entries", evicted);
+                }
+            }
         }
 
         info!("GraphService stopped");
+    }
+
+    /// Remove `last_accessed` and `ref_counts` entries for drv IDs that
+    /// are no longer present in the graph's LRU cache.
+    fn prune_stale_tracking_entries(&mut self) {
+        let before_la = self.last_accessed.len();
+        let before_rc = self.ref_counts.len();
+
+        self.last_accessed
+            .retain(|id, _| self.graph.nodes.contains(id));
+        self.ref_counts
+            .retain(|id, _| self.graph.nodes.contains(id));
+
+        let pruned_la = before_la.saturating_sub(self.last_accessed.len());
+        let pruned_rc = before_rc.saturating_sub(self.ref_counts.len());
+
+        if pruned_la > 0 || pruned_rc > 0 {
+            info!(
+                "Pruned stale graph tracking entries: {} last_accessed, {} ref_counts",
+                pruned_la, pruned_rc
+            );
+        }
     }
 
     /// Handle a single command

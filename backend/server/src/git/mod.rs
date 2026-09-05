@@ -7,28 +7,30 @@ use tracing::warn;
 
 use crate::ci::RepoTask;
 use crate::github::CICheckInfo;
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum GitTask {
     Checkout(GitWorkspace),
-    GitHubCheckout(PullRequest),
+    GitHubCheckout(Box<PullRequest>),
 }
 
 pub struct GitService {
     git_sender: mpsc::Sender<GitTask>,
     git_receiver: Option<mpsc::Receiver<GitTask>>,
     repo_sender: mpsc::Sender<RepoTask>,
+    journal: TaskJournal<GitTask>,
 }
 
 impl GitService {
-    pub fn new(repo_sender: mpsc::Sender<RepoTask>) -> Result<Self> {
+    pub fn new(repo_sender: mpsc::Sender<RepoTask>, pool: sqlx::SqlitePool) -> Result<Self> {
         let (git_sender, git_receiver) = mpsc::channel(1000);
 
         Ok(Self {
             git_sender,
             git_receiver: Some(git_receiver),
             repo_sender,
+            journal: TaskJournal::new(pool, "git"),
         })
     }
 }
@@ -42,6 +44,10 @@ impl AsyncService<GitTask> for GitService {
     #[allow(dead_code)] // Called via AsyncService trait dispatch
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<GitTask>> {
         self.git_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<GitTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: GitTask) -> anyhow::Result<()> {
@@ -74,8 +80,6 @@ impl AsyncService<GitTask> for GitService {
                     .fetch_remote_repo(&pr_base_repo, &pr.base.ref_field)
                     .await?;
                 base_repo.create_worktree().await?;
-                let base_task = RepoTask::Read(base_repo.worktree_path());
-                self.repo_sender.send(base_task).await?;
 
                 // do the same thing but for the head commit
                 let repo = GitWorkspace::from_git_repo(pr_base_repo, &pr.head.sha);

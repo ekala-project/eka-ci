@@ -74,7 +74,7 @@ fn spawn_change_summary_debounce(
     job: String,
 ) {
     let sender = gitlab_sender.clone();
-    tokio::spawn(async move {
+    crate::services::spawn_logged("gitlab-change-summary-debounce", async move {
         tokio::time::sleep(CHANGE_SUMMARY_DEBOUNCE).await;
         if let Err(e) = sender
             .send(GitLabTask::CreateChangeSummaryComment { ci_info, job })

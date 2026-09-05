@@ -13,15 +13,67 @@ use crate::checks::types::CheckTask;
 use crate::db::DbService;
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::nix::{EvalJob, EvalTask};
-use crate::services::AsyncService;
+use crate::services::{AsyncService, TaskJournal};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RepoTask {
     Read(PathBuf),
     ReadGitHub {
         repo_path: PathBuf,
         ci_info: CICheckInfo,
     },
+}
+
+/// Summary of what was discovered during CI configuration reading.
+#[derive(Debug, Default, Clone)]
+pub struct ConfigureSummary {
+    pub job_names: Vec<String>,
+    pub check_names: Vec<String>,
+    pub flake_checks: bool,
+    pub flake_packages: bool,
+    pub config_missing: bool,
+}
+
+impl ConfigureSummary {
+    pub fn to_markdown(&self) -> String {
+        if self.config_missing {
+            return "No `.ekaci/config.json` found in this commit.".to_string();
+        }
+
+        let mut lines = Vec::new();
+
+        if !self.job_names.is_empty() {
+            lines.push(format!("**Jobs ({}):**", self.job_names.len()));
+            for name in &self.job_names {
+                lines.push(format!("- `{}`", name));
+            }
+        }
+
+        if !self.check_names.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("**Checks ({}):**", self.check_names.len()));
+            for name in &self.check_names {
+                lines.push(format!("- `{}`", name));
+            }
+        }
+
+        if self.flake_checks || self.flake_packages {
+            lines.push(String::new());
+            lines.push("**Flake:**".to_string());
+            if self.flake_checks {
+                lines.push("- Checks enabled".to_string());
+            }
+            if self.flake_packages {
+                lines.push("- Packages enabled".to_string());
+            }
+        }
+
+        if lines.is_empty() {
+            "Config found but no jobs, checks, or flake outputs configured.".to_string()
+        } else {
+            lines.join("\n")
+        }
+    }
 }
 
 /// This service will receive a repo checkout and determine what CI jobs need
@@ -40,6 +92,7 @@ pub struct RepoReader {
     check_sender: Option<mpsc::Sender<CheckTask>>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     db_service: DbService,
+    journal: TaskJournal<RepoTask>,
 }
 
 impl RepoReader {
@@ -50,6 +103,7 @@ impl RepoReader {
         db_service: DbService,
     ) -> anyhow::Result<Self> {
         let (repo_sender, repo_receiver) = mpsc::channel(1000);
+        let pool = db_service.pool.clone();
 
         Ok(Self {
             repo_sender,
@@ -58,6 +112,7 @@ impl RepoReader {
             check_sender,
             github_sender,
             db_service,
+            journal: TaskJournal::new(pool, "repo"),
         })
     }
 
@@ -65,13 +120,16 @@ impl RepoReader {
         &self,
         mut path: PathBuf,
         ci_info: &CICheckInfo,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<ConfigureSummary> {
         let root = path.clone();
+        let mut summary = ConfigureSummary::default();
+
         if let Ok(config) = read_repo_toplevel(&mut path) {
             debug!("Found CI Config: {:?}", &config);
 
             // Process jobs
             for (job_name, job) in config.jobs {
+                summary.job_names.push(job_name.clone());
                 if self
                     .db_service
                     .has_jobset(
@@ -107,6 +165,7 @@ impl RepoReader {
             if let Some(check_sender) = &self.check_sender {
                 if let Some(github_sender) = &self.github_sender {
                     for (check_name, check_config) in config.checks {
+                        summary.check_names.push(check_name.clone());
                         debug!("Processing check: {}", check_name);
 
                         // Create checkset and placeholder result in database
@@ -150,6 +209,10 @@ impl RepoReader {
             }
 
             // Process flake checks and packages
+            if let Some(flake_config) = &config.flake {
+                summary.flake_checks = flake_config.checks.enable;
+                summary.flake_packages = flake_config.packages.enable;
+            }
             if let Some(flake_config) = config.flake {
                 if let Some(check_sender) = &self.check_sender {
                     if let Some(github_sender) = &self.github_sender {
@@ -281,8 +344,9 @@ impl RepoReader {
             }
         } else {
             debug!("Repo was missing a CI config");
+            summary.config_missing = true;
         }
-        Ok(())
+        Ok(summary)
     }
 }
 
@@ -294,6 +358,10 @@ impl AsyncService<RepoTask> for RepoReader {
     #[allow(dead_code)] // Called via AsyncService trait dispatch
     fn take_receiver(&mut self) -> Option<mpsc::Receiver<RepoTask>> {
         self.repo_receiver.take()
+    }
+
+    fn task_journal(&self) -> Option<&TaskJournal<RepoTask>> {
+        Some(&self.journal)
     }
 
     async fn handle_task(&self, task: RepoTask) -> anyhow::Result<()> {
@@ -327,10 +395,11 @@ impl AsyncService<RepoTask> for RepoReader {
                     .context("GitHub app was not instantiated")?;
                 github_sender.send(configure_task).await?;
 
-                self.process_github_repo_config(repo_path, &ci_info).await?;
+                let summary = self.process_github_repo_config(repo_path, &ci_info).await?;
 
                 let finish_configure_task = GitHubTask::CompleteCIConfigureGate {
                     ci_check_info: ci_info,
+                    summary: summary.to_markdown(),
                 };
                 github_sender.send(finish_configure_task).await?;
             },
@@ -438,7 +507,7 @@ pub fn load_repo_ci_config(domain: &str, owner: &str, repo: &str, sha: &str) -> 
 /// 2. `fs::canonicalize` of the joined path, asserted to still be a descendant of the canonicalized
 ///    `repo_root`. This also catches symlinks that were committed to the PR branch and point
 ///    outside the worktree.
-fn resolve_file_path(
+pub(crate) fn resolve_file_path(
     repo_root: PathBuf,
     _file_path_to_config: PathBuf,
     file_path_in_config: PathBuf,
