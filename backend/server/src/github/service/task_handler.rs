@@ -88,7 +88,10 @@ impl GitHubService {
                     .await
                     .insert(ci_check_info.commit.clone(), check_run.id);
             },
-            GitHubTask::CompleteCIConfigureGate { ci_check_info } => {
+            GitHubTask::CompleteCIConfigureGate {
+                ci_check_info,
+                summary,
+            } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 let check_run_id = self
                     .github_configure_checks
@@ -96,12 +99,13 @@ impl GitHubService {
                     .await
                     .remove(&ci_check_info.commit)
                     .context("No configure gate check run found for commit")?;
-                actions::update_ci_configure_gate(
+                actions::update_ci_configure_gate_with_summary(
                     &octocrab,
                     ci_check_info,
                     check_run_id,
                     CheckRunStatus::Completed,
                     CheckRunConclusion::Success,
+                    summary,
                 )
                 .await?;
             },

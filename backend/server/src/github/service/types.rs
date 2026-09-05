@@ -270,6 +270,8 @@ pub enum GitHubTask {
     },
     CompleteCIConfigureGate {
         ci_check_info: Arc<CICheckInfo>,
+        /// Markdown summary of what was configured (jobs, checks, flake).
+        summary: String,
     },
     CreateCIEvalJob {
         ci_check_info: Arc<CICheckInfo>,
