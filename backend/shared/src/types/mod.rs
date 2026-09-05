@@ -23,7 +23,9 @@ pub enum ClientRequest {
     Job(JobRequest),
     Repo(RepoRequest),
     Git(GitRequest),
-    GitHub { pr: GitHubPrRequest },
+    GitHub {
+        pr: GitHubPrRequest,
+    },
     DrvStatus(DrvStatusRequest),
     ChannelStatus(ChannelStatusRequest),
     /// Re-push all check run states for a commit SHA to GitHub.

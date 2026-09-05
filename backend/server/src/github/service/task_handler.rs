@@ -236,10 +236,7 @@ impl GitHubService {
                                 return Ok(());
                             },
                             Err(e) => {
-                                warn!(
-                                    "Failed to look up eval gate check run: {:?}",
-                                    e
-                                );
+                                warn!("Failed to look up eval gate check run: {:?}", e);
                                 return Ok(());
                             },
                         }

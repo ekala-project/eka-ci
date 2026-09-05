@@ -37,7 +37,8 @@ async fn main() -> anyhow::Result<()> {
         args.socket.clone().map_or_else(
             || {
                 eka_dirs()?.get_runtime_file("ekaci.socket").context(
-                    "failed to determine default path for unix socket, consider setting it explicitly",
+                    "failed to determine default path for unix socket, consider setting it \
+                     explicitly",
                 )
             },
             Result::Ok,
