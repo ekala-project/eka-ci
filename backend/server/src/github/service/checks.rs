@@ -116,6 +116,95 @@ impl GitHubService {
             repo_name: jobset_info.repo_name.clone(),
         };
 
+        // Check if this is a grouped (dotted) attr path
+        if let Some(dot_pos) = job_attr_name.find('.') {
+            let group_prefix = &job_attr_name[..dot_pos];
+
+            // Check if a coalesced gate already exists for this group
+            if let Some((existing_cr_id, _node_id)) = self
+                .db_service
+                .find_coalesced_check_run_for_group(jobset_id, group_prefix)
+                .await?
+            {
+                // Attach this variant to the existing coalesced gate
+                crate::db::github::insert_check_run_info_with_node_id(
+                    existing_cr_id,
+                    drv_id,
+                    &jobset_info.repo_name,
+                    &jobset_info.owner,
+                    _node_id.as_deref(),
+                    &self.db_service.pool,
+                )
+                .await?;
+
+                // Trigger an aggregate status update
+                self.github_sender
+                    .send(crate::github::GitHubTask::UpdateBuildStatus {
+                        drv_id: std::sync::Arc::new(drv_id.clone()),
+                        status: state,
+                    })
+                    .await?;
+                return Ok(());
+            }
+
+            // No coalesced gate yet — create one with ALL variants in the group
+            let group_jobs = self
+                .db_service
+                .get_group_jobs_in_jobset(jobset_id, group_prefix)
+                .await?;
+
+            if group_jobs.len() > 1 {
+                // Multiple variants: create a coalesced gate
+                let worst_diff = group_jobs
+                    .iter()
+                    .map(|j| &j.difference)
+                    .fold(JobDifference::Removed, |acc, d| {
+                        crate::github::service::jobsets::worst_difference_pub(&acc, d)
+                    });
+                let worst_state =
+                    crate::github::service::jobsets::aggregate_build_state(
+                        &group_jobs
+                            .iter()
+                            .map(|j| j.build_state.clone())
+                            .collect::<Vec<_>>(),
+                    );
+
+                let summary_variants: Vec<&crate::db::github::NewOrChangedJob> =
+                    group_jobs.iter().collect();
+                let summary =
+                    crate::github::service::jobsets::build_variant_summary_for_new_or_changed(
+                        &summary_variants,
+                    );
+
+                let check_run = ci_check_info
+                    .create_coalesced_gh_check_run(
+                        &octocrab,
+                        &jobset_info.job,
+                        group_prefix,
+                        worst_state,
+                        &worst_diff,
+                        &summary,
+                    )
+                    .await?;
+
+                // Insert rows for ALL variants in the group
+                for gj in &group_jobs {
+                    crate::db::github::insert_check_run_info_with_node_id(
+                        check_run.id.0 as i64,
+                        &gj.drv_path,
+                        &jobset_info.repo_name,
+                        &jobset_info.owner,
+                        Some(&check_run.node_id),
+                        &self.db_service.pool,
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
+            // Single variant with a dot: fall through to individual check run
+        }
+
+        // Ungrouped or single-variant: create individual check run as before
         let check_run = ci_check_info
             .create_gh_check_run(
                 &octocrab,
@@ -278,6 +367,8 @@ impl GitHubService {
 
     /// Re-push all check run states for a commit to GitHub.
     /// Uses GraphQL batching when node_ids are available, falls back to REST.
+    /// For coalesced gates (multiple drv_ids per check_run_id), computes
+    /// aggregate status and deduplicates by check_run_id.
     pub(super) async fn handle_resync_check_runs(&self, sha: &str) -> Result<()> {
         let check_runs: Vec<crate::db::github::CheckRun> = sqlx::query_as(
             r#"
@@ -293,62 +384,143 @@ impl GitHubService {
         .fetch_all(&self.db_service.pool)
         .await?;
 
-        let total = check_runs.len();
+        // Deduplicate by check_run_id — coalesced gates appear once per variant
+        let mut seen_check_run_ids = std::collections::HashSet::new();
+        let unique_check_runs: Vec<_> = check_runs
+            .into_iter()
+            .filter(|cr| seen_check_run_ids.insert(cr.check_run_id))
+            .collect();
+
+        let total = unique_check_runs.len();
         let mut batched = 0u32;
         let mut rest_updated = 0u32;
         let mut failed = 0u32;
 
-        for check_run in &check_runs {
-            let (gql_status, gql_conclusion) =
-                crate::github::service::graphql_batch::build_state_to_graphql(
-                    &check_run.build_state,
-                );
-
-            // Prefer GraphQL batcher when node_id is available
-            if let Some(node_id) = &check_run.node_id {
-                let repo_node_id = self
-                    .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
-                    .await;
-                if let Some(repo_node_id) = repo_node_id {
-                    self.batcher
-                        .queue_update(
-                            &check_run.repo_owner,
-                            &repo_node_id,
-                            node_id,
-                            gql_status,
-                            gql_conclusion,
-                        )
-                        .await;
-                    batched += 1;
-                    continue;
-                }
-            }
-
-            // Fallback: REST API
-            self.rate_limiter.acquire().await;
-            let octocrab = match self.octocrab_for_owner(&check_run.repo_owner) {
-                Ok(o) => o,
-                Err(e) => {
-                    warn!(
-                        "No installation for owner {} (check_run {}): {:?}",
-                        check_run.repo_owner, check_run.check_run_id, e
-                    );
-                    failed += 1;
-                    continue;
-                },
-            };
-            match check_run
-                .send_gh_update(&octocrab, &check_run.build_state)
+        for check_run in &unique_check_runs {
+            // Query variant states to detect coalesced gates and compute aggregate
+            let variant_states = self
+                .db_service
+                .variant_states_for_check_run(check_run.check_run_id)
                 .await
-            {
-                Ok(_) => rest_updated += 1,
-                Err(e) => {
-                    failed += 1;
-                    warn!(
-                        "Failed to resync check_run {}: {:?}",
-                        check_run.check_run_id, e
+                .unwrap_or_default();
+
+            let is_coalesced = variant_states.len() > 1;
+
+            if is_coalesced {
+                let states: Vec<_> = variant_states.iter().map(|v| v.build_state.clone()).collect();
+                let agg_state =
+                    crate::github::service::jobsets::aggregate_build_state(&states);
+                let summary =
+                    crate::github::service::jobsets::build_variant_summary_from_states(
+                        &variant_states,
                     );
-                },
+                let (gql_status, gql_conclusion) =
+                    crate::github::service::graphql_batch::build_state_to_graphql(&agg_state);
+
+                if let Some(node_id) = &check_run.node_id {
+                    let repo_node_id = self
+                        .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
+                        .await;
+                    if let Some(repo_node_id) = repo_node_id {
+                        self.batcher
+                            .queue_update_with_output(
+                                &check_run.repo_owner,
+                                &repo_node_id,
+                                node_id,
+                                gql_status,
+                                gql_conclusion,
+                                "Variant Status".to_string(),
+                                summary,
+                            )
+                            .await;
+                        batched += 1;
+                        continue;
+                    }
+                }
+
+                self.rate_limiter.acquire().await;
+                let octocrab = match self.octocrab_for_owner(&check_run.repo_owner) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        warn!(
+                            "No installation for owner {} (check_run {}): {:?}",
+                            check_run.repo_owner, check_run.check_run_id, e
+                        );
+                        failed += 1;
+                        continue;
+                    },
+                };
+                match check_run
+                    .send_gh_update_with_summary(
+                        &octocrab,
+                        &agg_state,
+                        "Variant Status",
+                        &crate::github::service::jobsets::build_variant_summary_from_states(
+                            &variant_states,
+                        ),
+                    )
+                    .await
+                {
+                    Ok(_) => rest_updated += 1,
+                    Err(e) => {
+                        failed += 1;
+                        warn!(
+                            "Failed to resync coalesced check_run {}: {:?}",
+                            check_run.check_run_id, e
+                        );
+                    },
+                }
+            } else {
+                // Non-coalesced: use direct state
+                let (gql_status, gql_conclusion) =
+                    crate::github::service::graphql_batch::build_state_to_graphql(
+                        &check_run.build_state,
+                    );
+
+                if let Some(node_id) = &check_run.node_id {
+                    let repo_node_id = self
+                        .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
+                        .await;
+                    if let Some(repo_node_id) = repo_node_id {
+                        self.batcher
+                            .queue_update(
+                                &check_run.repo_owner,
+                                &repo_node_id,
+                                node_id,
+                                gql_status,
+                                gql_conclusion,
+                            )
+                            .await;
+                        batched += 1;
+                        continue;
+                    }
+                }
+
+                self.rate_limiter.acquire().await;
+                let octocrab = match self.octocrab_for_owner(&check_run.repo_owner) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        warn!(
+                            "No installation for owner {} (check_run {}): {:?}",
+                            check_run.repo_owner, check_run.check_run_id, e
+                        );
+                        failed += 1;
+                        continue;
+                    },
+                };
+                match check_run
+                    .send_gh_update(&octocrab, &check_run.build_state)
+                    .await
+                {
+                    Ok(_) => rest_updated += 1,
+                    Err(e) => {
+                        failed += 1;
+                        warn!(
+                            "Failed to resync check_run {}: {:?}",
+                            check_run.check_run_id, e
+                        );
+                    },
+                }
             }
         }
 
