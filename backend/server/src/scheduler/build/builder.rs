@@ -95,15 +95,15 @@ impl Builder {
             return true;
         }
 
+        let remote_uri = match &self.remote_uri {
+            Some(uri) => uri,
+            None => return false,
+        };
+
         tokio::time::timeout(
             NIX_QUICK_TIMEOUT,
             Command::new("nix")
-                .args([
-                    "store",
-                    "ping",
-                    "--store",
-                    self.remote_uri.as_ref().unwrap(),
-                ])
+                .args(["store", "ping", "--store", remote_uri])
                 .output(),
         )
         .await

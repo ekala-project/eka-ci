@@ -210,7 +210,7 @@ pub(super) async fn handle_github_merge_group(
     };
 
     // Send the checkout task using the existing flow
-    let git_task = GitTask::GitHubCheckout(pr);
+    let git_task = GitTask::GitHubCheckout(Box::new(pr));
 
     if let Err(e) = git_sender.send(git_task).await {
         warn!("Failed to send merge queue checkout task: {:?}", e);
