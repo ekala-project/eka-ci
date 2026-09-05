@@ -21,36 +21,112 @@ impl GitHubService {
                     None
                 };
 
-                let (gql_status, gql_conclusion) =
-                    crate::github::service::graphql_batch::build_state_to_graphql(status);
-
                 for check_run in check_runs {
-                    // Use GraphQL batcher if node_id is available, otherwise fall back to REST
-                    if let Some(node_id) = &check_run.node_id {
-                        let repo_node_id = self
-                            .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
-                            .await;
-                        if let Some(repo_node_id) = repo_node_id {
-                            self.batcher
-                                .queue_update_with_log(
-                                    &check_run.repo_owner,
-                                    &repo_node_id,
-                                    node_id,
-                                    gql_status,
-                                    gql_conclusion,
-                                    log_tail.clone(),
-                                )
-                                .await;
-                            continue;
-                        }
-                    }
-                    // Fallback: REST API for check runs without node_id
-                    debug!("Updating checkrun status of {} (REST fallback)", &check_run.check_run_id);
-                    self.rate_limiter.acquire().await;
-                    let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
-                    check_run
-                        .send_gh_update_with_log(&octocrab, status, log_tail.as_deref())
+                    // Check if this is a coalesced gate by querying variant count
+                    let variant_states = self
+                        .db_service
+                        .variant_states_for_check_run(check_run.check_run_id)
                         .await?;
+
+                    let is_coalesced = variant_states.len() > 1;
+
+                    if is_coalesced {
+                        // Coalesced gate: compute aggregate status across all
+                        // variants, using the incoming status for the drv that
+                        // triggered this update (DB may not reflect it yet).
+                        let states: Vec<_> = variant_states
+                            .iter()
+                            .map(|v| {
+                                if v.drv_path == **drv_id {
+                                    status.clone()
+                                } else {
+                                    v.build_state.clone()
+                                }
+                            })
+                            .collect();
+                        let agg_state =
+                            crate::github::service::jobsets::aggregate_build_state(&states);
+                        let summary =
+                            crate::github::service::jobsets::build_variant_summary_from_states(
+                                &variant_states,
+                            );
+
+                        let (gql_status, gql_conclusion) =
+                            crate::github::service::graphql_batch::build_state_to_graphql(
+                                &agg_state,
+                            );
+
+                        if let Some(node_id) = &check_run.node_id {
+                            let repo_node_id = self
+                                .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
+                                .await;
+                            if let Some(repo_node_id) = repo_node_id {
+                                self.batcher
+                                    .queue_update_with_output(
+                                        &check_run.repo_owner,
+                                        &repo_node_id,
+                                        node_id,
+                                        gql_status,
+                                        gql_conclusion,
+                                        "Variant Status".to_string(),
+                                        summary,
+                                    )
+                                    .await;
+                                continue;
+                            }
+                        }
+
+                        // REST fallback for coalesced gate
+                        debug!(
+                            "Updating coalesced checkrun {} (REST fallback)",
+                            &check_run.check_run_id
+                        );
+                        self.rate_limiter.acquire().await;
+                        let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
+                        check_run
+                            .send_gh_update_with_summary(
+                                &octocrab,
+                                &agg_state,
+                                "Variant Status",
+                                &crate::github::service::jobsets::build_variant_summary_from_states(
+                                    &variant_states,
+                                ),
+                            )
+                            .await?;
+                    } else {
+                        // Non-coalesced: update directly as before
+                        let (gql_status, gql_conclusion) =
+                            crate::github::service::graphql_batch::build_state_to_graphql(status);
+
+                        if let Some(node_id) = &check_run.node_id {
+                            let repo_node_id = self
+                                .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
+                                .await;
+                            if let Some(repo_node_id) = repo_node_id {
+                                self.batcher
+                                    .queue_update_with_log(
+                                        &check_run.repo_owner,
+                                        &repo_node_id,
+                                        node_id,
+                                        gql_status,
+                                        gql_conclusion,
+                                        log_tail.clone(),
+                                    )
+                                    .await;
+                                continue;
+                            }
+                        }
+                        // Fallback: REST API for check runs without node_id
+                        debug!(
+                            "Updating checkrun status of {} (REST fallback)",
+                            &check_run.check_run_id
+                        );
+                        self.rate_limiter.acquire().await;
+                        let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
+                        check_run
+                            .send_gh_update_with_log(&octocrab, status, log_tail.as_deref())
+                            .await?;
+                    }
                 }
             },
             GitHubTask::UpdateBuildStatusWithSizeWarning {

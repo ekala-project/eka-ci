@@ -26,6 +26,15 @@ pub struct BaseJob {
     pub drv_path: String,
 }
 
+/// Build state of a single variant within a coalesced gate.
+/// Used to compute aggregate status and render the variant summary.
+#[derive(Debug, FromRow)]
+pub struct VariantBuildState {
+    pub drv_path: DrvId,
+    pub name: String,
+    pub build_state: DrvBuildState,
+}
+
 #[derive(Debug, FromRow)]
 pub struct JobInfo {
     pub jobset_id: i64,

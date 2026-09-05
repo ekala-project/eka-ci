@@ -28,6 +28,9 @@ struct PendingUpdate {
     conclusion: Option<&'static str>,
     /// Optional build log tail for failed check runs.
     log_tail: Option<String>,
+    /// Optional override for the output title. When set, used instead of
+    /// the hardcoded "Build failed". Used by coalesced gates.
+    output_title: Option<String>,
 }
 
 /// Accumulates check run updates and flushes them as batched GraphQL mutations.
@@ -73,6 +76,30 @@ impl CheckRunBatcher {
             status,
             conclusion,
             log_tail,
+            output_title: None,
+        });
+    }
+
+    /// Queue a check run update with a custom output title and summary.
+    /// Used by coalesced gates to render variant status tables.
+    pub async fn queue_update_with_output(
+        &self,
+        owner: &str,
+        repo_node_id: &str,
+        check_run_node_id: &str,
+        status: &'static str,
+        conclusion: Option<&'static str>,
+        output_title: String,
+        summary: String,
+    ) {
+        self.pending.lock().await.push(PendingUpdate {
+            repo_node_id: repo_node_id.to_string(),
+            check_run_node_id: check_run_node_id.to_string(),
+            owner: owner.to_string(),
+            status,
+            conclusion,
+            log_tail: Some(summary),
+            output_title: Some(output_title),
         });
     }
 
@@ -156,7 +183,8 @@ async fn send_batch(octocrab: &Octocrab, updates: &[PendingUpdate]) -> Result<us
             Some(c) => format!(", conclusion: {}", c),
             None => String::new(),
         };
-        // For failures with a log tail, include output with the last lines
+        // For failures with a log tail or coalesced gates with summary,
+        // include output in the mutation.
         let output_field = match &u.log_tail {
             Some(log) => {
                 // Escape for GraphQL string literal
@@ -164,9 +192,26 @@ async fn send_batch(octocrab: &Octocrab, updates: &[PendingUpdate]) -> Result<us
                     .replace('\\', "\\\\")
                     .replace('"', "\\\"")
                     .replace('\n', "\\n");
-                format!(
-                    r#", output: {{title: "Build failed", summary: "```\n{}\n```"}}"#,
+                let title = match &u.output_title {
+                    Some(t) => {
+                        let t_escaped = t
+                            .replace('\\', "\\\\")
+                            .replace('"', "\\\"")
+                            .replace('\n', "\\n");
+                        t_escaped
+                    },
+                    None => "Build failed".to_string(),
+                };
+                // Coalesced gates pass markdown directly; failure logs
+                // are wrapped in a code block.
+                let summary = if u.output_title.is_some() {
                     escaped
+                } else {
+                    format!("```\\n{}\\n```", escaped)
+                };
+                format!(
+                    r#", output: {{title: "{}", summary: "{}"}}"#,
+                    title, summary,
                 )
             },
             None => String::new(),

@@ -208,6 +208,29 @@ impl DbService {
         github::check_runs_for_commit(sha, &self.pool).await
     }
 
+    pub async fn variant_states_for_check_run(
+        &self,
+        check_run_id: i64,
+    ) -> anyhow::Result<Vec<github::VariantBuildState>> {
+        github::variant_states_for_check_run(check_run_id, &self.pool).await
+    }
+
+    pub async fn find_coalesced_check_run_for_group(
+        &self,
+        jobset_id: i64,
+        group_prefix: &str,
+    ) -> anyhow::Result<Option<(i64, Option<String>)>> {
+        github::find_coalesced_check_run_for_group(jobset_id, group_prefix, &self.pool).await
+    }
+
+    pub async fn get_group_jobs_in_jobset(
+        &self,
+        jobset_id: i64,
+        group_prefix: &str,
+    ) -> anyhow::Result<Vec<github::NewOrChangedJob>> {
+        github::get_group_jobs_in_jobset(jobset_id, group_prefix, &self.pool).await
+    }
+
     pub async fn insert_check_run_info(
         &self,
         check_run_id: i64,

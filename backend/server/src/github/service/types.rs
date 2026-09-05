@@ -220,12 +220,48 @@ impl CICheckInfo {
             .await
     }
 
+    /// Create a coalesced check run that represents multiple variants of
+    /// a package group. The `summary_markdown` is shown in the check run's
+    /// output body with a per-variant status table.
+    pub async fn create_coalesced_gh_check_run(
+        &self,
+        octocrab: &Octocrab,
+        jobset_name: &str,
+        group_name: &str,
+        worst_build_state: DrvBuildState,
+        worst_difference: &JobDifference,
+        summary_markdown: &str,
+    ) -> Result<CheckRun> {
+        let title = format!("{} / {} ({})", group_name, worst_difference, jobset_name);
+        let (gh_status, gh_conclusion) = worst_build_state.as_gh_checkrun_state();
+        self.inner_gh_check_run_with_output(
+            octocrab,
+            &title,
+            gh_status,
+            gh_conclusion,
+            Some(summary_markdown),
+        )
+        .await
+    }
+
     async fn inner_gh_check_run(
         &self,
         octocrab: &Octocrab,
         title: &str,
         gh_status: GHStatus,
         gh_conclusion: Option<GHConclusion>,
+    ) -> Result<CheckRun> {
+        self.inner_gh_check_run_with_output(octocrab, title, gh_status, gh_conclusion, None)
+            .await
+    }
+
+    async fn inner_gh_check_run_with_output(
+        &self,
+        octocrab: &Octocrab,
+        title: &str,
+        gh_status: GHStatus,
+        gh_conclusion: Option<GHConclusion>,
+        summary: Option<&str>,
     ) -> Result<CheckRun> {
         let check_builder = octocrab.checks(&self.owner, &self.repo_name);
         let mut create_check_run = check_builder
@@ -234,6 +270,17 @@ impl CICheckInfo {
 
         if let Some(conclusion) = gh_conclusion {
             create_check_run = create_check_run.conclusion(conclusion);
+        }
+
+        if let Some(summary_text) = summary {
+            let output = octocrab::params::checks::CheckRunOutput {
+                title: title.to_string(),
+                summary: summary_text.to_string(),
+                text: None,
+                annotations: vec![],
+                images: vec![],
+            };
+            create_check_run = create_check_run.output(output);
         }
 
         let check_run = create_check_run.send().await?;
