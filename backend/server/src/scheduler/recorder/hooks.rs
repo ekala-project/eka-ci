@@ -167,7 +167,7 @@ impl RecorderWorker {
             job_name: job_info.name.clone(),
             is_fod: drv_info.is_fod,
             system: drv_info.system.clone(),
-            pname: None, // TODO: Query pname from DrvInfo if needed
+            pname: drv_info.pname.clone(),
             build_log_path: format!("logs/{}/build.log", drv_id.store_path()), /* TODO: Use actual log path */
             commit_sha: jobset_info.sha.clone(),
         };

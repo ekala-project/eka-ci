@@ -714,9 +714,7 @@ mod tests {
             debug!("{:?}", &drv);
         }
 
-        // TODO: make less ugly
-        let length = result.len();
-        assert_eq!(length, 2);
+        assert_eq!(result.len(), 2);
         Ok(())
     }
 
