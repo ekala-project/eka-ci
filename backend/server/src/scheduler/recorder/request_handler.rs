@@ -14,11 +14,18 @@ impl RecorderWorker {
         use {DrvBuildResult as DBR, DrvBuildState as DBS};
 
         let drv = &task.derivation;
+
+        // Derive build_attempt from current state: FailedRetry means this
+        // is the second attempt, everything else is the first.
+        let current_state = self.db_service.get_drv(drv).await?.map(|d| d.build_state);
+        let attempt = match &current_state {
+            Some(DBS::FailedRetry) => std::num::NonZeroU32::new(2).unwrap(),
+            _ => std::num::NonZeroU32::new(1).unwrap(),
+        };
+
         let build_id = crate::db::model::build::DrvBuildId {
-            // `DrvBuildId` stores an owned `DrvId`; Arc deref + clone.
             derivation: (**drv).clone(),
-            // TODO: build_attempt seems like something we should query
-            build_attempt: std::num::NonZeroU32::new(1).unwrap(),
+            build_attempt: attempt,
         };
 
         let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
@@ -29,13 +36,7 @@ impl RecorderWorker {
                     "Attempting to record successful build of {}",
                     build_id.derivation.store_path()
                 );
-                // Get old state before updating
-                let old_state = self
-                    .db_service
-                    .get_drv(drv)
-                    .await?
-                    .map(|d| d.build_state)
-                    .unwrap_or(DBS::Queued);
+                let old_state = current_state.clone().unwrap_or(DBS::Queued);
 
                 self.update_and_broadcast(drv, &old_state, &task.result)
                     .await?;

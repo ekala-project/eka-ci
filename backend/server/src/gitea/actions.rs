@@ -1,8 +1,8 @@
-///! Gitea API action wrappers for check run and commit status operations.
-///!
-///! This module provides high-level functions for interacting with the Gitea API
-///! to create and update check runs (newer Gitea instances) or commit statuses
-///! (older instances). It automatically handles version detection and fallback.
+//! Gitea API action wrappers for check run and commit status operations.
+//!
+//! This module provides high-level functions for interacting with the Gitea API
+//! to create and update check runs (newer Gitea instances) or commit statuses
+//! (older instances). It automatically handles version detection and fallback.
 use anyhow::{Context, Result};
 use tracing::debug;
 
@@ -175,13 +175,19 @@ pub async fn fail_ci_eval_job(
 
     let name = format!("EkaCI: Evaluate Job ({})", job_name);
 
-    // Create a summary of errors
-    // TODO: Could enhance this with detailed output
-    let summary = if errors.len() == 1 {
-        format!("Evaluation failed: {}", &errors[0].attr)
-    } else {
-        format!("Evaluation failed with {} errors", errors.len())
-    };
+    // Create a summary and detailed error text
+    let summary = format!(
+        "{} evaluation error(s) occurred during job '{}'",
+        errors.len(),
+        job_name
+    );
+
+    let mut text = String::new();
+    for (idx, error) in errors.iter().enumerate() {
+        text.push_str(&format!("## Error {}\n\n", idx + 1));
+        text.push_str(&format!("**Attribute:** `{}`\n\n", error.attr));
+        text.push_str(&format!("**Error:**\n```\n{}\n```\n\n", error.error));
+    }
 
     let request = CreateCheckRunRequest {
         name,
@@ -191,7 +197,7 @@ pub async fn fail_ci_eval_job(
         output: Some(crate::gitea::client::CheckOutput {
             title: "Evaluation Failed".to_string(),
             summary,
-            text: None,
+            text: Some(text),
         }),
     };
 
