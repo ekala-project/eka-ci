@@ -1,8 +1,8 @@
-///! Database helper functions for GitLab platform operations.
-///!
-///! This module provides GitLab-specific database operations for commit statuses,
-///! merge requests, and related data. It follows the same patterns as the GitHub
-///! helpers in `db/github.rs`.
+//! Database helper functions for GitLab platform operations.
+//!
+//! This module provides GitLab-specific database operations for commit statuses,
+//! merge requests, and related data. It follows the same patterns as the GitHub
+//! helpers in `db/github.rs`.
 use anyhow::Result;
 use sqlx::{FromRow, Pool, Sqlite};
 

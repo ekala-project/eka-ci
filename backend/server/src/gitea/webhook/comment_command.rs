@@ -1,6 +1,6 @@
-///! Comment command parsing for Gitea webhook comments.
-///!
-///! This module parses `@eka-ci` commands from pull request comments.
+//! Comment command parsing for Gitea webhook comments.
+//!
+//! This module parses `@eka-ci` commands from pull request comments.
 
 /// Comment command parsed from PR comments
 #[derive(Debug, Clone, PartialEq, Eq)]

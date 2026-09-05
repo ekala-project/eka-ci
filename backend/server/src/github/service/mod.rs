@@ -98,10 +98,8 @@ impl ApiRateLimiter {
 
 /// Check if an octocrab error is a 429 rate limit response.
 pub(crate) fn is_rate_limited(err: &anyhow::Error) -> bool {
-    if let Some(octocrab_err) = err.downcast_ref::<octocrab::Error>() {
-        if let octocrab::Error::GitHub { source, .. } = octocrab_err {
-            return source.status_code == http::StatusCode::TOO_MANY_REQUESTS;
-        }
+    if let Some(octocrab::Error::GitHub { source, .. }) = err.downcast_ref::<octocrab::Error>() {
+        return source.status_code == http::StatusCode::TOO_MANY_REQUESTS;
     }
     false
 }

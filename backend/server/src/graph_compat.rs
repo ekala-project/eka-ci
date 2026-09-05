@@ -1,7 +1,5 @@
 // Compatibility layer for converting between server types and shared/graph types
 
-use std::str::FromStr;
-
 use crate::db::model::{Drv as ServerDrv, DrvId as ServerDrvId};
 
 /// Convert server DrvId to shared DrvId
@@ -11,7 +9,7 @@ pub fn to_shared_drv_id(server_id: &ServerDrvId) -> anyhow::Result<shared::types
 
 /// Convert shared DrvId to server DrvId
 pub fn to_server_drv_id(shared_id: &shared::types::DrvId) -> anyhow::Result<ServerDrvId> {
-    Ok(ServerDrvId::from_str(&shared_id.to_string())?)
+    Ok(shared_id.to_string().parse()?)
 }
 
 /// Convert a Vec of server DrvIds to shared DrvIds

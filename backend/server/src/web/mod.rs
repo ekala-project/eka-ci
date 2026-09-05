@@ -133,7 +133,7 @@ impl WebService {
 
         info!("Serving static files from: {:?}", static_dir);
 
-        let serve_dir = ServeDir::new(&static_dir)
+        let serve_dir = ServeDir::new(static_dir)
             .not_found_service(ServeFile::new(static_dir.join("index.html")));
 
         let cors = build_cors_layer(&self.state.allowed_origins);
