@@ -111,8 +111,12 @@ impl RecorderWorker {
         Ok(())
     }
 
-    /// Check if any jobsets are now fully concluded and send completion
-    /// notifications (GitHub check-run completion, channel events, auto-merge).
+    /// Check if any jobsets are now fully concluded and send
+    /// channel notifications and auto-merge signals.
+    ///
+    /// Note: the eval gate (CompleteCIEvalJob) is completed immediately
+    /// after evaluation by the EvalService, not here. This method only
+    /// handles downstream effects of all builds concluding.
     async fn check_jobset_completion(
         &self,
         drv: &Arc<drv_id::DrvId>,
@@ -134,35 +138,9 @@ impl RecorderWorker {
                 .jobset_has_new_or_changed_failures(job_info.jobset_id)
                 .await?;
 
-            let conclusion = if has_failures {
-                octocrab::params::checks::CheckRunConclusion::Failure
-            } else {
-                octocrab::params::checks::CheckRunConclusion::Success
-            };
-
             let jobset_info = self.db_service.get_jobset_info(job_info.jobset_id).await?;
 
-            let complete_task = GitHubTask::CompleteCIEvalJob {
-                ci_check_info: Arc::new(crate::github::CICheckInfo {
-                    commit: jobset_info.sha.clone(),
-                    base_commit: None,
-                    owner: jobset_info.owner.clone(),
-                    repo_name: jobset_info.repo_name.clone(),
-                }),
-                job_name: jobset_info.job.clone(),
-                conclusion: conclusion.into(),
-            };
-
-            if let Err(e) = github_sender.send(complete_task).await {
-                warn!(
-                    "Failed to send CompleteCIEvalJob for jobset {}: {:?}",
-                    job_info.jobset_id, e
-                );
-            }
-
             // Notify ChannelService that this jobset has concluded.
-            // Today the recorder only sees GitHub-backed jobsets, so
-            // the forge is hard-coded to GitHub.
             if let Some(channel_sender) = &self.channel_sender {
                 let channel_task = ChannelTask::JobsetComplete {
                     forge: ChannelForge::GitHub,
