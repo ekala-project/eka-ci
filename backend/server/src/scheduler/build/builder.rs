@@ -16,6 +16,7 @@ use super::{BuildRequest, Platform};
 use crate::config::RemoteBuilder;
 use crate::graph::GraphServiceHandle;
 use crate::metrics::BuildMetrics;
+use crate::nix::reconstitute::ReconstitutionTracker;
 use crate::scheduler::recorder::RecorderTask;
 
 /// This is meant to be an abstraction over both local and remote builders
@@ -36,6 +37,8 @@ pub struct Builder {
     no_output_timeout_seconds: u64,
     max_duration_seconds: u64,
     graph_handle: GraphServiceHandle,
+    db_pool: sqlx::SqlitePool,
+    reconstitution_tracker: Arc<ReconstitutionTracker>,
 }
 
 impl Builder {
@@ -54,6 +57,8 @@ impl Builder {
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
         graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Self {
         Self {
             is_local,
@@ -69,6 +74,8 @@ impl Builder {
             no_output_timeout_seconds,
             max_duration_seconds,
             graph_handle,
+            db_pool,
+            reconstitution_tracker,
         }
     }
 
@@ -117,6 +124,8 @@ impl Builder {
             self.no_output_timeout_seconds,
             self.max_duration_seconds,
             self.graph_handle.clone(),
+            self.db_pool.clone(),
+            self.reconstitution_tracker.clone(),
         );
 
         thread.run(cancellation_token)
@@ -129,6 +138,8 @@ impl Builder {
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
         graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -156,6 +167,8 @@ impl Builder {
                     no_output_timeout_seconds,
                     max_duration_seconds,
                     graph_handle.clone(),
+                    db_pool.clone(),
+                    reconstitution_tracker.clone(),
                 )
             })
             .collect();
@@ -170,6 +183,8 @@ impl Builder {
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
         graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -196,6 +211,8 @@ impl Builder {
                     no_output_timeout_seconds,
                     max_duration_seconds,
                     graph_handle.clone(),
+                    db_pool.clone(),
+                    reconstitution_tracker.clone(),
                 )
             })
             .collect();
@@ -213,6 +230,8 @@ impl Builder {
         no_output_timeout_seconds: u64,
         max_duration_seconds: u64,
         graph_handle: GraphServiceHandle,
+        db_pool: sqlx::SqlitePool,
+        reconstitution_tracker: Arc<ReconstitutionTracker>,
     ) -> Self {
         Self::new_inner(
             false,
@@ -232,6 +251,8 @@ impl Builder {
             no_output_timeout_seconds,
             max_duration_seconds,
             graph_handle,
+            db_pool,
+            reconstitution_tracker,
         )
     }
 

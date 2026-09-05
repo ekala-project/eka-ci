@@ -378,6 +378,11 @@ pub enum GitHubTask {
         issue_number: i64,
         body: String,
     },
+    /// Re-push all check run states for a commit to GitHub.
+    /// Fixes stale "pending" checks after server restarts.
+    ResyncCheckRuns {
+        sha: String,
+    },
 }
 
 pub type Owner = String;

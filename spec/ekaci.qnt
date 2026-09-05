@@ -208,15 +208,33 @@ module ekaci {
     }
     else if (is_buildable(drv, deps, nodes)) {
       val new_state = if (node.state == FailedRetry) FailedRetry else Buildable
-      all {
-        nodes' = nodes.put(drv, { ...node, state: new_state }),
-        build_queue' = build_queue.union(Set(drv)),
-        ingress_queue' = ingress_queue.exclude(Set(drv)),
-        deps' = deps,
-        referrers' = referrers,
-        failed_drvs' = failed_drvs,
-        transitive_failure_map' = transitive_failure_map,
-        recorder_queue' = recorder_queue,
+      // The real system uses try_send to the builder channel, which may
+      // fail when the channel is full. Model this nondeterministically:
+      // the drv transitions to Buildable either way, but may or may not
+      // be added to the build_queue. The sweep catches deferred drvs.
+      any {
+        // try_send succeeds: drv enters build queue
+        all {
+          nodes' = nodes.put(drv, { ...node, state: new_state }),
+          build_queue' = build_queue.union(Set(drv)),
+          ingress_queue' = ingress_queue.exclude(Set(drv)),
+          deps' = deps,
+          referrers' = referrers,
+          failed_drvs' = failed_drvs,
+          transitive_failure_map' = transitive_failure_map,
+          recorder_queue' = recorder_queue,
+        },
+        // try_send fails (channel full): drv is Buildable but deferred
+        all {
+          nodes' = nodes.put(drv, { ...node, state: new_state }),
+          build_queue' = build_queue,
+          ingress_queue' = ingress_queue.exclude(Set(drv)),
+          deps' = deps,
+          referrers' = referrers,
+          failed_drvs' = failed_drvs,
+          transitive_failure_map' = transitive_failure_map,
+          recorder_queue' = recorder_queue,
+        },
       }
     }
     else {
@@ -234,12 +252,13 @@ module ekaci {
     }
   }
 
-  // Periodic sweep: find Queued drvs whose deps are all Completed(Success)
-  // and re-enqueue them to ingress. Catches drvs stuck because a try_send
-  // (CheckBuildable) was dropped when the ingress channel was full.
+  // Periodic sweep: find Queued or Buildable drvs whose deps are all
+  // Completed(Success) and re-enqueue them to ingress. Catches:
+  //   - Queued drvs whose CheckBuildable try_send was dropped
+  //   - Buildable drvs deferred because the builder channel was full
   action sweep_buildable(drv: DrvId): bool = all {
     nodes.keys().contains(drv),
-    nodes.get(drv).state == Queued,
+    or(nodes.get(drv).state == Queued, nodes.get(drv).state == Buildable),
     is_buildable(drv, deps, nodes),
     not(ingress_queue.contains(drv)),
     not(build_queue.contains(drv)),
@@ -692,9 +711,10 @@ module ekaci {
     nondet drv = oneOf(failed_drvs)
     rebuild_failed(drv),
 
-    // Periodic buildability sweep
+    // Periodic buildability sweep (covers both Queued and deferred Buildable)
     nondet drv = oneOf(nodes.keys().filter(d =>
-      nodes.get(d).state == Queued and is_buildable(d, deps, nodes)
+      (nodes.get(d).state == Queued or nodes.get(d).state == Buildable)
+      and is_buildable(d, deps, nodes)
     ))
     sweep_buildable(drv),
 
@@ -1087,6 +1107,58 @@ module ekaci_test {
     .then(all {
       assert(build_queue.contains("stuck")),
       assert(nodes.get("stuck").state == Buildable),
+      unchanged,
+    })
+  }
+
+  // Test: Deferred Buildable drv (try_send failure) is swept and eventually built
+  run deferred_buildable_test = {
+    init
+    .then(eval_discover_leaf("ready", "x86_64-linux", false))
+    .then(ingress_process("ready"))
+    // Ingress marks it Buildable but try_send fails (channel full).
+    // We need to pick the nondeterministic branch where build_queue
+    // is NOT updated. Since ingress_process uses `any`, we verify
+    // the Buildable state is set and then manually simulate the
+    // deferred case.
+    .then(all {
+      // After ingress_process, "ready" is Buildable.
+      // Simulate the try_send failure: remove from build_queue.
+      assert(nodes.get("ready").state == Buildable),
+      build_queue' = build_queue.exclude(Set("ready")),
+      ingress_queue' = ingress_queue,
+      nodes' = nodes,
+      deps' = deps,
+      referrers' = referrers,
+      failed_drvs' = failed_drvs,
+      transitive_failure_map' = transitive_failure_map,
+      recorder_queue' = recorder_queue,
+    })
+    .then(all {
+      // Buildable but not in build_queue — deferred
+      assert(nodes.get("ready").state == Buildable),
+      assert(not(build_queue.contains("ready"))),
+      unchanged,
+    })
+    // Sweep catches the deferred Buildable drv
+    .then(sweep_buildable("ready"))
+    .then(all {
+      assert(ingress_queue.contains("ready")),
+      unchanged,
+    })
+    // Re-process through ingress → build_queue
+    .then(ingress_process("ready"))
+    .then(all {
+      assert(nodes.get("ready").state == Buildable),
+      // This time try_send succeeds (nondeterministic, but we assert it)
+      assert(build_queue.contains("ready")),
+      unchanged,
+    })
+    .then(start_build("ready"))
+    .then(build_complete("ready", Success))
+    .then(record_success("ready"))
+    .then(all {
+      assert(nodes.get("ready").state == Completed(Success)),
       unchanged,
     })
   }

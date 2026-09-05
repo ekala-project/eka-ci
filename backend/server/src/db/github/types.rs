@@ -14,6 +14,9 @@ pub struct CheckRun {
     pub repo_owner: String,
     pub build_state: DrvBuildState,
     pub drv_path: DrvId,
+    /// GraphQL node ID (e.g. "CR_kwDO..."). Used for batched GraphQL
+    /// mutations. `None` for check runs created before this column existed.
+    pub node_id: Option<String>,
 }
 
 /// Helper structure to represent a job from the base commit

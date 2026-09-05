@@ -1206,6 +1206,7 @@ dependencies = [
  "ci_config",
  "clap",
  "colored",
+ "reqwest 0.12.24",
  "serde",
  "serde_json",
  "shared",

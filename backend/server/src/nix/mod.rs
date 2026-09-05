@@ -16,6 +16,8 @@ pub use evaluator::utils::{pname_from_name, version_from_name};
 // Server-specific wrapper for eval jobs
 mod jobs;
 
+pub mod reconstitute;
+
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;

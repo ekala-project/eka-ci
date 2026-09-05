@@ -108,8 +108,8 @@ pub async fn list_open_pull_requests(pool: &Pool<Sqlite>) -> Result<Vec<PullRequ
             pr.updated_at,
             g.ROWID as jobset_id,
             COALESCE(COUNT(d.ROWID), 0) as total_drvs,
-            COALESCE(SUM(CASE WHEN d.build_state >= 6 AND d.build_state < 11 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
-            COALESCE(SUM(CASE WHEN d.build_state >= 11 AND d.build_state < 16 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = -1 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
             COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
@@ -175,8 +175,8 @@ pub async fn get_pull_request(
             pr.updated_at,
             g.ROWID as jobset_id,
             COALESCE(COUNT(d.ROWID), 0) as total_drvs,
-            COALESCE(SUM(CASE WHEN d.build_state >= 6 AND d.build_state < 11 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
-            COALESCE(SUM(CASE WHEN d.build_state >= 11 AND d.build_state < 16 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = -1 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
             COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
@@ -238,8 +238,8 @@ pub async fn list_merge_queue_builds(
             pr.updated_at,
             g.ROWID as jobset_id,
             COALESCE(COUNT(d.ROWID), 0) as total_drvs,
-            COALESCE(SUM(CASE WHEN d.build_state >= 6 AND d.build_state < 11 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
-            COALESCE(SUM(CASE WHEN d.build_state >= 11 AND d.build_state < 16 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = -1 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
             COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
@@ -307,8 +307,8 @@ pub async fn get_merge_queue_build_by_sha(
             pr.updated_at,
             g.ROWID as jobset_id,
             COALESCE(COUNT(d.ROWID), 0) as total_drvs,
-            COALESCE(SUM(CASE WHEN d.build_state >= 6 AND d.build_state < 11 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
-            COALESCE(SUM(CASE WHEN d.build_state >= 11 AND d.build_state < 16 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
+            COALESCE(SUM(CASE WHEN d.build_state = -1 THEN 1 ELSE 0 END), 0) as completed_failure_drvs,
             COALESCE(SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END), 0) as failed_retry_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END), 0) as changed_drvs,
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs

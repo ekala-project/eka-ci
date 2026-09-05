@@ -15,6 +15,15 @@ impl CheckRun {
         octocrab: &Octocrab,
         status: &DrvBuildState,
     ) -> Result<GHCheckRun> {
+        self.send_gh_update_with_log(octocrab, status, None).await
+    }
+
+    pub async fn send_gh_update_with_log(
+        &self,
+        octocrab: &Octocrab,
+        status: &DrvBuildState,
+        log_tail: Option<&str>,
+    ) -> Result<GHCheckRun> {
         let (gh_status, gh_conclusion) = status.as_gh_checkrun_state();
 
         let check_builder = octocrab.checks(&self.repo_owner, &self.repo_name);
@@ -24,6 +33,17 @@ impl CheckRun {
 
         if let Some(conclusion) = gh_conclusion {
             check_update = check_update.conclusion(conclusion);
+        }
+
+        if let Some(log) = log_tail {
+            let output = octocrab::params::checks::CheckRunOutput {
+                title: format!("{:?}", status),
+                summary: format!("```\n{}\n```", log),
+                text: None,
+                annotations: vec![],
+                images: vec![],
+            };
+            check_update = check_update.output(output);
         }
 
         let check_run = check_update.send().await?;
@@ -39,16 +59,30 @@ pub async fn insert_check_run_info(
     repo_owner: &str,
     pool: &Pool<Sqlite>,
 ) -> anyhow::Result<()> {
+    insert_check_run_info_with_node_id(check_run_id, drv_path, repo_name, repo_owner, None, pool)
+        .await
+}
+
+/// Insert a new GitHubCheckRuns record with GraphQL node_id
+pub async fn insert_check_run_info_with_node_id(
+    check_run_id: i64,
+    drv_path: &DrvId,
+    repo_name: &str,
+    repo_owner: &str,
+    node_id: Option<&str>,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO GitHubCheckRuns (check_run_id, drv_id, repo_name, repo_owner)
-        VALUES (?, (SELECT ROWID FROM Drv WHERE drv_path = ? LIMIT 1), ?, ?)
+        INSERT INTO GitHubCheckRuns (check_run_id, drv_id, repo_name, repo_owner, node_id)
+        VALUES (?, (SELECT ROWID FROM Drv WHERE drv_path = ? LIMIT 1), ?, ?, ?)
         "#,
     )
     .bind(check_run_id)
     .bind(drv_path)
     .bind(repo_name)
     .bind(repo_owner)
+    .bind(node_id)
     .execute(pool)
     .await?;
 
@@ -62,7 +96,7 @@ pub async fn check_runs_for_drv_path(
 ) -> anyhow::Result<Vec<CheckRun>> {
     let check_runs = sqlx::query_as(
         r#"
-        SELECT check_run_id, repo_name, repo_owner, build_state, drv_path
+        SELECT check_run_id, repo_name, repo_owner, build_state, drv_path, node_id
         FROM CheckRun
         WHERE drv_path = ?
         "#,
@@ -82,7 +116,7 @@ pub async fn check_runs_for_commit(
 ) -> anyhow::Result<Vec<CheckRun>> {
     let check_runs = sqlx::query_as(
         r#"
-        SELECT DISTINCT c.check_run_id, c.repo_name, c.repo_owner, d.build_state, d.drv_path
+        SELECT DISTINCT c.check_run_id, c.repo_name, c.repo_owner, d.build_state, d.drv_path, c.node_id
         FROM GitHubCheckRuns c
         INNER JOIN Drv d ON c.drv_id = d.ROWID
         INNER JOIN Job j ON j.drv_id = d.ROWID

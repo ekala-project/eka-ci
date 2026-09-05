@@ -164,22 +164,30 @@ impl IngressWorker {
         info!("IngressWorker service shutdown gracefully");
     }
 
-    /// Periodic sweep: find Queued drvs whose deps are all Completed(Success)
-    /// but were never re-enqueued because a try_send was dropped.
+    /// Periodic sweep: find Queued/Buildable drvs whose deps are all
+    /// Completed(Success) and re-send them to the builder. Catches drvs
+    /// that were deferred because the builder channel was full, or whose
+    /// CheckBuildable messages were dropped.
     async fn sweep_buildable_drvs(&self) {
         let mut swept = 0u32;
-        let queued_buildable: Vec<_> = self
+        let shared_buildable =
+            crate::db::graph_impl::convert_build_state(&DrvBuildState::Buildable);
+        let candidates: Vec<_> = self
             .graph_handle
             .shared_view()
             .iter()
             .filter(|e| {
-                e.value().build_state == shared::types::DrvBuildState::Queued
-                    && self.graph_handle.is_buildable(e.key())
+                let state = &e.value().build_state;
+                // Sweep both Queued (deps just completed) and Buildable
+                // (deferred because builder channel was full)
+                (*state == shared::types::DrvBuildState::Queued
+                    && self.graph_handle.is_buildable(e.key()))
+                    || *state == shared_buildable
             })
             .map(|e| e.key().clone())
             .collect();
 
-        for shared_id in queued_buildable {
+        for shared_id in candidates {
             if let Ok(server_id) = graph_compat::to_server_drv_id(&shared_id) {
                 match self.handle_check_buildable_task(&server_id).await {
                     Ok(()) => swept += 1,
@@ -258,7 +266,16 @@ impl IngressWorker {
 
             let shared_drv = cached_node.to_drv();
             let server_drv = graph_compat::to_server_drv(&shared_drv)?;
-            self.buildable_sender.send(BuildRequest(server_drv)).await?;
+            // Use try_send to avoid blocking the ingress when the
+            // builder channel is full. The periodic sweep will
+            // re-discover Buildable drvs that couldn't be sent.
+            if let Err(e) = self.buildable_sender.try_send(BuildRequest(server_drv)) {
+                debug!(
+                    "builder channel full, deferring build for {}: {}",
+                    drv_id.store_path(),
+                    e
+                );
+            }
         }
 
         Ok(())

@@ -97,7 +97,7 @@ pub async fn get_jobset_details(jobset_id: i64, pool: &Pool<Sqlite>) -> Result<J
             SUM(CASE WHEN d.build_state = 1 THEN 1 ELSE 0 END) as buildable_drvs,
             SUM(CASE WHEN d.build_state = 7 THEN 1 ELSE 0 END) as building_drvs,
             SUM(CASE WHEN d.build_state = 100 THEN 1 ELSE 0 END) as blocked_drvs,
-            SUM(CASE WHEN d.build_state = 1000 THEN 1 ELSE 0 END) as completed_success_drvs,
+            SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END) as completed_success_drvs,
             SUM(CASE WHEN d.build_state = -1 THEN 1 ELSE 0 END) as completed_failure_drvs,
             SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END) as failed_retry_drvs,
             SUM(CASE WHEN d.build_state = -2 THEN 1 ELSE 0 END) as transitive_failure_drvs,
@@ -253,7 +253,7 @@ pub async fn get_active_jobs(pool: &Pool<Sqlite>) -> Result<Vec<JobSetDetails>> 
             SUM(CASE WHEN d.build_state = 1 THEN 1 ELSE 0 END) as buildable_drvs,
             SUM(CASE WHEN d.build_state = 7 THEN 1 ELSE 0 END) as building_drvs,
             SUM(CASE WHEN d.build_state = 100 THEN 1 ELSE 0 END) as blocked_drvs,
-            SUM(CASE WHEN d.build_state = 1000 THEN 1 ELSE 0 END) as completed_success_drvs,
+            SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END) as completed_success_drvs,
             SUM(CASE WHEN d.build_state = -1 THEN 1 ELSE 0 END) as completed_failure_drvs,
             SUM(CASE WHEN d.build_state = 2 THEN 1 ELSE 0 END) as failed_retry_drvs,
             SUM(CASE WHEN d.build_state = -2 THEN 1 ELSE 0 END) as transitive_failure_drvs,
@@ -303,7 +303,7 @@ pub async fn get_commit_jobs(sha: &str, pool: &Pool<Sqlite>) -> Result<Vec<Commi
             g.ROWID as jobset_id,
             g.job as job_name,
             COUNT(d.ROWID) as total_drvs,
-            SUM(CASE WHEN d.build_state >= 1000 OR d.build_state < 0 THEN 1 ELSE 0 END) as completed_drvs,
+            SUM(CASE WHEN d.build_state = 42 OR d.build_state < 0 THEN 1 ELSE 0 END) as completed_drvs,
             SUM(CASE WHEN d.build_state < 0 THEN 1 ELSE 0 END) as failed_drvs
         FROM GitHubJobSets g
         JOIN Job j ON j.jobset = g.ROWID

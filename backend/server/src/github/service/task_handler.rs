@@ -14,11 +14,43 @@ impl GitHubService {
             GitHubTask::UpdateBuildStatus { drv_id, status } => {
                 let check_runs = self.db_service.check_runs_for_drv_path(drv_id).await?;
 
+                // For failures, fetch the last 25 lines of the build log
+                let log_tail = if status.is_failure() {
+                    self.fetch_log_tail(drv_id, 25).await
+                } else {
+                    None
+                };
+
+                let (gql_status, gql_conclusion) =
+                    crate::github::service::graphql_batch::build_state_to_graphql(status);
+
                 for check_run in check_runs {
-                    debug!("Updating checkrun status of {}", &check_run.check_run_id);
+                    // Use GraphQL batcher if node_id is available, otherwise fall back to REST
+                    if let Some(node_id) = &check_run.node_id {
+                        let repo_node_id = self
+                            .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
+                            .await;
+                        if let Some(repo_node_id) = repo_node_id {
+                            self.batcher
+                                .queue_update_with_log(
+                                    &check_run.repo_owner,
+                                    &repo_node_id,
+                                    node_id,
+                                    gql_status,
+                                    gql_conclusion,
+                                    log_tail.clone(),
+                                )
+                                .await;
+                            continue;
+                        }
+                    }
+                    // Fallback: REST API for check runs without node_id
+                    debug!("Updating checkrun status of {} (REST fallback)", &check_run.check_run_id);
                     self.rate_limiter.acquire().await;
                     let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
-                    check_run.send_gh_update(&octocrab, status).await?;
+                    check_run
+                        .send_gh_update_with_log(&octocrab, status, log_tail.as_deref())
+                        .await?;
                 }
             },
             GitHubTask::UpdateBuildStatusWithSizeWarning {
@@ -91,12 +123,48 @@ impl GitHubService {
                 conclusion,
             } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
-                let check_run_id = self
+                // Try in-memory map first, then fall back to GitHub API lookup
+                // (the map is empty after server restarts)
+                let check_run_id = match self
                     .github_eval_checks
                     .lock()
                     .await
                     .remove(&(ci_check_info.commit.clone(), job_name.clone()))
-                    .context("No eval job check run found for commit")?;
+                {
+                    Some(id) => id,
+                    None => {
+                        // Look up the check run by name from GitHub API
+                        let check_name = format!("EkaCI: Evaluate Job ({})", job_name);
+                        match actions::find_check_run_by_name(
+                            &octocrab,
+                            &ci_check_info.owner,
+                            &ci_check_info.repo_name,
+                            &ci_check_info.commit,
+                            &check_name,
+                        )
+                        .await
+                        {
+                            Ok(Some(id)) => id,
+                            Ok(None) => {
+                                warn!(
+                                    "No eval gate check run found for {}/{} commit {} job {}",
+                                    ci_check_info.owner,
+                                    ci_check_info.repo_name,
+                                    ci_check_info.commit,
+                                    job_name
+                                );
+                                return Ok(());
+                            },
+                            Err(e) => {
+                                warn!(
+                                    "Failed to look up eval gate check run: {:?}",
+                                    e
+                                );
+                                return Ok(());
+                            },
+                        }
+                    },
+                };
                 actions::update_ci_eval_job(
                     &octocrab,
                     ci_check_info,
@@ -292,6 +360,9 @@ impl GitHubService {
                         owner, repo_name, issue_number, e
                     );
                 }
+            },
+            GitHubTask::ResyncCheckRuns { sha } => {
+                self.handle_resync_check_runs(sha).await?;
             },
         }
         Ok(())
