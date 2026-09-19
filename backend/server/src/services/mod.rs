@@ -128,6 +128,12 @@ pub async fn start_services(config: Config) -> Result<()> {
     let (github_ingress_sender, github_ingress_receiver) =
         channel::<crate::scheduler::IngressTask>(1000);
 
+    // Create a pre-allocated eval sender for the GitHub service to
+    // dispatch passthru.tests evaluations. The actual eval_sender is
+    // created later (line ~233), so we use a separate channel here and
+    // forward messages into the real eval channel below.
+    let (github_eval_sender, github_eval_receiver) = channel::<EvalTask>(100);
+
     // Create GitHubService
     let maybe_github_service = if let Some(ref octocrab) = maybe_octocrab {
         Some(
@@ -137,6 +143,7 @@ pub async fn start_services(config: Config) -> Result<()> {
                 graph_handle.clone(),
                 Some(change_summary_metrics.clone()),
                 Some(github_ingress_sender),
+                Some(github_eval_sender),
             )
             .await?,
         )
@@ -246,6 +253,22 @@ pub async fn start_services(config: Config) -> Result<()> {
         graph_command_sender.clone(),
         Some(nix_eval_metrics),
     );
+
+    // Forward GitHub service eval requests (passthru.tests) to the
+    // eval service. This bridge lets the GitHub service dispatch eval
+    // tasks without holding a direct reference to the eval service.
+    {
+        let eval_fwd = eval_sender.clone();
+        let cancel = cancellation_token.clone();
+        spawn_logged("github-eval-forwarder", async move {
+            let mut rx = github_eval_receiver;
+            while let Some(task) = cancel.run_until_cancelled(rx.recv()).await.flatten() {
+                if eval_fwd.send(task).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
 
     // Create ChecksExecutor service
     let checks_service = ChecksExecutor::new(db_service.clone(), maybe_github_sender.clone());

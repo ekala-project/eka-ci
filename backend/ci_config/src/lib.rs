@@ -23,6 +23,22 @@ pub struct Job {
     /// Optional size check configuration for detecting installation bloat
     #[serde(default)]
     pub size_check: Option<SizeCheck>,
+    /// Optional passthru.tests evaluation for directly-changed packages
+    #[serde(default)]
+    pub passthru_tests: Option<PassthruTestsConfig>,
+}
+
+/// Configuration for evaluating passthru.tests on directly-changed packages.
+///
+/// When enabled, after the jobset diff identifies which packages changed,
+/// eka-ci filters to only directly-modified packages (using `meta.position`
+/// cross-referenced with `git diff`), then evaluates and builds their
+/// `passthru.tests` attribute sets.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct PassthruTestsConfig {
+    /// Enable passthru.tests evaluation for this job's changed packages
+    #[serde(default = "default_false")]
+    pub enable: bool,
 }
 
 /// Configuration for build output size checks
@@ -365,6 +381,32 @@ mod tests {
 
         assert!(config.package_change_summary.is_none());
         assert!(config.rebuild_impact.is_none());
+    }
+
+    #[test]
+    fn test_deserialization_with_passthru_tests() {
+        let example_config = r#"{
+  "jobs": {
+    "nixpkgs": {
+      "file": "/pkgs/top-level/release.nix",
+      "passthru_tests": { "enable": true }
+    },
+    "no-passthru": {
+      "file": "default.nix"
+    }
+  }
+}"#;
+        let config = serde_json::from_str::<CIConfig>(example_config)
+            .expect("Failed to deserialize config with passthru_tests");
+
+        assert_eq!(config.jobs.len(), 2);
+
+        let job = config.jobs.get("nixpkgs").unwrap();
+        assert!(job.passthru_tests.is_some());
+        assert_eq!(job.passthru_tests.as_ref().unwrap().enable, true);
+
+        let job2 = config.jobs.get("no-passthru").unwrap();
+        assert!(job2.passthru_tests.is_none());
     }
 
     #[test]

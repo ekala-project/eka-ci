@@ -10,4 +10,5 @@ async-trait = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1.41.0", features = ["full", "process", "io-util"] }
+tempfile = "3"
 tracing = { workspace = true }

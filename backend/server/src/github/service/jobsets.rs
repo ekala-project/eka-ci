@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::GitHubService;
+use crate::ci::config as ci_config;
 use crate::db::github::NewOrChangedJob;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
@@ -83,7 +84,135 @@ impl GitHubService {
             {
                 self.spawn_change_summary_debounce(Arc::clone(ci_check_info), name.to_string());
             }
+
+            // Trigger passthru.tests evaluation for directly-changed packages
+            // (only for primary jobs, not recursive passthru-tests jobsets).
+            if !name.ends_with("/passthru-tests") {
+                self.maybe_trigger_passthru_tests(
+                    ci_check_info,
+                    name,
+                    config_json,
+                    jobset_id,
+                    base_commit,
+                )
+                .await?;
+            }
         }
+        Ok(())
+    }
+
+    /// Check if passthru.tests is enabled for this job and, if so,
+    /// filter to directly-changed packages and dispatch a
+    /// `PassthruTests` eval task.
+    async fn maybe_trigger_passthru_tests(
+        &self,
+        ci_check_info: &Arc<CICheckInfo>,
+        job_name: &str,
+        config_json: Option<&str>,
+        jobset_id: i64,
+        base_commit: &str,
+    ) -> Result<()> {
+        let job_config = match parse_passthru_config(config_json) {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        let eval_sender = match &self.eval_sender {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        debug!(
+            "passthru.tests enabled for job {}, filtering changed packages",
+            job_name
+        );
+
+        let changed_attrs = self
+            .collect_directly_changed_attrs(ci_check_info, jobset_id, base_commit)
+            .await?;
+
+        if changed_attrs.is_empty() {
+            debug!("No directly-changed packages for passthru.tests");
+            return Ok(());
+        }
+
+        self.dispatch_passthru_tests_eval(
+            ci_check_info,
+            job_name,
+            config_json,
+            &job_config,
+            &changed_attrs,
+            eval_sender,
+        )
+        .await
+    }
+
+    /// Collect attr names of directly-changed packages using
+    /// `meta.position` + `git diff` filtering.
+    async fn collect_directly_changed_attrs(
+        &self,
+        ci_check_info: &Arc<CICheckInfo>,
+        jobset_id: i64,
+        base_commit: &str,
+    ) -> Result<Vec<String>> {
+        let changed_jobs = self.db_service.get_new_or_changed_jobs(jobset_id).await?;
+        if changed_jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let workspace = crate::git::workspace_root()
+            .map_err(|e| anyhow::anyhow!("workspace root unavailable: {e}"))?;
+        let repo_dir = workspace
+            .join("github.com")
+            .join(&ci_check_info.owner)
+            .join(&ci_check_info.repo_name);
+
+        let filtered = super::passthru_filter::filter_directly_changed(
+            &changed_jobs,
+            base_commit,
+            &ci_check_info.commit,
+            &repo_dir.to_string_lossy(),
+            &self.db_service.pool,
+        )
+        .await?;
+
+        Ok(filtered.directly_changed)
+    }
+
+    /// Resolve the job file path and send the passthru.tests eval task.
+    async fn dispatch_passthru_tests_eval(
+        &self,
+        ci_check_info: &Arc<CICheckInfo>,
+        job_name: &str,
+        config_json: Option<&str>,
+        job_config: &ci_config::Job,
+        changed_attrs: &[String],
+        eval_sender: &tokio::sync::mpsc::Sender<crate::nix::EvalTask>,
+    ) -> Result<()> {
+        let workspace = crate::git::workspace_root()
+            .map_err(|e| anyhow::anyhow!("workspace root unavailable: {e}"))?;
+        let repo_dir = workspace
+            .join("github.com")
+            .join(&ci_check_info.owner)
+            .join(&ci_check_info.repo_name);
+
+        let file_path = resolve_job_file_path(&repo_dir, &ci_check_info.commit, &job_config.file)?;
+
+        info!(
+            "Dispatching passthru.tests eval for {} directly-changed packages in job {}",
+            changed_attrs.len(),
+            job_name
+        );
+
+        let task = crate::nix::EvalTask::PassthruTests {
+            file_path,
+            changed_attrs: changed_attrs.to_vec(),
+            ci_info: ci_check_info.as_ref().clone(),
+            parent_job_name: job_name.to_string(),
+            config_json: config_json.map(str::to_string),
+        };
+        eval_sender.send(task).await?;
+
         Ok(())
     }
 
@@ -537,6 +666,36 @@ pub(crate) fn build_variant_summary_from_states(
         md.push_str(&format!("| {} | {} {} |\n", suffix, emoji, label));
     }
     md
+}
+
+/// Parse the job config JSON and return the `Job` if passthru_tests is enabled.
+fn parse_passthru_config(config_json: Option<&str>) -> Option<ci_config::Job> {
+    let json = config_json?;
+    let job: ci_config::Job = serde_json::from_str(json).ok()?;
+    let config = job.passthru_tests.as_ref()?;
+    if config.enable { Some(job) } else { None }
+}
+
+/// Resolve the absolute file path for a job's nix file in a worktree.
+///
+/// `repo_dir` is the master clone directory (e.g., `.../github.com/owner/repo`).
+/// The worktree for `sha` is at `{repo_dir}/worktrees/{sha}/`.
+/// `job_file` is the repo-relative path from `Job.file` (absolute in config
+/// = repo-root-relative, e.g., `/pkgs/top-level/release.nix`).
+fn resolve_job_file_path(
+    repo_dir: &std::path::Path,
+    sha: &str,
+    job_file: &std::path::Path,
+) -> Result<String> {
+    let worktree = repo_dir.join("worktrees").join(sha);
+
+    // Job.file is stored as an absolute path (repo-root-relative).
+    // Strip the leading `/` to make it actually relative.
+    let file_str: String = job_file.to_string_lossy().into();
+    let relative = file_str.strip_prefix('/').unwrap_or(&file_str);
+
+    let resolved = worktree.join(relative);
+    Ok(resolved.to_string_lossy().into())
 }
 
 #[cfg(test)]

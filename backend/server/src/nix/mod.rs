@@ -51,6 +51,18 @@ pub enum EvalTask {
     Job(EvalJob),
     GithubJobPR((EvalJob, CICheckInfo)),
     TraverseDrv(String),
+    /// Evaluate `passthru.tests` for directly-changed packages.
+    ///
+    /// Triggered by the GitHub service after jobset diff identifies
+    /// which packages were directly modified (filtered via
+    /// `meta.position` + `git diff`).
+    PassthruTests {
+        file_path: String,
+        changed_attrs: Vec<String>,
+        ci_info: CICheckInfo,
+        parent_job_name: String,
+        config_json: Option<String>,
+    },
 }
 
 pub struct EvalService {
@@ -90,8 +102,6 @@ impl EvalService {
     }
 
     async fn handle_eval_task(&self, task: EvalTask) -> Result<()> {
-        use anyhow::Context;
-
         debug!("EvalService received task: {:?}", task);
 
         match &task {
@@ -105,71 +115,190 @@ impl EvalService {
             },
             EvalTask::GithubJobPR((eval_job, ci_info)) => {
                 if self.github_sender.is_some() {
-                    // Only traverse drvs for head commits (base_commit is
-                    // Some). Base-commit evals only need the attr/drv list
-                    // for jobset diff computation — no graph population or
-                    // build scheduling required.
-                    let is_head = ci_info.base_commit.is_some();
-                    let (jobs, errors) =
-                        self.run_nix_eval_jobs(&eval_job.file_path, is_head).await?;
-                    let gh_sender = self
-                        .github_sender
-                        .as_ref()
-                        .context("github sender missing")?;
-                    // Clone once into Arc so the 2–3 downstream sends share one refcount.
-                    let ci_info = std::sync::Arc::new((*ci_info).clone());
-
-                    // Check if we should fail due to eval errors
-                    if !eval_job.allow_failures && !errors.is_empty() {
-                        debug!(
-                            "Eval job {} has {} errors and allow_failures is false, failing eval \
-                             gate",
-                            eval_job.name,
-                            errors.len()
-                        );
-                        let fail_task = GitHubTask::FailCIEvalJob {
-                            ci_check_info: ci_info,
-                            job_name: eval_job.name.clone(),
-                            errors,
-                        };
-                        gh_sender.send(fail_task).await?;
-                        // Don't create jobset or queue builds when eval fails
-                        return Ok(());
-                    }
-
-                    let create_task = GitHubTask::CreateCIEvalJob {
-                        ci_check_info: std::sync::Arc::clone(&ci_info),
-                        job_title: eval_job.name.clone(),
-                    };
-                    gh_sender.send(create_task).await?;
-
-                    let gh_task = GitHubTask::CreateJobSet {
-                        ci_check_info: std::sync::Arc::clone(&ci_info),
-                        name: eval_job.name.to_string(),
-                        jobs,
-                        config_json: eval_job.config_json.clone(),
-                    };
-                    gh_sender.send(gh_task).await?;
-
-                    // Build scheduling is dispatched by the GitHub
-                    // service after CreateJobSet computes the diff —
-                    // only new/changed packages enter the ingress queue.
-
-                    // Complete the eval gate immediately — evaluation
-                    // succeeded and all per-package check runs were
-                    // emitted. Individual build results are tracked by
-                    // their own check runs.
-                    let complete_task = GitHubTask::CompleteCIEvalJob {
-                        ci_check_info: ci_info,
-                        job_name: eval_job.name.clone(),
-                        conclusion: octocrab::params::checks::CheckRunConclusion::Success.into(),
-                    };
-                    gh_sender.send(complete_task).await?;
+                    self.handle_github_job_pr(eval_job, ci_info).await?;
                 } else {
                     warn!("GitHub service was never initialized, skipping task to create a jobset")
                 }
             },
+            EvalTask::PassthruTests {
+                file_path,
+                changed_attrs,
+                ci_info,
+                parent_job_name,
+                config_json,
+            } => {
+                if self.github_sender.is_some() {
+                    self.handle_passthru_tests(
+                        file_path,
+                        changed_attrs,
+                        ci_info,
+                        parent_job_name,
+                        config_json.as_deref(),
+                    )
+                    .await?;
+                } else {
+                    warn!(
+                        "GitHub service was never initialized, skipping passthru.tests evaluation"
+                    )
+                }
+            },
         };
+
+        Ok(())
+    }
+
+    async fn handle_github_job_pr(&self, eval_job: &EvalJob, ci_info: &CICheckInfo) -> Result<()> {
+        use anyhow::Context;
+
+        // Only traverse drvs for head commits (base_commit is
+        // Some). Base-commit evals only need the attr/drv list
+        // for jobset diff computation — no graph population or
+        // build scheduling required.
+        let is_head = ci_info.base_commit.is_some();
+        let (jobs, errors) = self.run_nix_eval_jobs(&eval_job.file_path, is_head).await?;
+        let gh_sender = self
+            .github_sender
+            .as_ref()
+            .context("github sender missing")?;
+        // Clone once into Arc so the 2–3 downstream sends share one refcount.
+        let ci_info = std::sync::Arc::new(ci_info.clone());
+
+        // Check if we should fail due to eval errors
+        if !eval_job.allow_failures && !errors.is_empty() {
+            debug!(
+                "Eval job {} has {} errors and allow_failures is false, failing eval gate",
+                eval_job.name,
+                errors.len()
+            );
+            let fail_task = GitHubTask::FailCIEvalJob {
+                ci_check_info: ci_info,
+                job_name: eval_job.name.clone(),
+                errors,
+            };
+            gh_sender.send(fail_task).await?;
+            // Don't create jobset or queue builds when eval fails
+            return Ok(());
+        }
+
+        let create_task = GitHubTask::CreateCIEvalJob {
+            ci_check_info: std::sync::Arc::clone(&ci_info),
+            job_title: eval_job.name.clone(),
+        };
+        gh_sender.send(create_task).await?;
+
+        let gh_task = GitHubTask::CreateJobSet {
+            ci_check_info: std::sync::Arc::clone(&ci_info),
+            name: eval_job.name.to_string(),
+            jobs,
+            config_json: eval_job.config_json.clone(),
+        };
+        gh_sender.send(gh_task).await?;
+
+        // Complete the eval gate immediately — evaluation succeeded
+        // and all per-package check runs were emitted.
+        let complete_task = GitHubTask::CompleteCIEvalJob {
+            ci_check_info: ci_info,
+            job_name: eval_job.name.clone(),
+            conclusion: octocrab::params::checks::CheckRunConclusion::Success.into(),
+        };
+        gh_sender.send(complete_task).await?;
+
+        Ok(())
+    }
+
+    async fn handle_passthru_tests(
+        &self,
+        file_path: &str,
+        changed_attrs: &[String],
+        ci_info: &CICheckInfo,
+        parent_job_name: &str,
+        config_json: Option<&str>,
+    ) -> Result<()> {
+        if changed_attrs.is_empty() {
+            debug!("No changed attrs for passthru.tests, skipping");
+            return Ok(());
+        }
+
+        let job_name = format!("{}/passthru-tests", parent_job_name);
+        info!(
+            "Evaluating passthru.tests for {} changed attrs in job {}",
+            changed_attrs.len(),
+            job_name
+        );
+
+        let jobs = self
+            .eval_passthru_tests_expr(file_path, changed_attrs)
+            .await?;
+        if jobs.is_empty() {
+            debug!("No passthru.tests derivations found, skipping jobset creation");
+            return Ok(());
+        }
+
+        info!(
+            "Found {} passthru.tests derivations for job {}",
+            jobs.len(),
+            job_name
+        );
+        self.send_passthru_tests_jobset(&job_name, jobs, ci_info, config_json)
+            .await
+    }
+
+    /// Generate and evaluate the passthru.tests Nix expression.
+    async fn eval_passthru_tests_expr(
+        &self,
+        file_path: &str,
+        changed_attrs: &[String],
+    ) -> Result<Vec<NixEvalDrv>> {
+        use anyhow::Context;
+
+        let tmp_file =
+            evaluator::passthru_tests::generate_passthru_tests_expr(file_path, changed_attrs)?;
+        let tmp_path = tmp_file
+            .path()
+            .to_str()
+            .context("temp file path is not valid UTF-8")?;
+
+        let (jobs, _errors) = self.run_nix_eval_jobs(tmp_path, true).await?;
+        drop(tmp_file);
+        Ok(jobs)
+    }
+
+    /// Send the passthru.tests results as a new jobset to the GitHub service.
+    async fn send_passthru_tests_jobset(
+        &self,
+        job_name: &str,
+        jobs: Vec<NixEvalDrv>,
+        ci_info: &CICheckInfo,
+        config_json: Option<&str>,
+    ) -> Result<()> {
+        use anyhow::Context;
+
+        let gh_sender = self
+            .github_sender
+            .as_ref()
+            .context("github sender missing")?;
+        let ci_info = std::sync::Arc::new(ci_info.clone());
+
+        let create_task = GitHubTask::CreateCIEvalJob {
+            ci_check_info: std::sync::Arc::clone(&ci_info),
+            job_title: job_name.to_string(),
+        };
+        gh_sender.send(create_task).await?;
+
+        let gh_task = GitHubTask::CreateJobSet {
+            ci_check_info: std::sync::Arc::clone(&ci_info),
+            name: job_name.to_string(),
+            jobs,
+            config_json: config_json.map(str::to_string),
+        };
+        gh_sender.send(gh_task).await?;
+
+        let complete_task = GitHubTask::CompleteCIEvalJob {
+            ci_check_info: ci_info,
+            job_name: job_name.to_string(),
+            conclusion: octocrab::params::checks::CheckRunConclusion::Success.into(),
+        };
+        gh_sender.send(complete_task).await?;
 
         Ok(())
     }

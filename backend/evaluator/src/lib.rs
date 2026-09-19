@@ -1,4 +1,5 @@
 pub mod nix_utils;
+pub mod passthru_tests;
 pub mod service;
 pub mod traits;
 pub mod types;

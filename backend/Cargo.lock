@@ -1270,6 +1270,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
+ "tempfile",
  "tokio",
  "tracing",
 ]
