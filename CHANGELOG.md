@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### passthru.tests evaluation (nixpkgs-CI workflow)
+
+- Add opt-in `passthru_tests` configuration to CI jobs that evaluates and
+  builds `passthru.tests` for packages directly modified in a PR
+- Filter changed packages using `meta.position` cross-referenced with
+  `git diff --name-only` to distinguish direct edits from transitive
+  rebuilds — only directly-modified packages trigger test evaluation
+- Generate a Nix expression that safely evaluates each changed package's
+  `passthru.tests` (using `builtins.tryEval` to handle missing tests
+  gracefully), then feed it through the existing `nix-eval-jobs` pipeline
+- Test derivations flow through the standard build pipeline and appear
+  as a separate `{job}/passthru-tests` jobset with individual check runs
+
 ## 0.1.0
 
 Initial release. EkaCI is a Nix-native CI system designed to answer

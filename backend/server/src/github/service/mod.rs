@@ -26,6 +26,7 @@ mod change_summary;
 mod checks;
 pub mod graphql_batch;
 mod jobsets;
+mod passthru_filter;
 mod task_handler;
 mod types;
 
@@ -53,6 +54,8 @@ pub struct GitHubService {
     change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
     /// Ingress sender for dispatching build requests after jobset diff.
     ingress_sender: Option<mpsc::Sender<IngressTask>>,
+    /// Eval sender for dispatching passthru.tests evaluations.
+    eval_sender: Option<mpsc::Sender<crate::nix::EvalTask>>,
     /// Rate limiter to avoid flooding the GitHub API endpoint.
     rate_limiter: ApiRateLimiter,
     /// Batches check run updates for GraphQL flush (separate rate limit budget).
@@ -111,6 +114,7 @@ impl GitHubService {
         graph_handle: GraphServiceHandle,
         change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
         ingress_sender: Option<mpsc::Sender<IngressTask>>,
+        eval_sender: Option<mpsc::Sender<crate::nix::EvalTask>>,
     ) -> anyhow::Result<Self> {
         use futures::stream::TryStreamExt;
         use tokio::pin;
@@ -241,6 +245,7 @@ impl GitHubService {
             graph_handle,
             change_summary_metrics,
             ingress_sender,
+            eval_sender,
             // ~10 req/sec keeps well under GitHub's 5000/hr app limit
             // while still being responsive for check_run updates.
             rate_limiter: ApiRateLimiter::new(10.0),
