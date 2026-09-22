@@ -56,6 +56,12 @@ pub struct BuildMetrics {
     pub active_builds: GaugeVec,
     /// Number of builds waiting in queue (gauge by platform)
     pub queued_builds: GaugeVec,
+    /// Time from nix-build spawn to first output line (input-fetch phase),
+    /// labelled by platform and builder locality (local/remote).
+    pub fetch_duration_seconds: HistogramVec,
+    /// Time from first output line to build completion (actual build phase),
+    /// labelled by platform and builder locality (local/remote).
+    pub build_duration_seconds: HistogramVec,
 }
 
 impl BuildMetrics {
@@ -72,12 +78,40 @@ impl BuildMetrics {
             &["platform"],
         )?;
 
+        let fetch_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "eka_build_fetch_duration_seconds",
+                "Time from nix-build spawn to first output line (input-fetch phase)",
+            )
+            .namespace("eka_ci")
+            .buckets(vec![
+                0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
+            ]),
+            &["platform", "locality"],
+        )?;
+
+        let build_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "eka_build_build_duration_seconds",
+                "Time from first output line to build completion (actual build phase)",
+            )
+            .namespace("eka_ci")
+            .buckets(vec![
+                1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0,
+            ]),
+            &["platform", "locality"],
+        )?;
+
         registry.register(Box::new(active_builds.clone()))?;
         registry.register(Box::new(queued_builds.clone()))?;
+        registry.register(Box::new(fetch_duration_seconds.clone()))?;
+        registry.register(Box::new(build_duration_seconds.clone()))?;
 
         Ok(Arc::new(Self {
             active_builds,
             queued_builds,
+            fetch_duration_seconds,
+            build_duration_seconds,
         }))
     }
 }
