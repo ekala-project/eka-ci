@@ -15,6 +15,17 @@
 - Test derivations flow through the standard build pipeline and appear
   as a separate `{job}/passthru-tests` jobset with individual check runs
 
+### Circuit-breaker for remote builders
+
+- Track `nix-build` exit codes per remote builder and classify connection
+  failures (SSH errors, connection refused/timeout, host unreachable)
+- After 3 connection-related failures within 120 seconds, temporarily
+  disable the builder and skip it during dispatch
+- Half-open recovery: after a cooldown period, send a `nix store ping`
+  probe; re-enable on success, extend backoff (up to 10 minutes) on
+  failure
+- Log orphan warnings when killing remote-targeting `nix-build`
+  subprocesses (remote nix-daemon processes may survive)
 ## 0.1.0
 
 Initial release. EkaCI is a Nix-native CI system designed to answer

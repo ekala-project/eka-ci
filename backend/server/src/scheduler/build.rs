@@ -1,9 +1,11 @@
 mod builder;
 mod builder_thread;
+pub mod circuit_breaker;
 mod queue;
 mod system_queue;
 
 pub use builder::*;
+pub use circuit_breaker::CircuitBreakerRegistry;
 pub use queue::*;
 pub use system_queue::*;
 

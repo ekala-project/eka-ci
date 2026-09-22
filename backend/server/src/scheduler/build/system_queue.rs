@@ -388,25 +388,36 @@ async fn loop_builds(
 
     use tokio::sync::mpsc::error::TryRecvError;
 
+    use super::circuit_breaker::CircuitBreakerRegistry;
+
     let mut build_buffer: VecDeque<BuildRequest> = VecDeque::new();
 
     // Keep both the builder info and channels for feature filtering
     struct BuilderChannel {
+        builder_name: String,
+        remote_uri: Option<String>,
         supported_features: Vec<String>,
         mandatory_features: Vec<String>,
         channel: mpsc::Sender<BuildRequest>,
+        circuit_breaker: CircuitBreakerRegistry,
     }
 
     let build_channels: Vec<BuilderChannel> = builders
         .into_values()
         .map(|builder| {
+            let builder_name = builder.builder_name.clone();
+            let remote_uri = builder.remote_uri.clone();
             let supported_features = builder.supported_features.clone();
             let mandatory_features = builder.mandatory_features.clone();
+            let circuit_breaker = builder.circuit_breaker.clone();
             let channel = builder.run(cancellation_token.clone());
             BuilderChannel {
+                builder_name,
+                remote_uri,
                 supported_features,
                 mandatory_features,
                 channel,
+                circuit_breaker,
             }
         })
         .collect();
@@ -450,25 +461,39 @@ async fn loop_builds(
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
                 .unwrap_or_default();
 
-            // Filter builders that can handle this job
-            let compatible_builders: Vec<&BuilderChannel> = build_channels
-                .iter()
-                .filter(|bc| {
-                    // Check mandatory features
-                    if !bc.mandatory_features.is_empty() {
-                        let has_mandatory = required_features
-                            .iter()
-                            .any(|req| bc.mandatory_features.contains(req));
-                        if !has_mandatory {
-                            return false;
+            // Filter builders that can handle this job (feature + circuit-breaker check)
+            let mut compatible_builders: Vec<&BuilderChannel> = Vec::new();
+            for bc in &build_channels {
+                // Check mandatory features
+                if !bc.mandatory_features.is_empty() {
+                    let has_mandatory = required_features
+                        .iter()
+                        .any(|req| bc.mandatory_features.contains(req));
+                    if !has_mandatory {
+                        continue;
+                    }
+                }
+                // Check if builder has all required features
+                if !required_features
+                    .iter()
+                    .all(|req| bc.supported_features.contains(req))
+                {
+                    continue;
+                }
+                // Skip builders whose circuit-breaker is tripped
+                if bc.remote_uri.is_some()
+                    && !bc.circuit_breaker.is_available(&bc.builder_name).await
+                {
+                    // Attempt recovery probe if cooldown has elapsed
+                    if let Some(uri) = &bc.remote_uri {
+                        if bc.circuit_breaker.try_recover(&bc.builder_name, uri).await {
+                            compatible_builders.push(bc);
                         }
                     }
-                    // Check if builder has all required features
-                    required_features
-                        .iter()
-                        .all(|req| bc.supported_features.contains(req))
-                })
-                .collect();
+                    continue;
+                }
+                compatible_builders.push(bc);
+            }
 
             // Wait for a compatible builder permit while continuing to receive new work.
             // This prevents starvation: if the current job can't be processed (e.g., requires
