@@ -314,7 +314,7 @@ impl IngressWorker {
             },
         };
 
-        if report.is_cached(drv_id) {
+        if report.is_cached_path(&drv_id.store_path()) {
             debug!("substitution hit for {}", drv_id.store_path());
             self.handle_check_substitution_task_with_report(drv_id, &report)
                 .await?;
@@ -367,7 +367,7 @@ impl IngressWorker {
     /// should skip queuing a real build).
     async fn handle_check_substitution_task(&self, drv_id: &drv_id::DrvId) -> anyhow::Result<bool> {
         let report = crate::nix::dry_run_realise(drv_id).await?;
-        if !report.is_cached(drv_id) {
+        if !report.is_cached_path(&drv_id.store_path()) {
             return Ok(false);
         }
         self.handle_check_substitution_task_with_report(drv_id, &report)

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -11,6 +11,123 @@ use crate::types::derivation_show;
 /// giving up. Substituter HTTP queries are the dominant cost; 30s comfortably
 /// covers a slow but reachable cache while still failing fast on a wedged one.
 const DRY_RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Result of a `nix-store --realise --dry-run` invocation against a derivation.
+///
+/// Nix prints two relevant sections to stderr:
+/// * `(this|these N) derivation(s) will be built:` followed by indented `.drv` paths that are NOT
+///   available locally and CANNOT be substituted from any configured binary cache — i.e. they would
+///   actually need to run.
+/// * `(this|these N) path(s) will be fetched (...)` followed by indented store output paths that
+///   are not in the local store but ARE available from a binary cache.
+///
+/// Anything not mentioned in either section is already valid in the local store.
+///
+/// We treat a derivation as "cached" iff its `.drv` path does not appear in
+/// `will_build` — meaning it is either already built locally OR pullable from
+/// a substituter, both of which mean we don't need to run a real build.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DryRunReport {
+    /// Full store paths (`/nix/store/...drv`) that nix says still need building.
+    pub will_build: HashSet<String>,
+    /// Full store paths (`/nix/store/...`) that nix says will be substituted.
+    pub will_fetch: HashSet<String>,
+}
+
+impl DryRunReport {
+    /// Parse the stderr emitted by `nix-store --realise --dry-run`.
+    ///
+    /// The format is fairly stable across modern Nix versions; we tolerate
+    /// minor variations (singular vs. plural section headers, optional
+    /// download-size annotations, leading whitespace differences).
+    pub fn parse(stderr: &str) -> Self {
+        #[derive(Clone, Copy)]
+        enum Section {
+            Build,
+            Fetch,
+        }
+
+        let mut report = DryRunReport::default();
+        let mut current: Option<Section> = None;
+
+        for raw_line in stderr.lines() {
+            let trimmed = raw_line.trim_end();
+            let lower = trimmed.trim_start().to_ascii_lowercase();
+
+            if !raw_line.starts_with(char::is_whitespace) {
+                if lower.contains("will be built") || lower.starts_with("don't know how to build") {
+                    current = Some(Section::Build);
+                    continue;
+                }
+                if lower.contains("will be fetched") {
+                    current = Some(Section::Fetch);
+                    continue;
+                }
+                if !trimmed.is_empty() {
+                    current = None;
+                }
+                continue;
+            }
+
+            let path = trimmed.trim();
+            if path.is_empty() {
+                continue;
+            }
+            if !path.starts_with('/') {
+                continue;
+            }
+            match current {
+                Some(Section::Build) => {
+                    report.will_build.insert(path.to_string());
+                },
+                Some(Section::Fetch) => {
+                    report.will_fetch.insert(path.to_string());
+                },
+                None => {},
+            }
+        }
+
+        report
+    }
+
+    /// True iff `drv_store_path` does not appear in `will_build` — i.e. its
+    /// output is either already in the local store or pullable from a substituter.
+    pub fn is_cached_path(&self, drv_store_path: &str) -> bool {
+        !self.will_build.contains(drv_store_path)
+    }
+}
+
+/// Run `nix-store --realise --dry-run <drv>` and parse the result.
+///
+/// Returns `Err` for any I/O / process failure or non-zero exit so callers can
+/// safely fall back to a real build (substitution checks are an optimization,
+/// never a correctness requirement).
+pub async fn dry_run_realise(drv_store_path: &str) -> Result<DryRunReport> {
+    let output = tokio::time::timeout(
+        DRY_RUN_TIMEOUT,
+        Command::new("nix-store")
+            .args(["--realise", "--dry-run", drv_store_path])
+            .output(),
+    )
+    .await
+    .with_context(|| format!("nix-store --realise --dry-run timed out for {drv_store_path}"))?
+    .with_context(|| {
+        format!("failed to spawn nix-store --realise --dry-run for {drv_store_path}")
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "nix-store --realise --dry-run failed for {} (exit {:?}): {}",
+            drv_store_path,
+            output.status.code(),
+            stderr.trim()
+        );
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(DryRunReport::parse(&stderr))
+}
 
 /// Retrieve the requisites of a drv. This is a global list of all direct
 /// and transitive drvs
@@ -163,33 +280,8 @@ pub async fn get_drv_outputs(drv_path: &str) -> Result<HashMap<String, String>> 
 pub async fn is_drv_cached(drv_path: &str) -> Result<bool> {
     debug!("Checking if {} is cached", drv_path);
 
-    let output = tokio::time::timeout(
-        DRY_RUN_TIMEOUT,
-        Command::new("nix-store")
-            .args(["--realise", "--dry-run", drv_path])
-            .output(),
-    )
-    .await
-    .with_context(|| format!("nix-store --realise --dry-run timed out for {}", drv_path))?
-    .with_context(|| {
-        format!(
-            "failed to spawn nix-store --realise --dry-run for {}",
-            drv_path
-        )
-    })?;
-
-    if !output.status.success() {
-        // If the command failed, assume not cached
-        return Ok(false);
+    match dry_run_realise(drv_path).await {
+        Ok(report) => Ok(report.is_cached_path(drv_path)),
+        Err(_) => Ok(false),
     }
-
-    // Nix writes the build/fetch plan to stderr
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // If "will be built" appears in the output, it's not cached
-    let needs_build = stderr.contains("will be built")
-        || stderr.contains("derivation(s) will be built")
-        || stderr.contains("don't know how to build");
-
-    Ok(!needs_build)
 }

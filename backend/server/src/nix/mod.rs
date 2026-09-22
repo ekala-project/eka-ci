@@ -1,7 +1,7 @@
 // Re-export evaluator types and functions for backward compatibility
 pub use evaluator::nix_utils::{
-    self as size, drv_references, drv_requisites, format_size, get_drv_outputs, get_output_sizes,
-    is_drv_cached, output_references,
+    self as size, DryRunReport, drv_references, drv_requisites, format_size, get_drv_outputs,
+    get_output_sizes, is_drv_cached, output_references,
 };
 pub use evaluator::service::jobs::{
     NIX_EVAL_JOBS_MAX_ENTRIES, NIX_EVAL_JOBS_MAX_LINE_BYTES, NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
@@ -18,14 +18,12 @@ mod jobs;
 
 pub mod reconstitute;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use lru::LruCache;
-use tokio::process::Command;
 use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 
@@ -593,136 +591,9 @@ impl crate::services::AsyncService<EvalTask> for EvalService {
     }
 }
 
-/// Result of a `nix-store --realise --dry-run` invocation against a derivation.
-///
-/// Nix prints two relevant sections to stderr:
-/// * `(this|these N) derivation(s) will be built:` followed by indented `.drv` paths that are NOT
-///   available locally and CANNOT be substituted from any configured binary cache — i.e. they would
-///   actually need to run.
-/// * `(this|these N) path(s) will be fetched (...)` followed by indented store output paths that
-///   are not in the local store but ARE available from a binary cache.
-///
-/// Anything not mentioned in either section is already valid in the local store.
-///
-/// We treat a derivation as "cached" iff its `.drv` path does not appear in
-/// `will_build` — meaning it is either already built locally OR pullable from
-/// a substituter, both of which mean we don't need to run a real build.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DryRunReport {
-    /// Full store paths (`/nix/store/...drv`) that nix says still need building.
-    pub will_build: HashSet<String>,
-    /// Full store paths (`/nix/store/...`) that nix says will be substituted.
-    pub will_fetch: HashSet<String>,
-}
-
-impl DryRunReport {
-    /// Parse the stderr emitted by `nix-store --realise --dry-run`.
-    ///
-    /// The format is fairly stable across modern Nix versions; we tolerate
-    /// minor variations (singular vs. plural section headers, optional
-    /// download-size annotations, leading whitespace differences).
-    pub fn parse(stderr: &str) -> Self {
-        #[derive(Clone, Copy)]
-        enum Section {
-            Build,
-            Fetch,
-        }
-
-        let mut report = DryRunReport::default();
-        let mut current: Option<Section> = None;
-
-        for raw_line in stderr.lines() {
-            // Identify section headers regardless of pluralization. Nix emits
-            // these without leading whitespace and ending with `:`.
-            let trimmed = raw_line.trim_end();
-            let lower = trimmed.trim_start().to_ascii_lowercase();
-
-            // Section headers start a new section. Order matters: check
-            // headers BEFORE treating an indented line as a path, because
-            // a header is never indented in practice but we trim defensively.
-            if !raw_line.starts_with(char::is_whitespace) {
-                if lower.contains("will be built") || lower.starts_with("don't know how to build") {
-                    current = Some(Section::Build);
-                    continue;
-                }
-                if lower.contains("will be fetched") {
-                    current = Some(Section::Fetch);
-                    continue;
-                }
-                // Any other unindented non-blank line ends the current section
-                // (e.g. warnings, the empty line nix prints between sections,
-                // the final summary line).
-                if !trimmed.is_empty() {
-                    current = None;
-                }
-                continue;
-            }
-
-            // Indented line — interpret as a path entry IF we're in a section.
-            let path = trimmed.trim();
-            if path.is_empty() {
-                continue;
-            }
-            // Only accept absolute store paths; ignore stray indented text.
-            if !path.starts_with('/') {
-                continue;
-            }
-            match current {
-                Some(Section::Build) => {
-                    report.will_build.insert(path.to_string());
-                },
-                Some(Section::Fetch) => {
-                    report.will_fetch.insert(path.to_string());
-                },
-                None => {},
-            }
-        }
-
-        report
-    }
-
-    /// True iff `drv` does not appear in `will_build` — i.e. its output is
-    /// either already in the local store or pullable from a substituter.
-    pub fn is_cached(&self, drv: &DrvId) -> bool {
-        !self.will_build.contains(&drv.store_path())
-    }
-}
-
-/// How long to wait for `nix-store --realise --dry-run` to complete before
-/// giving up. Substituter HTTP queries are the dominant cost; 30s comfortably
-/// covers a slow but reachable cache while still failing fast on a wedged one.
-const DRY_RUN_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Run `nix-store --realise --dry-run <drv>` and parse the result.
-///
-/// Returns `Err` for any I/O / process failure or non-zero exit so callers can
-/// safely fall back to a real build (substitution checks are an optimization,
-/// never a correctness requirement).
+/// Server-side wrapper: delegates to evaluator's `dry_run_realise` with `DrvId` → store path.
 pub async fn dry_run_realise(drv: &DrvId) -> Result<DryRunReport> {
-    let store_path = drv.store_path();
-    let output = tokio::time::timeout(
-        DRY_RUN_TIMEOUT,
-        Command::new("nix-store")
-            .args(["--realise", "--dry-run", &store_path])
-            .output(),
-    )
-    .await
-    .with_context(|| format!("nix-store --realise --dry-run timed out for {store_path}"))?
-    .with_context(|| format!("failed to spawn nix-store --realise --dry-run for {store_path}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "nix-store --realise --dry-run failed for {} (exit {:?}): {}",
-            store_path,
-            output.status.code(),
-            stderr.trim()
-        );
-    }
-
-    // Nix writes the build/fetch plan to stderr; stdout is empty under --dry-run.
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Ok(DryRunReport::parse(&stderr))
+    evaluator::nix_utils::dry_run_realise(&drv.store_path()).await
 }
 
 // The following functions are now imported from evaluator and re-exported above:
@@ -807,7 +678,7 @@ mod dry_run_tests {
         let report = DryRunReport::parse("");
         assert!(report.will_build.is_empty());
         assert!(report.will_fetch.is_empty());
-        assert!(report.is_cached(&drv("hello")));
+        assert!(report.is_cached_path(&drv("hello").store_path()));
     }
 
     #[test]
@@ -857,14 +728,14 @@ mod dry_run_tests {
             target.store_path()
         );
         let report = DryRunReport::parse(&stderr);
-        assert!(!report.is_cached(&target));
+        assert!(!report.is_cached_path(&target.store_path()));
 
         // The drv is only in will_fetch (its OUTPUT is fetchable from cache).
         // The .drv path itself is not in will_build, so we're "cached".
         let report = DryRunReport::parse(
             "these 1 paths will be fetched (1 KiB download):\n  /nix/store/aaa-foo\n",
         );
-        assert!(report.is_cached(&target));
+        assert!(report.is_cached_path(&target.store_path()));
     }
 
     #[test]
