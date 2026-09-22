@@ -15,6 +15,13 @@
 - Test derivations flow through the standard build pipeline and appear
   as a separate `{job}/passthru-tests` jobset with individual check runs
 
+### Prefetch measurement instrumentation
+
+- Add Prometheus histograms for build phase timing: `fetch_duration_seconds`
+  (spawn to first output line) and `build_duration_seconds` (first output
+  to completion), labelled by platform and locality (local/remote)
+- Data determines whether prefetching build inputs is worth pursuing
+
 ### Circuit-breaker for remote builders
 
 - Track `nix-build` exit codes per remote builder and classify connection

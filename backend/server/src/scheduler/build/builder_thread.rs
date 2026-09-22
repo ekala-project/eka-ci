@@ -187,6 +187,8 @@ impl BuilderThread {
             builder_name: self.builder_name.clone(),
             is_remote: self.is_remote,
             circuit_breaker: self.circuit_breaker.clone(),
+            platform: self.platform.clone(),
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -203,6 +205,8 @@ struct NixBuild {
     builder_name: String,
     is_remote: bool,
     circuit_breaker: CircuitBreakerRegistry,
+    platform: Platform,
+    metrics: Arc<BuildMetrics>,
 }
 
 enum BuildOutcome {
@@ -339,6 +343,12 @@ impl NixBuild {
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
 
+        // Prefetch measurement: track when the first output line arrives.
+        // The gap between spawn and first output is the input-fetch phase;
+        // the gap between first output and completion is the build phase.
+        let spawn_time = Instant::now();
+        let mut first_output_time: Option<Instant> = None;
+
         // Create a timeout that resets whenever we receive output
         let timeout_duration = Duration::from_secs(self.no_output_timeout_seconds);
         let mut timeout = Box::pin(sleep(timeout_duration));
@@ -358,6 +368,7 @@ impl NixBuild {
                         Ok(_) => {
                             log_writer.write_all(&stdout_buf).await?;
                             stdout_buf.clear();
+                            first_output_time.get_or_insert_with(Instant::now);
                             timeout.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
                         },
                         Err(e) => warn!("Error reading stdout: {}", e),
@@ -369,6 +380,7 @@ impl NixBuild {
                         Ok(_) => {
                             log_writer.write_all(&stderr_buf).await?;
                             stderr_buf.clear();
+                            first_output_time.get_or_insert_with(Instant::now);
                             timeout.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
                         },
                         Err(e) => warn!("Error reading stderr: {}", e),
@@ -428,6 +440,28 @@ impl NixBuild {
             self.drv_id.store_path(),
             log_path.display()
         );
+
+        // Record prefetch/build phase timing metrics.
+        let completion_time = Instant::now();
+        let locality = if self.is_remote { "remote" } else { "local" };
+        if let Some(first_out) = first_output_time {
+            let fetch_secs = first_out.duration_since(spawn_time).as_secs_f64();
+            let build_secs = completion_time.duration_since(first_out).as_secs_f64();
+            self.metrics
+                .fetch_duration_seconds
+                .with_label_values(&[&self.platform, locality])
+                .observe(fetch_secs);
+            self.metrics
+                .build_duration_seconds
+                .with_label_values(&[&self.platform, locality])
+                .observe(build_secs);
+            debug!(
+                "build phases for {}: fetch={:.1}s build={:.1}s",
+                self.drv_id.store_path(),
+                fetch_secs,
+                build_secs,
+            );
+        }
 
         if status.success() {
             // Try to replace build log with `nix log` output (richer for substituted drvs)
