@@ -15,6 +15,15 @@
 - Test derivations flow through the standard build pipeline and appear
   as a separate `{job}/passthru-tests` jobset with individual check runs
 
+### Consolidate dry-run duplication
+
+- Move `DryRunReport` struct and `dry_run_realise` function from the server
+  crate to the evaluator crate so both crates share one implementation
+- Rewrite evaluator's `is_drv_cached` to use `DryRunReport::parse` instead
+  of ad-hoc string matching
+- Server re-exports `DryRunReport` from evaluator and provides a thin
+  `dry_run_realise(&DrvId)` wrapper
+
 ### Prefetch measurement instrumentation
 
 - Add Prometheus histograms for build phase timing: `fetch_duration_seconds`
