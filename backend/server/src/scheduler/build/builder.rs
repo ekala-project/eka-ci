@@ -12,6 +12,7 @@ use tracing::info;
 const NIX_QUICK_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::builder_thread::BuilderThread;
+use super::circuit_breaker::CircuitBreakerRegistry;
 use super::{BuildRequest, Platform};
 use crate::config::RemoteBuilder;
 use crate::graph::GraphServiceHandle;
@@ -39,6 +40,7 @@ pub struct Builder {
     graph_handle: GraphServiceHandle,
     db_pool: sqlx::SqlitePool,
     reconstitution_tracker: Arc<ReconstitutionTracker>,
+    pub(in crate::scheduler::build) circuit_breaker: CircuitBreakerRegistry,
 }
 
 impl Builder {
@@ -59,6 +61,7 @@ impl Builder {
         graph_handle: GraphServiceHandle,
         db_pool: sqlx::SqlitePool,
         reconstitution_tracker: Arc<ReconstitutionTracker>,
+        circuit_breaker: CircuitBreakerRegistry,
     ) -> Self {
         Self {
             is_local,
@@ -76,6 +79,7 @@ impl Builder {
             graph_handle,
             db_pool,
             reconstitution_tracker,
+            circuit_breaker,
         }
     }
 
@@ -126,6 +130,9 @@ impl Builder {
             self.graph_handle.clone(),
             self.db_pool.clone(),
             self.reconstitution_tracker.clone(),
+            self.builder_name.clone(),
+            self.is_local,
+            self.circuit_breaker.clone(),
         );
 
         thread.run(cancellation_token)
@@ -140,6 +147,7 @@ impl Builder {
         graph_handle: GraphServiceHandle,
         db_pool: sqlx::SqlitePool,
         reconstitution_tracker: Arc<ReconstitutionTracker>,
+        circuit_breaker: CircuitBreakerRegistry,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -169,6 +177,7 @@ impl Builder {
                     graph_handle.clone(),
                     db_pool.clone(),
                     reconstitution_tracker.clone(),
+                    circuit_breaker.clone(),
                 )
             })
             .collect();
@@ -185,6 +194,7 @@ impl Builder {
         graph_handle: GraphServiceHandle,
         db_pool: sqlx::SqlitePool,
         reconstitution_tracker: Arc<ReconstitutionTracker>,
+        circuit_breaker: CircuitBreakerRegistry,
     ) -> Result<Vec<Self>> {
         let local_platforms = local_platforms().await?;
         let local_features = local_system_features().await?;
@@ -213,6 +223,7 @@ impl Builder {
                     graph_handle.clone(),
                     db_pool.clone(),
                     reconstitution_tracker.clone(),
+                    circuit_breaker.clone(),
                 )
             })
             .collect();
@@ -232,6 +243,7 @@ impl Builder {
         graph_handle: GraphServiceHandle,
         db_pool: sqlx::SqlitePool,
         reconstitution_tracker: Arc<ReconstitutionTracker>,
+        circuit_breaker: CircuitBreakerRegistry,
     ) -> Self {
         Self::new_inner(
             false,
@@ -253,6 +265,7 @@ impl Builder {
             graph_handle,
             db_pool,
             reconstitution_tracker,
+            circuit_breaker,
         )
     }
 

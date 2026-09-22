@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::build::{BuildQueue, BuildRequest, Builder};
+use super::build::{BuildQueue, BuildRequest, Builder, CircuitBreakerRegistry};
 use super::ingress::{IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
 use crate::channels::types::ChannelTask;
@@ -104,6 +104,7 @@ impl SchedulerService {
         // concurrently.
         let reconstitution_tracker =
             Arc::new(crate::nix::reconstitute::ReconstitutionTracker::new());
+        let circuit_breaker = CircuitBreakerRegistry::new();
 
         let mut builders = Builder::local_from_env(
             logs_dir.clone(),
@@ -114,6 +115,7 @@ impl SchedulerService {
             graph_handle.clone(),
             db_service.pool.clone(),
             reconstitution_tracker.clone(),
+            circuit_breaker.clone(),
         )
         .await?;
         let fod_builders = Builder::local_from_env_fod(
@@ -125,10 +127,14 @@ impl SchedulerService {
             graph_handle.clone(),
             db_service.pool.clone(),
             reconstitution_tracker.clone(),
+            circuit_breaker.clone(),
         )
         .await?;
         for remote in remote_builders {
             for remote_platform in &remote.platforms {
+                circuit_breaker
+                    .register(&format!("'{} {}'", remote.uri, remote.platforms.join(",")))
+                    .await;
                 let remote_builder = Builder::from_remote_builder(
                     remote_platform.to_string(),
                     &remote,
@@ -140,6 +146,7 @@ impl SchedulerService {
                     graph_handle.clone(),
                     db_service.pool.clone(),
                     reconstitution_tracker.clone(),
+                    circuit_breaker.clone(),
                 );
                 builders.push(remote_builder);
             }

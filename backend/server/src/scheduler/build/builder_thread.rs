@@ -12,6 +12,7 @@ use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use super::circuit_breaker::{self, CircuitBreakerRegistry};
 use super::{BuildRequest, Platform};
 use crate::db::model::{DrvId, build_event};
 use crate::graph::GraphServiceHandle;
@@ -32,6 +33,9 @@ pub struct BuilderThread {
     graph_handle: GraphServiceHandle,
     db_pool: sqlx::SqlitePool,
     reconstitution_tracker: Arc<ReconstitutionTracker>,
+    builder_name: String,
+    is_remote: bool,
+    circuit_breaker: CircuitBreakerRegistry,
 }
 
 impl BuilderThread {
@@ -48,6 +52,9 @@ impl BuilderThread {
         graph_handle: GraphServiceHandle,
         db_pool: sqlx::SqlitePool,
         reconstitution_tracker: Arc<ReconstitutionTracker>,
+        builder_name: String,
+        is_local: bool,
+        circuit_breaker: CircuitBreakerRegistry,
     ) -> Self {
         Self {
             build_args,
@@ -61,6 +68,9 @@ impl BuilderThread {
             graph_handle,
             db_pool,
             reconstitution_tracker,
+            builder_name,
+            is_remote: !is_local,
+            circuit_breaker,
         }
     }
 
@@ -174,6 +184,9 @@ impl BuilderThread {
             max_duration_seconds: self.max_duration_seconds,
             db_pool: self.db_pool.clone(),
             reconstitution_tracker: self.reconstitution_tracker.clone(),
+            builder_name: self.builder_name.clone(),
+            is_remote: self.is_remote,
+            circuit_breaker: self.circuit_breaker.clone(),
         }
     }
 }
@@ -187,11 +200,17 @@ struct NixBuild {
     max_duration_seconds: u64,
     db_pool: sqlx::SqlitePool,
     reconstitution_tracker: Arc<ReconstitutionTracker>,
+    builder_name: String,
+    is_remote: bool,
+    circuit_breaker: CircuitBreakerRegistry,
 }
 
 enum BuildOutcome {
     Success,
-    Failure,
+    Failure {
+        exit_code: Option<i32>,
+        stderr_tail: String,
+    },
     Timeout,
     AbsoluteTimeout,
 }
@@ -229,28 +248,56 @@ impl NixBuild {
             }
         }
 
-        match self.build_drv_with_logging().await {
-            Ok(BuildOutcome::Success) => DrvBuildState::Completed(DrvBuildResult::Success),
-            Ok(BuildOutcome::Failure) => DrvBuildState::Completed(DrvBuildResult::Failure),
-            Ok(BuildOutcome::Timeout) => {
+        let outcome = match self.build_drv_with_logging().await {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                warn!("Failed to build {:?}, encountered error: {:?}", drv_path, e);
+                return DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath);
+            },
+        };
+
+        // Report build outcome to circuit-breaker for remote builders.
+        if self.is_remote {
+            match &outcome {
+                BuildOutcome::Success => {
+                    self.circuit_breaker
+                        .record_success(&self.builder_name)
+                        .await;
+                },
+                BuildOutcome::Failure {
+                    exit_code,
+                    stderr_tail,
+                } => {
+                    if circuit_breaker::is_connection_failure(*exit_code, stderr_tail) {
+                        warn!(
+                            "connection failure detected for builder '{}' (exit={:?}): {}",
+                            self.builder_name, exit_code, drv_path,
+                        );
+                        self.circuit_breaker
+                            .record_failure(&self.builder_name)
+                            .await;
+                    }
+                },
+                BuildOutcome::Timeout | BuildOutcome::AbsoluteTimeout => {},
+            }
+        }
+
+        match outcome {
+            BuildOutcome::Success => DrvBuildState::Completed(DrvBuildResult::Success),
+            BuildOutcome::Failure { .. } => DrvBuildState::Completed(DrvBuildResult::Failure),
+            BuildOutcome::Timeout => {
                 warn!(
                     "Build timed out for {:?} (no output for {} seconds)",
                     drv_path, self.no_output_timeout_seconds
                 );
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout)
             },
-            Ok(BuildOutcome::AbsoluteTimeout) => {
+            BuildOutcome::AbsoluteTimeout => {
                 warn!(
                     "Build timed out for {:?} (wall-clock cap of {} seconds reached)",
                     drv_path, self.max_duration_seconds
                 );
                 DrvBuildState::Interrupted(DrvBuildInterruptionKind::Timeout)
-            },
-
-            // Err doesn't denote process failure, rather process construction or logging error
-            Err(e) => {
-                warn!("Failed to build {:?}, encountered error: {:?}", drv_path, e);
-                DrvBuildState::Interrupted(DrvBuildInterruptionKind::ProcessDeath)
             },
         }
     }
@@ -329,11 +376,27 @@ impl NixBuild {
                 },
                 _ = &mut timeout => {
                     warn!("Build timed out after {}s of no output", self.no_output_timeout_seconds);
+                    if self.is_remote {
+                        warn!(
+                            "killing remote build on '{}' for {} — orphaned nix-daemon \
+                             processes may remain on the remote machine",
+                            self.builder_name,
+                            self.drv_id.store_path(),
+                        );
+                    }
                     Self::kill_and_flush(&mut child, log_writer).await?;
                     return Ok(BuildOutcome::Timeout);
                 },
                 _ = &mut absolute_timeout => {
                     warn!("Build exceeded wall-clock cap of {}s", self.max_duration_seconds);
+                    if self.is_remote {
+                        warn!(
+                            "killing remote build on '{}' for {} — orphaned nix-daemon \
+                             processes may remain on the remote machine",
+                            self.builder_name,
+                            self.drv_id.store_path(),
+                        );
+                    }
                     Self::kill_and_flush(&mut child, log_writer).await?;
                     return Ok(BuildOutcome::AbsoluteTimeout);
                 },
@@ -380,7 +443,12 @@ impl NixBuild {
             }
             Ok(BuildOutcome::Success)
         } else {
-            Ok(BuildOutcome::Failure)
+            // Read the tail of the build log for connection failure classification.
+            let stderr_tail = read_file_tail(&log_path, 1024).await;
+            Ok(BuildOutcome::Failure {
+                exit_code: status.code(),
+                stderr_tail,
+            })
         }
     }
 
@@ -435,6 +503,31 @@ async fn get_nix_log(drv_id: &DrvId) -> anyhow::Result<String> {
     }
     let str = String::from_utf8(output.stdout)?;
     Ok(str)
+}
+
+/// Read up to `max_bytes` from the tail of a file. Returns an empty
+/// string on any I/O error (best-effort for diagnostics).
+async fn read_file_tail(path: &std::path::Path, max_bytes: u64) -> String {
+    use tokio::io::AsyncSeekExt;
+
+    let mut file = match File::open(path).await {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+    let metadata = match file.metadata().await {
+        Ok(m) => m,
+        Err(_) => return String::new(),
+    };
+    let len = metadata.len();
+    let start = len.saturating_sub(max_bytes);
+    if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    if file.read_to_end(&mut buf).await.is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 #[cfg(test)]
