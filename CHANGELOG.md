@@ -21,8 +21,11 @@
   streaming, and heartbeat (`proto/ekaci/v1/builder.proto`)
 - New `builder_proto` workspace crate with tonic/prost code generation
   for both client and server stubs
-- BuilderService: Join (registration), OpenTunnel (bidirectional build
-  dispatch), StreamLog (log forwarding)
+- `BuilderGrpcService` implementation in `server/src/grpc/` handling
+  Join (registration), OpenTunnel (bidirectional build dispatch/result
+  stream), StreamLog (log forwarding)
+- Connected builder registry tracking builder capabilities and providing
+  channels for dispatching build tasks
 
 ### NixStore trait and harmonia daemon protocol
 
