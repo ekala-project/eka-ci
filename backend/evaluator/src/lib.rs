@@ -6,6 +6,7 @@ pub mod types;
 pub mod utils;
 
 // Re-export commonly used items at the crate root for convenience
+pub use nix_store;
 pub use traits::{EvalDatabase, EvalMetricsCollector, NullMetrics};
 pub use types::{
     DrvInfo, DrvOutput, DrvPackageMetadata, NixEvalDrv, NixEvalError, NixEvalItem, NixEvalMeta,

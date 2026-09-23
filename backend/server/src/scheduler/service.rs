@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Re-export NixStore types for use by other server components.
+pub use nix_store::{DaemonNixStore, NixStore};
 use prometheus::Registry;
 use prometheus::process_collector::ProcessCollector;
 use tokio::sync::{broadcast, mpsc};
@@ -39,6 +41,11 @@ pub struct SchedulerService {
 
     // Prometheus metrics registry
     metrics_registry: Arc<Registry>,
+
+    /// Shared NixStore for daemon-protocol store queries.
+    /// Components that need fast store access (evaluator, ingress)
+    /// can clone this Arc.
+    store: Arc<dyn NixStore>,
 
     // Channels to individual services
     // We may in the future need to recover an individual service, so retaining
@@ -178,9 +185,17 @@ impl SchedulerService {
 
         let hook_thread = Some(hook_executor.run(cancellation_token));
 
+        // Create DaemonNixStore for daemon-protocol store queries.
+        // Pool size = number of CPUs + 1 to avoid contention.
+        let cpu_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let store: Arc<dyn NixStore> = Arc::new(DaemonNixStore::new(cpu_count + 1));
+
         Ok(Self {
             db_service,
             metrics_registry,
+            store,
             ingress_sender,
             builder_sender,
             recorder_sender,
@@ -199,6 +214,11 @@ impl SchedulerService {
     /// Get the Prometheus metrics registry for exposing via HTTP
     pub fn metrics_registry(&self) -> Arc<Registry> {
         self.metrics_registry.clone()
+    }
+
+    /// Get the shared NixStore instance for daemon-protocol store queries.
+    pub fn store(&self) -> Arc<dyn NixStore> {
+        self.store.clone()
     }
 
     /// Wait for all internal service threads to complete.
