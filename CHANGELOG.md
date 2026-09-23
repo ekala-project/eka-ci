@@ -26,6 +26,9 @@
   with connection pooling for high-throughput store queries
 - Harmonia crates (v3.3.0) added as git dependencies; verified compatible
   with the project's fenix nightly Rust toolchain
+- `SchedulerService` creates and holds a shared `Arc<dyn NixStore>`
+  (DaemonNixStore with CPU+1 pool size) for use by server components
+- Evaluator crate re-exports `nix_store` for downstream access
 
 ### Consolidate dry-run duplication
 

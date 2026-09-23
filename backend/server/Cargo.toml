@@ -44,6 +44,7 @@ change_summary = { path = "../change_summary" }
 ci_config = { path = "../ci_config" }
 graph = { path = "../graph" }
 evaluator = { path = "../evaluator" }
+nix_store = { path = "../nix_store" }
 git = { path = "../git" }
 sqlx = { version = "0.8.5", features = [ "runtime-tokio", "sqlite", "migrate", "macros", "chrono" ], default-features = false }
 tempfile = "3.14"
