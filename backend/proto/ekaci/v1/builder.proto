@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package ekaci.builder.v1;
+
+// BuilderService runs on the EkaCI scheduler and accepts connections
+// from remote builder agents. Builders self-register by calling Join,
+// then receive build work via the bidirectional OpenTunnel stream.
+service BuilderService {
+  // Initial handshake: builder announces its capabilities and gets a
+  // session ID back. Must be called before OpenTunnel.
+  rpc Join(JoinRequest) returns (JoinResponse) {}
+
+  // Bidirectional stream: the scheduler sends BuildTask messages, the
+  // builder replies with BuildReport messages. The stream stays open
+  // for the lifetime of the builder session; dropping it de-registers
+  // the builder.
+  rpc OpenTunnel(stream BuilderMessage) returns (stream SchedulerMessage) {}
+
+  // Unary RPC for streaming build log chunks. Builders send log data
+  // as the build progresses; the scheduler writes it to the log store.
+  rpc StreamLog(stream LogChunk) returns (LogAck) {}
+}
+
+// ─── Registration ────────────────────────────────────────────────────
+
+message JoinRequest {
+  // Unique builder identifier (UUIDv4).
+  string builder_id = 1;
+  // Human-readable hostname.
+  string hostname = 2;
+  // Nix systems this builder supports (e.g. "x86_64-linux").
+  repeated string systems = 3;
+  // Maximum concurrent builds.
+  uint32 max_jobs = 4;
+  // Supported nix system features (e.g. "kvm", "big-parallel").
+  repeated string supported_features = 5;
+  // Features that builds MUST require to be routed here.
+  repeated string mandatory_features = 6;
+  // Nix version string for compatibility checks.
+  string nix_version = 7;
+  // Store directory (usually /nix/store).
+  string store_dir = 8;
+}
+
+message JoinResponse {
+  // Echo the builder_id back for confirmation.
+  string builder_id = 1;
+  // Session token for authenticating subsequent RPCs.
+  string session_token = 2;
+  // Scheduler-assigned concurrency limit (may differ from requested).
+  uint32 granted_max_jobs = 3;
+}
+
+// ─── Tunnel Messages ─────────────────────────────────────────────────
+
+// Messages sent by the builder over the OpenTunnel stream.
+message BuilderMessage {
+  oneof message {
+    Heartbeat heartbeat = 1;
+    BuildReport build_report = 2;
+  }
+}
+
+// Messages sent by the scheduler over the OpenTunnel stream.
+message SchedulerMessage {
+  oneof message {
+    BuildTask build_task = 1;
+    AbortBuild abort_build = 2;
+    Ping ping = 3;
+  }
+}
+
+// ─── Heartbeat ───────────────────────────────────────────────────────
+
+message Heartbeat {
+  string builder_id = 1;
+  // 1/5/15-minute load averages.
+  float load1 = 2;
+  float load5 = 3;
+  float load15 = 4;
+  // Available disk space on the store volume (bytes).
+  uint64 store_free_bytes = 5;
+  // Number of builds currently executing on this builder.
+  uint32 active_builds = 6;
+}
+
+message Ping {
+  // Opaque; builder echoes it back in the next heartbeat.
+  string nonce = 1;
+}
+
+// ─── Build Dispatch ──────────────────────────────────────────────────
+
+message BuildTask {
+  // Unique build request ID (UUIDv4).
+  string build_id = 1;
+  // Full store path to the .drv file.
+  string drv_path = 2;
+  // Maximum seconds without output before the build is killed.
+  uint64 no_output_timeout_seconds = 3;
+  // Absolute wall-clock cap in seconds.
+  uint64 max_duration_seconds = 4;
+}
+
+message AbortBuild {
+  string build_id = 1;
+}
+
+// ─── Build Result ────────────────────────────────────────────────────
+
+message BuildReport {
+  string build_id = 1;
+  BuildOutcome outcome = 2;
+  // Wall-clock duration of the build in milliseconds.
+  uint64 duration_ms = 3;
+  // Exit code of the nix-build process, if available.
+  optional int32 exit_code = 4;
+  // Last N bytes of stderr, for diagnostics on failure.
+  string stderr_tail = 5;
+}
+
+enum BuildOutcome {
+  BUILD_OUTCOME_UNSPECIFIED = 0;
+  BUILD_OUTCOME_SUCCESS = 1;
+  BUILD_OUTCOME_FAILURE = 2;
+  BUILD_OUTCOME_TIMEOUT = 3;
+  BUILD_OUTCOME_ABSOLUTE_TIMEOUT = 4;
+  BUILD_OUTCOME_CANCELLED = 5;
+}
+
+// ─── Log Streaming ───────────────────────────────────────────────────
+
+message LogChunk {
+  string build_id = 1;
+  // Raw log bytes (interleaved stdout+stderr).
+  bytes data = 2;
+}
+
+message LogAck {}

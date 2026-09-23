@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "builder_proto",
   "change_summary",
   "ci_config",
   "client",
