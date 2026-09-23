@@ -15,6 +15,18 @@
 - Test derivations flow through the standard build pipeline and appear
   as a separate `{job}/passthru-tests` jobset with individual check runs
 
+### NixStore trait and harmonia daemon protocol
+
+- New `nix_store` workspace crate with `NixStore` trait abstracting store
+  operations: `is_valid_path`, `query_references`, `query_requisites`,
+  `query_derivation_output_map`, `query_path_info`, `store_ping`
+- `SubprocessNixStore` implementation wrapping existing nix-store/nix CLI
+  commands (fallback and testing)
+- `DaemonNixStore` implementation using harmonia's daemon wire protocol
+  with connection pooling for high-throughput store queries
+- Harmonia crates (v3.3.0) added as git dependencies; verified compatible
+  with the project's fenix nightly Rust toolchain
+
 ### Consolidate dry-run duplication
 
 - Move `DryRunReport` struct and `dry_run_realise` function from the server

@@ -1,0 +1,22 @@
+[package]
+name = "nix_store"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["process", "time", "io-util", "fs"] }
+tracing = { workspace = true }
+async-trait = "0.1"
+
+# Harmonia crates for daemon protocol access
+harmonia-protocol = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-remote = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-path = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-path-info = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-derivation = { git = "https://github.com/nix-community/harmonia.git" }
+harmonia-store-aterm = { git = "https://github.com/nix-community/harmonia.git" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
