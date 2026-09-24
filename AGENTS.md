@@ -6,9 +6,19 @@ This document provides essential guidelines for AI agents working on the eka-ci 
 
 ```
 eka-ci/
-├── backend/          # Rust workspace (Cargo workspace)
-│   └── server/       # Main server crate
-└── frontend/         # Elm project
+├── backend/               # Rust workspace (Cargo workspace)
+│   ├── builder_proto/     # gRPC proto codegen (tonic/prost)
+│   ├── change_summary/    # Package diff and rebuild impact analysis
+│   ├── ci_config/         # Repository config parsing (.eka-ci/config.json)
+│   ├── client/            # CLI client (ekaci)
+│   ├── evaluator/         # Nix evaluation and drv traversal
+│   ├── git/               # Git operations
+│   ├── graph/             # In-memory dependency graph service
+│   ├── nix_store/         # NixStore trait + SubprocessNixStore + DaemonNixStore
+│   ├── proto/             # Protobuf definitions (ekaci/v1/builder.proto)
+│   ├── server/            # Main server crate
+│   └── shared/            # Shared types across crates
+└── frontend/              # Elm project
 ```
 
 **backend/**: Actor-based message-passing CI system built in Rust
@@ -45,6 +55,11 @@ cargo fmt    # Format all code
 - Always run `cargo fmt` to ensure consistent formatting
 - Consider running `cargo clippy` for additional lints
 
+**Proto compilation** (builder_proto crate):
+- Requires `protoc` — available via `nix-shell -p protobuf` or set `PROTOC` env var
+- Proto sources live in `backend/proto/ekaci/v1/`
+- Generated code is compiled by `build.rs` via tonic-build
+
 ### Error Handling Requirements
 
 **NEVER** use `let _ = <Result expr>;`
@@ -77,6 +92,27 @@ if let Err(e) = some_function_returning_result() {    // ✅ Handle error
 - Use `Arc` for shared immutable data across tasks
 - Use `Arc<DrvId>` pattern extensively (see existing code)
 - Follow existing message-passing patterns (see `backend/docs/message_flow.md`)
+
+### Key Subsystems
+
+**Circuit-breaker** (`server/src/scheduler/build/circuit_breaker.rs`):
+Tracks nix-build connection failures per remote builder. After 3 failures
+within 120s, the builder is temporarily disabled. Recovery probes with
+exponential backoff (30s–10min). The registry is shared between
+`BuilderThread` (reports failures) and `system_queue` (filters dispatch).
+
+**NixStore trait** (`nix_store/` crate):
+Abstracts nix store operations behind `NixStore` trait with two impls:
+- `SubprocessNixStore` — shells out to nix-store/nix CLI
+- `DaemonNixStore` — harmonia daemon wire protocol with connection pool
+
+The `SchedulerService` holds an `Arc<dyn NixStore>` (DaemonNixStore).
+`dry_run_realise` stays as a subprocess — no daemon equivalent exists.
+
+**gRPC builder protocol** (`builder_proto/`, `server/src/grpc/`):
+Proto-defined builder self-registration and build dispatch. Builders
+connect via `Join` + `OpenTunnel` (bidirectional stream). The
+`BuilderGrpcService` tracks connected builders in a registry.
 
 ## Frontend Development (Elm)
 

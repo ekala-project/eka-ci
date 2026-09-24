@@ -35,10 +35,13 @@ This doesn't scale well, and is error prone.
   - Intelligent build queue with multi-tier scheduling
   - Platform-specific build queues (x86_64-linux, aarch64-linux, x86_64-darwin, aarch64-darwin)
   - Dedicated FOD (Fixed-Output Derivation) queue
-  - Remote builder support via SSH
+  - Remote builder support via SSH with circuit-breaker protection
+  - Circuit-breaker pattern: auto-disable unreachable builders after repeated failures, recover via exponential-backoff probes
+  - gRPC builder protocol for dynamic builder registration and build dispatch
   - System features support (respects `requiredSystemFeatures`)
   - Build retry logic with transitive failure propagation
-  - Build timeout handling (output-based)
+  - Build timeout handling (output-based and absolute wall-clock)
+  - Nix daemon wire protocol integration (harmonia) for fast store queries
   - Flake checks mode (similar to Garnix)
 
 - **Binary Cache Integration**
@@ -65,6 +68,7 @@ This doesn't scale well, and is error prone.
 - **Monitoring & Observability**
   - Prometheus metrics endpoint
   - Build queue metrics
+  - Build phase timing metrics (fetch vs build duration)
   - Graph cache utilization metrics
   - WebSocket support for real-time updates
   - Structured logging (tracing)
@@ -370,6 +374,7 @@ eka-ci exposes metrics at `/metrics`:
 
 - Build queue depth and throughput
 - Build success/failure rates
+- Build phase timing (fetch duration vs build duration, by platform/locality)
 - Graph cache hit rate and eviction stats
 - Remote builder health and utilization
 - Webhook processing latency
@@ -382,6 +387,9 @@ eka_ci_build_queue_depth
 # Cache hit rate
 rate(eka_ci_graph_cache_hits_total[5m]) /
   (rate(eka_ci_graph_cache_hits_total[5m]) + rate(eka_ci_graph_cache_misses_total[5m]))
+
+# Average input-fetch time per build (prefetch measurement)
+histogram_quantile(0.95, rate(eka_ci_eka_build_fetch_duration_seconds_bucket[1h]))
 ```
 
 ### Logging
@@ -436,8 +444,13 @@ journalctl -u eka-ci -f
 - [ ] "OfBorg" convention support (commit message attr paths)
 - [ ] Flake checks evaluation mode
 - [ ] Flake develop actions (impure commands)
-- [ ] Auto-scaling remote builders
+- [ ] Auto-scaling remote builders via gRPC builder protocol
 - [x] Multi-GitHub App support with automatic selection
+- [x] Circuit-breaker for remote builders
+- [x] Nix daemon protocol integration (harmonia)
+- [x] gRPC builder protocol (proto + service skeleton)
+- [x] Build phase timing instrumentation (prefetch measurement)
+- [ ] Daemon-based input prefetching (pending measurement data)
 - [ ] GCP Secret Manager and Azure Key Vault integration
 - [ ] Automatic credential rotation
 
