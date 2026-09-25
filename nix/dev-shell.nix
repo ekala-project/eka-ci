@@ -8,6 +8,7 @@
   mkShell,
   openssl,
   pkg-config,
+  protobuf,
   rustc,
   rustfmt,
   rust-analyzer,
@@ -29,6 +30,7 @@ mkShell {
       "rustfmt-preview"
     ])
     pkg-config
+    protobuf
     nix-eval-jobs
     rust-analyzer
     elmPackages.elm
