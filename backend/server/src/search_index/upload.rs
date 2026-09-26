@@ -4,9 +4,10 @@
 //   - Local filesystem: writes files directly to a directory path.
 //   - S3: shells out to `aws s3 cp` with credentials injected via env vars.
 //
-// The S3 path reuses the CredentialSource infrastructure from the cache
-// registry so all existing auth methods (env, file, AWS profile, Vault,
-// Secrets Manager, IMDS, systemd-creds) work out of the box.
+// All uploads are namespaced by channel name so multiple channels can
+// coexist under the same destination without clobbering each other:
+//   {destination}/{channel_name}/packages.json.zst
+//   {destination}/{channel_name}/manifest.json
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,37 +18,50 @@ use tracing::{debug, info};
 use crate::config::{CredentialSource, SearchIndexConfig};
 use crate::search_index::types::Manifest;
 
-/// Upload a single compressed index file to the configured destination.
-pub async fn upload_index(config: &SearchIndexConfig, filename: &str, data: &[u8]) -> Result<()> {
+/// Upload a single compressed index file to the configured destination,
+/// namespaced under the channel name.
+pub async fn upload_index(
+    config: &SearchIndexConfig,
+    channel_name: &str,
+    filename: &str,
+    data: &[u8],
+) -> Result<()> {
     let dest = &config.destination;
+    let prefixed = format!("{channel_name}/{filename}");
 
     if dest.starts_with("s3://") {
-        upload_s3(dest, filename, data, &config.credentials).await
+        upload_s3(dest, &prefixed, data, &config.credentials).await
     } else {
-        upload_local(dest, filename, data).await
+        upload_local(dest, &prefixed, data).await
     }
 }
 
-/// Upload the manifest.json (uncompressed) to the configured destination.
-pub async fn upload_manifest(config: &SearchIndexConfig, manifest: &Manifest) -> Result<()> {
+/// Upload the manifest.json (uncompressed), namespaced under the channel name.
+pub async fn upload_manifest(
+    config: &SearchIndexConfig,
+    channel_name: &str,
+    manifest: &Manifest,
+) -> Result<()> {
     let json = serde_json::to_vec_pretty(manifest).context("failed to serialize manifest")?;
     let dest = &config.destination;
+    let prefixed = format!("{channel_name}/manifest.json");
 
     if dest.starts_with("s3://") {
-        upload_s3(dest, "manifest.json", &json, &config.credentials).await
+        upload_s3(dest, &prefixed, &json, &config.credentials).await
     } else {
-        upload_local(dest, "manifest.json", &json).await
+        upload_local(dest, &prefixed, &json).await
     }
 }
 
-/// Write a file to a local directory.
-async fn upload_local(dest_dir: &str, filename: &str, data: &[u8]) -> Result<()> {
-    let dir = Path::new(dest_dir);
-    tokio::fs::create_dir_all(dir)
-        .await
-        .with_context(|| format!("failed to create index directory: {}", dir.display()))?;
+/// Write a file to a local directory, creating parent directories as needed.
+async fn upload_local(dest_dir: &str, relative_path: &str, data: &[u8]) -> Result<()> {
+    let path = Path::new(dest_dir).join(relative_path);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+    }
 
-    let path = dir.join(filename);
     tokio::fs::write(&path, data)
         .await
         .with_context(|| format!("failed to write index file: {}", path.display()))?;
@@ -66,11 +80,11 @@ async fn upload_local(dest_dir: &str, filename: &str, data: &[u8]) -> Result<()>
 /// Uses a temporary file to avoid piping large blobs through stdin.
 async fn upload_s3(
     s3_prefix: &str,
-    filename: &str,
+    relative_path: &str,
     data: &[u8],
     credentials: &CredentialSource,
 ) -> Result<()> {
-    let s3_url = format!("{}/{}", s3_prefix.trim_end_matches('/'), filename);
+    let s3_url = format!("{}/{}", s3_prefix.trim_end_matches('/'), relative_path);
     let cred_env = credentials
         .load()
         .await
@@ -79,7 +93,7 @@ async fn upload_s3(
     let temp_file = write_temp_file(data).await?;
     let temp_path = temp_file.path().to_string_lossy().to_string();
 
-    let content_type = if filename.ends_with(".zst") {
+    let content_type = if relative_path.ends_with(".zst") {
         "application/zstd"
     } else {
         "application/json"

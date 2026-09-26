@@ -94,8 +94,33 @@ pub struct IndexInfo {
 pub struct Manifest {
     /// ISO 8601 timestamp of generation.
     pub generated_at: String,
+    /// Channel name that produced this index (e.g. "unstable").
+    pub channel_name: String,
     /// The nixpkgs revision (commit SHA) these indexes are built against.
     pub nixpkgs_rev: String,
     /// Per-index metadata keyed by index name ("packages", "files", etc.).
     pub indexes: HashMap<String, IndexInfo>,
+}
+
+/// Response payload for `GET /v1/search-index`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIndexInfo {
+    /// Publicly-reachable base URL for index downloads.
+    /// Clients fetch `{public_url}/{channel_name}/packages.json.zst`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
+    /// Available channels with their latest index metadata.
+    pub channels: Vec<ChannelIndexInfo>,
+}
+
+/// Per-channel index metadata returned in the discovery endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelIndexInfo {
+    /// Channel name (e.g. "unstable").
+    pub name: String,
+    /// Full channel identifier (e.g. "github/ekacorp/ekapkgs/unstable").
+    pub channel_id: String,
+    /// URL path segment for this channel's indexes.
+    /// Full URL: `{public_url}/{url_prefix}/packages.json.zst`.
+    pub url_prefix: String,
 }
