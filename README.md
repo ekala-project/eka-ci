@@ -86,6 +86,14 @@ This doesn't scale well, and is error prone.
   - Push successful builds to configured caches
   - Integration with existing cache infrastructure
 
+- **Search Index Generation**
+  - Generates zstd-compressed JSON indexes after channel promotion
+  - `packages.json.zst` — package metadata (attr, pname, version, description)
+  - `files.json.zst` — executable file listings from built packages (replaces `nix-locate`)
+  - `manifest.json` — index metadata for client-side staleness checks
+  - Upload to S3 or local filesystem with full credential source support
+  - Powers tab completion and search in the ekapkgs CLI
+
 - **Security Enhancements**
   - Webhook signature verification (framework ready)
   - Additional audit logging features
@@ -287,6 +295,15 @@ credentials = { aws-secrets-manager = {
 allow_all = false
 allowed_repos = ["myorg/production-*"]
 allowed_branches = ["main"]
+
+# Search index generation (optional)
+[search_index]
+enabled = true
+destination = "s3://my-bucket/indexes"  # or a local path like "/var/lib/ekaci/indexes"
+credentials = { aws-profile = { profile = "default" } }
+channels = []              # empty = generate for all promoted channels
+generate_files_index = true
+generate_options_index = false
 ```
 
 ### Repository Configuration
@@ -444,6 +461,7 @@ journalctl -u eka-ci -f
 - [ ] "OfBorg" convention support (commit message attr paths)
 - [ ] Flake checks evaluation mode
 - [ ] Flake develop actions (impure commands)
+- [x] Search index generation for ekapkgs-cli (packages, files)
 - [ ] Auto-scaling remote builders via gRPC builder protocol
 - [x] Multi-GitHub App support with automatic selection
 - [x] Circuit-breaker for remote builders

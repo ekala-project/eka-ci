@@ -17,6 +17,7 @@ eka-ci/
 │   ├── nix_store/         # NixStore trait + SubprocessNixStore + DaemonNixStore
 │   ├── proto/             # Protobuf definitions (ekaci/v1/builder.proto)
 │   ├── server/            # Main server crate
+│   │   └── src/search_index/  # Search index generation (post-promotion)
 │   └── shared/            # Shared types across crates
 └── frontend/              # Elm project
 ```
@@ -113,6 +114,15 @@ The `SchedulerService` holds an `Arc<dyn NixStore>` (DaemonNixStore).
 Proto-defined builder self-registration and build dispatch. Builders
 connect via `Join` + `OpenTunnel` (bidirectional stream). The
 `BuilderGrpcService` tracks connected builders in a registry.
+
+**Search index generation** (`server/src/search_index/`):
+Post-channel-promotion service that generates zstd-compressed JSON
+indexes for the ekapkgs CLI. `SearchIndexService` receives
+`SearchIndexTask::GenerateIndexes` from `ChannelService` after a
+successful promotion, runs generators (`packages.rs` shells out to
+`nix search`, `files.rs` walks store paths), and uploads the results
+to a configured destination (S3 or local path). Configuration lives
+in the `[search_index]` section of `ekaci.toml`.
 
 ## Frontend Development (Elm)
 
