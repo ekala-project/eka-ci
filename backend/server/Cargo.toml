@@ -61,5 +61,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 xdg = { workspace = true }
+zstd = "0.13"
 openssl = { version = "0.10.75", features = ["vendored"] }
 rustls = { version = "0.23", features = ["ring"], default-features = false }

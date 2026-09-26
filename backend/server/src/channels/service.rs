@@ -29,6 +29,7 @@ use crate::config::{ChannelConfig, ChannelForge};
 use crate::db::DbService;
 use crate::db::model::build_event::DrvBuildState;
 use crate::github::GitHubTask;
+use crate::search_index::types::SearchIndexTask;
 use crate::services::{AsyncService, TaskJournal};
 
 /// Capacity of the inbound mpsc channel. Matches other AsyncServices
@@ -65,6 +66,10 @@ pub struct ChannelService {
     /// display promotion status in the GitHub UI. `None` when GitHub
     /// integration is disabled.
     github_sender: Option<mpsc::Sender<GitHubTask>>,
+    /// Optional sender for triggering search-index generation after a
+    /// successful promotion. `None` when `[search_index]` is not
+    /// configured.
+    search_index_sender: Option<mpsc::Sender<SearchIndexTask>>,
     journal: TaskJournal<ChannelTask>,
 }
 
@@ -74,6 +79,7 @@ impl ChannelService {
         channels: Arc<HashMap<String, ChannelConfig>>,
         octocrab: Option<Arc<Octocrab>>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
+        search_index_sender: Option<mpsc::Sender<SearchIndexTask>>,
     ) -> Self {
         let (task_sender, task_receiver) = mpsc::channel(CHANNEL_TASK_BUFFER);
         let pool = db.pool.clone();
@@ -85,6 +91,7 @@ impl ChannelService {
             channels,
             octocrab,
             github_sender,
+            search_index_sender,
             journal: TaskJournal::new(pool, "channels"),
         }
     }
@@ -276,6 +283,25 @@ impl ChannelService {
         Ok(None)
     }
 
+    /// Dispatch a search-index generation task after a successful
+    /// promotion. No-ops when the search-index sender is not configured.
+    fn dispatch_search_index(&self, channel: &ChannelConfig, sha: &str) {
+        let Some(ref sender) = self.search_index_sender else {
+            return;
+        };
+        let task = SearchIndexTask::GenerateIndexes {
+            channel_id: channel.channel_id(),
+            channel: channel.clone(),
+            sha: sha.to_string(),
+        };
+        let sender = sender.clone();
+        crate::services::spawn_logged("search-index-dispatch", async move {
+            if let Err(e) = sender.send(task).await {
+                warn!("Failed to send SearchIndexTask: {:?}", e);
+            }
+        });
+    }
+
     /// Idempotency guard: a `(channel, sha)` pair that has already
     /// reached a terminal decision must not be re-promoted. Replayed
     /// webhooks otherwise would re-drive the entire eval pipeline and
@@ -432,6 +458,9 @@ impl ChannelService {
 
                 // Update GitHub check run to success
                 self.fire_github_check_run(&channel, &sha, PromotionStatus::Promoted, None);
+
+                // Trigger search-index generation for the promoted SHA.
+                self.dispatch_search_index(&channel, &sha);
 
                 info!(
                     event = "channel_promoted",
@@ -601,6 +630,9 @@ impl ChannelService {
 
                     // Update GitHub check run to success
                     self.fire_github_check_run(&channel, &sha, PromotionStatus::Promoted, None);
+
+                    // Trigger search-index generation for the promoted SHA.
+                    self.dispatch_search_index(&channel, &sha);
 
                     info!(
                         event = "channel_promoted",
@@ -784,7 +816,7 @@ mod tests {
         // Ready; the service should record a Promoted row. (PR 3
         // stub: no actual FF push.)
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None, None);
         let ch = channel("stable", &[], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-1".to_string())
             .await
@@ -805,7 +837,7 @@ mod tests {
         // required job is treated as not-yet-terminal => Waiting,
         // which leaves the Evaluating row in place.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None, None);
         let ch = channel("stable", &["coreutils"], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-w".to_string())
             .await
@@ -825,7 +857,7 @@ mod tests {
         // First push reaches Promoted (empty required). A second
         // delivery of the same SHA must NOT open a new Evaluating row.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None, None);
         let ch = channel("stable", &[], &[]);
         svc.handle_evaluate_push(ch.clone(), "sha-dup".to_string())
             .await
@@ -849,7 +881,7 @@ mod tests {
         // sha-b arrives -> stored as pending (no prior pending => no Skipped row yet).
         // sha-c arrives -> sha-b is now stale and must be audited as Skipped.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None, None);
         let ch = channel("stable", &["coreutils"], &[]);
 
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
@@ -894,7 +926,7 @@ mod tests {
         // Empty channels registry: a JobsetComplete for any repo
         // should silently no-op without touching the DB.
         let db = DbService::new_in_memory().await.unwrap();
-        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(HashMap::new()), None, None, None);
         svc.handle_jobset_complete(
             ChannelForge::GitHub,
             "no-such-owner".to_string(),
@@ -922,7 +954,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None, None);
 
         svc.handle_jobset_complete(
             ChannelForge::GitHub,
@@ -960,7 +992,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None, None);
 
         // Open an Evaluating row for sha-a.
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
@@ -995,7 +1027,7 @@ mod tests {
         let ch = channel("stable", &["coreutils"], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None, None);
 
         svc.handle_evaluate_push(ch.clone(), "sha-a".to_string())
             .await
@@ -1030,7 +1062,7 @@ mod tests {
         let ch = channel("stable", &[], &[]);
         let mut registry = HashMap::new();
         registry.insert(ch.channel_id(), ch.clone());
-        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None);
+        let svc = ChannelService::new(db.clone(), Arc::new(registry), None, None, None);
 
         svc.handle_evaluate_push(ch.clone(), "sha-x".to_string())
             .await
