@@ -56,6 +56,9 @@ pub(super) struct AppState {
     /// reference for each event. Empty when no channels are configured;
     /// the webhook handlers must tolerate this and short-circuit.
     pub(super) channels: Arc<std::collections::HashMap<String, crate::config::ChannelConfig>>,
+    /// Search-index configuration. `None` when the feature is disabled.
+    /// Used by the `GET /v1/search-index` discovery endpoint.
+    pub(super) search_index_config: Option<crate::config::SearchIndexConfig>,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState

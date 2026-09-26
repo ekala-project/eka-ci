@@ -67,6 +67,7 @@ impl WebService {
         allowed_origins: Vec<String>,
         change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
         channels: Arc<std::collections::HashMap<String, crate::config::ChannelConfig>>,
+        search_index_config: Option<crate::config::SearchIndexConfig>,
     ) -> Result<Self> {
         let listener = TcpListener::bind(socket)
             .await
@@ -118,6 +119,7 @@ impl WebService {
                 allowed_origins,
                 change_summary_metrics,
                 channels,
+                search_index_config,
             },
         })
     }

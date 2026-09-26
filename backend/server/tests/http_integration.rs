@@ -154,6 +154,7 @@ async fn create_test_server_with_options(
         allowed_origins,
         None, // change_summary_metrics: tests don't observe metrics
         Arc::new(std::collections::HashMap::new()), // no release channels for tests
+        None, // no search index config for tests
     )
     .await
     .expect("Failed to create web service");

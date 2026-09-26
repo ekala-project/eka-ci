@@ -4,6 +4,7 @@
 // This is a lightweight AsyncService that receives GenerateIndexes
 // tasks from the ChannelService and runs the generators sequentially.
 // Each generator is independent: if one fails, the others still run.
+// Uploads are namespaced by channel name so multiple channels coexist.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -38,12 +39,13 @@ impl SearchIndexService {
     }
 
     /// Handle a GenerateIndexes task: run each generator, upload
-    /// results, and produce a manifest.
-    async fn handle_generate(&self, channel_id: &str, sha: &str) -> Result<()> {
+    /// results namespaced by channel name, and produce a manifest.
+    async fn handle_generate(&self, channel_id: &str, channel_name: &str, sha: &str) -> Result<()> {
         let start = Instant::now();
         info!(
             event = "search_index_generation_start",
             channel_id = %channel_id,
+            channel_name = %channel_name,
             sha = %sha,
             "starting search index generation"
         );
@@ -60,7 +62,9 @@ impl SearchIndexService {
         match generators::packages::generate_packages_index(&flake_ref, system).await {
             Ok((data, count)) => {
                 let size = data.len() as u64;
-                if let Err(e) = upload::upload_index(&self.config, "packages.json.zst", &data).await
+                if let Err(e) =
+                    upload::upload_index(&self.config, channel_name, "packages.json.zst", &data)
+                        .await
                 {
                     warn!(
                         event = "search_index_upload_failed",
@@ -98,7 +102,8 @@ impl SearchIndexService {
                 Ok((data, count)) => {
                     let size = data.len() as u64;
                     if let Err(e) =
-                        upload::upload_index(&self.config, "files.json.zst", &data).await
+                        upload::upload_index(&self.config, channel_name, "files.json.zst", &data)
+                            .await
                     {
                         warn!(
                             event = "search_index_upload_failed",
@@ -130,11 +135,12 @@ impl SearchIndexService {
         // Build and upload manifest
         let manifest = Manifest {
             generated_at: chrono::Utc::now().to_rfc3339(),
+            channel_name: channel_name.to_string(),
             nixpkgs_rev: sha.to_string(),
             indexes: manifest_indexes,
         };
 
-        if let Err(e) = upload::upload_manifest(&self.config, &manifest).await {
+        if let Err(e) = upload::upload_manifest(&self.config, channel_name, &manifest).await {
             warn!(
                 event = "search_index_manifest_upload_failed",
                 error = %e,
@@ -145,6 +151,7 @@ impl SearchIndexService {
         info!(
             event = "search_index_generation_complete",
             channel_id = %channel_id,
+            channel_name = %channel_name,
             sha = %sha,
             elapsed_ms = start.elapsed().as_millis() as u64,
             indexes = manifest.indexes.len(),
@@ -180,7 +187,7 @@ impl AsyncService<SearchIndexTask> for SearchIndexService {
         match task {
             SearchIndexTask::GenerateIndexes {
                 channel_id,
-                channel: _,
+                channel,
                 sha,
             } => {
                 if !self.should_generate(&channel_id) {
@@ -191,7 +198,7 @@ impl AsyncService<SearchIndexTask> for SearchIndexService {
                     );
                     return Ok(());
                 }
-                self.handle_generate(&channel_id, &sha).await
+                self.handle_generate(&channel_id, &channel.name, &sha).await
             },
         }
     }

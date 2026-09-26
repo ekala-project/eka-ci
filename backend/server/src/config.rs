@@ -580,6 +580,14 @@ pub struct SearchIndexConfig {
     ///   - `s3://bucket/prefix` — upload via AWS S3
     ///   - A local filesystem path — write files directly
     pub destination: String,
+    /// Publicly-reachable base URL where the uploaded indexes are
+    /// served. Exposed through `GET /v1/search-index` so third-party
+    /// tools can discover indexes without out-of-band configuration.
+    ///
+    /// Example: `"https://indexes.example.com"`. Clients fetch
+    /// `{public_url}/{channel_name}/packages.json.zst`.
+    #[serde(default)]
+    pub public_url: Option<String>,
     /// Credential source for upload authentication. Reuses the same
     /// `CredentialSource` enum as the cache registry.
     #[serde(default = "default_credential_none")]

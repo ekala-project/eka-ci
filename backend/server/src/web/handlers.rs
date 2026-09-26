@@ -324,3 +324,45 @@ pub(super) async fn admin_github_api_cache_invalidate_handler(
     )
         .into_response()
 }
+
+// Search index discovery
+pub(super) async fn search_index_handler(State(state): State<AppState>) -> impl IntoResponse {
+    use crate::search_index::types::{ChannelIndexInfo, SearchIndexInfo};
+
+    let config = match &state.search_index_config {
+        Some(c) if c.enabled => c,
+        _ => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "search index generation is not configured"
+                })),
+            )
+                .into_response();
+        },
+    };
+
+    let channels: Vec<ChannelIndexInfo> = state
+        .channels
+        .values()
+        .filter(|ch| {
+            config.channels.is_empty() || config.channels.iter().any(|c| c == &ch.channel_id())
+        })
+        .map(|ch| ChannelIndexInfo {
+            name: ch.name.clone(),
+            channel_id: ch.channel_id(),
+            url_prefix: ch.name.clone(),
+        })
+        .collect();
+
+    let info = SearchIndexInfo {
+        public_url: config.public_url.clone(),
+        channels,
+    };
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::to_value(info).unwrap()),
+    )
+        .into_response()
+}

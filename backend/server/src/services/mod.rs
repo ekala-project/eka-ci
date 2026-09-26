@@ -342,6 +342,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.web.allowed_origins.clone(),
         Some(change_summary_metrics.clone()),
         channels_registry.clone(),
+        config.search_index.clone(),
     )
     .await
     .context("failed to start web service")?;

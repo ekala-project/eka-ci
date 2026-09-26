@@ -241,6 +241,7 @@ pub(super) fn api_routes() -> Router<AppState> {
             "/maintainer-requests/{request_id}",
             get(get_maintainer_request_handler),
         )
+        .route("/search-index", get(search_index_handler))
         .route("/drvs/{drv}/rebuild", post(rebuild_drv_handler))
         .route(
             "/admin/rebuild-all-failed",

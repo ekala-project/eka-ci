@@ -355,6 +355,21 @@ let
           authentication.
         '';
       };
+      public_url = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "https://indexes.example.com";
+        description = ''
+          Publicly-reachable base URL where the uploaded indexes are served
+          (e.g. a CloudFront distribution in front of the S3 bucket, or a
+          static file server).
+
+          Exposed through the `GET /v1/search-index` API endpoint so
+          third-party tools can discover index locations without out-of-band
+          configuration. Clients fetch indexes at
+          `{public_url}/{channel_name}/packages.json.zst`.
+        '';
+      };
       credentials = mkOption {
         type = settingsFormat.type;
         default = "none";
