@@ -53,6 +53,7 @@ async fn test_channel_promotion_on_successful_required_jobs() {
         Arc::new(channels),
         None, // No octocrab in tests
         None, // No GitHub sender in tests
+        None, // No search index sender in tests
     );
 
     let channel_sender = channel_service.get_sender();
@@ -160,7 +161,7 @@ async fn test_channel_blocked_on_failed_required_job() {
     channels.insert(channel.channel_id(), channel.clone());
 
     let channel_service =
-        ChannelService::new(ctx.db_service.clone(), Arc::new(channels), None, None);
+        ChannelService::new(ctx.db_service.clone(), Arc::new(channels), None, None, None);
 
     let channel_sender = channel_service.get_sender();
 

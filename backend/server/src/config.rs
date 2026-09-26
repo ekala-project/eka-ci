@@ -89,6 +89,10 @@ struct ConfigFile {
     /// gated-release feature. Empty/absent disables the feature.
     #[serde(default)]
     channels: Vec<ChannelConfig>,
+    /// Search-index generation configuration. When enabled, the server
+    /// produces compressed JSON indexes (packages, files, options) after
+    /// channel promotion and uploads them to a configured destination.
+    search_index: Option<SearchIndexConfig>,
     security: Option<SecurityConfig>,
 }
 
@@ -558,6 +562,46 @@ pub struct CachePermissions {
     pub allowed_branches: Vec<String>,
 }
 
+/// Search-index generation configuration.
+///
+/// When enabled, the server generates zstd-compressed JSON index files
+/// after a release-channel promotion and uploads them to a configured
+/// storage destination. These indexes power tab completion and search
+/// in the ekapkgs CLI.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SearchIndexConfig {
+    /// Whether search index generation is enabled (default: true when
+    /// the section is present).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Storage destination URL for uploading indexes.
+    ///
+    /// Supports:
+    ///   - `s3://bucket/prefix` — upload via AWS S3
+    ///   - A local filesystem path — write files directly
+    pub destination: String,
+    /// Credential source for upload authentication. Reuses the same
+    /// `CredentialSource` enum as the cache registry.
+    #[serde(default = "default_credential_none")]
+    pub credentials: CredentialSource,
+    /// Which channel IDs trigger index generation. Empty means all
+    /// promoted channels generate indexes.
+    #[serde(default)]
+    pub channels: Vec<String>,
+    /// Whether to generate the `files.json.zst` index (expensive:
+    /// walks store paths of all successfully-built packages).
+    #[serde(default = "default_true")]
+    pub generate_files_index: bool,
+    /// Whether to generate `options.json.zst` and
+    /// `service-options.json.zst` indexes (ekaos-specific).
+    #[serde(default)]
+    pub generate_options_index: bool,
+}
+
+fn default_credential_none() -> CredentialSource {
+    CredentialSource::None
+}
+
 /// GitHub App configuration - defines available GitHub Apps server-side
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GitHubAppConfig {
@@ -791,6 +835,26 @@ fn clamp_timeout_seconds(field: &'static str, value: u64, min: u64, max: u64) ->
         return max;
     }
     value
+}
+
+/// Validate an optional `SearchIndexConfig`. Returns `None` when the
+/// section is absent or explicitly disabled.
+pub(crate) fn validate_search_index(
+    raw: Option<SearchIndexConfig>,
+) -> anyhow::Result<Option<SearchIndexConfig>> {
+    let config = match raw {
+        Some(c) if c.enabled => c,
+        _ => return Ok(None),
+    };
+    if config.destination.is_empty() {
+        bail!("[search_index] destination is empty");
+    }
+    tracing::info!(
+        event = "search_index_configured",
+        destination = %config.destination,
+        "Search-index generation enabled"
+    );
+    Ok(Some(config))
 }
 
 /// Validate a vector of release-channel definitions and collect them
@@ -1138,6 +1202,9 @@ pub struct Config {
     /// Release-channel registry - keyed by `ChannelConfig::channel_id()`.
     /// Empty when no channels are configured (gated-release feature off).
     pub channels: HashMap<String, ChannelConfig>,
+    /// Search-index generation configuration. `None` when the feature
+    /// is not configured or explicitly disabled.
+    pub search_index: Option<SearchIndexConfig>,
     /// Security settings for hook execution
     pub security: SecurityConfig,
 }
@@ -1497,6 +1564,7 @@ impl Config {
             gitea_instances,
             gitlab_instances,
             channels,
+            search_index: validate_search_index(file.search_index)?,
             security,
         })
     }
@@ -1597,6 +1665,7 @@ mod redaction_tests {
             gitea_instances: HashMap::new(),
             gitlab_instances: HashMap::new(),
             channels: HashMap::new(),
+            search_index: None,
             security: SecurityConfig {
                 max_hook_timeout_seconds: 300,
                 audit_hooks: true,
@@ -1695,6 +1764,7 @@ mod redaction_tests {
             gitea_instances,
             gitlab_instances,
             channels: HashMap::new(),
+            search_index: None,
             security: SecurityConfig {
                 max_hook_timeout_seconds: 300,
                 audit_hooks: true,

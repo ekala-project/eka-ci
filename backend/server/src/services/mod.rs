@@ -21,6 +21,7 @@ use crate::graph::{GraphCommand, GraphService, GraphServiceHandle};
 use crate::metrics::{ChangeSummaryMetrics, GraphMetrics, NixEvalMetrics, WebhookMetrics};
 use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
+use crate::search_index::SearchIndexService;
 use crate::services::checks::ChecksExecutor;
 use crate::web::WebService;
 
@@ -190,12 +191,22 @@ pub async fn start_services(config: Config) -> Result<()> {
     // emits `ChannelTask::JobsetComplete` whenever a jobset reaches a
     // fully-terminal state, which is how an in-flight channel
     // evaluation gets the signal to re-snapshot and finalise.
+    // Construct SearchIndexService (if configured) before ChannelService
+    // so its sender can be plumbed into ChannelService for post-promotion
+    // index generation dispatch.
+    let search_index_service = config
+        .search_index
+        .as_ref()
+        .map(|si_config| SearchIndexService::new(si_config.clone(), db_pool.clone()));
+    let search_index_sender = search_index_service.as_ref().map(|s| s.get_sender());
+
     let channels_registry = Arc::new(config.channels.clone());
     let channel_service = ChannelService::new(
         db_service.clone(),
         channels_registry.clone(),
         maybe_octocrab.as_ref().map(|o| Arc::new(o.clone())),
         maybe_github_sender.clone(),
+        search_index_sender,
     );
     let channel_sender = channel_service.get_sender();
 
@@ -375,6 +386,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let gitlab_handle = gitlab_service.run(cancellation_token.clone());
     let gitea_handle = gitea_service.run(cancellation_token.clone());
     let channel_handle = channel_service.run(cancellation_token.clone());
+    let search_index_handle = search_index_service.map(|svc| svc.run(cancellation_token.clone()));
 
     let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
@@ -418,6 +430,13 @@ pub async fn start_services(config: Config) -> Result<()> {
     if let Some(handle) = github_handle {
         if let Err(e) = handle.await {
             warn!("GitHub service task exited with error: {:?}", e);
+        }
+    }
+
+    // SearchIndexService is optional; await its handle if it was spawned.
+    if let Some(handle) = search_index_handle {
+        if let Err(e) = handle.await {
+            warn!("SearchIndexService task exited with error: {:?}", e);
         }
     }
 
