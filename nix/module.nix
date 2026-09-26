@@ -331,6 +331,76 @@ let
     };
   };
 
+  searchIndexType = types.submodule {
+    freeformType = settingsFormat.type;
+    options = {
+      enabled = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether search index generation is enabled. Defaults to `true` when
+          the `[search_index]` section is present.
+        '';
+      };
+      destination = mkOption {
+        type = types.str;
+        example = "s3://my-bucket/indexes";
+        description = ''
+          Storage destination for uploading generated indexes. Supports:
+
+          - `s3://bucket/prefix` — upload via `aws s3 cp`
+          - A local filesystem path — write files directly
+
+          When using S3, configure {option}`credentials` to provide
+          authentication.
+        '';
+      };
+      credentials = mkOption {
+        type = settingsFormat.type;
+        default = "none";
+        example = {
+          aws-profile = {
+            profile = "default";
+          };
+        };
+        description = ''
+          Credential source for upload authentication. Same shape as
+          {option}`services.eka-ci.settings.caches.*.credentials`.
+          Defaults to `"none"` (no authentication).
+        '';
+      };
+      channels = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = ''
+          List of channel IDs that trigger index generation. When empty (the
+          default), indexes are generated for every promoted channel.
+        '';
+      };
+      generate_files_index = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether to generate `files.json.zst`, an index of executable files
+          in successfully-built packages. This replaces the need for
+          `nix-locate` on the client side. The index can be large (~30 MB
+          compressed) and requires walking store paths, so disable if the
+          extra I/O is unwanted.
+        '';
+      };
+      generate_options_index = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Whether to generate `options.json.zst` and
+          `service-options.json.zst` indexes. These are only meaningful for
+          ekaOS system flakes and can be skipped for plain nixpkgs-style
+          repositories.
+        '';
+      };
+    };
+  };
+
   channelType = types.submodule {
     freeformType = settingsFormat.type;
     options = {
@@ -529,6 +599,29 @@ let
           when specified jobs succeed.
 
           See `docs/channels.md` for detailed configuration and operational guidance.
+        '';
+      };
+      search_index = mkOption {
+        type = types.nullOr searchIndexType;
+        default = null;
+        example = lib.literalExpression ''
+          {
+            destination = "s3://my-bucket/indexes";
+            credentials.aws-profile.profile = "default";
+          }
+        '';
+        description = ''
+          Search index generation configuration. When set, the server produces
+          zstd-compressed JSON indexes (`packages.json.zst`, `files.json.zst`,
+          `manifest.json`) after each channel promotion and uploads them to
+          {option}`destination`.
+
+          These indexes power tab completion (`ekapkgs home packages add <TAB>`)
+          and search (`ekapkgs search packages <query>`, `ekapkgs search files <query>`)
+          in the ekapkgs CLI, replacing the slow `nix search nixpkgs --json ^`
+          fallback with instant lookups.
+
+          Set to `null` (the default) to disable index generation entirely.
         '';
       };
     };
