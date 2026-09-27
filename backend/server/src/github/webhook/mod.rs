@@ -12,6 +12,7 @@ use crate::config::{ChannelConfig, GitHubAppConfig};
 use crate::db::DbService;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
+use crate::search_index::types::SearchIndexTask;
 
 pub(crate) mod comment_command;
 mod comments;
@@ -88,6 +89,7 @@ pub async fn handle_webhook_payload(
     db_service: DbService,
     github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
     channels: Arc<HashMap<String, ChannelConfig>>,
+    search_index_sender: Option<mpsc::Sender<SearchIndexTask>>,
 ) {
     match webhook_payload {
         WEP::PullRequest(pr) => {
@@ -140,7 +142,14 @@ pub async fn handle_webhook_payload(
                 .await
         },
         WEP::Push(push_payload) => {
-            push::handle_github_push(*push_payload, repository_info, git_sender, channels).await
+            push::handle_github_push(
+                *push_payload,
+                repository_info,
+                git_sender,
+                channels,
+                search_index_sender,
+            )
+            .await
         },
         _ => (),
     }
