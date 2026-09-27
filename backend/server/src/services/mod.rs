@@ -344,6 +344,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         channels_registry.clone(),
         config.search_index.clone(),
         search_index_sender.clone(),
+        config.mcp.clone(),
     )
     .await
     .context("failed to start web service")?;

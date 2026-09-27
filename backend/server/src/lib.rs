@@ -28,6 +28,7 @@ pub mod graph_compat;
 pub mod hooks;
 // Re-export JobsetData from shared for backward compatibility
 pub use shared::types::JobsetData;
+pub mod mcp;
 pub mod metrics;
 pub mod nix;
 pub mod path_safety;

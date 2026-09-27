@@ -63,6 +63,8 @@ pub(super) struct AppState {
     /// when the `[search_index]` section is not configured.
     pub(super) search_index_sender:
         Option<mpsc::Sender<crate::search_index::types::SearchIndexTask>>,
+    /// MCP server configuration. `None` when the feature is disabled.
+    pub(super) mcp_config: Option<crate::config::McpConfig>,
 }
 
 // Implement FromRef so extractors can access JwtService from AppState

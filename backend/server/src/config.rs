@@ -93,6 +93,9 @@ struct ConfigFile {
     /// produces compressed JSON indexes (packages, files, options) after
     /// channel promotion and uploads them to a configured destination.
     search_index: Option<SearchIndexConfig>,
+    /// MCP server configuration. When present, the server exposes an
+    /// MCP endpoint at `/v1/mcp` for AI agent diagnostics.
+    mcp: Option<McpConfig>,
     security: Option<SecurityConfig>,
 }
 
@@ -837,6 +840,30 @@ fn clamp_timeout_seconds(field: &'static str, value: u64, min: u64, max: u64) ->
     value
 }
 
+/// MCP (Model Context Protocol) server configuration.
+///
+/// When present and enabled, the server exposes an MCP endpoint at
+/// `/v1/mcp` that AI agents can use to query build status, read
+/// logs, and diagnose failing PR gates.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct McpConfig {
+    /// Whether the MCP server is enabled (default: true when section present).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// Validate an optional `McpConfig`. Returns `None` when the
+/// section is absent or explicitly disabled.
+pub(crate) fn validate_mcp(raw: Option<McpConfig>) -> Option<McpConfig> {
+    match raw {
+        Some(c) if c.enabled => {
+            tracing::info!(event = "mcp_enabled", "MCP server endpoint enabled");
+            Some(c)
+        },
+        _ => None,
+    }
+}
+
 /// Validate an optional `SearchIndexConfig`. Returns `None` when the
 /// section is absent or explicitly disabled.
 pub(crate) fn validate_search_index(
@@ -1205,6 +1232,8 @@ pub struct Config {
     /// Search-index generation configuration. `None` when the feature
     /// is not configured or explicitly disabled.
     pub search_index: Option<SearchIndexConfig>,
+    /// MCP server configuration. `None` when the feature is disabled.
+    pub mcp: Option<McpConfig>,
     /// Security settings for hook execution
     pub security: SecurityConfig,
 }
@@ -1565,6 +1594,7 @@ impl Config {
             gitlab_instances,
             channels,
             search_index: validate_search_index(file.search_index)?,
+            mcp: validate_mcp(file.mcp),
             security,
         })
     }
@@ -1666,6 +1696,7 @@ mod redaction_tests {
             gitlab_instances: HashMap::new(),
             channels: HashMap::new(),
             search_index: None,
+            mcp: None,
             security: SecurityConfig {
                 max_hook_timeout_seconds: 300,
                 audit_hooks: true,
@@ -1765,6 +1796,7 @@ mod redaction_tests {
             gitlab_instances,
             channels: HashMap::new(),
             search_index: None,
+            mcp: None,
             security: SecurityConfig {
                 max_hook_timeout_seconds: 300,
                 audit_hooks: true,
