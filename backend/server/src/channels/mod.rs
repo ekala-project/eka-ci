@@ -46,6 +46,31 @@ pub fn match_push_channels<'a>(
         .collect()
 }
 
+/// Return channels whose `target_branch` matches the supplied
+/// `(forge, owner, repo, branch)`. Used by the push-webhook handler
+/// to trigger search-index regeneration when a channel branch is
+/// updated (either by eka-ci's own promotion or an external push).
+///
+/// Matching rules mirror `match_push_channels`: case-insensitive on
+/// `owner`, case-sensitive on `repo` and `branch`.
+pub fn match_target_branch_channels<'a>(
+    channels: &'a HashMap<String, ChannelConfig>,
+    forge: &ChannelForge,
+    owner: &str,
+    repo: &str,
+    branch: &str,
+) -> Vec<&'a ChannelConfig> {
+    channels
+        .values()
+        .filter(|c| {
+            &c.forge == forge
+                && c.owner.eq_ignore_ascii_case(owner)
+                && c.repo == repo
+                && c.target_branch == branch
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +230,47 @@ mod tests {
     fn empty_registry_returns_empty() {
         let map: HashMap<String, ChannelConfig> = HashMap::new();
         let hits = match_push_channels(&map, &ChannelForge::GitHub, "anyone", "anything", "any");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn target_branch_match_finds_channel() {
+        let map = registry(vec![ch(
+            ChannelForge::GitHub,
+            "ekacorp",
+            "ekapkgs",
+            "stable",
+            "master",
+        )]);
+        // target_branch is "{name}-unstable" per the test helper
+        let hits = match_target_branch_channels(
+            &map,
+            &ChannelForge::GitHub,
+            "ekacorp",
+            "ekapkgs",
+            "stable-unstable",
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "stable");
+    }
+
+    #[test]
+    fn target_branch_no_match_on_tracking_branch() {
+        let map = registry(vec![ch(
+            ChannelForge::GitHub,
+            "ekacorp",
+            "ekapkgs",
+            "stable",
+            "master",
+        )]);
+        // "master" is the tracking branch, not the target branch
+        let hits = match_target_branch_channels(
+            &map,
+            &ChannelForge::GitHub,
+            "ekacorp",
+            "ekapkgs",
+            "master",
+        );
         assert!(hits.is_empty());
     }
 }

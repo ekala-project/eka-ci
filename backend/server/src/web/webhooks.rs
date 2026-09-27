@@ -153,6 +153,7 @@ pub(super) async fn handle_github_webhook(
         state.db_service,
         state.github_app_configs,
         state.channels,
+        state.search_index_sender,
     )
     .await;
 

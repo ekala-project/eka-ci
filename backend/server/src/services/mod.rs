@@ -206,7 +206,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         channels_registry.clone(),
         maybe_octocrab.as_ref().map(|o| Arc::new(o.clone())),
         maybe_github_sender.clone(),
-        search_index_sender,
+        search_index_sender.clone(),
     );
     let channel_sender = channel_service.get_sender();
 
@@ -343,6 +343,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         Some(change_summary_metrics.clone()),
         channels_registry.clone(),
         config.search_index.clone(),
+        search_index_sender.clone(),
     )
     .await
     .context("failed to start web service")?;

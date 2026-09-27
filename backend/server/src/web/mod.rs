@@ -68,6 +68,7 @@ impl WebService {
         change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
         channels: Arc<std::collections::HashMap<String, crate::config::ChannelConfig>>,
         search_index_config: Option<crate::config::SearchIndexConfig>,
+        search_index_sender: Option<mpsc::Sender<crate::search_index::types::SearchIndexTask>>,
     ) -> Result<Self> {
         let listener = TcpListener::bind(socket)
             .await
@@ -120,6 +121,7 @@ impl WebService {
                 change_summary_metrics,
                 channels,
                 search_index_config,
+                search_index_sender,
             },
         })
     }
