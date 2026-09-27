@@ -1,11 +1,9 @@
 // Package index generator.
 //
 // Runs `nix search <flake-ref> --json ^` and transforms the raw
-// output into a flat array of PackageEntry structs, then compresses
-// the result with zstd.
+// output into a flat array of PackageEntry structs.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -22,29 +20,24 @@ struct NixSearchEntry {
     description: String,
 }
 
-/// Generate the compressed `packages.json.zst` index.
+/// Generate the package entries by shelling out to `nix search`.
 ///
-/// Shells out to `nix search` against the given flake reference and
-/// transforms the result into the flat array format expected by the
-/// ekapkgs CLI.
-pub async fn generate_packages_index(flake_ref: &str, system: &str) -> Result<(Vec<u8>, usize)> {
+/// Returns the parsed and sorted entries ready for insertion into the
+/// SQLite database.
+pub async fn generate_package_entries(flake_ref: &str, system: &str) -> Result<Vec<PackageEntry>> {
     let start = Instant::now();
 
     let raw_json = run_nix_search(flake_ref).await?;
     let entries = parse_and_transform(&raw_json, system)?;
-    let count = entries.len();
-
-    let compressed = compress_json(&entries)?;
 
     info!(
-        event = "packages_index_generated",
-        entries = count,
-        compressed_bytes = compressed.len(),
+        event = "packages_entries_generated",
+        entries = entries.len(),
         elapsed_ms = start.elapsed().as_millis() as u64,
-        "generated packages.json.zst"
+        "generated package entries"
     );
 
-    Ok((compressed, count))
+    Ok(entries)
 }
 
 /// Run `nix search <flake_ref> --json ^` and return raw stdout.
@@ -107,19 +100,10 @@ fn parse_and_transform(raw: &[u8], system: &str) -> Result<Vec<PackageEntry>> {
     Ok(entries)
 }
 
-/// Serialize to JSON and compress with zstd (level 3).
-fn compress_json<T: serde::Serialize>(data: &T) -> Result<Vec<u8>> {
-    let json = serde_json::to_vec(data).context("failed to serialize index JSON")?;
-    let mut encoder = zstd::Encoder::new(Vec::new(), 3)?;
-    encoder.write_all(&json)?;
-    let compressed = encoder.finish()?;
-    Ok(compressed)
-}
-
 /// Enrich package entries with output names from existing drv data.
 ///
-/// This is called after the initial index is built, using data already
-/// available in the evaluator's `NixEvalDrv.outputs` map.
+/// This is called after the initial entries are built, using data
+/// already available in the evaluator's `NixEvalDrv.outputs` map.
 pub fn enrich_with_outputs(
     entries: &mut [PackageEntry],
     output_map: &HashMap<String, Vec<String>>,
@@ -155,23 +139,5 @@ mod tests {
         assert_eq!(entries[0].attr, "bat");
         assert_eq!(entries[1].attr, "hello");
         assert_eq!(entries[1].version, "2.12.1");
-    }
-
-    #[test]
-    fn compress_json_roundtrips() {
-        let data = vec![PackageEntry {
-            attr: "hello".to_string(),
-            pname: "hello".to_string(),
-            version: "2.12.1".to_string(),
-            description: "A greeting".to_string(),
-            outputs: vec!["out".to_string()],
-            main_program: Some("hello".to_string()),
-        }];
-        let compressed = compress_json(&data).unwrap();
-        assert!(!compressed.is_empty());
-        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
-        let roundtrip: Vec<PackageEntry> = serde_json::from_slice(&decompressed).unwrap();
-        assert_eq!(roundtrip.len(), 1);
-        assert_eq!(roundtrip[0].attr, "hello");
     }
 }

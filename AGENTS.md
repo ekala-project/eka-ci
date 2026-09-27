@@ -116,13 +116,14 @@ connect via `Join` + `OpenTunnel` (bidirectional stream). The
 `BuilderGrpcService` tracks connected builders in a registry.
 
 **Search index generation** (`server/src/search_index/`):
-Post-channel-promotion service that generates zstd-compressed JSON
-indexes for the ekapkgs CLI. `SearchIndexService` receives
+Post-channel-promotion service that generates a SQLite database with
+FTS5 indexes for the ekapkgs CLI. `SearchIndexService` receives
 `SearchIndexTask::GenerateIndexes` from `ChannelService` after a
 successful promotion, runs generators (`packages.rs` shells out to
-`nix search`, `files.rs` walks store paths), and uploads the results
-to a configured destination (S3 or local path). Configuration lives
-in the `[search_index]` section of `ekaci.toml`.
+`nix search`, `files.rs` walks store paths), builds a single
+`search.db` via `sqlite.rs`, and uploads it to a configured
+destination (S3 or local path). Configuration lives in the
+`[search_index]` section of `ekaci.toml`.
 
 ## Frontend Development (Elm)
 

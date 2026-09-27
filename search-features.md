@@ -2,48 +2,86 @@
 
 ## Overview
 
-ekapkgs-cli now supports downloading pre-built search indexes from a remote URL (via `defaults.index_url` in `config.toml`). These indexes power:
+ekapkgs-cli supports downloading a pre-built SQLite search database from a remote URL (via `defaults.index_url` in `config.toml`). This database powers:
 
 - **Tab completion** for `ekapkgs home packages add <TAB>`, `ekapkgs home services add <TAB>`, etc.
 - **Package search** via `ekapkgs search packages <query>`
 - **File search** via `ekapkgs search files <query>` (replaces `nix-locate` dependency)
 
-Without pre-built indexes, the client falls back to running `nix search nixpkgs --json ^` locally, which takes 30-60 seconds. Pre-built indexes make tab completion and search work instantly on first use.
+Without a pre-built database, the client falls back to running `nix search nixpkgs --json ^` locally, which takes 30-60 seconds. The pre-built SQLite database makes tab completion and search work instantly on first use with efficient FTS5 full-text search.
 
-## What ekaci Needs to Produce
+## What ekaci Produces
 
-Four zstd-compressed JSON index files, regenerated whenever the tracked nixpkgs input is updated (e.g., on channel promotion or flake input pin change).
+A single SQLite database (`search.db.zst`) per channel, regenerated whenever the tracked nixpkgs input is updated (e.g., on channel promotion or flake input pin change). The database contains FTS5 virtual tables for instant full-text search without loading the entire dataset into memory.
 
-### 1. `packages.json.zst` (~3MB compressed)
+### Schema
 
-**Generation:**
+```sql
+-- Package metadata from nix search
+CREATE TABLE packages (
+    attr         TEXT PRIMARY KEY,  -- e.g. "hello", "python3Packages.requests"
+    pname        TEXT NOT NULL,
+    version      TEXT NOT NULL,
+    description  TEXT,
+    outputs      TEXT,              -- JSON array, e.g. '["out","dev"]'
+    main_program TEXT               -- from meta.mainProgram
+);
+
+-- FTS5 index for package search
+CREATE VIRTUAL TABLE packages_fts USING fts5(
+    attr, pname, description,
+    content='packages', content_rowid='rowid'
+);
+
+-- All files installed by successfully-built packages
+CREATE TABLE files (
+    file    TEXT NOT NULL,   -- e.g. "bin/hello", "lib/libz.so.1", "share/man/man1/hello.1.gz"
+    package TEXT NOT NULL,   -- attribute path
+    output  TEXT NOT NULL    -- usually "out"
+);
+CREATE INDEX idx_files_file    ON files(file);
+CREATE INDEX idx_files_package ON files(package);
+
+-- FTS5 index for file search
+CREATE VIRTUAL TABLE files_fts USING fts5(
+    file, package,
+    content='files', content_rowid='rowid'
+);
+
+-- NixOS/ekaOS configuration options
+CREATE TABLE options (
+    name         TEXT PRIMARY KEY,
+    description  TEXT,
+    type         TEXT,
+    default_val  TEXT,   -- JSON-serialized
+    example      TEXT,   -- JSON-serialized
+    declarations TEXT,   -- JSON array
+    read_only    INTEGER NOT NULL DEFAULT 0
+);
+
+-- Generation metadata
+CREATE TABLE metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+-- Keys: generated_at, channel_name, nixpkgs_rev, package_count, file_count, option_count
+```
+
+### Data Sources
+
+**Packages** (~120K entries):
 
 ```bash
-nix search nixpkgs --json ^ > /tmp/raw.json
+nix search nixpkgs --json ^
 ```
 
-**Post-processing:** The raw output is a map `{ "legacyPackages.x86_64-linux.attr": { pname, version, description } }`. Transform to a flat array and strip the `legacyPackages.{system}.` prefix:
-
-```json
-[
-  {
-    "attr": "hello",
-    "pname": "hello",
-    "version": "2.12.1",
-    "description": "A program that produces a familiar, friendly greeting",
-    "outputs": ["out"],
-    "main_program": "hello"
-  }
-]
-```
-
-The `outputs` and `main_program` fields are enriched metadata not available from `nix search`. See [Enriched Metadata](#enriched-metadata) below.
+Post-processing strips the `legacyPackages.{system}.` prefix from attribute paths. The `outputs` and `main_program` fields are enriched metadata not available from `nix search` — see [Enriched Metadata](#enriched-metadata) below.
 
 **Time:** ~30-60 seconds for a full nixpkgs eval.
 
-### 2. `options.json.zst` (~500KB compressed)
+**Options** (ekaos-specific):
 
-**Generation:** Evaluate the ekaos configuration's option tree. The ekapkgs-cli already has the exact nix expression for this (see `crates/ekapkgs/src/commands/search.rs`, `generate_option_index()`). The core logic:
+Evaluated from the ekaos configuration option tree. Only relevant for ekaos system flakes. The nix expression:
 
 ```bash
 nix eval --impure --expr '
@@ -71,43 +109,15 @@ nix eval --impure --expr '
 '
 ```
 
-**Scope:** This is only relevant for ekaos system flakes. If ekaci tracks a non-ekaos repo, this index can be skipped.
+**Files** (tens of millions of entries):
 
-### 3. `service-options.json.zst` (~100KB compressed)
-
-**Generation:** Evaluate the service module schema from the ekaos flake. The ekapkgs-cli has the generator at `crates/ekapkgs/src/service_schema.rs`. The nix expression imports `generate-service-options.nix` from the flake's service infrastructure.
-
-**Scope:** Only for repos with ekaos service modules. Skip otherwise.
-
-### 4. `files.json.zst` (~30MB compressed, executables only)
-
-**Generation:** For each successfully built package in the channel, walk the store path's file tree and collect executables under `bin/`, `sbin/`, and `libexec/`.
-
-```json
-[
-  { "file": "bin/hello", "package": "hello", "output": "out" },
-  { "file": "bin/python3", "package": "python3", "output": "out" },
-  { "file": "bin/python3-config", "package": "python3", "output": "out" }
-]
-```
-
-**How to get file listings:** After a successful build, ekaci already has the store path. Use:
-
-```bash
-nix path-info --json /nix/store/...-hello-2.12.1
-# Then walk the store path for executables:
-find /nix/store/...-hello-2.12.1/{bin,sbin,libexec} -type f -o -type l 2>/dev/null
-```
-
-Or use `nix nar ls --json /nix/store/...-hello-2.12.1` for a structured listing without needing the path to be locally present (works on cached narinfo).
-
-**Note:** Only index executables to keep the file index manageable (~30MB vs ~300MB for all files). The client's `ekapkgs search files` command searches this index by substring match.
+For each successfully-built package in the channel, recursively walk the entire store path tree and collect all installed files and symlinks. This includes binaries, libraries, headers, man pages, configuration files, etc.
 
 ---
 
 ## Enriched Metadata
 
-The basic package index (`pname`, `version`, `description`) can be generated from `nix search` alone. The enriched fields (`outputs`, `main_program`) require additional evaluation that ekaci is well-positioned to provide.
+The basic package data (`pname`, `version`, `description`) comes from `nix search`. The enriched fields (`outputs`, `main_program`) require additional evaluation that ekaci is well-positioned to provide.
 
 ### `outputs` (list of output names)
 
@@ -118,22 +128,13 @@ nix derivation show /nix/store/...-hello-2.12.1.drv | jq '.[].outputs | keys'
 # ["out"]
 ```
 
-Or from `nix-eval-jobs` output, which ekaci already parses — the `NixEvalDrv` struct may include output info.
+Or from `nix-eval-jobs` output, which ekaci already parses.
 
 ### `main_program` (primary binary name)
 
 ```bash
 nix eval nixpkgs#hello.meta.mainProgram 2>/dev/null
 # "hello"
-```
-
-This can be bulk-evaluated with a single nix expression across all packages:
-
-```nix
-let pkgs = import <nixpkgs> {};
-in builtins.mapAttrs (name: drv:
-  builtins.tryEval (drv.meta.mainProgram or null)
-) pkgs
 ```
 
 ### Integration with existing ekaci data
@@ -143,21 +144,21 @@ ekaci already tracks:
 - Output sizes via `DrvOutputSize` and `DrvClosureSize`
 - Dependency graphs via `DrvRefs`
 
-The enriched metadata can be collected as a **post-build hook** or as part of the **recorder** phase when a build completes successfully. The recorder already calls `nix path-info` for size data — extending it to also capture output names is minimal.
+The enriched metadata can be collected as a **post-build hook** or as part of the **recorder** phase when a build completes successfully.
 
 ---
 
 ## Hosting
 
-The generated `.json.zst` files need to be served at a stable HTTP URL. The ekapkgs-cli client fetches `{index_url}/{name}.json.zst`.
+The generated `search.db.zst` file needs to be served at a stable HTTP URL. The ekapkgs-cli client fetches `{index_url}/{channel_name}/search.db.zst`.
 
 ### Options
 
-1. **S3 bucket** (recommended): ekaci already has S3 cache infrastructure. Upload index files alongside cache artifacts. Serve via CloudFront or direct S3 URL.
+1. **S3 bucket** (recommended): ekaci already has S3 cache infrastructure. Upload the database alongside cache artifacts. Serve via CloudFront or direct S3 URL.
 
-2. **ekapkgs-serve static endpoint**: Add `GET /indexes/{name}.json.zst` to ekapkgs-serve's HTTP API. Serve files from a configured directory.
+2. **ekapkgs-serve static endpoint**: Add `GET /indexes/{channel_name}/search.db.zst` to ekapkgs-serve's HTTP API. Serve files from a configured directory.
 
-3. **Git branch**: Push index files to a dedicated branch (similar to channel promotion). Serve via raw Git hosting.
+3. **Git branch**: Push the database to a dedicated branch (similar to channel promotion). Serve via raw Git hosting.
 
 ### Client configuration
 
@@ -169,10 +170,7 @@ index_url = "https://indexes.example.com"
 ```
 
 The client then fetches:
-- `https://indexes.example.com/packages.json.zst`
-- `https://indexes.example.com/options.json.zst`
-- `https://indexes.example.com/service-options.json.zst`
-- `https://indexes.example.com/files.json.zst`
+- `https://indexes.example.com/{channel}/search.db.zst`
 
 ---
 
@@ -180,35 +178,23 @@ The client then fetches:
 
 ### When to regenerate
 
-- **`packages.json.zst`**: When the tracked nixpkgs flake input updates. This aligns with channel promotion — after a channel evaluates and promotes, regenerate the package index for that channel's nixpkgs pin.
+- **Packages + files**: When the tracked nixpkgs flake input updates. This aligns with channel promotion — after a channel evaluates and promotes, regenerate the database for that channel's nixpkgs pin.
 
-- **`options.json.zst`** and **`service-options.json.zst`**: When the ekaos system flake changes (module/option definitions).
-
-- **`files.json.zst`**: After a channel promotion completes and all required packages have been built. This is the most expensive index but also the least latency-sensitive — it can run as a background job.
+- **Options**: When the ekaos system flake changes (module/option definitions).
 
 ### Implementation approach
 
-The most natural fit within ekaci's architecture is as a **post-channel-promotion hook**: after `ChannelService` successfully promotes a commit, trigger index generation as a follow-up task.
-
-Alternatively, it could be a periodic job (e.g., hourly cron) that checks whether the nixpkgs pin has changed since the last index generation.
+The search index is generated as a **post-channel-promotion task**: after `ChannelService` successfully promotes a commit, it sends a `GenerateIndexes` task to the `SearchIndexService`, which runs generators, builds the SQLite database, and uploads it.
 
 ---
 
-## Manifest (optional)
+## Why SQLite over compressed JSON
 
-A metadata file at `{index_url}/manifest.json` would allow the client to check staleness without downloading full indexes:
+The previous design used zstd-compressed JSON arrays (`packages.json.zst`, `files.json.zst`, etc.). SQLite with FTS5 was chosen instead because:
 
-```json
-{
-  "generated_at": "2026-09-23T12:00:00Z",
-  "nixpkgs_rev": "abc123def456...",
-  "indexes": {
-    "packages": { "size": 3145728, "entries": 120000 },
-    "options": { "size": 524288, "entries": 8500 },
-    "service-options": { "size": 102400, "entries": 340 },
-    "files": { "size": 31457280, "entries": 2100000 }
-  }
-}
-```
-
-This is not required for the initial implementation but would enable future optimizations like conditional downloads and client-side staleness warnings.
+1. **No full load required** — queries only touch relevant B-tree pages via indexes, rather than deserializing the entire dataset into memory
+2. **FTS5 full-text search** — built-in, optimized for substring/prefix package and file queries
+3. **Memory-mapped I/O** — the OS page cache handles hot data without explicit deserialization
+4. **Single file** — one download per channel instead of multiple files
+5. **Query flexibility** — SQL allows filtering, joining, and aggregation without client-side code
+6. **Scalability** — the files index (tens of millions of entries covering all installed files) would be impractical to load fully into memory; SQLite handles it with constant memory via indexed queries

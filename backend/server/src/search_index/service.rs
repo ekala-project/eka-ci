@@ -1,9 +1,10 @@
-// SearchIndexService: generates and uploads search indexes after
-// channel promotion.
+// SearchIndexService: generates and uploads a SQLite search database
+// after channel promotion.
 //
 // This is a lightweight AsyncService that receives GenerateIndexes
-// tasks from the ChannelService and runs the generators sequentially.
-// Each generator is independent: if one fails, the others still run.
+// tasks from the ChannelService. It runs generators to collect
+// package and file entries, builds a single SQLite database with
+// FTS5 indexes, and uploads the result.
 // Uploads are namespaced by channel name so multiple channels coexist.
 
 use std::collections::HashMap;
@@ -13,7 +14,7 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::types::{IndexInfo, Manifest, SearchIndexTask};
+use super::types::{Manifest, SearchIndexTask};
 use super::{generators, upload};
 use crate::config::SearchIndexConfig;
 use crate::services::{AsyncService, TaskJournal};
@@ -38,8 +39,8 @@ impl SearchIndexService {
         }
     }
 
-    /// Handle a GenerateIndexes task: run each generator, upload
-    /// results namespaced by channel name, and produce a manifest.
+    /// Handle a GenerateIndexes task: run generators, build a SQLite
+    /// database, and upload the single `search.db` file.
     async fn handle_generate(&self, channel_id: &str, channel_name: &str, sha: &str) -> Result<()> {
         let start = Instant::now();
         info!(
@@ -50,102 +51,65 @@ impl SearchIndexService {
             "starting search index generation"
         );
 
-        // Determine the flake reference for nix search. Construct from
-        // the channel's owner/repo and the promoted SHA.
-        // For GitHub: "github:{owner}/{repo}/{sha}"
         let flake_ref = format!("github:{}/{}/{}", "nixpkgs", "nixpkgs", sha);
         let system = "x86_64-linux";
 
-        let mut manifest_indexes: HashMap<String, IndexInfo> = HashMap::new();
-
-        // Generate packages.json.zst
-        match generators::packages::generate_packages_index(&flake_ref, system).await {
-            Ok((data, count)) => {
-                let size = data.len() as u64;
-                if let Err(e) =
-                    upload::upload_index(&self.config, channel_name, "packages.json.zst", &data)
-                        .await
-                {
-                    warn!(
-                        event = "search_index_upload_failed",
-                        index = "packages",
-                        error = %e,
-                        "failed to upload packages index"
-                    );
-                } else {
-                    manifest_indexes.insert(
-                        "packages".to_string(),
-                        IndexInfo {
-                            size,
-                            entries: count,
-                        },
-                    );
-                }
-            },
-            Err(e) => {
-                warn!(
-                    event = "search_index_generation_failed",
-                    index = "packages",
-                    error = %e,
-                    "failed to generate packages index"
-                );
-            },
-        }
-
-        // Generate files.json.zst (if enabled)
-        if self.config.generate_files_index {
-            // For now, pass an empty map — in a future enhancement the
-            // service will query the DB for successfully-built drv output
-            // paths from the promoted jobset.
-            let store_outputs: HashMap<String, Vec<(String, String)>> = HashMap::new();
-            match generators::files::generate_files_index(&store_outputs).await {
-                Ok((data, count)) => {
-                    let size = data.len() as u64;
-                    if let Err(e) =
-                        upload::upload_index(&self.config, channel_name, "files.json.zst", &data)
-                            .await
-                    {
-                        warn!(
-                            event = "search_index_upload_failed",
-                            index = "files",
-                            error = %e,
-                            "failed to upload files index"
-                        );
-                    } else {
-                        manifest_indexes.insert(
-                            "files".to_string(),
-                            IndexInfo {
-                                size,
-                                entries: count,
-                            },
-                        );
-                    }
-                },
+        // Generate package entries.
+        let packages =
+            match generators::packages::generate_package_entries(&flake_ref, system).await {
+                Ok(entries) => entries,
                 Err(e) => {
                     warn!(
-                        event = "search_index_generation_failed",
-                        index = "files",
+                        event = "search_index_packages_failed",
                         error = %e,
-                        "failed to generate files index"
+                        "failed to generate package entries; building db without packages"
                     );
+                    Vec::new()
                 },
-            }
-        }
+            };
 
-        // Build and upload manifest
+        // Generate file entries (walks store paths).
+        let store_outputs: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let files = match generators::files::generate_file_entries(&store_outputs).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!(
+                    event = "search_index_files_failed",
+                    error = %e,
+                    "failed to generate file entries; building db without files"
+                );
+                Vec::new()
+            },
+        };
+
         let manifest = Manifest {
             generated_at: chrono::Utc::now().to_rfc3339(),
             channel_name: channel_name.to_string(),
             nixpkgs_rev: sha.to_string(),
-            indexes: manifest_indexes,
+            package_count: packages.len(),
+            file_count: files.len(),
+            option_count: 0,
         };
 
-        if let Err(e) = upload::upload_manifest(&self.config, channel_name, &manifest).await {
+        // Build the SQLite database (blocking I/O, run on spawn_blocking).
+        let db_data = {
+            let pkgs = packages;
+            let fls = files;
+            let m = manifest.clone();
+            tokio::task::spawn_blocking(move || {
+                generators::sqlite::build_database(&pkgs, &fls, &[], &m)
+            })
+            .await??
+        };
+
+        // Upload the database.
+        if let Err(e) = upload::upload_database(&self.config, channel_name, &db_data).await {
             warn!(
-                event = "search_index_manifest_upload_failed",
+                event = "search_index_upload_failed",
                 error = %e,
-                "failed to upload manifest.json"
+                "failed to upload search.db"
             );
+            return Err(e);
         }
 
         info!(
@@ -154,7 +118,9 @@ impl SearchIndexService {
             channel_name = %channel_name,
             sha = %sha,
             elapsed_ms = start.elapsed().as_millis() as u64,
-            indexes = manifest.indexes.len(),
+            db_bytes = db_data.len(),
+            packages = manifest.package_count,
+            files = manifest.file_count,
             "search index generation complete"
         );
 

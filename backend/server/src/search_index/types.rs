@@ -3,8 +3,6 @@
 // Kept as a plain-data module so the generator and upload modules can
 // reference these types without pulling in the service machinery.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::config::ChannelConfig;
@@ -23,7 +21,7 @@ pub enum SearchIndexTask {
     },
 }
 
-/// A single entry in `packages.json.zst`.
+/// A single entry in the `packages` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageEntry {
     /// Attribute path (e.g. "hello", "python3Packages.requests").
@@ -43,7 +41,7 @@ pub struct PackageEntry {
     pub main_program: Option<String>,
 }
 
-/// A single entry in `files.json.zst`.
+/// A single entry in the `files` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
     /// Relative path within the store output (e.g. "bin/hello").
@@ -54,7 +52,7 @@ pub struct FileEntry {
     pub output: String,
 }
 
-/// A single entry in `options.json.zst`.
+/// A single entry in the `options` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionEntry {
     /// Option path (e.g. "services.openssh.enable").
@@ -79,17 +77,8 @@ pub struct OptionEntry {
     pub read_only: bool,
 }
 
-/// Per-index metadata in the manifest.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexInfo {
-    /// Compressed size in bytes.
-    pub size: u64,
-    /// Number of entries in the index.
-    pub entries: usize,
-}
-
-/// Top-level manifest (`manifest.json`) describing the current set of
-/// indexes at a given URL prefix.
+/// Top-level manifest stored in the `metadata` table of the SQLite
+/// database and also returned by the discovery endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     /// ISO 8601 timestamp of generation.
@@ -98,15 +87,19 @@ pub struct Manifest {
     pub channel_name: String,
     /// The nixpkgs revision (commit SHA) these indexes are built against.
     pub nixpkgs_rev: String,
-    /// Per-index metadata keyed by index name ("packages", "files", etc.).
-    pub indexes: HashMap<String, IndexInfo>,
+    /// Number of packages in the database.
+    pub package_count: usize,
+    /// Number of file entries in the database.
+    pub file_count: usize,
+    /// Number of option entries in the database.
+    pub option_count: usize,
 }
 
 /// Response payload for `GET /v1/search-index`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchIndexInfo {
     /// Publicly-reachable base URL for index downloads.
-    /// Clients fetch `{public_url}/{channel_name}/packages.json.zst`.
+    /// Clients fetch `{public_url}/{channel_name}/search.db.zst`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_url: Option<String>,
     /// Available channels with their latest index metadata.
@@ -121,6 +114,6 @@ pub struct ChannelIndexInfo {
     /// Full channel identifier (e.g. "github/ekacorp/ekapkgs/unstable").
     pub channel_id: String,
     /// URL path segment for this channel's indexes.
-    /// Full URL: `{public_url}/{url_prefix}/packages.json.zst`.
+    /// Full URL: `{public_url}/{url_prefix}/search.db`.
     pub url_prefix: String,
 }

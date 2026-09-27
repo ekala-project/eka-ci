@@ -87,11 +87,11 @@ This doesn't scale well, and is error prone.
   - Integration with existing cache infrastructure
 
 - **Search Index Generation**
-  - Generates zstd-compressed JSON indexes after channel promotion
-  - `packages.json.zst` — package metadata (attr, pname, version, description)
-  - `files.json.zst` — executable file listings from built packages (replaces `nix-locate`)
-  - `manifest.json` — index metadata for client-side staleness checks
-  - Upload to S3 or local filesystem with full credential source support
+  - Generates a SQLite database with FTS5 indexes after channel promotion
+  - Packages table — package metadata (attr, pname, version, description)
+  - Files table — all installed files from built packages (replaces `nix-locate`)
+  - Options table — NixOS/ekaOS configuration options
+  - Uploaded as `search.db.zst` to S3 or local filesystem
   - Powers tab completion and search in the ekapkgs CLI
 
 - **Security Enhancements**
@@ -302,8 +302,6 @@ enabled = true
 destination = "s3://my-bucket/indexes"  # or a local path like "/var/lib/ekaci/indexes"
 credentials = { aws-profile = { profile = "default" } }
 channels = []              # empty = generate for all promoted channels
-generate_files_index = true
-generate_options_index = false
 ```
 
 ### Repository Configuration
