@@ -1,33 +1,37 @@
 // File index generator.
 //
 // Walks the store paths of successfully-built packages and collects
-// executables under bin/, sbin/, and libexec/. The result is a flat
-// array of FileEntry structs, compressed with zstd.
+// all installed files. The result is a flat array of FileEntry structs
+// ready for insertion into SQLite.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tracing::{debug, info, warn};
 
 use super::super::types::FileEntry;
 
 /// Maximum number of file entries to collect (safety cap).
-const MAX_FILE_ENTRIES: usize = 5_000_000;
+const MAX_FILE_ENTRIES: usize = 50_000_000;
 
-/// Generate the compressed `files.json.zst` index.
+/// Generate file entries from store outputs.
 ///
-/// `store_outputs` maps `(attr, output_name)` to the store path.
-/// Only store paths that exist locally are walked.
-pub async fn generate_files_index(
+/// `store_outputs` maps attr to a list of `(output_name, store_path)`.
+/// Only store paths that exist locally are walked. All files and
+/// symlinks under each store path are collected recursively.
+pub async fn generate_file_entries(
     store_outputs: &HashMap<String, Vec<(String, String)>>,
-) -> Result<(Vec<u8>, usize)> {
+) -> Result<Vec<FileEntry>> {
     let start = Instant::now();
     let mut entries: Vec<FileEntry> = Vec::new();
+    let mut truncated = false;
 
     for (attr, outputs) in store_outputs {
+        if truncated {
+            break;
+        }
         for (output_name, store_path) in outputs {
             if entries.len() >= MAX_FILE_ENTRIES {
                 warn!(
@@ -35,6 +39,7 @@ pub async fn generate_files_index(
                     max = MAX_FILE_ENTRIES,
                     "file index reached entry cap; stopping collection"
                 );
+                truncated = true;
                 break;
             }
 
@@ -49,111 +54,88 @@ pub async fn generate_files_index(
                 continue;
             }
 
-            collect_executables(path, attr, output_name, &mut entries).await;
+            walk_store_path(path, path, attr, output_name, &mut entries).await;
         }
     }
 
     entries.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.package.cmp(&b.package)));
 
-    let count = entries.len();
-    let compressed = compress_json(&entries)?;
-
     info!(
-        event = "files_index_generated",
-        entries = count,
-        compressed_bytes = compressed.len(),
+        event = "file_entries_generated",
+        entries = entries.len(),
         elapsed_ms = start.elapsed().as_millis() as u64,
-        "generated files.json.zst"
+        "generated file entries"
     );
 
-    Ok((compressed, count))
+    Ok(entries)
 }
 
-/// Walk `{store_path}/{bin,sbin,libexec}` and collect executable files
-/// and symlinks.
-async fn collect_executables(
-    store_path: &Path,
+/// Recursively walk a store path and collect all files and symlinks.
+///
+/// `root` is the store path root used to compute relative paths.
+/// `current` is the directory currently being walked.
+async fn walk_store_path(
+    root: &Path,
+    current: &Path,
     attr: &str,
     output_name: &str,
     entries: &mut Vec<FileEntry>,
 ) {
-    let dirs = ["bin", "sbin", "libexec"];
-    for dir in dirs {
-        let dir_path = store_path.join(dir);
-        if !dir_path.is_dir() {
-            continue;
-        }
-        let read_dir = match tokio::fs::read_dir(&dir_path).await {
-            Ok(rd) => rd,
-            Err(e) => {
-                debug!(
-                    event = "files_index_readdir_failed",
-                    path = %dir_path.display(),
-                    error = %e,
-                    "failed to read directory; skipping"
-                );
-                continue;
-            },
-        };
-        collect_from_dir(read_dir, dir, attr, output_name, entries).await;
-    }
-}
+    let mut read_dir = match tokio::fs::read_dir(current).await {
+        Ok(rd) => rd,
+        Err(e) => {
+            debug!(
+                event = "files_index_readdir_failed",
+                path = %current.display(),
+                error = %e,
+                "failed to read directory; skipping"
+            );
+            return;
+        },
+    };
 
-/// Read directory entries and add files/symlinks to the entries list.
-async fn collect_from_dir(
-    mut read_dir: tokio::fs::ReadDir,
-    prefix_dir: &str,
-    attr: &str,
-    output_name: &str,
-    entries: &mut Vec<FileEntry>,
-) {
     while let Ok(Some(entry)) = read_dir.next_entry().await {
+        if entries.len() >= MAX_FILE_ENTRIES {
+            return;
+        }
+
         let file_type = match entry.file_type().await {
             Ok(ft) => ft,
             Err(_) => continue,
         };
+
+        let entry_path = entry.path();
+
+        if file_type.is_dir() {
+            Box::pin(walk_store_path(
+                root,
+                &entry_path,
+                attr,
+                output_name,
+                entries,
+            ))
+            .await;
+            continue;
+        }
+
         if !file_type.is_file() && !file_type.is_symlink() {
             continue;
         }
-        let file_name = match entry.file_name().into_string() {
-            Ok(name) => name,
+
+        let relative = match entry_path.strip_prefix(root) {
+            Ok(r) => r,
             Err(_) => continue,
         };
+
+        let rel_str = match relative.to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+
         entries.push(FileEntry {
-            file: format!("{prefix_dir}/{file_name}"),
+            file: rel_str,
             package: attr.to_string(),
             output: output_name.to_string(),
         });
-        if entries.len() >= MAX_FILE_ENTRIES {
-            return;
-        }
-    }
-}
-
-/// Serialize to JSON and compress with zstd (level 3).
-fn compress_json<T: serde::Serialize>(data: &T) -> Result<Vec<u8>> {
-    let json = serde_json::to_vec(data).context("failed to serialize files index JSON")?;
-    let mut encoder = zstd::Encoder::new(Vec::new(), 3)?;
-    encoder.write_all(&json)?;
-    let compressed = encoder.finish()?;
-    Ok(compressed)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compress_roundtrips() {
-        let data = vec![FileEntry {
-            file: "bin/hello".to_string(),
-            package: "hello".to_string(),
-            output: "out".to_string(),
-        }];
-        let compressed = compress_json(&data).unwrap();
-        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
-        let roundtrip: Vec<FileEntry> = serde_json::from_slice(&decompressed).unwrap();
-        assert_eq!(roundtrip.len(), 1);
-        assert_eq!(roundtrip[0].file, "bin/hello");
     }
 }

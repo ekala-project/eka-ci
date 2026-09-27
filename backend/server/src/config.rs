@@ -564,28 +564,28 @@ pub struct CachePermissions {
 
 /// Search-index generation configuration.
 ///
-/// When enabled, the server generates zstd-compressed JSON index files
-/// after a release-channel promotion and uploads them to a configured
-/// storage destination. These indexes power tab completion and search
-/// in the ekapkgs CLI.
+/// When enabled, the server generates a SQLite database with FTS5
+/// indexes after a release-channel promotion and uploads it to a
+/// configured storage destination. This database powers tab
+/// completion and search in the ekapkgs CLI.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SearchIndexConfig {
     /// Whether search index generation is enabled (default: true when
     /// the section is present).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Storage destination URL for uploading indexes.
+    /// Storage destination URL for uploading the database.
     ///
     /// Supports:
     ///   - `s3://bucket/prefix` — upload via AWS S3
     ///   - A local filesystem path — write files directly
     pub destination: String,
-    /// Publicly-reachable base URL where the uploaded indexes are
+    /// Publicly-reachable base URL where the uploaded database is
     /// served. Exposed through `GET /v1/search-index` so third-party
     /// tools can discover indexes without out-of-band configuration.
     ///
     /// Example: `"https://indexes.example.com"`. Clients fetch
-    /// `{public_url}/{channel_name}/packages.json.zst`.
+    /// `{public_url}/{channel_name}/search.db.zst`.
     #[serde(default)]
     pub public_url: Option<String>,
     /// Credential source for upload authentication. Reuses the same
@@ -596,14 +596,6 @@ pub struct SearchIndexConfig {
     /// promoted channels generate indexes.
     #[serde(default)]
     pub channels: Vec<String>,
-    /// Whether to generate the `files.json.zst` index (expensive:
-    /// walks store paths of all successfully-built packages).
-    #[serde(default = "default_true")]
-    pub generate_files_index: bool,
-    /// Whether to generate `options.json.zst` and
-    /// `service-options.json.zst` indexes (ekaos-specific).
-    #[serde(default)]
-    pub generate_options_index: bool,
 }
 
 fn default_credential_none() -> CredentialSource {

@@ -6,51 +6,57 @@
 //
 // All uploads are namespaced by channel name so multiple channels can
 // coexist under the same destination without clobbering each other:
-//   {destination}/{channel_name}/packages.json.zst
-//   {destination}/{channel_name}/manifest.json
+//   {destination}/{channel_name}/search.db
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info};
 
 use crate::config::{CredentialSource, SearchIndexConfig};
-use crate::search_index::types::Manifest;
 
-/// Upload a single compressed index file to the configured destination,
-/// namespaced under the channel name.
-pub async fn upload_index(
+/// Compress the SQLite database with zstd and upload it to the
+/// configured destination as `search.db.zst`, namespaced under the
+/// channel name.
+pub async fn upload_database(
     config: &SearchIndexConfig,
     channel_name: &str,
-    filename: &str,
     data: &[u8],
 ) -> Result<()> {
+    let compressed = compress_zstd(data)?;
+
+    info!(
+        event = "search_db_compressed",
+        raw_bytes = data.len(),
+        compressed_bytes = compressed.len(),
+        "compressed search.db with zstd"
+    );
+
     let dest = &config.destination;
-    let prefixed = format!("{channel_name}/{filename}");
+    let relative = format!("{channel_name}/search.db.zst");
 
     if dest.starts_with("s3://") {
-        upload_s3(dest, &prefixed, data, &config.credentials).await
+        upload_s3(
+            dest,
+            &relative,
+            &compressed,
+            "application/zstd",
+            &config.credentials,
+        )
+        .await
     } else {
-        upload_local(dest, &prefixed, data).await
+        upload_local(dest, &relative, &compressed).await
     }
 }
 
-/// Upload the manifest.json (uncompressed), namespaced under the channel name.
-pub async fn upload_manifest(
-    config: &SearchIndexConfig,
-    channel_name: &str,
-    manifest: &Manifest,
-) -> Result<()> {
-    let json = serde_json::to_vec_pretty(manifest).context("failed to serialize manifest")?;
-    let dest = &config.destination;
-    let prefixed = format!("{channel_name}/manifest.json");
-
-    if dest.starts_with("s3://") {
-        upload_s3(dest, &prefixed, &json, &config.credentials).await
-    } else {
-        upload_local(dest, &prefixed, &json).await
-    }
+/// Compress data with zstd at level 3.
+fn compress_zstd(data: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = zstd::Encoder::new(Vec::new(), 3)?;
+    encoder.write_all(data)?;
+    let compressed = encoder.finish()?;
+    Ok(compressed)
 }
 
 /// Write a file to a local directory, creating parent directories as needed.
@@ -82,6 +88,7 @@ async fn upload_s3(
     s3_prefix: &str,
     relative_path: &str,
     data: &[u8],
+    content_type: &str,
     credentials: &CredentialSource,
 ) -> Result<()> {
     let s3_url = format!("{}/{}", s3_prefix.trim_end_matches('/'), relative_path);
@@ -92,12 +99,6 @@ async fn upload_s3(
 
     let temp_file = write_temp_file(data).await?;
     let temp_path = temp_file.path().to_string_lossy().to_string();
-
-    let content_type = if relative_path.ends_with(".zst") {
-        "application/zstd"
-    } else {
-        "application/json"
-    };
 
     let output = build_s3_command(&temp_path, &s3_url, content_type, &cred_env)
         .output()

@@ -367,7 +367,7 @@ let
           Exposed through the `GET /v1/search-index` API endpoint so
           third-party tools can discover index locations without out-of-band
           configuration. Clients fetch indexes at
-          `{public_url}/{channel_name}/packages.json.zst`.
+          `{public_url}/{channel_name}/search.db.zst`.
         '';
       };
       credentials = mkOption {
@@ -390,27 +390,6 @@ let
         description = ''
           List of channel IDs that trigger index generation. When empty (the
           default), indexes are generated for every promoted channel.
-        '';
-      };
-      generate_files_index = mkOption {
-        type = types.bool;
-        default = true;
-        description = ''
-          Whether to generate `files.json.zst`, an index of executable files
-          in successfully-built packages. This replaces the need for
-          `nix-locate` on the client side. The index can be large (~30 MB
-          compressed) and requires walking store paths, so disable if the
-          extra I/O is unwanted.
-        '';
-      };
-      generate_options_index = mkOption {
-        type = types.bool;
-        default = false;
-        description = ''
-          Whether to generate `options.json.zst` and
-          `service-options.json.zst` indexes. These are only meaningful for
-          ekaOS system flakes and can be skipped for plain nixpkgs-style
-          repositories.
         '';
       };
     };
@@ -627,11 +606,11 @@ let
         '';
         description = ''
           Search index generation configuration. When set, the server produces
-          zstd-compressed JSON indexes (`packages.json.zst`, `files.json.zst`,
-          `manifest.json`) after each channel promotion and uploads them to
-          {option}`destination`.
+          a zstd-compressed SQLite database (`search.db.zst`) with FTS5 indexes
+          after each channel promotion and uploads it to {option}`destination`.
 
-          These indexes power tab completion (`ekapkgs home packages add <TAB>`)
+          The database contains packages, all installed files, and configuration
+          options. It powers tab completion (`ekapkgs home packages add <TAB>`)
           and search (`ekapkgs search packages <query>`, `ekapkgs search files <query>`)
           in the ekapkgs CLI, replacing the slow `nix search nixpkgs --json ^`
           fallback with instant lookups.
