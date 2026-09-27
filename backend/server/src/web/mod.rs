@@ -7,7 +7,7 @@ mod pull_requests;
 mod repositories;
 mod responses;
 mod routes;
-mod security;
+pub(crate) mod security;
 mod state;
 mod webhooks;
 
@@ -69,6 +69,7 @@ impl WebService {
         channels: Arc<std::collections::HashMap<String, crate::config::ChannelConfig>>,
         search_index_config: Option<crate::config::SearchIndexConfig>,
         search_index_sender: Option<mpsc::Sender<crate::search_index::types::SearchIndexTask>>,
+        mcp_config: Option<crate::config::McpConfig>,
     ) -> Result<Self> {
         let listener = TcpListener::bind(socket)
             .await
@@ -122,6 +123,7 @@ impl WebService {
                 channels,
                 search_index_config,
                 search_index_sender,
+                mcp_config,
             },
         })
     }
@@ -142,8 +144,20 @@ impl WebService {
 
         let cors = build_cors_layer(&self.state.allowed_origins);
 
-        let app = Router::new()
-            .nest("/v1", api_routes())
+        let app = Router::new().nest("/v1", api_routes());
+
+        let app = if self.state.mcp_config.is_some() {
+            let mcp_service = crate::mcp::build_mcp_service(
+                self.state.db_service.clone(),
+                self.state.logs_dir.clone(),
+            );
+            info!(event = "mcp_endpoint_registered", path = "/v1/mcp");
+            app.nest_service("/v1/mcp", mcp_service)
+        } else {
+            app
+        };
+
+        let app = app
             .nest("/github", github_routes())
             .nest("/gitlab", gitlab_routes())
             .nest("/gitea", gitea_routes())

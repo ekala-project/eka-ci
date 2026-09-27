@@ -7,7 +7,7 @@ use tracing::warn;
 /// Parse a `DrvId` from a string, returning a `(status, message)` pair on
 /// failure that is suitable for `?`-propagation in handlers returning
 /// `Result<_, (StatusCode, String)>`.
-pub(super) fn parse_drv_id(
+pub(crate) fn parse_drv_id(
     drv: &str,
 ) -> Result<crate::db::model::drv_id::DrvId, (axum::http::StatusCode, String)> {
     crate::db::model::drv_id::DrvId::try_from(drv).map_err(|e| {
@@ -23,7 +23,7 @@ pub(super) fn parse_drv_id(
 /// Rejects `..`, absolute, or prefix components appended after `base` so
 /// a future regression in upstream validation can't silently enable
 /// directory traversal via `Path::join`.
-pub(super) fn path_is_under(base: &std::path::Path, candidate: &std::path::Path) -> bool {
+pub(crate) fn path_is_under(base: &std::path::Path, candidate: &std::path::Path) -> bool {
     use std::path::Component;
     if !candidate.starts_with(base) {
         return false;

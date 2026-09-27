@@ -115,6 +115,14 @@ Proto-defined builder self-registration and build dispatch. Builders
 connect via `Join` + `OpenTunnel` (bidirectional stream). The
 `BuilderGrpcService` tracks connected builders in a registry.
 
+**MCP server** (`server/src/mcp/`):
+Streamable HTTP MCP endpoint at `/v1/mcp` for AI agent diagnostics.
+Enabled via `[mcp]` section in `ekaci.toml`. Tools: `list_failing_prs`,
+`get_pr_status`, `get_failing_gates`, `get_build_log`,
+`get_failure_chain`, `get_drv_details`. Built with `rmcp` crate;
+the `McpHandler` struct holds `DbService` + `logs_dir` and is
+instantiated per-session by `StreamableHttpService`.
+
 **Search index generation** (`server/src/search_index/`):
 Post-channel-promotion service that generates a SQLite database with
 FTS5 indexes for the ekapkgs CLI. `SearchIndexService` receives

@@ -156,6 +156,7 @@ async fn create_test_server_with_options(
         Arc::new(std::collections::HashMap::new()), // no release channels for tests
         None, // no search index config for tests
         None, // no search index sender for tests
+        None, // no MCP config for tests
     )
     .await
     .expect("Failed to create web service");
