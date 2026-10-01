@@ -9,6 +9,7 @@ repository = "https://github.com/ekala-project/eka-ci"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 # No dev dependencies needed currently
