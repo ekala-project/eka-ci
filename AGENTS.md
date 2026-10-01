@@ -9,7 +9,7 @@ eka-ci/
 ├── backend/               # Rust workspace (Cargo workspace)
 │   ├── builder_proto/     # gRPC proto codegen (tonic/prost)
 │   ├── change_summary/    # Package diff and rebuild impact analysis
-│   ├── ci_config/         # Repository config parsing (.eka-ci/config.json)
+│   ├── ci_config/         # Repository config parsing (.ekaci/config.json)
 │   ├── client/            # CLI client (ekaci)
 │   ├── evaluator/         # Nix evaluation and drv traversal
 │   ├── git/               # Git operations

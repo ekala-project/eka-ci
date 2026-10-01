@@ -1,6 +1,6 @@
 # Repository Configuration
 
-Repositories opt in to Eka CI by adding a `.eka-ci/config.json` file. This file is
+Repositories opt in to Eka CI by adding a `.ekaci/config.json` file. This file is
 **untrusted**: it can reference caches, jobs, and checks defined on the server, but it can
 never inject credentials, host paths, or arbitrary commands beyond what the server allows.
 

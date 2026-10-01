@@ -10,6 +10,8 @@
   git invocations; only full object ids are fetched directly as a refspec
 - Accept `allow-eval-failures` as an alias of `allow_eval_failures` in
   `.ekaci/config.json` (it was silently ignored) and warn on unknown keys
+- Docs: config path is `.ekaci/config.json`, flake mode status, GitHub App
+  Contents permission, push events required for release channels
 
 ### passthru.tests evaluation (nixpkgs-CI workflow)
 

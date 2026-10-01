@@ -161,7 +161,7 @@ eka-ci requires these **Repository permissions**:
 | Permission | Access Level | Purpose |
 |------------|--------------|---------|
 | **Checks** | Read & Write | Create and update CI check runs on PRs |
-| **Contents** | Read only | Clone repositories and read source code |
+| **Contents** | Read only | Receive push events; not used for cloning (clones are unauthenticated, so private repositories are not supported yet) |
 | **Pull requests** | Read only | Receive PR events and read PR metadata |
 | **Metadata** | Read only | Default permission (automatically included) |
 
@@ -180,9 +180,9 @@ Enable these webhook events:
 - ✅ **Merge group** - For GitHub merge queue support
 - ✅ **Installation** - Tracks when app is installed/uninstalled
 - ✅ **Installation repositories** - Tracks repository access changes
+- ✅ **Push** - Only needed if you use release channels (evaluates and promotes pushed commits)
 
 **Do NOT enable:**
-- Push events (eka-ci is PR-focused)
 - Issue events (not used)
 - Other events (creates unnecessary webhook traffic)
 
@@ -966,7 +966,7 @@ Or if the issue is GitHub App permissions:
    ```
 
 2. Verify repository is configured:
-   - Repository must have `.eka-ci/config.json`
+   - Repository must have `.ekaci/config.json`
    - Configuration must define jobs
 
 3. Check GitHub API rate limits:

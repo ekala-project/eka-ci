@@ -42,7 +42,7 @@ This doesn't scale well, and is error prone.
   - Build retry logic with transitive failure propagation
   - Build timeout handling (output-based and absolute wall-clock)
   - Nix daemon wire protocol integration (harmonia) for fast store queries
-  - Flake checks mode (similar to Garnix)
+  - Flake `checks`/`packages` built as shell checks (`nix build .#<attr>`)
 
 - **Binary Cache Integration**
   - Multiple backend support: S3, Cachix, Attic
@@ -189,7 +189,7 @@ See [docs/configure-caches.md](docs/configure-caches.md) for cache configuration
 
 ### 3. Configure Repository
 
-Add `.eka-ci/config.json` to your repository:
+Add `.ekaci/config.json` to your repository:
 
 ```json
 {
@@ -306,7 +306,7 @@ channels = []              # empty = generate for all promoted channels
 
 ### Repository Configuration
 
-Repository-specific settings (`.eka-ci/config.json`):
+Repository-specific settings (`.ekaci/config.json`):
 
 ```json
 {
