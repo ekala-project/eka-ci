@@ -12,6 +12,9 @@
   `.ekaci/config.json` (it was silently ignored) and warn on unknown keys
 - Docs: config path is `.ekaci/config.json`, flake mode status, GitHub App
   Contents permission, push events required for release channels
+- NixOS module: drop `null` settings when generating `ekaci.toml`; put
+  `nix`, `nix-eval-jobs` and `git` on the service `PATH` (the service did
+  not start: `nix config show` failed with ENOENT)
 - Nix package builds again: stable Rust from fenix (nixpkgs' rustc is too
   old), `outputHashes` for the harmonia git dependency, `protobuf`, system
   openssl instead of the vendored one, and a RUNPATH fix for rust-lld.

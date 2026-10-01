@@ -21,6 +21,15 @@ let
   cfg = config.services.eka-ci;
   settingsFormat = pkgs.formats.toml { };
 
+  filterNulls =
+    v:
+    if builtins.isAttrs v then
+      lib.mapAttrs (_: filterNulls) (lib.filterAttrs (_: x: x != null) v)
+    else if builtins.isList v then
+      map filterNulls (builtins.filter (x: x != null) v)
+    else
+      v;
+
   # Permission submodule reused for both caches and github_apps.
   permissionsType = types.submodule {
     options = {
@@ -760,10 +769,16 @@ in
       after = [ "network.target" ];
       wantedBy = [ "multi-user.target" ];
 
+      path = [
+        config.nix.package
+        pkgs.nix-eval-jobs
+        pkgs.git
+      ];
+
       serviceConfig = mkMerge [
         (
           let
-            conf = settingsFormat.generate "ekaci.toml" cfg.settings;
+            conf = settingsFormat.generate "ekaci.toml" (filterNulls cfg.settings);
           in
           {
             ExecStart = "${cfg.package}/bin/eka_ci_server --config-file ${conf}";
