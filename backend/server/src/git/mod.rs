@@ -53,7 +53,6 @@ impl AsyncService<GitTask> for GitService {
     async fn handle_task(&self, task: GitTask) -> anyhow::Result<()> {
         match task {
             GitTask::Checkout(repo) => {
-                repo.ensure_master_clone().await?;
                 repo.create_worktree().await?;
                 let repo_task = RepoTask::Read(repo.worktree_path());
                 self.repo_sender.send(repo_task).await?;
