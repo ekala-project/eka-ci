@@ -58,6 +58,16 @@ fn enumerate_flake_outputs(
     repo_path: &Path,
     output_type: FlakeOutputType,
 ) -> Result<Vec<FlakeOutput>, String> {
+    let workspace = crate::git::workspace_root()
+        .map_err(|e| format!("failed to locate ekaci workspace root: {e}"))?;
+    enumerate_flake_outputs_in(&workspace, repo_path, output_type)
+}
+
+fn enumerate_flake_outputs_in(
+    workspace: &Path,
+    repo_path: &Path,
+    output_type: FlakeOutputType,
+) -> Result<Vec<FlakeOutput>, String> {
     let output_type_str = match output_type {
         FlakeOutputType::Check => "checks",
         FlakeOutputType::Package => "packages",
@@ -67,9 +77,7 @@ fn enumerate_flake_outputs(
     // ekaci workspace root before handing it to `nix eval`. This
     // rejects PR-committed symlinks that would otherwise cause `nix`
     // to evaluate a flake stored outside the managed checkout.
-    let workspace = crate::git::workspace_root()
-        .map_err(|e| format!("failed to locate ekaci workspace root: {e}"))?;
-    let canonical = crate::path_safety::canonical_within(repo_path, &workspace)
+    let canonical = crate::path_safety::canonical_within(repo_path, workspace)
         .map_err(|e| format!("flake repo path failed containment check: {e}"))?;
 
     // Run nix eval to get the structure of checks/packages
@@ -165,10 +173,6 @@ mod tests {
     /// `repo_path` that canonicalizes outside the configured ekaci
     /// workspace root. We short-circuit before ever spawning `nix`,
     /// so no Nix install is needed.
-    ///
-    /// Note: this test mutates the `EKACI_WORKSPACE_ROOT` env var,
-    /// which is process-global. It is run serially by default because
-    /// the other flake tests do not touch the env.
     #[test]
     fn test_enumerate_rejects_path_outside_workspace() {
         use tempfile::tempdir;
@@ -176,27 +180,8 @@ mod tests {
         let workspace = tempdir().unwrap();
         let outside = tempdir().unwrap();
 
-        // Point workspace_root() at our isolated tempdir.
-        // SAFETY: std::env::set_var is process-global. This test only
-        // mutates a server-defined variable and restores it on drop.
-        struct EnvGuard(&'static str, Option<String>);
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                unsafe {
-                    match self.1.take() {
-                        Some(v) => std::env::set_var(self.0, v),
-                        None => std::env::remove_var(self.0),
-                    }
-                }
-            }
-        }
-        let prev = std::env::var("EKACI_WORKSPACE_ROOT").ok();
-        unsafe {
-            std::env::set_var("EKACI_WORKSPACE_ROOT", workspace.path());
-        }
-        let _guard = EnvGuard("EKACI_WORKSPACE_ROOT", prev);
-
-        let result = enumerate_flake_outputs(outside.path(), FlakeOutputType::Check);
+        let result =
+            enumerate_flake_outputs_in(workspace.path(), outside.path(), FlakeOutputType::Check);
         let err = result.expect_err("path outside workspace must be rejected");
         assert!(
             err.contains("containment"),

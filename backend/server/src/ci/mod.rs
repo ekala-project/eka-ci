@@ -449,16 +449,22 @@ fn read_repo_toplevel(path: &mut PathBuf) -> Result<CIConfig> {
 /// Returns a structured result that distinguishes between legitimate absence,
 /// I/O errors, and parse failures. Only `Invalid` signals actionable user error.
 pub fn load_repo_ci_config(domain: &str, owner: &str, repo: &str, sha: &str) -> CIConfigLoad {
-    let workspace_root = match crate::git::workspace_root() {
-        Ok(root) => root,
-        Err(e) => {
-            return CIConfigLoad::Unreadable(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("workspace root unavailable: {}", e),
-            ));
-        },
-    };
+    match crate::git::workspace_root() {
+        Ok(root) => load_repo_ci_config_in(root, domain, owner, repo, sha),
+        Err(e) => CIConfigLoad::Unreadable(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("workspace root unavailable: {}", e),
+        )),
+    }
+}
 
+fn load_repo_ci_config_in(
+    workspace_root: PathBuf,
+    domain: &str,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+) -> CIConfigLoad {
     let mut path = workspace_root;
     path.push(domain);
     path.push(owner);
@@ -626,49 +632,26 @@ mod tests {
         assert!(result.is_err(), "relative paths are not supported today");
     }
 
-    /// H6: loader distinguishes malformed JSON from absent config.
-    #[test]
-    fn loader_returns_invalid_on_malformed_json() {
-        // Set up workspace structure:
-        // {workspace_root}/test.example/owner/repo/worktrees/sha/.ekaci/config.json
-        let workspace = match crate::git::workspace_root() {
-            Ok(ws) => ws,
-            Err(_) => {
-                eprintln!("Skipping test: workspace root not available");
-                return;
-            },
-        };
-
-        let test_path = workspace
-            .join("test.example")
-            .join("test-owner")
-            .join("test-repo")
-            .join("worktrees")
-            .join("malformed-test-sha")
-            .join(".ekaci");
-
-        std::fs::create_dir_all(&test_path).unwrap();
-        let config_path = test_path.join("config.json");
-        std::fs::write(&config_path, b"{").unwrap();
-
-        let result = load_repo_ci_config(
+    fn load_from_temp_workspace(contents: &[u8]) -> CIConfigLoad {
+        let workspace = tempfile::tempdir().unwrap();
+        let config_dir = workspace
+            .path()
+            .join("test.example/test-owner/test-repo/worktrees/test-sha/.ekaci");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.json"), contents).unwrap();
+        load_repo_ci_config_in(
+            workspace.path().to_path_buf(),
             "test.example",
             "test-owner",
             "test-repo",
-            "malformed-test-sha",
-        );
+            "test-sha",
+        )
+    }
 
-        // Clean up
-        let _ = std::fs::remove_dir_all(
-            workspace
-                .join("test.example")
-                .join("test-owner")
-                .join("test-repo")
-                .join("worktrees")
-                .join("malformed-test-sha"),
-        );
-
-        match result {
+    /// H6: loader distinguishes malformed JSON from absent config.
+    #[test]
+    fn loader_returns_invalid_on_malformed_json() {
+        match load_from_temp_workspace(b"{") {
             CIConfigLoad::Invalid { source, error } => {
                 assert!(
                     source.contains("config.json"),
@@ -683,45 +666,8 @@ mod tests {
     /// H6: loader detects schema mismatches (e.g., string where bool expected).
     #[test]
     fn loader_returns_invalid_on_schema_mismatch() {
-        let workspace = match crate::git::workspace_root() {
-            Ok(ws) => ws,
-            Err(_) => {
-                eprintln!("Skipping test: workspace root not available");
-                return;
-            },
-        };
-
-        let test_path = workspace
-            .join("test.example")
-            .join("test-owner")
-            .join("test-repo")
-            .join("worktrees")
-            .join("schema-test-sha")
-            .join(".ekaci");
-
-        std::fs::create_dir_all(&test_path).unwrap();
-        let config_path = test_path.join("config.json");
         // Schema mismatch: enabled should be bool, not string
-        std::fs::write(
-            &config_path,
-            br#"{"package_change_summary": {"enabled": "yes"}}"#,
-        )
-        .unwrap();
-
-        let result =
-            load_repo_ci_config("test.example", "test-owner", "test-repo", "schema-test-sha");
-
-        // Clean up
-        let _ = std::fs::remove_dir_all(
-            workspace
-                .join("test.example")
-                .join("test-owner")
-                .join("test-repo")
-                .join("worktrees")
-                .join("schema-test-sha"),
-        );
-
-        match result {
+        match load_from_temp_workspace(br#"{"package_change_summary": {"enabled": "yes"}}"#) {
             CIConfigLoad::Invalid { source, error } => {
                 assert!(source.contains("config.json"));
                 assert!(!error.is_empty());
