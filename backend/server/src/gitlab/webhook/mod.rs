@@ -310,7 +310,7 @@ async fn handle_push_event(
     }
 
     // Release-channel routing: a push to a tracking-branch that any
-    // channel watches must trigger an evaluation of `.eka-ci/config.json`
+    // channel watches must trigger an evaluation of `.ekaci/config.json`
     // at the new SHA. The ChannelService (PR 3) consumes the eventual
     // JobSetComplete and decides whether to promote target-branch.
     let forge = ChannelForge::GitLab {

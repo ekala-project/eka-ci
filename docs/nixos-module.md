@@ -279,7 +279,7 @@ List of binary caches the server may push to.
 
 Each cache entry has the following fields:
 
-- **`id`** (`string`, **required**): Cache identifier referenced from `.eka-ci/config.json`.
+- **`id`** (`string`, **required**): Cache identifier referenced from `.ekaci/config.json`.
 - **`cache_type`** (`one of "nix-copy", "cachix", "attic"`, **required**): Backend type for
   this cache.
 - **`destination`** (`string`, **required**): Destination URL passed to the chosen backend.

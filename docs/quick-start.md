@@ -46,7 +46,7 @@ See [Server Configuration](./server-configuration.md) and
 
 ## 3. Configure the repository
 
-Add `.eka-ci/config.json` at the root of any repository you want Eka CI to build:
+Add `.ekaci/config.json` at the root of any repository you want Eka CI to build:
 
 ```json
 {

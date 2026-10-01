@@ -3,7 +3,7 @@
 // On a push to a tracking-branch that any release channel is watching,
 // drive a `GitTask::Checkout` for the new SHA so the downstream pipeline
 // (RepoTask::Read -> evaluator -> build scheduler) will evaluate
-// `.eka-ci/config.json` at that commit. The ChannelService then
+// `.ekaci/config.json` at that commit. The ChannelService then
 // observes the resulting JobSetComplete event and decides whether to
 // promote the SHA onto the channel's target-branch.
 //

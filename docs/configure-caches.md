@@ -372,7 +372,7 @@ allowed_branches = [
 
 ## Repository Configuration
 
-In your repository's `.eka-ci/config.json`, reference caches by ID:
+In your repository's `.ekaci/config.json`, reference caches by ID:
 
 ```json
 {
@@ -415,7 +415,7 @@ permissions = { allow_all = true }
 ```
 
 ```json
-// Repository config: .eka-ci/config.json
+// Repository config: .ekaci/config.json
 {
   "jobs": {
     "stdenv": {
@@ -455,7 +455,7 @@ allowed_branches = ["main", "release/*"]
 ```
 
 ```json
-// Repository config: .eka-ci/config.json
+// Repository config: .ekaci/config.json
 {
   "jobs": {
     "backend": {
@@ -686,7 +686,7 @@ When `audit_hooks = true`, all cache operations are logged:
 ### Cache push fails silently
 
 Check that:
-1. Cache ID in `.eka-ci/config.json` matches server config
+1. Cache ID in `.ekaci/config.json` matches server config
 2. Repository has permission to use the cache
 3. Credentials are valid and accessible
 4. Server logs show the hook execution

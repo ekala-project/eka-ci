@@ -136,7 +136,7 @@ impl ChannelService {
 
     /// Snapshot the current state of every job named in
     /// `channel.required` and `channel.packages` at `sha`, indexed by
-    /// the job name as declared in `.eka-ci/config.json`.
+    /// the job name as declared in `.ekaci/config.json`.
     ///
     /// Queries the DB for all jobsets matching `(owner, repo, sha)`
     /// and collects the latest `DrvBuildState` for each job name in

@@ -144,7 +144,7 @@ struct ConfigFileOAuth {
 /// Cache registry configuration - defines available caches server-side
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CacheConfig {
-    /// Cache ID (referenced from repository .eka-ci/config.json)
+    /// Cache ID (referenced from repository .ekaci/config.json)
     pub id: String,
     /// Type of cache (nix-copy, cachix, attic)
     pub cache_type: CacheType,
@@ -608,7 +608,7 @@ fn default_credential_none() -> CredentialSource {
 /// GitHub App configuration - defines available GitHub Apps server-side
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GitHubAppConfig {
-    /// GitHub App ID (referenced from repository .eka-ci/config.json)
+    /// GitHub App ID (referenced from repository .ekaci/config.json)
     pub id: String,
     /// Credential source for GitHub App authentication
     pub credentials: CredentialSource,
@@ -687,7 +687,7 @@ impl ChannelForge {
 /// channel red until manually reconciled — see `ChannelPromotion` rows
 /// with `status = PushFailed`.
 ///
-/// Channels are intentionally *not* defined in `.eka-ci/config.json`:
+/// Channels are intentionally *not* defined in `.ekaci/config.json`:
 /// keeping them in admin-only ekaci.toml means a malicious or
 /// accidentally-merged PR cannot reconfigure which branch eka-ci is
 /// allowed to push.
@@ -708,7 +708,7 @@ pub struct ChannelConfig {
     /// Branch eka-ci fast-forwards on a successful release
     /// (e.g. "ekapkgs-unstable"). Must not equal `tracking_branch`.
     pub target_branch: String,
-    /// Job names from `.eka-ci/config.json` that MUST succeed before the
+    /// Job names from `.ekaci/config.json` that MUST succeed before the
     /// channel will advance. A failure (Completed(Failure),
     /// TransitiveFailure, UnsatisfiableRequirements) blocks promotion.
     #[serde(default)]

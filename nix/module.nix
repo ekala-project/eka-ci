@@ -65,7 +65,7 @@ let
       id = mkOption {
         type = types.str;
         example = "production-s3";
-        description = "Cache identifier referenced from `.eka-ci/config.json`.";
+        description = "Cache identifier referenced from `.ekaci/config.json`.";
       };
       cache_type = mkOption {
         type = types.enum [
@@ -448,7 +448,7 @@ let
         ];
         description = ''
           Job attribute names that MUST succeed for promotion. Job names must
-          match `.eka-ci/config.json` exactly. If any required job fails or is
+          match `.ekaci/config.json` exactly. If any required job fails or is
           interrupted, the channel enters Blocked status and will not promote.
         '';
       };

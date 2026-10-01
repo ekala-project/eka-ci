@@ -215,7 +215,7 @@ pub async fn get_latest_for_sha(
 /// Snapshot the current build state of every job named in `job_names`
 /// for the given `(owner, repo, sha)` tuple.
 ///
-/// Queries across all jobsets (all `.eka-ci/config.json` jobs) for
+/// Queries across all jobsets (all `.ekaci/config.json` jobs) for
 /// that commit and returns a map of `job_name -> DrvBuildState` for
 /// any Job.name that appears in `job_names`. Jobs that don't exist
 /// in the jobset(s) are omitted from the result.

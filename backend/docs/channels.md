@@ -97,7 +97,7 @@ dry_run = false
 ### Validation Rules
 
 1. **Uniqueness**: No two channels can share `(owner, repo, target_branch)`
-2. **Job Names**: Must match `.eka-ci/config.json` attribute names exactly
+2. **Job Names**: Must match `.ekaci/config.json` attribute names exactly
 3. **Branch Access**: GitHub App must have write permission to `target_branch`
 
 ## Monitoring
@@ -186,7 +186,7 @@ GROUP BY status;
    ```
 
 **Resolution**:
-- Verify job names in `ekaci.toml` match `.eka-ci/config.json` exactly
+- Verify job names in `ekaci.toml` match `.ekaci/config.json` exactly
 - Ensure `required` jobs are actually evaluated (not missing from config)
 - If stuck due to transient failure, manually finalize:
   ```sql

@@ -64,7 +64,7 @@ allowed_branches = ["main", "release/*"]
 
 ### Repository Cache Reference
 
-Reference caches by ID in your `.eka-ci/config.json`:
+Reference caches by ID in your `.ekaci/config.json`:
 
 ```json
 {
@@ -229,7 +229,7 @@ Any additional variables defined in the hook's `env` field.
 To test the automatic cache push:
 
 1. **Configure a cache** in server config (`~/.config/ekaci/ekaci.toml`)
-2. **Reference the cache** in repository `.eka-ci/config.json`:
+2. **Reference the cache** in repository `.ekaci/config.json`:
    ```json
    {
      "jobs": {
@@ -260,7 +260,7 @@ INFO  eka_ci_server::hooks::executor: Hook 'push-production-s3' completed succes
 
 To test manual hook implementation:
 
-1. Create a `.eka-ci/config.json` with `post_build_hooks`
+1. Create a `.ekaci/config.json` with `post_build_hooks`
 2. Trigger a build
 3. Check logs in `{logs_dir}/{drv_hash}/hook-{name}.log`
 4. Verify hook environment variables are set correctly
@@ -280,7 +280,7 @@ To test manual hook implementation:
 ### From No Hooks to Post-Build Hooks
 
 1. Run database migration: `20260409_job_config.sql`
-2. Update `.eka-ci/config.json` to include `post_build_hooks`
+2. Update `.ekaci/config.json` to include `post_build_hooks`
 3. Deploy updated server with HookExecutor initialized
 4. Monitor hook execution logs
 
