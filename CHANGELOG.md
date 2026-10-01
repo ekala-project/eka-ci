@@ -12,6 +12,11 @@
   `.ekaci/config.json` (it was silently ignored) and warn on unknown keys
 - Docs: config path is `.ekaci/config.json`, flake mode status, GitHub App
   Contents permission, push events required for release channels
+- Nix package builds again: stable Rust from fenix (nixpkgs' rustc is too
+  old), `outputHashes` for the harmonia git dependency, `protobuf`, system
+  openssl instead of the vendored one, and a RUNPATH fix for rust-lld.
+  `nix/overlay.nix` now takes the fenix flake as an argument (direct
+  importers must pass it); `overlays.default` is unchanged for consumers
 
 ### passthru.tests evaluation (nixpkgs-CI workflow)
 

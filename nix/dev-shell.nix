@@ -22,12 +22,13 @@
 mkShell {
   RUST_SRC_PATH = "${rustPlatform.rustcSrc}/library";
   nativeBuildInputs = [
-    (fenix.default.withComponents [
+    (fenix.stable.withComponents [
       "cargo"
       "clippy"
+      "rust-src"
       "rust-std"
       "rustc"
-      "rustfmt-preview"
+      "rustfmt"
     ])
     pkg-config
     protobuf
