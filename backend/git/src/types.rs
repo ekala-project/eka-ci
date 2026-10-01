@@ -5,7 +5,7 @@ use octocrab::models::Repository;
 use shared::types::GitRequest;
 use tracing::{debug, warn};
 
-use super::actions::{add_git_worktree, clone_git_repo, fetch_remote_repo};
+use super::actions::{add_git_worktree, clone_git_repo, ensure_rev_fetched, fetch_remote_repo};
 
 /// RAII guard that removes `path` on drop unless `disarm()` is called.
 ///
@@ -243,6 +243,7 @@ impl GitWorkspace {
         if self.worktree_path.exists() {
             return Ok(());
         }
+        ensure_rev_fetched(&self.repo_path, &self.rev_parse).await?;
         std::fs::create_dir_all(self.worktree_path.parent().unwrap())?;
 
         let dest_dir = path_to_str(&self.worktree_path)?.to_string();
@@ -258,6 +259,11 @@ impl GitWorkspace {
         }
         guard.disarm();
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn master_path(&self) -> PathBuf {
+        self.repo_path.clone()
     }
 
     pub fn worktree_path(&self) -> PathBuf {

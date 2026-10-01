@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Maintenance fixes
+
+- Fetch from origin before creating a worktree, so commits pushed after
+  the first clone (Gitea/GitLab pushes, reconstitution) can be checked out
+- End option parsing (`--` / `--end-of-options`) before refs and URLs in
+  git invocations; only full object ids are fetched directly as a refspec
+
 ### passthru.tests evaluation (nixpkgs-CI workflow)
 
 - Add opt-in `passthru_tests` configuration to CI jobs that evaluates and
