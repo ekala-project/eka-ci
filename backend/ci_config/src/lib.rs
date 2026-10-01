@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod unknown_keys;
+
 fn default_true() -> bool {
     true
 }
@@ -14,7 +16,7 @@ fn default_false() -> bool {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Job {
     pub file: PathBuf,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", alias = "allow-eval-failures")]
     pub allow_eval_failures: bool,
     /// Cache IDs to push build outputs to (references server-configured caches)
     /// These are resolved server-side for security - no arbitrary commands allowed
@@ -174,11 +176,23 @@ pub struct CIConfig {
     /// Overrides for the rebuild-impact section; absent ⇒ engine defaults.
     #[serde(default)]
     pub rebuild_impact: Option<RebuildImpactConfig>,
+    #[serde(skip)]
+    unknown_keys: Vec<String>,
 }
 
 impl CIConfig {
     pub fn from_str(string: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str::<Self>(string)
+        let mut config = serde_json::from_str::<Self>(string)?;
+        let raw = serde_json::from_str::<serde_json::Value>(string)?;
+        config.unknown_keys = unknown_keys::find(&raw, &config);
+        for key in &config.unknown_keys {
+            tracing::warn!(key = %key, "ignoring unknown key in .ekaci/config.json");
+        }
+        Ok(config)
+    }
+
+    pub fn unknown_keys(&self) -> &[String] {
+        &self.unknown_keys
     }
 }
 
@@ -196,8 +210,25 @@ mod tests {
     }
   }
 }"#;
-        serde_json::from_str::<CIConfig>(example_config)
+        let config = serde_json::from_str::<CIConfig>(example_config)
             .expect("Failed to deserialize example config");
+        assert!(!config.jobs["stdenv"].allow_eval_failures);
+    }
+
+    #[test]
+    fn test_allow_eval_failures_spellings_are_equivalent() {
+        let parse = |job: &str| {
+            let json = format!(r#"{{"jobs": {{"j": {job}}}}}"#);
+            let config = CIConfig::from_str(&json).expect("config must parse");
+            assert!(config.unknown_keys().is_empty(), "{job} must be recognised");
+            config.jobs["j"].allow_eval_failures
+        };
+        assert!(!parse(r#"{"file": "a.nix", "allow-eval-failures": false}"#));
+        assert!(!parse(r#"{"file": "a.nix", "allow_eval_failures": false}"#));
+        assert!(
+            parse(r#"{"file": "a.nix"}"#),
+            "absent key keeps the default"
+        );
     }
 
     #[test]

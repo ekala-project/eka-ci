@@ -8,6 +8,8 @@
   the first clone (Gitea/GitLab pushes, reconstitution) can be checked out
 - End option parsing (`--` / `--end-of-options`) before refs and URLs in
   git invocations; only full object ids are fetched directly as a refspec
+- Accept `allow-eval-failures` as an alias of `allow_eval_failures` in
+  `.ekaci/config.json` (it was silently ignored) and warn on unknown keys
 
 ### passthru.tests evaluation (nixpkgs-CI workflow)
 
