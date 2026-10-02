@@ -1,7 +1,8 @@
 mod config;
 mod executor;
-mod nix_shell;
-mod simple_executor;
+mod host;
+#[cfg(target_os = "macos")]
+mod seatbelt;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 use self::config::load_config;
-use self::executor::CheckExecutor;
+use self::executor::{CheckExecutor, SandboxOptions};
 
 /// Check subcommands
 #[derive(Debug, clap::Subcommand)]
@@ -32,6 +33,15 @@ pub enum CheckCommand {
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
+
+        #[arg(long)]
+        no_sandbox: bool,
+
+        #[arg(long = "network-allow", value_name = "CIDR")]
+        network_allow: Vec<String>,
+
+        #[arg(long, value_name = "SECS", default_value_t = 1800)]
+        timeout: u64,
     },
 
     /// List available checks
@@ -50,7 +60,17 @@ pub async fn handle_check_command(cmd: CheckCommand) -> Result<()> {
             check,
             dry_run,
             verbose,
-        } => run_checks(repo_path, check, dry_run, verbose).await,
+            no_sandbox,
+            network_allow,
+            timeout,
+        } => {
+            let sandbox = SandboxOptions {
+                enabled: !no_sandbox,
+                network_allow,
+                timeout: Duration::from_secs(timeout),
+            };
+            run_checks(repo_path, check, dry_run, verbose, sandbox).await
+        },
 
         CheckCommand::List { repo_path } => list_checks(repo_path).await,
     }
@@ -62,6 +82,7 @@ async fn run_checks(
     check_filter: Option<String>,
     dry_run: bool,
     verbose: bool,
+    sandbox: SandboxOptions,
 ) -> Result<()> {
     let repo_path = repo_path
         .or_else(|| std::env::current_dir().ok())
@@ -127,7 +148,7 @@ async fn run_checks(
     }
 
     // Execute checks
-    let executor = CheckExecutor::new(repo_path.clone());
+    let executor = CheckExecutor::new(repo_path.clone(), &sandbox)?;
     let mut results = Vec::new();
 
     for (name, check) in checks_to_run {
