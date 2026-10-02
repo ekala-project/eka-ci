@@ -1,6 +1,15 @@
+pub mod checkout;
+pub mod devshell;
+
 pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 pub const DEFAULT_MEMORY_LIMIT_MB: u64 = 8192;
 
+pub fn timeout_note(limit: std::time::Duration) -> String {
+    format!("[ekaci: check timed out after {limit:?}]")
+}
+
+#[cfg(target_os = "linux")]
+pub mod check;
 #[cfg(target_os = "linux")]
 pub mod eval;
 #[cfg(target_os = "linux")]

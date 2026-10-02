@@ -37,7 +37,11 @@ fn default_memory_limit_mb() -> u64 {
     DEFAULT_MEMORY_LIMIT_MB
 }
 
-fn validate_limits(section: &str, timeout_secs: u64, memory_mb: u64) -> anyhow::Result<()> {
+pub(super) fn validate_limits(
+    section: &str,
+    timeout_secs: u64,
+    memory_mb: u64,
+) -> anyhow::Result<()> {
     if !(TIMEOUT_MIN_S..=TIMEOUT_MAX_S).contains(&timeout_secs) {
         bail!(
             "[{section}] timeout_secs must be between {TIMEOUT_MIN_S} and {TIMEOUT_MAX_S}, got \
@@ -64,6 +68,13 @@ impl EvalConfig {
             );
         }
         Ok(config)
+    }
+
+    pub fn shell_limits(&self) -> sandbox::check::Limits {
+        sandbox::check::Limits {
+            timeout: Duration::from_secs(self.timeout_secs),
+            memory_limit_mb: self.memory_limit_mb,
+        }
     }
 
     pub fn sandbox_config(&self) -> EvalSandboxConfig {

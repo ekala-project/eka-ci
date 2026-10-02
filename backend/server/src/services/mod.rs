@@ -212,7 +212,7 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
-    let eval_sandbox = build_eval_sandbox(&config).await?;
+    let (eval_sandbox, check_sandbox) = build_sandboxes(&config).await?;
 
     let scheduler_service = SchedulerService::new(
         db_service.clone(),
@@ -286,7 +286,11 @@ pub async fn start_services(config: Config) -> Result<()> {
     }
 
     // Create ChecksExecutor service
-    let checks_service = ChecksExecutor::new(db_service.clone(), maybe_github_sender.clone());
+    let checks_service = ChecksExecutor::new(
+        db_service.clone(),
+        maybe_github_sender.clone(),
+        check_sandbox,
+    );
     let check_sender = checks_service.get_sender();
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
@@ -455,7 +459,9 @@ pub async fn start_services(config: Config) -> Result<()> {
     Ok(())
 }
 
-async fn build_eval_sandbox(config: &crate::config::Config) -> Result<sandbox::eval::EvalSandbox> {
+async fn build_sandboxes(
+    config: &crate::config::Config,
+) -> Result<(sandbox::eval::EvalSandbox, sandbox::check::CheckSandbox)> {
     let policy = config
         .sandbox
         .network_policy()
@@ -467,9 +473,11 @@ async fn build_eval_sandbox(config: &crate::config::Config) -> Result<sandbox::e
         .preflight_network()
         .await
         .context("sandbox preflight failed")?;
-    Ok(sandbox::eval::EvalSandbox::new(
-        Arc::new(sandbox),
-        config.eval.sandbox_config(),
+    let sandbox = Arc::new(sandbox);
+    Ok((
+        sandbox::eval::EvalSandbox::new(sandbox.clone(), config.eval.sandbox_config()),
+        sandbox::check::CheckSandbox::new(sandbox, config.checks.limits())
+            .with_dev_shell_limits(config.eval.shell_limits()),
     ))
 }
 
