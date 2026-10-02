@@ -340,6 +340,96 @@ let
     };
   };
 
+  evalType = types.submodule {
+    freeformType = settingsFormat.type;
+    options = {
+      timeout_secs = mkOption {
+        type = types.ints.between 10 86400;
+        default = 1800;
+        description = ''
+          Wall-clock limit, in seconds, for one `nix-eval-jobs` run. The
+          whole evaluation sandbox is killed when it elapses.
+        '';
+      };
+      memory_limit_mb = mkOption {
+        type = types.ints.between 1024 1048576;
+        default = 8192;
+        description = ''
+          Address-space limit (`RLIMIT_AS`), in MiB, for every process inside
+          the evaluation sandbox. `nix-eval-jobs` workers are recycled at half
+          of this value.
+        '';
+      };
+      allowed_uris = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [
+          "https://github.com/NixOS/nixpkgs/"
+          "github:NixOS/nixpkgs"
+        ];
+        description = ''
+          URI prefixes that eval-time fetchers (`builtins.fetchurl`,
+          `fetchTarball`, `fetchGit`, ...) may access. Evaluation runs with
+          `restrict-eval = true`, so an expression that pins nixpkgs with
+          `fetchTarball` needs that URL's prefix listed here. Empty blocks
+          all eval-time fetches.
+        '';
+      };
+    };
+  };
+
+  sandboxType = types.submodule {
+    freeformType = settingsFormat.type;
+    options = {
+      network_allow = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "10.20.0.5/32" ];
+        description = ''
+          IPv4 prefixes that sandboxes with network access (evaluation,
+          dev-shell capture, checks with `allow_network`) may reach despite
+          the built-in deny list of private, link-local, CGNAT and reserved
+          ranges and the server's own addresses.
+        '';
+      };
+      network_deny = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Additional IPv4 prefixes made unreachable from sandboxes.";
+      };
+      helper_path = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Path to `ekaci-sandbox-helper`. When `null` the server uses the
+          helper installed next to its own binary.
+        '';
+      };
+    };
+  };
+
+  checksType = types.submodule {
+    freeformType = settingsFormat.type;
+    options = {
+      timeout_secs = mkOption {
+        type = types.ints.between 10 86400;
+        default = 1800;
+        description = ''
+          Wall-clock limit, in seconds, for one repository check command. The
+          whole sandbox is killed when it elapses.
+        '';
+      };
+      memory_limit_mb = mkOption {
+        type = types.ints.between 1024 1048576;
+        default = 8192;
+        description = ''
+          Address-space limit (`RLIMIT_AS`), in MiB, for every process of a
+          check.
+        '';
+      };
+    };
+  };
+
   searchIndexType = types.submodule {
     freeformType = settingsFormat.type;
     options = {
@@ -509,6 +599,28 @@ let
         type = securityType;
         default = { };
         description = "Security-related settings.";
+      };
+      eval = mkOption {
+        type = evalType;
+        default = { };
+        description = ''
+          Evaluation sandbox settings. Every `nix-eval-jobs` run happens inside
+          bubblewrap + landlock with a cleared environment and
+          `restrict-eval`; see `docs/server-configuration.md`.
+        '';
+      };
+      sandbox = mkOption {
+        type = sandboxType;
+        default = { };
+        description = ''
+          Network policy shared by every sandbox with network access; see
+          `docs/server-configuration.md`.
+        '';
+      };
+      checks = mkOption {
+        type = checksType;
+        default = { };
+        description = "Limits for repository check commands.";
       };
 
       db_path = mkOption {
@@ -770,6 +882,8 @@ in
       wantedBy = [ "multi-user.target" ];
 
       path = [
+        pkgs.bubblewrap
+        pkgs.passt
         config.nix.package
         pkgs.nix-eval-jobs
         pkgs.git
@@ -828,21 +942,24 @@ in
           PrivateTmp = true;
           PrivateDevices = true;
           DevicePolicy = "closed";
+          BindPaths = [ "/dev/net/tun" ];
+          DeviceAllow = [ "/dev/net/tun rw" ];
           ProtectControlGroups = true;
           ProtectKernelModules = true;
-          ProtectKernelTunables = true;
-          ProtectKernelLogs = true;
+          ProtectKernelTunables = false;
+          ProtectKernelLogs = false;
+          ProtectHostname = false;
           ProtectClock = true;
-          ProtectHostname = true;
           ProtectProc = "invisible";
-          ProcSubset = "pid";
-          RestrictNamespaces = true;
+          ProcSubset = "all";
+          RestrictNamespaces = false;
           RestrictRealtime = true;
           RestrictSUIDSGID = true;
           RestrictAddressFamilies = [
             "AF_UNIX"
             "AF_INET"
             "AF_INET6"
+            "AF_NETLINK"
           ];
           LockPersonality = true;
           MemoryDenyWriteExecute = true;
@@ -851,6 +968,11 @@ in
             "@system-service"
             "~@privileged"
             "~@resources"
+            "@mount"
+            "capset"
+            "setrlimit"
+            "@setuid"
+            "sethostname"
           ];
           CapabilityBoundingSet = [ ];
           AmbientCapabilities = [ ];
