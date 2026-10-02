@@ -1,3 +1,8 @@
+pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+pub const DEFAULT_MEMORY_LIMIT_MB: u64 = 8192;
+
+#[cfg(target_os = "linux")]
+pub mod eval;
 #[cfg(target_os = "linux")]
 pub mod helper;
 #[cfg(target_os = "linux")]

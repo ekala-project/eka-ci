@@ -11,8 +11,11 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use sandbox::SandboxExit;
+use sandbox::eval::EvalSandbox;
 use sqlx::SqlitePool;
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -29,19 +32,15 @@ pub async fn drv_store_path_exists(store_path: &str) -> bool {
 /// same evaluation trigger only one `nix-eval-jobs` invocation.
 pub struct ReconstitutionTracker {
     in_flight: Mutex<HashSet<String>>,
-}
-
-impl Default for ReconstitutionTracker {
-    fn default() -> Self {
-        Self {
-            in_flight: Mutex::new(HashSet::new()),
-        }
-    }
+    eval_sandbox: EvalSandbox,
 }
 
 impl ReconstitutionTracker {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(eval_sandbox: EvalSandbox) -> Self {
+        Self {
+            in_flight: Mutex::new(HashSet::new()),
+            eval_sandbox,
+        }
     }
 
     fn key(sha: &str, job: &str) -> String {
@@ -99,12 +98,16 @@ pub async fn reconstitute_drv(
         return Ok(drv_store_path_exists(&drv_id.store_path()).await);
     }
 
-    let result = do_reconstitute(&context, drv_id).await;
+    let result = do_reconstitute(&context, drv_id, &tracker.eval_sandbox).await;
     tracker.release(&context.sha, &context.job).await;
     result
 }
 
-async fn do_reconstitute(context: &JobSetInfo, drv_id: &DrvId) -> Result<bool> {
+async fn do_reconstitute(
+    context: &JobSetInfo,
+    drv_id: &DrvId,
+    eval_sandbox: &EvalSandbox,
+) -> Result<bool> {
     info!(
         "reconstituting GC'd drv {} via re-evaluation of job '{}' at {}/{} commit {}",
         drv_id.store_path(),
@@ -156,7 +159,7 @@ async fn do_reconstitute(context: &JobSetInfo, drv_id: &DrvId) -> Result<bool> {
             .context("failed to resolve nix file path for reconstitution")?;
 
     // Step 6: Run nix-eval-jobs to repopulate the nix store with .drv files
-    run_nix_eval_jobs_for_reconstitution(&file_path).await?;
+    run_nix_eval_jobs_for_reconstitution(&file_path, eval_sandbox).await?;
 
     // Step 7: Verify the target drv now exists
     let exists = drv_store_path_exists(&drv_id.store_path()).await;
@@ -175,33 +178,54 @@ async fn do_reconstitute(context: &JobSetInfo, drv_id: &DrvId) -> Result<bool> {
 /// Run `nix-eval-jobs` purely to repopulate `.drv` files in the store.
 /// We discard the output — we only care about the side effect of
 /// `.drv` files being created during evaluation.
-async fn run_nix_eval_jobs_for_reconstitution(file_path: &Path) -> Result<()> {
-    let file_path_str = file_path.to_string_lossy();
+async fn run_nix_eval_jobs_for_reconstitution(
+    file_path: &Path,
+    eval_sandbox: &EvalSandbox,
+) -> Result<()> {
     debug!(
         "running nix-eval-jobs for reconstitution: {}",
-        file_path_str
+        file_path.display()
     );
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(600), // 10 minute timeout
-        tokio::process::Command::new("nix-eval-jobs")
-            .args(["--show-input-drvs", "--meta", &file_path_str])
-            .output(),
-    )
-    .await
-    .context("nix-eval-jobs timed out during reconstitution")?
-    .context("failed to spawn nix-eval-jobs for reconstitution")?;
+    let mut child = eval_sandbox
+        .spawn_nix_eval_jobs(file_path, &[])
+        .await
+        .context("failed to spawn nix-eval-jobs for reconstitution")?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (_, stderr) = tokio::join!(discard(stdout), drain(stderr));
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(
-            "nix-eval-jobs exited with non-zero status during reconstitution: {}",
-            stderr.lines().take(5).collect::<Vec<_>>().join("\n")
-        );
-        // Non-zero exit is not necessarily fatal — nix-eval-jobs may have
-        // partially succeeded and created the drv we need. The caller will
-        // check drv existence afterwards.
+    match child.wait().await? {
+        SandboxExit::TimedOut(limit) => bail!(
+            "nix-eval-jobs timed out after {}s during reconstitution",
+            limit.as_secs()
+        ),
+        SandboxExit::Exited(status) if !status.success() => {
+            warn!(
+                "nix-eval-jobs exited with non-zero status during reconstitution: {}",
+                stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+            );
+        },
+        SandboxExit::Exited(_) => {},
     }
 
     Ok(())
+}
+
+async fn discard(pipe: Option<impl tokio::io::AsyncRead + Unpin>) {
+    if let Some(mut pipe) = pipe {
+        if let Err(e) = tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await {
+            debug!("reading nix-eval-jobs stdout failed: {e}");
+        }
+    }
+}
+
+async fn drain(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> String {
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        if let Err(e) = pipe.read_to_end(&mut buf).await {
+            debug!("reading nix-eval-jobs output failed: {e}");
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }

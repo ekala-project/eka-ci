@@ -212,6 +212,8 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
+    let eval_sandbox = build_eval_sandbox(&config).await?;
+
     let scheduler_service = SchedulerService::new(
         db_service.clone(),
         config.logs_dir.clone(),
@@ -228,6 +230,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.security.audit_hooks,
         Some(channel_sender.clone()),
         cancellation_token.clone(),
+        eval_sandbox.clone(),
     )
     .await?;
 
@@ -263,6 +266,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         maybe_github_sender.clone(),
         graph_command_sender.clone(),
         Some(nix_eval_metrics),
+        eval_sandbox,
     );
 
     // Forward GitHub service eval requests (passthru.tests) to the
@@ -449,6 +453,24 @@ pub async fn start_services(config: Config) -> Result<()> {
     info!("All services shutdown gracefully");
 
     Ok(())
+}
+
+async fn build_eval_sandbox(config: &crate::config::Config) -> Result<sandbox::eval::EvalSandbox> {
+    let policy = config
+        .sandbox
+        .network_policy()
+        .context("invalid [sandbox] network policy")?;
+    let sandbox = sandbox::Sandbox::locate(config.sandbox.helper_path.as_deref())
+        .context("sandbox unavailable")?
+        .with_network_policy(policy);
+    sandbox
+        .preflight_network()
+        .await
+        .context("sandbox preflight failed")?;
+    Ok(sandbox::eval::EvalSandbox::new(
+        Arc::new(sandbox),
+        config.eval.sandbox_config(),
+    ))
 }
 
 async fn enqueue_buildable_builds(

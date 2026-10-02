@@ -80,6 +80,7 @@ async fn test_build_simple_drv_success() {
         true,                                       // audit hooks enabled
         None,                                       // no channel task sender
         tokio_util::sync::CancellationToken::new(), // cancellation token
+        common::test_eval_sandbox(),
     )
     .await
     .expect("Failed to create scheduler");
@@ -184,6 +185,7 @@ async fn test_build_failure_retry_logic() {
         true,                                       // audit hooks enabled
         None,                                       // no channel task sender
         tokio_util::sync::CancellationToken::new(), // cancellation token
+        common::test_eval_sandbox(),
     )
     .await
     .expect("Failed to create scheduler");
