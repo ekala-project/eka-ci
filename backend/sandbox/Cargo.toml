@@ -1,0 +1,23 @@
+[package]
+name = "sandbox"
+version = "0.1.0"
+edition = "2021"
+description = "bwrap + landlock process sandbox used for untrusted Nix evaluation"
+
+[[bin]]
+name = "ekaci-sandbox-helper"
+path = "src/bin/ekaci-sandbox-helper.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+libc = "0.2"
+tokio = { version = "1.41.0", features = ["process", "io-util", "sync", "time", "rt", "macros"] }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.41.0", features = ["full"] }
+serde_json = { workspace = true }
