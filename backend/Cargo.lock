@@ -705,19 +705,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
-name = "birdcage"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "848df95320021558dd6bb4c26de3fe66724cdcbdbbf3fa720150b52b086ae568"
-dependencies = [
- "bitflags 2.13.2",
- "libc",
- "log",
- "rustix 0.38.44",
- "seccompiler",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1503,14 +1490,16 @@ name = "ekaci"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "birdcage",
  "ci_config",
  "clap",
  "colored",
+ "libc",
  "reqwest 0.12.28",
+ "sandbox",
  "serde",
  "serde_json",
  "shared",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -4488,15 +4477,6 @@ checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
 dependencies = [
  "ring",
  "untrusted",
-]
-
-[[package]]
-name = "seccompiler"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f6575e3c2b3a0fe2ef3e53855b6a8dead7c29f783da5e123d378c8c6a89017e"
-dependencies = [
- "libc",
 ]
 
 [[package]]

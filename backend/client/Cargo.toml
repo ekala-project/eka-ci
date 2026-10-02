@@ -5,7 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = { workspace = true }
-birdcage = "0.8.1"
+libc = "0.2"
+sandbox = { path = "../sandbox" }
 reqwest = { version = "0.12", features = ["json"] }
 ci_config = { path = "../ci_config" }
 clap = {workspace = true}
@@ -17,3 +18,7 @@ shared = { workspace = true }
 tokio = { version = "1.41.0", features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tempfile = "3"
