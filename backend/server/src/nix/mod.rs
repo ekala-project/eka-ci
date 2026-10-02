@@ -74,6 +74,7 @@ pub struct EvalService {
     /// events. Optional so unit/integration tests that don't care
     /// about observability can pass `None`.
     pub(crate) nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
+    eval_sandbox: sandbox::eval::EvalSandbox,
     journal: crate::services::TaskJournal<EvalTask>,
 }
 
@@ -85,6 +86,7 @@ impl EvalService {
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         graph_command_sender: mpsc::Sender<GraphCommand>,
         nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
+        eval_sandbox: sandbox::eval::EvalSandbox,
     ) -> EvalService {
         let pool = db_service.pool.clone();
         EvalService {
@@ -95,6 +97,7 @@ impl EvalService {
             graph_command_sender,
             drv_map: Mutex::new(LruCache::new(NonZeroUsize::new(5000).unwrap())),
             nix_eval_metrics,
+            eval_sandbox,
             journal: crate::services::TaskJournal::new(pool, "eval"),
         }
     }
@@ -105,7 +108,7 @@ impl EvalService {
         match &task {
             EvalTask::Job(drv) => {
                 debug!("Processing Job task for: {}", drv.file_path);
-                let (_jobs, _errors) = self.run_nix_eval_jobs(&drv.file_path, true).await?;
+                let (_jobs, _errors) = self.run_nix_eval_jobs(&drv.file_path, &[], true).await?;
             },
             EvalTask::TraverseDrv(drv) => {
                 debug!("Processing TraverseDrv task for: {}", drv);
@@ -153,7 +156,9 @@ impl EvalService {
         // for jobset diff computation — no graph population or
         // build scheduling required.
         let is_head = ci_info.base_commit.is_some();
-        let (jobs, errors) = self.run_nix_eval_jobs(&eval_job.file_path, is_head).await?;
+        let (jobs, errors) = self
+            .run_nix_eval_jobs(&eval_job.file_path, &[], is_head)
+            .await?;
         let gh_sender = self
             .github_sender
             .as_ref()
@@ -256,7 +261,10 @@ impl EvalService {
             .to_str()
             .context("temp file path is not valid UTF-8")?;
 
-        let (jobs, _errors) = self.run_nix_eval_jobs(tmp_path, true).await?;
+        let original_root = sandbox::eval::readable_root(std::path::Path::new(file_path));
+        let (jobs, _errors) = self
+            .run_nix_eval_jobs(tmp_path, &[original_root], true)
+            .await?;
         drop(tmp_file);
         Ok(jobs)
     }
