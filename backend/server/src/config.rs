@@ -12,9 +12,15 @@ use tracing::{debug, info, warn};
 
 use crate::secret::Redacted;
 
+mod checks;
+mod eval;
 mod remote_builder;
+mod sandbox;
+pub use checks::ChecksConfig;
+pub use eval::EvalConfig;
 pub use remote_builder::RemoteBuilder;
 use remote_builder::read_nix_machines_file;
+pub use sandbox::SandboxConfig;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -97,6 +103,9 @@ struct ConfigFile {
     /// MCP endpoint at `/v1/mcp` for AI agent diagnostics.
     mcp: Option<McpConfig>,
     security: Option<SecurityConfig>,
+    eval: Option<EvalConfig>,
+    sandbox: Option<SandboxConfig>,
+    checks: Option<ChecksConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -1236,6 +1245,9 @@ pub struct Config {
     pub mcp: Option<McpConfig>,
     /// Security settings for hook execution
     pub security: SecurityConfig,
+    pub eval: EvalConfig,
+    pub sandbox: SandboxConfig,
+    pub checks: ChecksConfig,
 }
 
 #[derive(Debug)]
@@ -1596,6 +1608,9 @@ impl Config {
             search_index: validate_search_index(file.search_index)?,
             mcp: validate_mcp(file.mcp),
             security,
+            eval: EvalConfig::validate(file.eval)?,
+            sandbox: SandboxConfig::validate(file.sandbox)?,
+            checks: ChecksConfig::validate(file.checks)?,
         })
     }
 
@@ -1704,6 +1719,9 @@ mod redaction_tests {
                 allow_insecure_webhooks: false,
                 allow_private_cache_hosts: false,
             },
+            eval: EvalConfig::default(),
+            sandbox: SandboxConfig::default(),
+            checks: ChecksConfig::default(),
         };
         // Both the compact and pretty Debug forms must redact every secret.
         assert_no_secret(&format!("{config:?}"), "Config {:?}");
@@ -1804,6 +1822,9 @@ mod redaction_tests {
                 allow_insecure_webhooks: false,
                 allow_private_cache_hosts: false,
             },
+            eval: EvalConfig::default(),
+            sandbox: SandboxConfig::default(),
+            checks: ChecksConfig::default(),
         };
 
         let debug_output = format!("{config:?}");

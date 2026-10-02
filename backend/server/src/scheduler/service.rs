@@ -77,6 +77,7 @@ impl SchedulerService {
         audit_hooks: bool,
         channel_sender: Option<mpsc::Sender<ChannelTask>>,
         cancellation_token: CancellationToken,
+        eval_sandbox: sandbox::eval::EvalSandbox,
     ) -> anyhow::Result<Self> {
         // Create build metrics using shared registry
         let build_metrics = BuildMetrics::new(&metrics_registry)?;
@@ -108,9 +109,9 @@ impl SchedulerService {
 
         // Shared reconstitution tracker prevents duplicate nix-eval-jobs
         // invocations when many GC'd drvs from the same eval are rebuilt
-        // concurrently.
-        let reconstitution_tracker =
-            Arc::new(crate::nix::reconstitute::ReconstitutionTracker::new());
+        let reconstitution_tracker = Arc::new(
+            crate::nix::reconstitute::ReconstitutionTracker::new(eval_sandbox),
+        );
         let circuit_breaker = CircuitBreakerRegistry::new();
 
         let mut builders = Builder::local_from_env(

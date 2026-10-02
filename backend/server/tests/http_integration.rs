@@ -87,6 +87,7 @@ async fn create_test_server_with_options(
         None, /* no ChannelService wired in this
                * integration test */
         tokio_util::sync::CancellationToken::new(), // cancellation token
+        common::test_eval_sandbox(),
     )
     .await
     .expect("Failed to create scheduler");

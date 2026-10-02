@@ -1,5 +1,7 @@
 // Thin wrapper around evaluator::service::jobs that adds server-specific logic
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 
 use crate::nix::{NixEvalDrv, NixEvalError};
@@ -15,6 +17,7 @@ impl super::EvalService {
     pub async fn run_nix_eval_jobs(
         &self,
         file_path: &str,
+        extra_roots: &[PathBuf],
         traverse: bool,
     ) -> Result<(Vec<NixEvalDrv>, Vec<NixEvalError>)> {
         // Create a metrics adapter if metrics are available
@@ -35,8 +38,14 @@ impl super::EvalService {
             };
 
         // Call the evaluator's run_nix_eval_jobs
-        let (jobs, errors) =
-            evaluator::service::run_nix_eval_jobs(file_path, metrics, Some(traverse_fn)).await?;
+        let (jobs, errors) = evaluator::service::run_nix_eval_jobs(
+            &self.eval_sandbox,
+            file_path,
+            extra_roots,
+            metrics,
+            Some(traverse_fn),
+        )
+        .await?;
 
         // Traverse after full parse — only when building (head commit).
         // Base-commit evals skip this since they only need attr/drv

@@ -270,6 +270,71 @@ Security-related settings.
   destinations whose DNS resolves to private/loopback addresses. Disables built-in SSRF
   protection; only enable in trusted, isolated networks.
 
+### `settings.eval`
+
+**Type:** `submodule`
+
+Evaluation sandbox settings. Every `nix-eval-jobs` run happens inside bubblewrap +
+landlock with a cleared environment and `restrict-eval`; see
+[Server Configuration](./server-configuration.md#eval).
+
+- **`eval.timeout_secs`** (`integer between 10 and 86400`, default `1800`): Wall-clock
+  limit, in seconds, for one `nix-eval-jobs` run. The whole sandbox is killed when it
+  elapses.
+- **`eval.memory_limit_mb`** (`integer between 1024 and 1048576`, default `8192`):
+  Address-space limit (`RLIMIT_AS`), in MiB, for every process in the sandbox.
+- **`eval.allowed_uris`** (`list of string`, default `[]`): URI prefixes that eval-time
+  fetchers may access. Expressions that pin nixpkgs with `fetchTarball` need that URL's
+  prefix listed. Empty blocks all eval-time fetches.
+
+The module puts `bubblewrap`, `passt`, `nix-eval-jobs` and Nix on the service `PATH`, and
+relaxes the unit hardening just enough for the sandbox: `RestrictNamespaces = false`,
+`ProtectKernelTunables = false`, `ProtectKernelLogs = false`, `ProtectHostname = false` and
+`ProcSubset = "all"` (bwrap
+mounts a fresh `/proc` for its pid namespace, which the kernel refuses while parts of `/proc`
+are overmounted), `@mount`, `capset` and `setrlimit` re-allowed in `SystemCallFilter` (plus `@setuid` and `sethostname`, which `pasta` uses on its own namespaces; with an empty capability set they cannot affect the host), and
+for `pasta`'s network namespace `/dev/net/tun` (bound into the private `/dev` and allowed
+in `DeviceAllow`) and `AF_NETLINK`. The server refuses to start if the sandbox or network
+filter preflight fails. The module does not filter the network of the host's Nix build
+users; builds requested through the daemon socket (fixed-output derivations) keep the
+daemon's network. See the daemon caveat in
+[Server Configuration](./server-configuration.md#sandbox).
+
+**Example:**
+```nix
+settings.eval = {
+  timeout_secs = 3600;
+  allowed_uris = [ "https://github.com/NixOS/nixpkgs/" ];
+};
+```
+
+### `settings.sandbox`
+
+**Type:** `submodule`
+
+Network policy for every sandbox with network access (evaluation, dev-shell capture,
+checks with `allow_network`). Private, link-local, CGNAT and reserved IPv4 ranges, the
+server's own addresses and its loopback are always unreachable; see
+[Server Configuration](./server-configuration.md#sandbox).
+
+- **`sandbox.network_allow`** (`list of string`, default `[]`): IPv4 prefixes reachable
+  despite that list, e.g. `[ "10.20.0.5/32" ]` for an internal binary cache.
+- **`sandbox.network_deny`** (`list of string`, default `[]`): additional unreachable
+  IPv4 prefixes.
+- **`sandbox.helper_path`** (`null or path`, default `null`): Path to
+  `ekaci-sandbox-helper`; `null` uses the one installed next to the server binary.
+
+### `settings.checks`
+
+**Type:** `submodule`
+
+Limits for repository check commands, which run in the same sandbox as evaluation.
+
+- **`checks.timeout_secs`** (`integer between 10 and 86400`, default `1800`): wall-clock
+  limit per check command.
+- **`checks.memory_limit_mb`** (`integer between 1024 and 1048576`, default `8192`):
+  `RLIMIT_AS` per process of a check.
+
 ### `settings.caches`
 
 **Type:** `list of submodule`
@@ -524,18 +589,22 @@ The module applies aggressive systemd hardening by default:
 - `ProtectSystem = "strict"` (read-only `/usr`, `/boot`, `/efi`)
 - `ProtectHome = true` (no access to `/home`, `/root`)
 - `PrivateTmp = true` (isolated `/tmp`)
-- `PrivateDevices = true` (empty `/dev`)
+- `PrivateDevices = true` (minimal `/dev`, plus `/dev/net/tun` for `pasta`)
 - `NoNewPrivileges = true` (no privilege escalation)
-- `ProtectKernelModules/Tunables/Logs = true`
-- `ProtectControlGroups/Clock/Hostname = true`
-- `RestrictNamespaces/Realtime/SUIDSGID = true`
-- `RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ]`
+- `ProtectKernelModules = true`
+- `ProtectControlGroups/Clock = true`
+- `ProtectProc = "invisible"`
+- `RestrictRealtime/SUIDSGID = true`
+- `RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ]`
 - `LockPersonality = true`
 - `MemoryDenyWriteExecute = true`
 - `SystemCallArchitectures = "native"`
-- `SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ]`
+- `SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" "@mount" "capset" "setrlimit" "@setuid" "sethostname" ]`
 - Empty `CapabilityBoundingSet` and `AmbientCapabilities`
 - `UMask = "0077"`
+
+`RestrictNamespaces`, `ProtectKernelTunables`, `ProtectKernelLogs`, `ProtectHostname` and
+`ProcSubset` are left off because the sandbox needs them (see `settings.eval`).
 
 If you need to relax any of these, override `systemd.services.eka-ci.serviceConfig` in your
 configuration.

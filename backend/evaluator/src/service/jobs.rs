@@ -1,8 +1,9 @@
-use std::process::Stdio;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
+use sandbox::eval::EvalSandbox;
+use sandbox::{SandboxExit, SandboxedChild};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Command;
 use tracing::{debug, warn};
 
 use crate::types::nix_eval_jobs::{NixEvalDrv, NixEvalError, NixEvalItem};
@@ -205,7 +206,9 @@ pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
 /// - `metrics`: Optional metrics collector for observability
 /// - `on_drv_traversed`: Optional callback invoked for each drv with its input_drvs
 pub async fn run_nix_eval_jobs<F>(
+    sandbox: &EvalSandbox,
     file_path: &str,
+    extra_roots: &[PathBuf],
     metrics: Option<&dyn crate::traits::EvalMetricsCollector>,
     mut on_drv_traversed: Option<F>,
 ) -> anyhow::Result<(Vec<NixEvalDrv>, Vec<NixEvalError>)>
@@ -215,88 +218,15 @@ where
         &Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> Result<(), anyhow::Error>,
 {
-    let mut cmd = Command::new("nix-eval-jobs")
-        .arg("--show-input-drvs")
-        .arg("--meta")
-        .arg(file_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped()) // Capture stderr to prevent it from appearing in server logs
-        .spawn()
-        .context("failed to spawn nix-eval-jobs")?;
-
-    // Drain stderr concurrently to prevent pipe deadlock: if the child
-    // fills the OS pipe buffer (~64 KB) for stderr while we're blocked
-    // reading stdout, both sides stall. Spawning a reader task keeps
-    // the stderr pipe drained.
-    let stderr_handle = cmd.stderr.take().map(|mut stderr| {
-        tokio::spawn(async move {
-            let mut buf = String::new();
-            let _ = stderr.read_to_string(&mut buf).await;
-            buf
-        })
-    });
-
-    let outcome = {
-        let stdout = cmd
-            .stdout
-            .take()
-            .context("nix-eval-jobs stdout was not captured")?;
-        let reader = BufReader::new(stdout);
-        process_nix_eval_output(
-            reader,
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        )
-        .await
-    };
-
-    // Collect stderr output from the background drain task.
-    let stderr_output = match stderr_handle {
-        Some(handle) => handle.await.unwrap_or_default(),
-        None => String::new(),
-    };
-    if !stderr_output.is_empty() {
-        debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
-    }
+    let mut child = sandbox
+        .spawn_nix_eval_jobs(Path::new(file_path), extra_roots)
+        .await?;
+    let (outcome, stderr_output) = consume_child_output(&mut child).await?;
 
     if outcome.truncation != Truncation::None {
-        if let Err(e) = cmd.kill().await {
-            warn!(
-                "nix-eval-jobs child kill failed (may already be dead): {:?}",
-                e
-            );
-        }
-
-        if let Err(e) = cmd.wait().await {
-            warn!("nix-eval-jobs child wait failed: {:?}", e);
-        }
-
-        if let Some(m) = metrics {
-            m.truncated_total_inc(outcome.truncation.label());
-        }
-
-        warn!(
-            reason = outcome.truncation.label(),
-            jobs = outcome.jobs.len(),
-            errors = outcome.errors.len(),
-            bytes_read = outcome.bytes_read,
-            "nix-eval-jobs output truncated"
-        );
-
-        bail!(
-            "nix-eval-jobs output exceeded resource cap ({}): jobs={}, errors={}, bytes={}",
-            outcome.truncation.label(),
-            outcome.jobs.len(),
-            outcome.errors.len(),
-            outcome.bytes_read,
-        );
-    } else {
-        // Reap the child on the clean path too.
-        if let Err(e) = cmd.wait().await {
-            warn!("nix-eval-jobs child wait failed on clean path: {:?}", e);
-        }
+        return Err(fail_truncated(&mut child, &outcome, metrics).await);
     }
+    finish_clean(&mut child, &outcome, &stderr_output).await?;
 
     // Observability for the clean path.
     if let Some(m) = metrics {
@@ -321,208 +251,116 @@ where
     Ok((outcome.jobs, outcome.errors))
 }
 
-#[cfg(test)]
-mod tests {
-    use std::io::Cursor;
-
-    use super::*;
-
-    /// A minimal valid NixEvalDrv JSON body — keeps every test line
-    /// short enough that per-line caps aren't an issue in other tests.
-    fn drv_json(attr: &str) -> String {
-        format!(
-            r#"{{"attr":"{attr}","attrPath":["{attr}"],"drvPath":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0-{attr}.drv","inputDrvs":{{}},"name":"{attr}","outputs":{{"out":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0-{attr}"}},"system":"x86_64-linux"}}"#
-        )
-    }
-
-    fn error_json(attr: &str, msg: &str) -> String {
-        format!(r#"{{"attr":"{attr}","attrPath":["{attr}"],"error":"{msg}"}}"#)
-    }
-
-    #[tokio::test]
-    async fn empty_input_yields_no_entries_and_no_truncation() {
-        let outcome = process_nix_eval_output(
-            Cursor::new(Vec::<u8>::new()),
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        )
-        .await;
-        assert_eq!(outcome.jobs.len(), 0);
-        assert_eq!(outcome.errors.len(), 0);
-        assert_eq!(outcome.truncation, Truncation::None);
-        assert_eq!(outcome.bytes_read, 0);
-    }
-
-    #[tokio::test]
-    async fn happy_path_parses_drv_and_error_lines() {
-        let mut data = String::new();
-        data.push_str(&drv_json("a"));
-        data.push('\n');
-        data.push_str(&error_json("b", "oops"));
-        data.push('\n');
-        data.push_str(&drv_json("c"));
-        data.push('\n');
-
-        let outcome = process_nix_eval_output(
-            Cursor::new(data.as_bytes().to_vec()),
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        )
-        .await;
-        assert_eq!(outcome.jobs.len(), 2);
-        assert_eq!(outcome.errors.len(), 1);
-        assert_eq!(outcome.truncation, Truncation::None);
-        assert!(outcome.bytes_read > 0);
-        assert_eq!(outcome.jobs[0].attr, "a");
-        assert_eq!(outcome.jobs[1].attr, "c");
-        assert_eq!(outcome.errors[0].attr, "b");
-    }
-
-    #[tokio::test]
-    async fn malformed_json_lines_are_skipped_without_truncation() {
-        let mut data = String::new();
-        data.push_str(&drv_json("good"));
-        data.push('\n');
-        data.push_str("not-json-at-all\n");
-        data.push_str("{\"half\": \n"); // broken JSON
-        data.push_str(&drv_json("also-good"));
-        data.push('\n');
-
-        let outcome = process_nix_eval_output(
-            Cursor::new(data.as_bytes().to_vec()),
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        )
-        .await;
-        assert_eq!(
-            outcome.jobs.len(),
-            2,
-            "malformed lines must not crash parse"
-        );
-        assert_eq!(outcome.errors.len(), 0);
-        assert_eq!(outcome.truncation, Truncation::None);
-    }
-
-    #[tokio::test]
-    async fn non_utf8_lines_are_skipped() {
-        // A valid line, then a non-UTF-8 line, then another valid
-        // line. Non-UTF-8 must be dropped, not terminate parsing.
-        let mut data: Vec<u8> = Vec::new();
-        data.extend_from_slice(drv_json("alpha").as_bytes());
-        data.push(b'\n');
-        // 0xFF is never valid UTF-8.
-        data.extend_from_slice(&[0xFFu8, 0xFEu8, b'x', b'\n']);
-        data.extend_from_slice(drv_json("omega").as_bytes());
-        data.push(b'\n');
-
-        let outcome = process_nix_eval_output(
-            Cursor::new(data),
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        )
-        .await;
-        assert_eq!(outcome.jobs.len(), 2);
-        assert_eq!(outcome.truncation, Truncation::None);
-    }
-
-    #[tokio::test]
-    async fn max_entries_cap_halts_consumption() {
-        let mut data = String::new();
-        // 5 drv lines — we'll cap at 3.
-        for i in 0..5 {
-            data.push_str(&drv_json(&format!("d{i}")));
-            data.push('\n');
-        }
-
-        let outcome = process_nix_eval_output(
-            Cursor::new(data.as_bytes().to_vec()),
-            3,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        )
-        .await;
-        assert_eq!(outcome.jobs.len(), 3);
-        assert_eq!(outcome.truncation, Truncation::MaxEntries);
-    }
-
-    #[tokio::test]
-    async fn max_bytes_cap_halts_consumption_before_parse_completes() {
-        // Build roughly 200 KB of drv lines, cap at 50 KB.
-        let mut data = String::new();
-        for i in 0..5000u32 {
-            data.push_str(&drv_json(&format!("d{i}")));
-            data.push('\n');
-            if data.len() > 200_000 {
-                break;
+async fn consume_child_output(
+    child: &mut SandboxedChild,
+) -> anyhow::Result<(ConsumeOutcome, String)> {
+    let stderr_handle = child.stderr.take().map(|mut stderr| {
+        tokio::spawn(async move {
+            let mut buf = String::new();
+            if let Err(e) = stderr.read_to_string(&mut buf).await {
+                debug!("reading nix-eval-jobs stderr failed: {e}");
             }
-        }
-        assert!(data.len() > 50_000, "test prerequisite");
+            buf
+        })
+    });
 
-        let outcome = process_nix_eval_output(
-            Cursor::new(data.as_bytes().to_vec()),
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            50_000, // 50 KB byte cap
-            NIX_EVAL_JOBS_MAX_LINE_BYTES,
-        )
-        .await;
-        assert_eq!(outcome.truncation, Truncation::MaxBytes);
-        assert!(outcome.bytes_read > 50_000);
+    let stdout = child
+        .stdout
+        .take()
+        .context("nix-eval-jobs stdout was not captured")?;
+    let outcome = process_nix_eval_output(
+        BufReader::new(stdout),
+        NIX_EVAL_JOBS_MAX_ENTRIES,
+        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
+        NIX_EVAL_JOBS_MAX_LINE_BYTES,
+    )
+    .await;
+    if outcome.truncation != Truncation::None {
+        child.kill();
     }
 
-    #[tokio::test]
-    async fn max_line_bytes_cap_stops_newline_less_flood() {
-        // A single 4 KiB blob with no newline — cap at 1 KiB.
-        let data = vec![b'x'; 4 * 1024];
-        let outcome = process_nix_eval_output(
-            Cursor::new(data),
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            1024,
-        )
-        .await;
-        assert_eq!(outcome.truncation, Truncation::MaxLineBytes);
-        assert_eq!(outcome.jobs.len(), 0);
-        assert_eq!(outcome.errors.len(), 0);
+    let stderr_output = match stderr_handle {
+        Some(handle) => handle.await.unwrap_or_else(|e| {
+            warn!("nix-eval-jobs stderr drain task failed: {e}");
+            String::new()
+        }),
+        None => String::new(),
+    };
+    if !stderr_output.is_empty() {
+        debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
     }
-
-    #[tokio::test]
-    async fn max_line_bytes_accepts_line_exactly_at_cap() {
-        // A line of `max_line_bytes` ASCII bytes followed by '\n' must
-        // parse (or be a malformed-JSON skip), not trigger
-        // MaxLineBytes. We build a valid JSON line padded to close to
-        // the cap.
-        let base = drv_json("pad");
-        let target_len = 512usize; // cap for the test
-        assert!(base.len() < target_len);
-        // Pad the `name` field (noop for parsing) to stretch length.
-        let pad = target_len - base.len();
-        let padded = drv_json(&"a".repeat(pad.saturating_add(1).max(1)));
-        // `padded` may now slightly exceed target_len — that's fine,
-        // we just need "line at cap".
-        let line_len = padded.len();
-        let mut data = padded.clone();
-        data.push('\n');
-
-        let outcome = process_nix_eval_output(
-            Cursor::new(data.into_bytes()),
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            line_len, // cap equal to the line body length
-        )
-        .await;
-        // The line fits at the cap, so we must not see MaxLineBytes.
-        assert_ne!(outcome.truncation, Truncation::MaxLineBytes);
-    }
-
-    #[tokio::test]
-    async fn truncation_labels_are_stable() {
-        assert_eq!(Truncation::None.label(), "none");
-        assert_eq!(Truncation::MaxEntries.label(), "max_entries");
-        assert_eq!(Truncation::MaxBytes.label(), "max_bytes");
-        assert_eq!(Truncation::MaxLineBytes.label(), "max_line_bytes");
-    }
+    Ok((outcome, stderr_output))
 }
+
+async fn fail_truncated(
+    child: &mut SandboxedChild,
+    outcome: &ConsumeOutcome,
+    metrics: Option<&dyn crate::traits::EvalMetricsCollector>,
+) -> anyhow::Error {
+    child.kill();
+    if let Err(e) = child.wait().await {
+        warn!("nix-eval-jobs child wait failed: {:?}", e);
+    }
+
+    if let Some(m) = metrics {
+        m.truncated_total_inc(outcome.truncation.label());
+    }
+
+    warn!(
+        reason = outcome.truncation.label(),
+        jobs = outcome.jobs.len(),
+        errors = outcome.errors.len(),
+        bytes_read = outcome.bytes_read,
+        "nix-eval-jobs output truncated"
+    );
+
+    anyhow!(
+        "nix-eval-jobs output exceeded resource cap ({}): jobs={}, errors={}, bytes={}",
+        outcome.truncation.label(),
+        outcome.jobs.len(),
+        outcome.errors.len(),
+        outcome.bytes_read,
+    )
+}
+
+async fn finish_clean(
+    child: &mut SandboxedChild,
+    outcome: &ConsumeOutcome,
+    stderr_output: &str,
+) -> anyhow::Result<()> {
+    check_exit(child.wait().await?, outcome, stderr_output)
+}
+
+fn check_exit(
+    exit: SandboxExit,
+    outcome: &ConsumeOutcome,
+    stderr_output: &str,
+) -> anyhow::Result<()> {
+    let status = match exit {
+        SandboxExit::TimedOut(limit) => bail!(
+            "nix-eval-jobs exceeded the evaluation timeout of {}s and was killed",
+            limit.as_secs()
+        ),
+        SandboxExit::Exited(status) => status,
+    };
+    if status.success() {
+        return Ok(());
+    }
+    if outcome.jobs.is_empty() && outcome.errors.is_empty() {
+        bail!(
+            "nix-eval-jobs failed ({status}) without producing output: {}",
+            stderr_tail(stderr_output)
+        );
+    }
+    warn!("nix-eval-jobs exited with {status} after producing output");
+    Ok(())
+}
+
+fn stderr_tail(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.trim().lines().collect();
+    lines[lines.len().saturating_sub(10)..].join("\n")
+}
+
+#[cfg(test)]
+#[path = "jobs_tests.rs"]
+mod tests;

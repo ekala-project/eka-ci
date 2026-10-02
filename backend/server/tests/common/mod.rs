@@ -187,6 +187,12 @@ pub async fn wait_for_drv_state(
     }
 }
 
+#[allow(dead_code)]
+pub fn test_eval_sandbox() -> sandbox::eval::EvalSandbox {
+    let sandbox = sandbox::Sandbox::with_paths("bwrap".into(), "ekaci-sandbox-helper".into());
+    sandbox::eval::EvalSandbox::new(std::sync::Arc::new(sandbox), Default::default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

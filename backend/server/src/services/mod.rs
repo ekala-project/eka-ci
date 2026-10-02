@@ -212,6 +212,8 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let cancellation_token = CancellationToken::new();
 
+    let (eval_sandbox, check_sandbox) = build_sandboxes(&config).await?;
+
     let scheduler_service = SchedulerService::new(
         db_service.clone(),
         config.logs_dir.clone(),
@@ -228,6 +230,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.security.audit_hooks,
         Some(channel_sender.clone()),
         cancellation_token.clone(),
+        eval_sandbox.clone(),
     )
     .await?;
 
@@ -263,6 +266,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         maybe_github_sender.clone(),
         graph_command_sender.clone(),
         Some(nix_eval_metrics),
+        eval_sandbox,
     );
 
     // Forward GitHub service eval requests (passthru.tests) to the
@@ -282,7 +286,11 @@ pub async fn start_services(config: Config) -> Result<()> {
     }
 
     // Create ChecksExecutor service
-    let checks_service = ChecksExecutor::new(db_service.clone(), maybe_github_sender.clone());
+    let checks_service = ChecksExecutor::new(
+        db_service.clone(),
+        maybe_github_sender.clone(),
+        check_sandbox,
+    );
     let check_sender = checks_service.get_sender();
 
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
@@ -449,6 +457,28 @@ pub async fn start_services(config: Config) -> Result<()> {
     info!("All services shutdown gracefully");
 
     Ok(())
+}
+
+async fn build_sandboxes(
+    config: &crate::config::Config,
+) -> Result<(sandbox::eval::EvalSandbox, sandbox::check::CheckSandbox)> {
+    let policy = config
+        .sandbox
+        .network_policy()
+        .context("invalid [sandbox] network policy")?;
+    let sandbox = sandbox::Sandbox::locate(config.sandbox.helper_path.as_deref())
+        .context("sandbox unavailable")?
+        .with_network_policy(policy);
+    sandbox
+        .preflight_network()
+        .await
+        .context("sandbox preflight failed")?;
+    let sandbox = Arc::new(sandbox);
+    Ok((
+        sandbox::eval::EvalSandbox::new(sandbox.clone(), config.eval.sandbox_config()),
+        sandbox::check::CheckSandbox::new(sandbox, config.checks.limits())
+            .with_dev_shell_limits(config.eval.shell_limits()),
+    ))
 }
 
 async fn enqueue_buildable_builds(

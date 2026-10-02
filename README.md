@@ -60,8 +60,9 @@ This doesn't scale well, and is error prone.
 
 - **Security Architecture**
   - Credential isolation (server vs repository configuration)
-  - Sandboxed check execution (via birdcage)
-  - Network and filesystem isolation for checks
+  - Sandboxed evaluation and check execution (bubblewrap + landlock)
+  - Filtered network: internet egress only, with no direct access to the host or its private
+    networks (builds through the Nix daemon are outside the filter; see the server docs)
   - Audit logging support
   - No credentials exposed to repository configs
 
@@ -326,8 +327,7 @@ Repository-specific settings (`.ekaci/config.json`):
     "check-name": {
       "shell": "shell-derivation-attr",
       "command": "command to run",
-      "allow_network": false,
-      "ro_bind": ["/path/to/readonly/bind"]
+      "allow_network": false
     }
   }
 }

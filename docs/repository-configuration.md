@@ -24,8 +24,7 @@ never inject credentials, host paths, or arbitrary commands beyond what the serv
     "check-name": {
       "shell": "shell-derivation-attr",
       "command": "command to run",
-      "allow_network": false,
-      "ro_bind": ["/path/to/readonly/bind"]
+      "allow_network": false
     }
   }
 }
@@ -59,14 +58,44 @@ A *check* runs a sandboxed command in a shell derivation defined in the reposito
 
 | Field | Required | Description |
 |---|---|---|
-| `shell` | yes | Attribute name of a shell derivation that provides the tools. |
+| `shell` | no | Dev shell providing the tools: `devShells.<system>.<shell>` of `flake.nix`, or attribute `<shell>` of `shell.nix`. The default shell when omitted. |
+| `shell_nix` | no | Default `false`. Use `shell.nix` (`nix-shell`) instead of `flake.nix` (`nix develop`). |
 | `command` | yes | The command line to run inside the sandbox. |
-| `allow_network` | no | Default `false`. When `true`, the check is allowed network access. |
-| `ro_bind` | no | Additional read-only bind mounts to expose to the sandbox. |
+| `allow_network` | no | Default `false`. When `true`, the check command gets filtered internet access (no direct access to the server or its private networks). The dev shell capture always has it. |
 
-Checks are sandboxed via `birdcage` with no filesystem write access outside their working
-directory and no network access by default. See
-[Architecture](./architecture.md#security-model) for details on the security model.
+Checks run in a bubblewrap + landlock sandbox with no filesystem write access outside
+their checkout, only the dev shell's environment, and no direct network access by default.
+The dev shell capture (`nix develop` / `nix-shell`, which evaluates the repository's
+`flake.nix` or `shell.nix`) runs before the check in the same sandbox and always has
+filtered network access, to fetch flake inputs; `allow_network` only controls the check
+command.
+With `allow_network`, network access is filtered server-side to the internet only, so a pull
+request enabling it gains no direct access to the server or its private networks. Builds
+requested through the Nix daemon use the daemon's network either way; see the caveat in
+[Server Configuration](./server-configuration.md#sandbox) and the security model in
+[Architecture](./architecture.md#security-model).
+
+### Running checks locally
+
+`ekaci check run [--check NAME]` runs the checks of the current repository sandboxed:
+
+- **Linux**: the same sandbox as the server (needs `bwrap` and `pasta` on `PATH`).
+  `--network-allow CIDR` (repeatable) opens a private IPv4 prefix to checks with
+  `allow_network` and to the dev shell capture.
+  An existing `.git` is read-only. In a directory without one, a `.git` the check creates
+  is deleted when the check exits, so host `git` never runs hooks or config planted by it.
+- **macOS**: Seatbelt (`sandbox-exec`). Reads are limited to `/nix/store`, a few system
+  paths and the checkout, writes to the checkout (not `.git`). Seatbelt cannot filter by
+  address, so `allow_network` there allows outbound traffic to everything except
+  localhost (private networks included), and so does the dev shell capture of every
+  check; a warning is printed. File metadata (`stat`)
+  stays visible everywhere; `/etc/nix` is not readable.
+- On macOS and with `--no-sandbox`, `--timeout` kills the check's process group; a process
+  that leaves it (`setsid`) keeps running after `ekaci` exits. Only Linux confines the whole
+  process tree (pid namespace).
+
+`--timeout SECS` (default 1800) limits each check command; `--no-sandbox` runs checks
+directly on the host.
 
 ## Cache references
 

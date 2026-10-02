@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use sandbox::check::CheckSandbox;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -17,10 +18,15 @@ pub struct ChecksExecutor {
     db_service: DbService,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     journal: TaskJournal<CheckTask>,
+    sandbox: CheckSandbox,
 }
 
 impl ChecksExecutor {
-    pub fn new(db_service: DbService, github_sender: Option<mpsc::Sender<GitHubTask>>) -> Self {
+    pub fn new(
+        db_service: DbService,
+        github_sender: Option<mpsc::Sender<GitHubTask>>,
+        sandbox: CheckSandbox,
+    ) -> Self {
         let (check_sender, check_receiver) = mpsc::channel(1000);
         let pool = db_service.pool.clone();
         Self {
@@ -29,6 +35,7 @@ impl ChecksExecutor {
             db_service,
             github_sender,
             journal: TaskJournal::new(pool, "checks"),
+            sandbox,
         }
     }
 
@@ -49,7 +56,7 @@ impl ChecksExecutor {
             .context("failed to clone repository")?;
 
         // Execute the check in a sandboxed environment
-        let result = execute_check(&task.config, checkout_path, &task.check_name)
+        let result = execute_check(&self.sandbox, &task.config, checkout_path, &task.check_name)
             .await
             .context("failed to execute check")?;
 
