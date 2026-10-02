@@ -416,18 +416,24 @@ Builders are health-checked before use to avoid queueing builds to unavailable r
 
 ### Security Model
 
-**Sandboxing via birdcage**:
-- Filesystem isolation (only sees `/nix/store` and checkout directory)
-- Network isolation (configurable per-check)
-- No access to home directory or system files
-- Prevents arbitrary file access outside checkout
+**Sandboxing** (`backend/sandbox`, shared with evaluation):
+- bubblewrap + landlock: only `/nix/store` (read-only), the checkout (read-write, its
+  `.git` read-only) and a few `/etc` files are visible
+- the environment is exactly the dev shell's; nothing from the server is inherited
+- `allow_network = false`: no direct network (Nix daemon socket only; builds the daemon
+  runs, such as fixed-output derivations, use the daemon's network)
+- `allow_network = true`: egress through `pasta` with private, link-local and reserved
+  ranges and the server's own addresses unreachable (`[sandbox]` in `ekaci.toml`)
+- configurable wall-clock and memory limits (`[checks]`); the whole process tree is
+  killed on timeout
 
 **Nix Package Provisioning**:
 ```bash
-nix-shell -p nixfmt statix --run 'env'
+nix develop .#<shell> --command env -0    # or: nix-shell shell.nix -A <shell> --run 'env -0'
 ```
 
-Fetches PATH and environment variables with packages available, then runs the command in that environment within the sandbox.
+Captures the dev shell's environment inside the sandbox (filtered network, `[eval]`
+limits), then runs the command with that environment in a fresh sandbox.
 
 ### Use Cases
 
@@ -864,7 +870,7 @@ db.close().await;
 - **SQLx**: Async SQL with compile-time query checking
 - **Octocrab**: GitHub API client
 - **Serde**: JSON serialization
-- **Birdcage**: Sandboxing via Linux namespaces
+- **bubblewrap**, **landlock** and **passt** (`pasta`): sandboxing and network filtering
 - **nix-eval-jobs**: Parallel Nix evaluation (external tool)
 - **Nix**: Build execution and derivation management
 
