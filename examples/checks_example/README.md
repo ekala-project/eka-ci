@@ -45,23 +45,23 @@ Checks are defined in `.ekaci/config.json`:
 
 ## How It Works
 
-1. **Environment Setup**: The system obtains the Nix environment in one of two ways:
-   - **Flake mode** (default): Runs `nix develop .#<shell> --command env` to get the devShell environment from flake.nix
-   - **shell.nix mode**: Runs `nix-shell shell.nix -A <shell> --run env` to get the environment from shell.nix
-2. **Repository Checkout**: A temporary copy of the repository is created
-3. **Sandbox Creation**: Using birdcage, a sandbox is created with:
+1. **Repository Checkout**: The server clones the commit into a temporary directory
+2. **Environment Setup**: Inside the sandbox (filtered network), the system obtains the Nix environment in one of two ways:
+   - **Flake mode** (default): Runs `nix develop .#<shell> --command env -0` to get the devShell environment from flake.nix
+   - **shell.nix mode**: Runs `nix-shell shell.nix -A <shell> --run 'env -0'` to get the environment from shell.nix
+3. **Sandbox Creation**: A bubblewrap + landlock sandbox is created with:
    - Read-only access to `/nix/store`
    - Read-write access to the checkout directory
    - Read-only access to `.git` directory
-   - Optional network access
-4. **Command Execution**: The command runs in the sandbox with the Nix environment
+   - No network, or filtered internet access with `allow_network` (no private ranges, no host)
+4. **Command Execution**: The command runs in the sandbox with only the dev shell's environment, under a timeout and memory limit
 5. **Result Capture**: Exit code, stdout, stderr, and duration are recorded
 
 ## Security Features
 
 - **Isolated Filesystem**: Commands can only access the checkout and `/nix/store`
-- **Network Control**: Network access can be disabled per-check
-- **No Nix Daemon**: The sandbox doesn't have access to the Nix daemon
+- **Network Control**: No direct network by default; `allow_network` gives internet egress only, with no direct access to the server or its private networks
+- **Nix Daemon**: The daemon socket is exposed, so `nix build` works; builds run in Nix's own sandbox with the daemon's network (fixed-output derivations can reach anything the daemon can)
 - **Ephemeral Execution**: The checkout is discarded after the check completes
 
 ## Use Cases

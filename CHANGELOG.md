@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Sandbox for evaluation and checks
+
+- New `sandbox` workspace crate (bubblewrap + landlock via
+  `ekaci-sandbox-helper`) with no unsandboxed fallback; the server refuses to
+  start if the preflight fails
+- Every `nix-eval-jobs` run is sandboxed: cleared environment, only the store,
+  the worktree and a few `/etc` files (not `/etc/nix`) visible, `restrict-eval` with
+  `[eval] allowed_uris`, wall-clock and memory limits (`[eval]`). Not yet
+  covered: the `nix eval` that lists a flake's `checks`/`packages` still runs
+  unsandboxed
+- Repository checks and their dev-shell capture (`nix develop` /
+  `nix-shell`) run in the same sandbox: checkout read-write, `.git` and
+  `/nix/store` read-only, only the dev shell's environment, limits from
+  `[checks]` (`timeout_secs`, `memory_limit_mb`), replacing the previous
+  check sandbox
+- Network filter: evaluation, dev-shell capture and checks with
+  `allow_network` get internet egress through `pasta` with private,
+  link-local/metadata, CGNAT and reserved ranges and the server's own
+  addresses unreachable, host loopback unreachable and IPv6 off;
+  `[sandbox] network_allow`/`network_deny` adjust it. Checks without
+  `allow_network` have no direct network. The Nix daemon socket stays reachable
+  from every sandbox, and builds it runs (fixed-output derivations, IFD) use the
+  daemon's own network, outside this filter
+- `ekaci check run` is sandboxed: same sandbox on Linux (`--network-allow`,
+  `--timeout`), Seatbelt on macOS, `--no-sandbox` to opt out
+- NixOS module: `passt` on the service `PATH`, `/dev/net/tun` and
+  `AF_NETLINK` allowed, `settings.sandbox` and `settings.checks` options
+
 ### Maintenance fixes
 
 - Fetch from origin before creating a worktree, so commits pushed after
