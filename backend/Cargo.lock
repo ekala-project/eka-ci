@@ -1443,7 +1443,6 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-secretsmanager",
  "axum 0.8.9",
- "birdcage",
  "bstr",
  "builder_proto",
  "change_summary",
