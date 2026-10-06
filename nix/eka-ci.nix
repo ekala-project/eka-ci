@@ -5,10 +5,42 @@
   pkg-config,
   protobuf,
   openssl,
+  elmPackages,
 }:
 
 let
   backendDir = ../backend;
+  frontendDir = ../frontend;
+
+  frontend = stdenv.mkDerivation {
+    pname = "eka-ci-frontend";
+    version = "0.1.0";
+
+    src = lib.fileset.toSource {
+      root = frontendDir;
+      fileset = lib.fileset.unions [
+        (frontendDir + "/elm.json")
+        (frontendDir + "/src")
+        (frontendDir + "/static")
+      ];
+    };
+
+    nativeBuildInputs = [ elmPackages.elm ];
+
+    configurePhase = elmPackages.fetchElmDeps {
+      elmPackages = import (frontendDir + "/elm-srcs.nix");
+      elmVersion = elmPackages.elm.version;
+      registryDat = frontendDir + "/registry.dat";
+    };
+
+    buildPhase = ''
+      elm make src/Main.elm --optimize --output=static/main.js
+    '';
+
+    installPhase = ''
+      cp -r static $out
+    '';
+  };
 in
 rustPlatform.buildRustPackage {
   pname = "eka-ci";
@@ -34,6 +66,11 @@ rustPlatform.buildRustPackage {
   buildInputs = [
     openssl
   ];
+
+  postInstall = ''
+    mkdir -p $out/share/eka-ci
+    ln -s ${frontend} $out/share/eka-ci/static
+  '';
 
   env = {
     OPENSSL_NO_VENDOR = "1";
