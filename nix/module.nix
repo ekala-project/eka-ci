@@ -1,4 +1,3 @@
-flake:
 {
   config,
   lib,
@@ -844,7 +843,7 @@ in
 
   config = mkIf cfg.enable {
     # Make the eka-ci package available via the overlay supplied by this flake.
-    nixpkgs.overlays = [ flake.overlays.default ];
+    nixpkgs.overlays = [ (import ./overlay.nix) ];
 
     networking.firewall.allowedTCPPorts = lib.optional cfg.openFirewall cfg.settings.web.port;
 
