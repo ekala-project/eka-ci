@@ -18,7 +18,7 @@
       fenix,
     }:
     let
-      localOverlay = import ./nix/overlay.nix fenix;
+      localOverlay = import ./nix/overlay.nix;
     in
     utils.lib.eachDefaultSystem (system: rec {
       legacyPackages = import nixpkgs {
@@ -49,6 +49,6 @@
     })
     // {
       overlays.default = localOverlay;
-      nixosModules.daemon = import ./nix/module.nix self;
+      nixosModules.daemon = import ./nix/module.nix;
     };
 }
