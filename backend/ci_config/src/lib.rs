@@ -79,6 +79,23 @@ pub struct Check {
     pub allow_network: bool,
 }
 
+/// Configuration for an AI agent skill gate.
+///
+/// Skills are evaluated by sending the PR diff and a prompt file to an
+/// AI model, which returns a structured pass/fail verdict. The model ID
+/// references a server-configured model (like cache IDs reference caches).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Skill {
+    /// Path to the prompt/checklist file (relative to repo root)
+    pub prompt_file: PathBuf,
+    /// Server-defined model ID. If omitted, uses the server's default model.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// If true, gate posts a neutral check run instead of blocking pass/fail.
+    #[serde(default = "default_false")]
+    pub advisory: bool,
+}
+
 /// Configuration for flake checks integration
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct FlakeChecksConfig {
@@ -168,6 +185,9 @@ pub struct CIConfig {
     pub jobs: HashMap<String, Job>,
     #[serde(default)]
     pub checks: HashMap<String, Check>,
+    /// AI agent skill gates; model IDs resolved server-side.
+    #[serde(default)]
+    pub skills: HashMap<String, Skill>,
     #[serde(default)]
     pub flake: Option<FlakeConfig>,
     /// Overrides for the package-changes section; absent ⇒ engine defaults.
@@ -459,6 +479,46 @@ mod tests {
         assert_eq!(ri.enabled, false);
         assert_eq!(ri.max_top_blast_radius, 5);
         assert_eq!(ri.compute_full_blast_radius, false);
+    }
+
+    #[test]
+    fn test_deserialization_with_skills() {
+        let example_config = r#"{
+  "skills": {
+    "security-audit": {
+      "prompt_file": ".ekaci/skills/security.md",
+      "model": "fast"
+    },
+    "changelog-check": {
+      "prompt_file": ".ekaci/skills/changelog.md",
+      "advisory": true
+    }
+  }
+}"#;
+        let config = serde_json::from_str::<CIConfig>(example_config)
+            .expect("Failed to deserialize config with skills");
+
+        assert_eq!(config.skills.len(), 2);
+
+        let security = config.skills.get("security-audit").unwrap();
+        assert_eq!(
+            security.prompt_file,
+            std::path::PathBuf::from(".ekaci/skills/security.md")
+        );
+        assert_eq!(security.model, Some("fast".to_string()));
+        assert!(!security.advisory);
+
+        let changelog = config.skills.get("changelog-check").unwrap();
+        assert_eq!(changelog.model, None);
+        assert!(changelog.advisory);
+    }
+
+    #[test]
+    fn test_deserialization_without_skills() {
+        let example_config = r#"{ "jobs": { "a": { "file": "a.nix" } } }"#;
+        let config = serde_json::from_str::<CIConfig>(example_config)
+            .expect("Failed to deserialize config without skills");
+        assert!(config.skills.is_empty());
     }
 
     #[test]

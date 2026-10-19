@@ -13,6 +13,7 @@ pub mod model;
 pub mod runtime_refs;
 mod service;
 pub mod size;
+mod skills;
 
 pub use approved_users::ApprovedUser;
 pub use service::DbService;

@@ -14,10 +14,12 @@ use crate::secret::Redacted;
 
 mod checks;
 mod eval;
+mod models;
 mod remote_builder;
 mod sandbox;
 pub use checks::ChecksConfig;
 pub use eval::EvalConfig;
+pub use models::{ModelConfig, ModelProvider, ModelsRegistry};
 pub use remote_builder::RemoteBuilder;
 use remote_builder::read_nix_machines_file;
 pub use sandbox::SandboxConfig;
@@ -99,6 +101,11 @@ struct ConfigFile {
     /// produces compressed JSON indexes (packages, files, options) after
     /// channel promotion and uploads them to a configured destination.
     search_index: Option<SearchIndexConfig>,
+    /// AI model registry for skill gates. Each entry defines a
+    /// provider, model name, and credentials that skill definitions in
+    /// `.ekaci/config.json` can reference by ID.
+    #[serde(default)]
+    models: Vec<ModelConfig>,
     /// MCP server configuration. When present, the server exposes an
     /// MCP endpoint at `/v1/mcp` for AI agent diagnostics.
     mcp: Option<McpConfig>,
@@ -1241,6 +1248,8 @@ pub struct Config {
     /// Search-index generation configuration. `None` when the feature
     /// is not configured or explicitly disabled.
     pub search_index: Option<SearchIndexConfig>,
+    /// AI model registry for skill gates.
+    pub models: ModelsRegistry,
     /// MCP server configuration. `None` when the feature is disabled.
     pub mcp: Option<McpConfig>,
     /// Security settings for hook execution
@@ -1605,6 +1614,7 @@ impl Config {
             gitea_instances,
             gitlab_instances,
             channels,
+            models: models::validate_models(file.models)?,
             search_index: validate_search_index(file.search_index)?,
             mcp: validate_mcp(file.mcp),
             security,
@@ -1710,6 +1720,10 @@ mod redaction_tests {
             gitea_instances: HashMap::new(),
             gitlab_instances: HashMap::new(),
             channels: HashMap::new(),
+            models: ModelsRegistry {
+                models: HashMap::new(),
+                default_model_id: None,
+            },
             search_index: None,
             mcp: None,
             security: SecurityConfig {
@@ -1813,6 +1827,10 @@ mod redaction_tests {
             gitea_instances,
             gitlab_instances,
             channels: HashMap::new(),
+            models: ModelsRegistry {
+                models: HashMap::new(),
+                default_model_id: None,
+            },
             search_index: None,
             mcp: None,
             security: SecurityConfig {

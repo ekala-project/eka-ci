@@ -12,6 +12,7 @@ use crate::checks::types::CheckResultMessage;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::nix::{NixEvalDrv, NixEvalError};
+use crate::skills::types::SkillResultMessage;
 
 /// Serde-friendly mirror of `octocrab::params::checks::CheckRunConclusion`.
 ///
@@ -432,6 +433,12 @@ pub enum GitHubTask {
     ResyncCheckRuns {
         sha: String,
     },
+    /// Skill gate passed.
+    SkillComplete(SkillResultMessage),
+    /// Skill gate failed.
+    SkillFailed(SkillResultMessage),
+    /// Skill gate encountered a model error (posted as neutral).
+    SkillError(SkillResultMessage),
 }
 
 pub type Owner = String;

@@ -441,7 +441,115 @@ impl GitHubService {
             GitHubTask::ResyncCheckRuns { sha } => {
                 self.handle_resync_check_runs(sha).await?;
             },
+            GitHubTask::SkillComplete(result)
+            | GitHubTask::SkillFailed(result)
+            | GitHubTask::SkillError(result) => {
+                self.handle_skill_result(result).await?;
+            },
         }
         Ok(())
     }
+
+    async fn handle_skill_result(
+        &self,
+        result: &crate::skills::types::SkillResultMessage,
+    ) -> anyhow::Result<()> {
+        use octocrab::params::checks::{CheckRunConclusion, CheckRunStatus};
+
+        let octocrab = self.octocrab_for_owner(&result.owner)?;
+
+        let conclusion = if result.error || result.advisory {
+            CheckRunConclusion::Neutral
+        } else if result.success {
+            CheckRunConclusion::Success
+        } else {
+            CheckRunConclusion::Failure
+        };
+
+        let title = format_skill_title(result);
+        let summary = format_skill_summary(result);
+        let text = format_skill_findings(result);
+
+        let output = octocrab::params::checks::CheckRunOutput {
+            title,
+            summary,
+            text: if text.is_empty() { None } else { Some(text) },
+            annotations: vec![],
+            images: vec![],
+        };
+
+        octocrab
+            .checks(&result.owner, &result.repo_name)
+            .update_check_run(octocrab::models::CheckRunId(result.check_run_id as u64))
+            .status(CheckRunStatus::Completed)
+            .conclusion(conclusion)
+            .output(output)
+            .send()
+            .await?;
+
+        tracing::debug!(
+            "Updated skill check run {} for '{}'",
+            result.check_run_id,
+            result.skill_name,
+        );
+
+        Ok(())
+    }
+}
+
+fn format_skill_title(result: &crate::skills::types::SkillResultMessage) -> String {
+    if result.error {
+        "Skill error — needs review".to_string()
+    } else if result.success {
+        "Skill passed".to_string()
+    } else {
+        "Skill failed".to_string()
+    }
+}
+
+fn format_skill_summary(result: &crate::skills::types::SkillResultMessage) -> String {
+    let status = if result.error {
+        format!("# Skill: {} — Error\n\n", result.skill_name)
+    } else if result.success {
+        format!("# Skill: {} — Pass ✓\n\n", result.skill_name)
+    } else {
+        format!("# Skill: {} — Fail ✗\n\n", result.skill_name)
+    };
+
+    let mut s = status;
+    s.push_str(&format!(
+        "**Model:** {} | **Duration:** {:.1}s\n\n",
+        result.model_id,
+        result.duration_ms as f64 / 1000.0,
+    ));
+    if result.advisory {
+        s.push_str("*Advisory — this gate does not block merge.*\n\n");
+    }
+    s.push_str(&format!("### Reason\n{}\n", result.reason));
+    s
+}
+
+fn format_skill_findings(result: &crate::skills::types::SkillResultMessage) -> String {
+    let findings: Vec<crate::ai::Finding> =
+        serde_json::from_str(&result.findings_json).unwrap_or_default();
+
+    if findings.is_empty() {
+        return String::new();
+    }
+
+    let mut text = String::from("### Findings\n\n");
+    text.push_str("| Severity | File | Description |\n");
+    text.push_str("|----------|------|-------------|\n");
+    for f in &findings {
+        let location = match (&f.file, f.line) {
+            (Some(file), Some(line)) => format!("{file}:{line}"),
+            (Some(file), None) => file.clone(),
+            _ => String::new(),
+        };
+        text.push_str(&format!(
+            "| {} | {} | {} |\n",
+            f.severity, location, f.description
+        ));
+    }
+    text
 }

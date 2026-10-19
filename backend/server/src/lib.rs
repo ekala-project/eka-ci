@@ -2,6 +2,7 @@
 //!
 //! This library crate exposes the server modules for testing.
 
+pub mod ai;
 pub mod auth;
 pub mod auto_merge;
 pub mod cache_permissions;
@@ -36,5 +37,6 @@ pub mod scheduler;
 pub mod search_index;
 pub mod secret;
 pub mod services;
+pub mod skills;
 pub mod web;
 pub mod webhook_security;
