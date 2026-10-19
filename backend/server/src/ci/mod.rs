@@ -14,6 +14,7 @@ use crate::db::DbService;
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::nix::{EvalJob, EvalTask};
 use crate::services::{AsyncService, TaskJournal};
+use crate::skills::types::SkillTask;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RepoTask {
@@ -29,6 +30,7 @@ pub enum RepoTask {
 pub struct ConfigureSummary {
     pub job_names: Vec<String>,
     pub check_names: Vec<String>,
+    pub skill_names: Vec<String>,
     pub flake_checks: bool,
     pub flake_packages: bool,
     pub config_missing: bool,
@@ -53,6 +55,14 @@ impl ConfigureSummary {
             lines.push(String::new());
             lines.push(format!("**Checks ({}):**", self.check_names.len()));
             for name in &self.check_names {
+                lines.push(format!("- `{}`", name));
+            }
+        }
+
+        if !self.skill_names.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("**Skills ({}):**", self.skill_names.len()));
+            for name in &self.skill_names {
                 lines.push(format!("- `{}`", name));
             }
         }
@@ -90,6 +100,7 @@ pub struct RepoReader {
     repo_receiver: Option<mpsc::Receiver<RepoTask>>,
     eval_sender: mpsc::Sender<EvalTask>,
     check_sender: Option<mpsc::Sender<CheckTask>>,
+    skill_sender: Option<mpsc::Sender<SkillTask>>,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     db_service: DbService,
     journal: TaskJournal<RepoTask>,
@@ -99,6 +110,7 @@ impl RepoReader {
     pub fn new(
         eval_sender: mpsc::Sender<EvalTask>,
         check_sender: Option<mpsc::Sender<CheckTask>>,
+        skill_sender: Option<mpsc::Sender<SkillTask>>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         db_service: DbService,
     ) -> anyhow::Result<Self> {
@@ -110,6 +122,7 @@ impl RepoReader {
             repo_receiver: Some(repo_receiver),
             eval_sender,
             check_sender,
+            skill_sender,
             github_sender,
             db_service,
             journal: TaskJournal::new(pool, "repo"),
@@ -204,6 +217,58 @@ impl RepoReader {
                         };
 
                         check_sender.send(check_task).await?;
+                    }
+                }
+            }
+
+            // Process skills
+            if let Some(skill_sender) = &self.skill_sender {
+                if let Some(github_sender) = &self.github_sender {
+                    if let Some(base_sha) = &ci_info.base_commit {
+                        for (skill_name, skill_config) in &config.skills {
+                            summary.skill_names.push(skill_name.clone());
+                            debug!("Processing skill: {}", skill_name);
+
+                            let checkset_id = self
+                                .db_service
+                                .insert_github_checkset(
+                                    &ci_info.commit,
+                                    &format!("skill/{}", skill_name),
+                                    &ci_info.owner,
+                                    &ci_info.repo_name,
+                                )
+                                .await?;
+
+                            let skill_result_id = self
+                                .db_service
+                                .insert_skill_result(checkset_id, false, false, "", "[]", "", 0)
+                                .await?;
+
+                            let create_check_run_task = GitHubTask::CreateCheckRun {
+                                owner: ci_info.owner.clone(),
+                                repo_name: ci_info.repo_name.clone(),
+                                sha: ci_info.commit.clone(),
+                                check_name: format!("skill/{}", skill_name),
+                                check_result_id: skill_result_id,
+                            };
+                            github_sender.send(create_check_run_task).await?;
+
+                            let skill_task = SkillTask {
+                                skill_name: skill_name.clone(),
+                                owner: ci_info.owner.clone(),
+                                repo_name: ci_info.repo_name.clone(),
+                                sha: ci_info.commit.clone(),
+                                base_sha: base_sha.clone(),
+                                config: skill_config.clone(),
+                                pr_title: None,
+                                pr_description: None,
+                                pr_author: None,
+                            };
+
+                            skill_sender.send(skill_task).await?;
+                        }
+                    } else if !config.skills.is_empty() {
+                        warn!("Skills configured but no base commit available for diff; skipping");
                     }
                 }
             }

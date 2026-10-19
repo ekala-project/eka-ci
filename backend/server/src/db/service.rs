@@ -10,7 +10,7 @@ use tracing::{debug, info};
 use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
-use super::{approved_users, checks, github, hooks, installations};
+use super::{approved_users, checks, github, hooks, installations, skills};
 use crate::nix::NixEvalDrv;
 
 #[derive(Clone)]
@@ -477,6 +477,29 @@ impl DbService {
         checkset_id: i64,
     ) -> anyhow::Result<Option<checks::CheckRunInfo>> {
         checks::get_check_run_info_by_checkset(owner, repo_name, checkset_id, &self.pool).await
+    }
+
+    pub async fn insert_skill_result(
+        &self,
+        checkset_id: i64,
+        success: bool,
+        error: bool,
+        reason: &str,
+        findings: &str,
+        model_id: &str,
+        duration_ms: i64,
+    ) -> anyhow::Result<i64> {
+        skills::insert_skill_result(
+            checkset_id,
+            success,
+            error,
+            reason,
+            findings,
+            model_id,
+            duration_ms,
+            &self.pool,
+        )
+        .await
     }
 
     // Pull Request methods

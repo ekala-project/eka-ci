@@ -7,6 +7,7 @@ use tokio::sync::mpsc::{Sender, channel};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::ai::AiClient;
 use crate::auth::{JwtService, OAuthConfig};
 use crate::channels::ChannelService;
 use crate::ci::RepoReader;
@@ -23,6 +24,7 @@ use crate::nix::{EvalService, EvalTask};
 use crate::scheduler::{IngressTask, SchedulerService};
 use crate::search_index::SearchIndexService;
 use crate::services::checks::ChecksExecutor;
+use crate::services::skills::SkillsExecutor;
 use crate::web::WebService;
 
 mod async_service;
@@ -35,6 +37,7 @@ pub mod spawn;
 pub use spawn::spawn_logged;
 
 mod checks;
+pub mod skills;
 
 pub mod websocket;
 pub use websocket::WebSocketService;
@@ -293,10 +296,29 @@ pub async fn start_services(config: Config) -> Result<()> {
     );
     let check_sender = checks_service.get_sender();
 
+    // Create SkillsExecutor service (if models are configured)
+    let ai_client = AiClient::from_registry(&config.models)
+        .await
+        .context("failed to build AI client from model registry")?;
+    let ai_client = Arc::new(ai_client);
+
+    let skills_service = if ai_client.has_models() {
+        let svc = SkillsExecutor::new(
+            db_service.clone(),
+            maybe_github_sender.clone(),
+            ai_client.clone(),
+        );
+        Some(svc)
+    } else {
+        None
+    };
+    let skill_sender = skills_service.as_ref().map(|s| s.get_sender());
+
     let maybe_github_sender = maybe_github_service.as_ref().map(|x| x.get_sender());
     let repo_service = RepoReader::new(
         eval_sender.clone(),
         Some(check_sender.clone()),
+        skill_sender.clone(),
         maybe_github_sender.clone(),
         db_service.clone(),
     )?;
@@ -391,6 +413,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let repo_handle = repo_service.run(cancellation_token.clone());
     let eval_handle = eval_service.run(cancellation_token.clone());
     let checks_handle = checks_service.run(cancellation_token.clone());
+    let skills_handle = skills_service.map(|svc| svc.run(cancellation_token.clone()));
     let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
     let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
     let github_handle = maybe_github_service.map(|svc| svc.run(cancellation_token.clone()));
@@ -448,6 +471,13 @@ pub async fn start_services(config: Config) -> Result<()> {
     if let Some(handle) = search_index_handle {
         if let Err(e) = handle.await {
             warn!("SearchIndexService task exited with error: {:?}", e);
+        }
+    }
+
+    // SkillsExecutor is optional; await its handle if it was spawned.
+    if let Some(handle) = skills_handle {
+        if let Err(e) = handle.await {
+            warn!("SkillsExecutor task exited with error: {:?}", e);
         }
     }
 
