@@ -1,0 +1,13 @@
+[package]
+name = "search_index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
+tempfile = "3"
+tokio = { version = "1.41.0", features = ["process", "fs"] }
