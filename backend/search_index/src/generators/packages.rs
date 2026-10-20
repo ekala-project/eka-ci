@@ -9,7 +9,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info};
 
-use super::super::types::PackageEntry;
+use crate::types::PackageEntry;
 
 /// Raw shape of each entry returned by `nix search --json`.
 #[derive(serde::Deserialize)]

@@ -45,6 +45,7 @@ ci_config = { path = "../ci_config" }
 graph = { path = "../graph" }
 evaluator = { path = "../evaluator" }
 sandbox = { path = "../sandbox" }
+search_index = { path = "../search_index" }
 nix_store = { path = "../nix_store" }
 builder_proto = { path = "../builder_proto" }
 tonic = "0.12"

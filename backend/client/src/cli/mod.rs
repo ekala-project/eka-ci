@@ -76,6 +76,24 @@ pub(crate) enum Commands {
         /// Git commit SHA
         sha: String,
     },
+
+    /// Generate a search index database locally
+    GenerateSearchIndex {
+        /// Flake reference (e.g. "github:NixOS/nixpkgs/abc123", "nixpkgs", or a path)
+        flake_ref: String,
+
+        /// Target system (default: x86_64-linux)
+        #[arg(long, default_value = "x86_64-linux")]
+        system: String,
+
+        /// Channel name for metadata (default: "local")
+        #[arg(long, default_value = "local")]
+        channel: String,
+
+        /// Output path for the generated .db file
+        #[arg(short, long, default_value = "search.db")]
+        output: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
