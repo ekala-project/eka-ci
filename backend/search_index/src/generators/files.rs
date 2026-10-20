@@ -11,7 +11,7 @@ use std::time::Instant;
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
-use super::super::types::FileEntry;
+use crate::types::FileEntry;
 
 /// Maximum number of file entries to collect (safety cap).
 const MAX_FILE_ENTRIES: usize = 50_000_000;

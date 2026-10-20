@@ -1462,6 +1462,7 @@ dependencies = [
  "rustls 0.23.45",
  "sandbox",
  "schemars",
+ "search_index",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1490,12 +1491,14 @@ name = "ekaci"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "ci_config",
  "clap",
  "colored",
  "libc",
  "reqwest 0.12.28",
  "sandbox",
+ "search_index",
  "serde",
  "serde_json",
  "shared",
@@ -4477,6 +4480,19 @@ checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
 dependencies = [
  "ring",
  "untrusted",
+]
+
+[[package]]
+name = "search_index"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

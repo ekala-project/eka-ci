@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use tracing::info;
 
-use super::super::types::{FileEntry, Manifest, OptionEntry, PackageEntry};
+use crate::types::{FileEntry, Manifest, OptionEntry, PackageEntry};
 
 /// Build a SQLite database from the provided entries and return the
 /// raw bytes of the `.db` file.
@@ -25,7 +25,7 @@ pub fn build_database(
         tempfile::NamedTempFile::new().context("failed to create temp file for search index db")?;
     let db_path = tmp.path();
 
-    build_database_at(db_path, packages, files, options, manifest)?;
+    build_database_to_path(db_path, packages, files, options, manifest)?;
 
     let data = std::fs::read(db_path).context("failed to read generated search index database")?;
 
@@ -42,7 +42,7 @@ pub fn build_database(
 }
 
 /// Build the SQLite database at the given path.
-fn build_database_at(
+pub fn build_database_to_path(
     path: &Path,
     packages: &[PackageEntry],
     files: &[FileEntry],

@@ -10,6 +10,7 @@ members = [
   "graph",
   "nix_store",
   "sandbox",
+  "search_index",
   "server",
   "shared",
 ]

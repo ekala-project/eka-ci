@@ -2,6 +2,7 @@ mod api;
 mod check;
 mod cli;
 mod requests;
+mod search_index;
 
 use std::path::PathBuf;
 
@@ -156,6 +157,16 @@ async fn main() -> anyhow::Result<()> {
             let request = t::ResyncChecksRequest { sha };
             send_request(&socket, ClientRequest::ResyncChecks(request))
                 .context("failed to send resync-checks request to server")?;
+        },
+        Some(Commands::GenerateSearchIndex {
+            flake_ref,
+            system,
+            channel,
+            output,
+        }) => {
+            search_index::handle_generate_search_index(flake_ref, system, channel, output)
+                .await
+                .context("failed to generate search index")?;
         },
         None => {},
     }
