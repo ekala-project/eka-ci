@@ -163,10 +163,14 @@ async fn main() -> anyhow::Result<()> {
             system,
             channel,
             output,
+            with_files,
+            jobs,
         }) => {
-            search_index::handle_generate_search_index(flake_ref, system, channel, output)
-                .await
-                .context("failed to generate search index")?;
+            search_index::handle_generate_search_index(
+                flake_ref, system, channel, output, with_files, jobs,
+            )
+            .await
+            .context("failed to generate search index")?;
         },
         None => {},
     }
