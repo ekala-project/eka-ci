@@ -93,6 +93,14 @@ pub(crate) enum Commands {
         /// Output path for the generated .db file
         #[arg(short, long, default_value = "search.db")]
         output: std::path::PathBuf,
+
+        /// Build packages and index their output files
+        #[arg(long)]
+        with_files: bool,
+
+        /// Max concurrent nix build jobs (used with --with-files)
+        #[arg(long, default_value = "4")]
+        jobs: usize,
     },
 }
 
