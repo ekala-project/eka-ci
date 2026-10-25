@@ -9,7 +9,7 @@ libc = "0.2"
 sandbox = { path = "../sandbox" }
 search_index = { path = "../search_index" }
 chrono = { version = "0.4", default-features = false, features = ["now", "std"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ci_config = { path = "../ci_config" }
 clap = {workspace = true}
 colored = "2"
