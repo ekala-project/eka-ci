@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -44,12 +44,8 @@ pub async fn handle_generate_search_index(
     // Optionally build packages and index their files.
     let file_entries = if with_files {
         println!();
-        println!(
-            "{} Building packages and indexing files...",
-            "->".blue()
-        );
-        let store_outputs =
-            build_and_collect_outputs(&flake_ref, &packages, jobs).await;
+        println!("{} Building packages and indexing files...", "->".blue());
+        let store_outputs = build_and_collect_outputs(&flake_ref, &packages, jobs).await;
 
         let succeeded: usize = store_outputs.len();
         println!(
@@ -62,10 +58,7 @@ pub async fn handle_generate_search_index(
         let files = generators::files::generate_file_entries(&store_outputs)
             .await
             .context("failed to generate file entries")?;
-        println!(
-            "   Indexed {} files",
-            files.len().to_string().green()
-        );
+        println!("   Indexed {} files", files.len().to_string().green());
         files
     } else {
         Vec::new()
