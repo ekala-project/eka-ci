@@ -1,10 +1,11 @@
 // GitHub push-event handler for release channels.
 //
 // On a push to a tracking-branch that any release channel is watching,
-// drive a `GitTask::Checkout` for the new SHA so the downstream pipeline
-// (RepoTask::Read -> evaluator -> build scheduler) will evaluate
-// `.ekaci/config.json` at that commit. The ChannelService then
-// observes the resulting JobSetComplete event and decides whether to
+// drive a `GitTask::ChannelCheckout` so the downstream pipeline
+// (RepoTask::ReadGitHub -> evaluator -> build scheduler) will evaluate
+// `.ekaci/config.json` at that commit and create jobsets in the
+// database. The ChannelService then observes the resulting
+// JobSetComplete event from the recorder and decides whether to
 // promote the SHA onto the channel's target-branch.
 //
 // On a push to a target-branch (channel branch), dispatch a
@@ -138,8 +139,13 @@ async fn handle_tracking_branch(
 
     // De-duplicate Checkout emission: multiple channels can share the
     // same `(owner, repo, branch)`, but they evaluate the SAME commit.
-    // One Checkout suffices; the per-channel decision is made later by
-    // the ChannelService once the build completes.
+    // One ChannelCheckout suffices; the per-channel decision is made
+    // later by the ChannelService once the build completes.
+    //
+    // ChannelCheckout (not plain Checkout) ensures the downstream
+    // pipeline uses RepoTask::ReadGitHub, which creates jobsets in the
+    // database. Without jobsets, the recorder cannot emit
+    // JobsetComplete and channel promotion stalls.
     let repo = GitRepo {
         protocol: GitProtocol::Https,
         domain: "github.com".to_string(),
@@ -148,7 +154,13 @@ async fn handle_tracking_branch(
     };
     let workspace = GitWorkspace::from_git_repo(repo, sha);
 
-    if let Err(e) = git_sender.send(GitTask::Checkout(workspace)).await {
+    let task = GitTask::ChannelCheckout {
+        workspace,
+        owner: owner.to_string(),
+        repo_name: repo_name.to_string(),
+        sha: sha.to_string(),
+    };
+    if let Err(e) = git_sender.send(task).await {
         warn!(
             event = "github_push_checkout_send_failed",
             error = %e,
@@ -156,7 +168,7 @@ async fn handle_tracking_branch(
             repo = %repo_name,
             branch = %branch,
             sha = %sha,
-            "Failed to enqueue GitTask::Checkout for channel push"
+            "Failed to enqueue GitTask::ChannelCheckout for channel push"
         );
     }
 

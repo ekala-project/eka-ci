@@ -13,6 +13,18 @@ use crate::services::{AsyncService, TaskJournal};
 pub enum GitTask {
     Checkout(GitWorkspace),
     GitHubCheckout(Box<PullRequest>),
+    /// Checkout a specific commit for a release-channel tracking-branch
+    /// push. Unlike plain `Checkout` (which sends `RepoTask::Read`),
+    /// this variant sends `RepoTask::ReadGitHub` so that jobsets are
+    /// created in the database and GitHub check runs are posted. This
+    /// is required for the recorder to emit `JobsetComplete` and for
+    /// channel promotion to work.
+    ChannelCheckout {
+        workspace: GitWorkspace,
+        owner: String,
+        repo_name: String,
+        sha: String,
+    },
 }
 
 pub struct GitService {
@@ -55,6 +67,25 @@ impl AsyncService<GitTask> for GitService {
             GitTask::Checkout(repo) => {
                 repo.create_worktree().await?;
                 let repo_task = RepoTask::Read(repo.worktree_path());
+                self.repo_sender.send(repo_task).await?;
+            },
+            GitTask::ChannelCheckout {
+                workspace,
+                owner,
+                repo_name,
+                sha,
+            } => {
+                workspace.create_worktree().await?;
+                let ci_info = CICheckInfo {
+                    commit: sha,
+                    base_commit: None,
+                    owner,
+                    repo_name,
+                };
+                let repo_task = RepoTask::ReadGitHub {
+                    repo_path: workspace.worktree_path(),
+                    ci_info,
+                };
                 self.repo_sender.send(repo_task).await?;
             },
             GitTask::GitHubCheckout(pr) => {
