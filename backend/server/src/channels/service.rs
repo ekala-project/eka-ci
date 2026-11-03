@@ -466,8 +466,11 @@ impl ChannelService {
                     event = "channel_promoted",
                     channel_id = %channel_id,
                     sha = %sha,
-                    "channel evaluation reached Promoted (PR3 stub: no actual push performed)"
+                    "channel promoted successfully"
                 );
+
+                // Terminal decision: kick off any pending SHA.
+                self.drain_pending(&channel).await?;
             },
             PromotionDecision::Blocked {
                 failed_required,
@@ -504,6 +507,9 @@ impl ChannelService {
                     failed = ?failed_required,
                     "channel evaluation blocked by failed required jobs"
                 );
+
+                // Terminal decision: kick off any pending SHA.
+                self.drain_pending(&channel).await?;
             },
             PromotionDecision::Waiting {
                 pending_required,
