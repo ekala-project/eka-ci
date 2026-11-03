@@ -19,6 +19,7 @@ use octocrab::models::webhook_events::payload::PushWebhookEventPayload;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::channels::types::ChannelTask;
 use crate::channels::{match_push_channels, match_target_branch_channels};
 use crate::config::{ChannelConfig, ChannelForge};
 use crate::git::{GitProtocol, GitRepo, GitTask, GitWorkspace};
@@ -41,6 +42,7 @@ pub(super) async fn handle_github_push(
     repository_info: Option<(String, String)>,
     git_sender: mpsc::Sender<GitTask>,
     channels: Arc<HashMap<String, ChannelConfig>>,
+    channel_sender: Option<mpsc::Sender<ChannelTask>>,
     search_index_sender: Option<mpsc::Sender<SearchIndexTask>>,
 ) {
     // Branch-delete pushes (e.g. closing a PR) arrive with `deleted: true`
@@ -83,6 +85,7 @@ pub(super) async fn handle_github_push(
         branch,
         &after_sha,
         &git_sender,
+        &channel_sender,
     )
     .await;
 
@@ -99,7 +102,9 @@ pub(super) async fn handle_github_push(
 }
 
 /// If the pushed branch matches a channel's `tracking_branch`, schedule
-/// a git checkout to kick off the eval → build → promotion pipeline.
+/// a git checkout to kick off the eval → build → promotion pipeline,
+/// and dispatch `EvaluatePush` to the ChannelService so an in-flight
+/// Evaluating row is created before builds complete.
 async fn handle_tracking_branch(
     channels: &HashMap<String, ChannelConfig>,
     owner: &str,
@@ -107,6 +112,7 @@ async fn handle_tracking_branch(
     branch: &str,
     sha: &str,
     git_sender: &mpsc::Sender<GitTask>,
+    channel_sender: &Option<mpsc::Sender<ChannelTask>>,
 ) {
     let matches = match_push_channels(channels, &ChannelForge::GitHub, owner, repo_name, branch);
     if matches.is_empty() {
@@ -152,6 +158,28 @@ async fn handle_tracking_branch(
             sha = %sha,
             "Failed to enqueue GitTask::Checkout for channel push"
         );
+    }
+
+    // Dispatch EvaluatePush to the ChannelService for each matching
+    // channel so the initial Evaluating row is created. Without this,
+    // the JobsetComplete event that arrives after builds finish would
+    // find no in-flight row and silently no-op.
+    if let Some(sender) = channel_sender {
+        for channel in &matches {
+            let task = ChannelTask::EvaluatePush {
+                channel: (*channel).clone(),
+                sha: sha.to_string(),
+            };
+            if let Err(e) = sender.send(task).await {
+                warn!(
+                    event = "github_push_evaluate_send_failed",
+                    error = %e,
+                    channel = %channel.name,
+                    sha = %sha,
+                    "Failed to enqueue ChannelTask::EvaluatePush"
+                );
+            }
+        }
     }
 }
 

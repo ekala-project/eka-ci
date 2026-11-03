@@ -8,6 +8,7 @@ use octocrab::models::webhook_events::{EventInstallation, WebhookEventPayload as
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
+use crate::channels::types::ChannelTask;
 use crate::config::{ChannelConfig, GitHubAppConfig};
 use crate::db::DbService;
 use crate::git::GitTask;
@@ -89,6 +90,7 @@ pub async fn handle_webhook_payload(
     db_service: DbService,
     github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
     channels: Arc<HashMap<String, ChannelConfig>>,
+    channel_sender: Option<mpsc::Sender<ChannelTask>>,
     search_index_sender: Option<mpsc::Sender<SearchIndexTask>>,
 ) {
     match webhook_payload {
@@ -147,6 +149,7 @@ pub async fn handle_webhook_payload(
                 repository_info,
                 git_sender,
                 channels,
+                channel_sender,
                 search_index_sender,
             )
             .await

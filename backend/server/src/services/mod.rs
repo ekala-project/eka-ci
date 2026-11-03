@@ -372,6 +372,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         config.web.allowed_origins.clone(),
         Some(change_summary_metrics.clone()),
         channels_registry.clone(),
+        Some(channel_sender.clone()),
         config.search_index.clone(),
         search_index_sender.clone(),
         config.mcp.clone(),

@@ -7,6 +7,7 @@ use prometheus::Registry;
 use tokio::sync::mpsc;
 
 use crate::auth::{JwtService, OAuthConfig};
+use crate::channels::types::ChannelTask;
 use crate::git::GitTask;
 use crate::github::GitHubTask;
 use crate::metrics::{ChangeSummaryMetrics, WebhookMetrics};
@@ -56,6 +57,10 @@ pub(super) struct AppState {
     /// reference for each event. Empty when no channels are configured;
     /// the webhook handlers must tolerate this and short-circuit.
     pub(super) channels: Arc<std::collections::HashMap<String, crate::config::ChannelConfig>>,
+    /// Sender for dispatching channel evaluation tasks. `None` when no
+    /// channels are configured. The push-webhook handler uses this to
+    /// send `EvaluatePush` tasks when a tracking-branch push arrives.
+    pub(super) channel_sender: Option<mpsc::Sender<ChannelTask>>,
     /// Search-index configuration. `None` when the feature is disabled.
     /// Used by the `GET /v1/search-index` discovery endpoint.
     pub(super) search_index_config: Option<crate::config::SearchIndexConfig>,
