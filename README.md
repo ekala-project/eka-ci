@@ -1,177 +1,146 @@
 # EkaCI
 
-Continuous Integration server for Nix projects with advanced caching, security, and GitHub integration.
+Continuous Integration server purpose-built for Nix projects. EkaCI answers "should I merge this PR?" as quickly as possible by evaluating only what changed, building only what's affected, and presenting results as concise change summaries rather than walls of logs.
 
-This tool provides an optimized reviewing experience for small to large Nix package repositories. In particular, the tool provides:
-- Succinct PR review workflows
-  - Does the eval still succeed?
-  - Only inspect builds that have changed
-    - Added, removed, [newly/still] succeeding, [newly/still] failing builds
-  - Closure size difference
-  - Retained dependency differences
-  - Captured logs
-  - Explore dependency failures (similar to Hydra)
-  - (Stretch goal) Diffoscope-like diff of package outputs
-  - (Stretch goal) Diffs of NixOS configurations
+Full user documentation is published at <https://ekala-project.github.io/eka-ci/>.
 
-Ultimately, this tool is meant to answer, "should I merge this PR?" in the quickest manner possible.
-Curating a Nix repository should not be highly limited to manual review processes of a reviewer.
-This doesn't scale well, and is error prone.
+## Why EkaCI
+
+Curating a Nix repository shouldn't be bottlenecked by manual review. EkaCI automates the tedious parts:
+
+- **Differential evaluation** -- only builds derivations that actually changed between base and head
+- **Change summaries** -- added, removed, newly-succeeding, newly-failing, still-failing builds at a glance
+- **Closure size tracking** -- per-commit output and closure sizes with threshold warnings
+- **Dependency failure tracing** -- trace any failure back to its root-cause derivation
+- **Release channels** -- gated branch promotion when required jobs pass
+- **Search index generation** -- SQLite FTS5 databases for package/file/option search (powers ekapkgs-cli)
+
+## Feature Comparison
+
+|                                  | EkaCI | Hydra | ofborg |
+|----------------------------------|-------|-------|--------|
+| **Differential eval**            | Yes -- only changed drvs | No -- full jobset | No -- full eval |
+| **Dependency-aware scheduling**  | LRU graph with transitive failure propagation | No | No |
+| **Lazy check-run creation**      | Only new/changed/failed builds | All jobs | All jobs |
+| **Change summaries on PRs**      | Built-in (added/removed/regressed) | Manual | Manual |
+| **Release channels**             | Gated fast-forward promotion | Jobset-based channels | N/A |
+| **Search index generation**      | Post-promotion SQLite FTS5 | Separate service | N/A |
+| **Multi-forge support**          | GitHub, GitLab, Gitea | N/A | GitHub only |
+| **Sandboxed evaluation**         | bubblewrap + landlock + pasta | Nix sandbox only | Nix sandbox only |
+| **Remote builder resilience**    | Circuit-breaker with backoff probes | None | None |
+| **Binary cache push**            | S3, Cachix, Attic with per-repo/branch ACLs | S3 | N/A |
+| **Credential sources**           | 10 (Vault, AWS SM, systemd creds, ...) | Environment | Environment |
+| **Build metrics**                | Prometheus (queue depth, phase timing, cache hit rate) | Prometheus | N/A |
+| **MCP endpoint for AI agents**   | `/v1/mcp` with 6 diagnostic tools | N/A | N/A |
+| **Closure size tracking**        | Output + closure size with historical baseline | N/A | N/A |
+| **gRPC builder protocol**        | Dynamic registration and dispatch | N/A | N/A |
 
 ## Features
 
-### ✅ Core CI Functionality (Production Ready)
+### Nix Evaluation and Building
 
-- **GitHub App Integration**
-  - Webhook-based event handling
-  - Pull request check runs with status updates
-  - Installation and repository tracking
-  - Merge queue support
-  - Multi-source credential management (8 different sources)
-  - Fine-grained permission controls
+- Differential evaluation via `nix-eval-jobs` -- only changed derivations are built
+- In-memory dependency graph with configurable LRU cache (default 100k nodes)
+- Three-tier scheduler: ingress (dependency eligibility) -> build queue (platform routing) -> platform queue (builder selection)
+- Dedicated FOD queue to prevent network-bound fetches from starving compute builds
+- Multi-platform: x86_64-linux, aarch64-linux, x86_64-darwin, aarch64-darwin
+- `requiredSystemFeatures` respected during builder selection
+- Build retry with automatic transitive failure propagation and recovery
+- Configurable timeouts: output-inactivity and absolute wall-clock
 
-- **Nix Build System**
-  - Dependency graph tracking with LRU caching (100k nodes default)
-  - Intelligent build queue with multi-tier scheduling
-  - Platform-specific build queues (x86_64-linux, aarch64-linux, x86_64-darwin, aarch64-darwin)
-  - Dedicated FOD (Fixed-Output Derivation) queue
-  - Remote builder support via SSH with circuit-breaker protection
-  - Circuit-breaker pattern: auto-disable unreachable builders after repeated failures, recover via exponential-backoff probes
-  - gRPC builder protocol for dynamic builder registration and build dispatch
-  - System features support (respects `requiredSystemFeatures`)
-  - Build retry logic with transitive failure propagation
-  - Build timeout handling (output-based and absolute wall-clock)
-  - Nix daemon wire protocol integration (harmonia) for fast store queries
-  - Flake `checks`/`packages` built as shell checks (`nix build .#<attr>`)
+### Release Channels
 
-- **Binary Cache Integration**
-  - Multiple backend support: S3, Cachix, Attic
-  - Multi-source credential support:
-    - Environment variables
-    - File-based credentials (JSON or key=value)
-    - HashiCorp Vault
-    - AWS Secrets Manager
-    - systemd credentials (TPM2-encrypted)
-    - Instance metadata (EC2/GCP/Azure)
-    - AWS profiles
-    - GitHub App key files
-  - Cache permission system (repository and branch restrictions)
-  - Glob pattern matching for flexible access control
+- Gated promotion: fast-forward a target branch only when required jobs succeed
+- Job classification: `required` (must pass) vs `packages` (tracked but non-blocking)
+- SHA coalescing: latest commit wins during in-flight evaluation
+- Idempotent terminal decisions prevent replay on webhook duplication
+- Audit trail with timestamps for every promotion decision
+- Triggers search-index generation on successful promotion
 
-- **Security Architecture**
-  - Credential isolation (server vs repository configuration)
-  - Sandboxed evaluation and check execution (bubblewrap + landlock)
-  - Filtered network: internet egress only, with no direct access to the host or its private
-    networks (builds through the Nix daemon are outside the filter; see the server docs)
-  - Audit logging support
-  - No credentials exposed to repository configs
+### Forge Integration
 
-- **Monitoring & Observability**
-  - Prometheus metrics endpoint
-  - Build queue metrics
-  - Build phase timing metrics (fetch vs build duration)
-  - Graph cache utilization metrics
-  - WebSocket support for real-time updates
-  - Structured logging (tracing)
-  - Build log capture and storage
+- **GitHub**: webhooks, check runs, merge queue, OAuth, multi-app credential routing
+- **GitLab**: webhook support with per-instance configuration
+- **Gitea**: webhook support with per-instance configuration
+- Lazy check-run creation: only surfaces new, changed, or failed builds to reduce noise
 
-- **Build Metrics & Size Tracking**
-  - Output size tracking (NAR size via `nix path-info`)
-  - Closure size tracking (including all dependencies via `nix path-info -S`)
-  - Historical size tracking per commit and repository
-  - Baseline comparison against base branch
-  - Configurable size increase thresholds
-  - Automatic warnings when thresholds exceeded
+### Security
 
-- **Automated Cache Pushing**
-  - Push successful builds to configured caches
-  - Integration with existing cache infrastructure
+- **Sandboxed evaluation and checks**: bubblewrap + landlock with cleared environment
+- **Filtered network**: `pasta`-based egress filtering blocks host and private network access; Nix daemon builds use the daemon's own network
+- **Credential isolation**: server credentials never exposed to repository configs
+- **HMAC-SHA256 webhook verification**
+- **NixOS module** with strict systemd hardening (ProtectSystem=strict, PrivateTmp, etc.)
 
-- **Search Index Generation**
-  - Generates a SQLite database with FTS5 indexes after channel promotion
-  - Packages table — package metadata (attr, pname, version, description)
-  - Files table — all installed files from built packages (replaces `nix-locate`)
-  - Options table — NixOS/ekaOS configuration options
-  - Uploaded as `search.db.zst` to S3 or local filesystem
-  - Powers tab completion and search in the ekapkgs CLI
+### Binary Cache Integration
 
-- **Security Enhancements**
-  - Webhook signature verification (framework ready)
-  - Additional audit logging features
+- Backends: S3 (`nix copy`), Cachix, Attic
+- Automatic push of successful builds to configured caches
+- Per-repository and per-branch access control via glob patterns
+- 10 credential sources: environment variables, file (JSON/key=value), HashiCorp Vault, AWS Secrets Manager, AWS profiles, systemd credentials (TPM2), instance metadata (EC2/GCP/Azure), GitHub App key files, Cachix tokens, and `"none"`
 
-### 🚧 Partially Implemented
+### Remote Builders
 
-- **Post-Build Hooks**
-  - Framework implemented
-  - Database schema and executor service ready
-  - Integration with main service pending
-  - See: [docs/post-build-hooks.md](docs/post-build-hooks.md)
+- SSH-based with per-builder concurrency limits and platform partitioning
+- Circuit-breaker: auto-disables builders after 3 connection failures in 120s, recovers via exponential-backoff probes (30s -- 10min)
+- gRPC builder protocol for dynamic self-registration and bidirectional build dispatch
+- Nix daemon wire protocol (harmonia) for fast store queries with connection pooling
 
-- **Approval Workflow**
-  - Basic approval checking implemented
-  - `--require-approval` flag supported
-  - OAuth authentication infrastructure ready
-  - Full workflow UI pending
+### Observability
 
-- **Web Interface**
-  - HTTP API endpoints functional
-  - WebSocket real-time updates working
-  - Log viewing available
-  - Full PR review portal UI pending
+- Prometheus endpoint (`/metrics`): queue depth, success/failure rates, phase timing, cache hit rates, builder health
+- Build log capture with WebSocket streaming
+- Structured logging via `tracing`
+- Closure and output size tracking with historical baselines and configurable threshold warnings
 
-### 📋 Planned Features
+### Search Index Generation
 
-- **Enhanced Metrics**
-  - Dependency comparison between branches
-  - Metric visualization in web UI
-  - GitHub check integration for size warnings
+Generates a compressed SQLite database (`search.db.zst`) per channel after promotion:
 
-- **PR Review Portal**
-  - Ordered list of PRs (by rebuild count, lines changed)
-  - Textual diff viewing
-  - Metrics dashboard
-  - Approval and merge capabilities
+- **Packages**: attr path, pname, version, description, outputs, main program
+- **Files**: every installed file from successful builds (replaces `nix-locate`)
+- **Options**: NixOS/ekaOS configuration options
 
-- **Future Evaluation Modes**
-  - "OfBorg" convention (read attr path from commit message)
+Uploaded to S3 or local filesystem. Powers instant FTS5 lookups in ekapkgs-cli.
 
-## Design
+### MCP Integration
 
-See the [design document](./DESIGN.md) for details about a high-level overview of EkaCI.
+Streamable HTTP endpoint at `/v1/mcp` for AI agent diagnostics. Tools: `list_failing_prs`, `get_pr_status`, `get_failing_gates`, `get_build_log`, `get_failure_chain`, `get_drv_details`.
 
-See the [architecture document](./docs/architecture.md) for details about EkaCI's current implementation.
+### CLI
 
-Full user documentation is published at <https://ekala-project.github.io/eka-ci/>.
+The `ekaci` CLI communicates over a Unix socket:
+
+- `ekaci pr` -- PR status and active jobsets
+- `ekaci job` / `ekaci jobs` -- trigger builds, query status
+- `ekaci drv info` / `ekaci drv deps` -- derivation details and dependency trees
+- `ekaci log` -- stream build logs
+- `ekaci check` -- run repository checks locally in the sandbox
+- `ekaci channel status` -- promotion history
+- `ekaci resync-checks` -- re-sync check-run states to the forge
 
 ## Quick Start
 
 ### Prerequisites
 
-- Nix package manager installed
-- GitHub organization with admin access
+- Nix package manager
+- A forge account with admin access (GitHub, GitLab, or Gitea)
 - Publicly accessible server (for webhooks)
 
-### 1. Create GitHub App
+### 1. Create a Forge App
 
-Follow the comprehensive guide: [docs/github-app-setup.md](docs/github-app-setup.md)
+For GitHub, follow the [GitHub App setup guide](docs/github-app-setup.md).
 
-Quick summary:
-1. Create GitHub App at `https://github.com/organizations/YOUR_ORG/settings/apps`
-2. Configure permissions: Checks (RW), Contents (R), Pull Requests (R)
-3. Subscribe to events: pull_request, workflow_run, merge_group, installation
-4. Generate and download private key
-
-### 2. Configure Server
+### 2. Configure the Server
 
 Create `~/.config/ekaci/ekaci.toml`:
 
 ```toml
-# GitHub App credentials (choose one method)
 [[github_apps]]
 id = "main"
 credentials = { file = { path = "/etc/eka-ci/github-app.json" } }
 
-# Optional: Cache configuration
+# Optional: binary cache
 [[caches]]
 id = "production-s3"
 cache_type = "nix-copy"
@@ -184,11 +153,9 @@ allowed_repos = ["myorg/*"]
 allowed_branches = ["main", "release/*"]
 ```
 
-See [docs/github-app-setup.md](docs/github-app-setup.md) for detailed credential configuration options.
+See [docs/server-configuration.md](docs/server-configuration.md) for the full configuration reference.
 
-See [docs/configure-caches.md](docs/configure-caches.md) for cache configuration details.
-
-### 3. Configure Repository
+### 3. Configure a Repository
 
 Add `.ekaci/config.json` to your repository:
 
@@ -211,274 +178,26 @@ Add `.ekaci/config.json` to your repository:
 }
 ```
 
-### 4. Run Server
+### 4. Run
 
 ```bash
 nix build
 ./result/bin/eka-ci-server
 ```
 
-Or with systemd:
-
-```ini
-[Unit]
-Description=eka-ci server
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/path/to/eka-ci-server
-Restart=on-failure
-User=eka-ci
-Environment="VAULT_TOKEN=s.your-token"
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## Configuration Reference
-
-### Server Configuration
-
-Full configuration options (`~/.config/ekaci/ekaci.toml`):
-
-```toml
-# Web server settings
-[web]
-address = "127.0.0.1"
-port = 3030
-
-# Database and logs
-db_path = "/var/lib/ekaci/sqlite.db"
-logs_dir = "/var/log/ekaci"
-
-# Build configuration
-build_no_output_timeout_seconds = 1200  # 20 minutes
-graph_lru_capacity = 100000  # LRU cache size
-require_approval = false  # Require approval for external PRs
-
-# OAuth (optional, for web UI)
-[oauth]
-client_id = "github-oauth-client-id"
-client_secret = "github-oauth-client-secret"
-redirect_url = "https://your-server.com/github/auth/callback"
-jwt_secret = "your-jwt-secret"
-
-# Security
-[security]
-max_hook_timeout_seconds = 300
-audit_hooks = true
-
-# GitHub App credentials
-[[github_apps]]
-id = "production"
-credentials = { vault = {
-    address = "https://vault.example.com:8200",
-    secret_path = "eka-ci/github-app",
-    token_env = "VAULT_TOKEN"
-}}
-
-[github_apps.permissions]
-allow_all = false
-allowed_repos = ["myorg/*"]
-
-# Cache configurations
-[[caches]]
-id = "s3-cache"
-cache_type = "nix-copy"
-destination = "s3://bucket/path"
-credentials = { aws-secrets-manager = {
-    secret_name = "eka-ci/s3-credentials",
-    region = "us-east-1"
-}}
-
-[caches.permissions]
-allow_all = false
-allowed_repos = ["myorg/production-*"]
-allowed_branches = ["main"]
-
-# Search index generation (optional)
-[search_index]
-enabled = true
-destination = "s3://my-bucket/indexes"  # or a local path like "/var/lib/ekaci/indexes"
-credentials = { aws-profile = { profile = "default" } }
-channels = []              # empty = generate for all promoted channels
-```
-
-### Repository Configuration
-
-Repository-specific settings (`.ekaci/config.json`):
-
-```json
-{
-  "jobs": {
-    "package-name": {
-      "file": "path/to/file.nix",
-      "attr_path": "optional.attr.path",
-      "allow_eval_failures": false,
-      "caches": ["cache-id-from-server-config"],
-      "size_check": {
-        "max_increase_percent": 10.0,
-        "base_branch": "main"
-      }
-    }
-  },
-  "checks": {
-    "check-name": {
-      "shell": "shell-derivation-attr",
-      "command": "command to run",
-      "allow_network": false
-    }
-  }
-}
-```
-
-**Size Check Configuration:**
-- `size_check.max_increase_percent` - Maximum allowed percentage increase in output/closure size compared to base branch
-- `size_check.base_branch` - Branch to compare against (typically "main" or "master")
-
-When size checks are configured, EkaCI will:
-1. Calculate both output size (NAR) and closure size (including dependencies) for each build
-2. Store sizes in historical database tables
-3. Compare against the most recent build on the base branch
-4. Log warnings when size increases exceed the threshold
-5. Track size trends over time for monitoring
+Or deploy with the NixOS module -- see [docs/nixos-module.md](docs/nixos-module.md).
 
 ## Documentation
 
-- **[GitHub App Setup Guide](docs/github-app-setup.md)** - Complete guide for creating and configuring GitHub Apps with 8 credential sources
-- **[Cache Configuration Guide](docs/configure-caches.md)** - Detailed cache setup and credential management
-- **[LRU Cache Operations](docs/lru-cache-tuning.md)** - LRU cache tuning and monitoring
-- **[Post-Build Hooks](docs/post-build-hooks.md)** - Hook system implementation details
-- **[Architecture](docs/architecture.md)** - Detailed implementation architecture
-- **[Design](DESIGN.md)** - High-level design philosophy
-
-## Deployment
-
-### Production Recommendations
-
-1. **Use HashiCorp Vault or AWS Secrets Manager** for credential storage
-2. **Enable cache permissions** to restrict which repositories can use which caches
-3. **Configure remote builders** for parallel build capacity
-4. **Set up Prometheus monitoring** to track build queue metrics
-5. **Use systemd** for process management and automatic restarts
-6. **Enable audit logging** for security compliance
-7. **Configure LRU cache capacity** based on your repository size:
-   - Small repos (<1k packages): 10,000 nodes
-   - Medium repos (1k-10k packages): 100,000 nodes (default)
-   - Large repos (>10k packages): 500,000+ nodes
-
-See [docs/lru-cache-tuning.md](docs/lru-cache-tuning.md) for tuning guidance.
-
-### Security Best Practices
-
-- Never commit credentials to version control
-- Use separate GitHub Apps for different environments
-- Implement repository and branch restrictions via permissions
-- Run eka-ci server as non-root user
-- Enable systemd sandboxing features
-- Rotate credentials regularly (90 days for production)
-- Monitor webhook delivery for suspicious activity
-- Use HTTPS with valid SSL certificates
-
-## Monitoring
-
-### Prometheus Metrics
-
-eka-ci exposes metrics at `/metrics`:
-
-- Build queue depth and throughput
-- Build success/failure rates
-- Build phase timing (fetch duration vs build duration, by platform/locality)
-- Graph cache hit rate and eviction stats
-- Remote builder health and utilization
-- Webhook processing latency
-
-Example Prometheus query:
-```promql
-# Build queue depth
-eka_ci_build_queue_depth
-
-# Cache hit rate
-rate(eka_ci_graph_cache_hits_total[5m]) /
-  (rate(eka_ci_graph_cache_hits_total[5m]) + rate(eka_ci_graph_cache_misses_total[5m]))
-
-# Average input-fetch time per build (prefetch measurement)
-histogram_quantile(0.95, rate(eka_ci_eka_build_fetch_duration_seconds_bucket[1h]))
-```
-
-### Logging
-
-Structured logs with configurable levels:
-
-```bash
-# Set log level via environment
-RUST_LOG=info eka-ci-server
-
-# Filter specific modules
-RUST_LOG=eka_ci_server::scheduler=debug,eka_ci_server=info eka-ci-server
-
-# View systemd logs
-journalctl -u eka-ci -f
-```
-
-## Development Roadmap
-
-### MVP (✅ Complete)
-
-- [x] GitHub App registration workflow
-- [x] Receive PR events through webhooks
-- [x] Send check runs to PRs
-- [x] Git checkout and evaluation
-- [x] Evaluate derivation differences between branches
-- [x] Queue changed derivations for build
-- [x] Remote builder support
-- [x] Build log capture
-
-### Beta (🚧 In Progress)
-
-**Backend:**
-- [x] GitHub OAuth user registration
-- [x] Push successful builds to cache (framework ready)
-- [x] Calculate and track closure sizes
-- [x] Calculate and track output sizes (NAR)
-- [x] Historical size tracking with baseline comparison
-- [x] Dedicated FOD build queue
-- [x] Multi-source credential support
-- [x] Cache permission system
-
-**Frontend:**
-- [ ] GitHub OAuth integration for web UI
-- [ ] PR review portal with ordered list
-- [ ] Textual diff viewing
-- [ ] Metrics visualization
-- [ ] Approval and merge capabilities
-
-### Future Enhancements
-
-- [ ] "OfBorg" convention support (commit message attr paths)
-- [ ] Flake checks evaluation mode
-- [ ] Flake develop actions (impure commands)
-- [x] Search index generation for ekapkgs-cli (packages, files)
-- [ ] Auto-scaling remote builders via gRPC builder protocol
-- [x] Multi-GitHub App support with automatic selection
-- [x] Circuit-breaker for remote builders
-- [x] Nix daemon protocol integration (harmonia)
-- [x] gRPC builder protocol (proto + service skeleton)
-- [x] Build phase timing instrumentation (prefetch measurement)
-- [ ] Daemon-based input prefetching (pending measurement data)
-- [ ] GCP Secret Manager and Azure Key Vault integration
-- [ ] Automatic credential rotation
-
-## Contributing
-
-We welcome contributions! Areas that need help:
-
-1. **Web UI Development** - Elm frontend for PR review portal
-2. **Post-Build Hooks** - Complete integration with main service
-3. **Webhook Signature Verification** - Implement HMAC verification
-4. **Metrics Calculation** - Closure size and dependency analysis
-5. **Documentation** - More examples and use cases
+- [Server Configuration](docs/server-configuration.md) -- full `ekaci.toml` reference
+- [NixOS Module](docs/nixos-module.md) -- NixOS deployment with systemd hardening
+- [GitHub App Setup](docs/github-app-setup.md) -- creating and configuring GitHub Apps
+- [Cache Configuration](docs/configure-caches.md) -- binary cache setup and credentials
+- [Architecture](docs/architecture.md) -- service design and message flow
+- [Change Summaries](docs/change-summaries.md) -- operational runbook for PR summaries
+- [LRU Cache Tuning](docs/lru-cache-tuning.md) -- graph cache sizing and monitoring
+- [Post-Build Hooks](docs/post-build-hooks.md) -- hook system details
+- [Design](DESIGN.md) -- high-level design philosophy
 
 ## Support
 
