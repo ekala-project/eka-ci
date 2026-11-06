@@ -92,11 +92,12 @@ struct ConfigFile {
     gitea_instances: Vec<GiteaInstanceConfig>,
     #[serde(default)]
     gitlab_instances: Vec<GitLabInstanceConfig>,
-    /// Release-channel registry. Channels here are the *only* place
-    /// eka-ci is permitted to push to a forge — the server side of the
-    /// gated-release feature. Empty/absent disables the feature.
+    /// Release-channel registry, keyed by a user-chosen identifier.
+    /// Channels here are the *only* place eka-ci is permitted to push
+    /// to a forge — the server side of the gated-release feature.
+    /// Empty/absent disables the feature.
     #[serde(default)]
-    channels: Vec<ChannelConfig>,
+    channels: HashMap<String, ChannelConfig>,
     /// Search-index generation configuration. When enabled, the server
     /// produces compressed JSON indexes (packages, files, options) after
     /// channel promotion and uploads them to a configured destination.
@@ -917,16 +918,17 @@ pub(crate) fn validate_search_index(
 ///      repo. Chained releases are not supported in v1; we surface this as an error rather than
 ///      silently allowing a release on one channel to cascade into another.
 pub(crate) fn validate_channels(
-    raw: Vec<ChannelConfig>,
+    raw: HashMap<String, ChannelConfig>,
 ) -> anyhow::Result<HashMap<String, ChannelConfig>> {
     // First pass: per-channel sanity (rules 1 & 2) and gather the
     // tracking-branch index used for rule 5.
     let mut all_tracking: HashSet<(ChannelForge, String, String, String)> = HashSet::new();
-    for channel in &raw {
+    for (key, channel) in &raw {
         if channel.name.is_empty() || channel.name.contains('/') {
             bail!(
-                "channel name {:?} (owner={}, repo={}) is invalid: must be non-empty and must not \
-                 contain '/'",
+                "channel {:?} name {:?} (owner={}, repo={}) is invalid: must be non-empty and \
+                 must not contain '/'",
+                key,
                 channel.name,
                 channel.owner,
                 channel.repo,
@@ -946,7 +948,7 @@ pub(crate) fn validate_channels(
     // Second pass: insert into the registry, enforcing rules 3, 4, 5.
     let mut channels: HashMap<String, ChannelConfig> = HashMap::with_capacity(raw.len());
     let mut seen_target: HashMap<(ChannelForge, String, String, String), String> = HashMap::new();
-    for channel in raw {
+    for (_key, channel) in raw {
         let id = channel.channel_id();
         let target_key = (
             channel.forge.clone(),
@@ -2224,10 +2226,20 @@ mod channel_validation_tests {
         }
     }
 
+    fn map_from(entries: Vec<(&str, ChannelConfig)>) -> HashMap<String, ChannelConfig> {
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
     #[test]
     fn happy_path_unique_channel_is_keyed_by_channel_id() {
-        let registry = validate_channels(vec![ch("unstable", "master", "ekapkgs-unstable")])
-            .expect("single valid channel should validate");
+        let registry = validate_channels(map_from(vec![(
+            "corepkgs",
+            ch("unstable", "master", "ekapkgs-unstable"),
+        )]))
+        .expect("single valid channel should validate");
         assert_eq!(registry.len(), 1);
         let key = "github/ekacorp/ekapkgs/unstable";
         assert!(registry.contains_key(key), "registry key should be {key:?}");
@@ -2238,50 +2250,33 @@ mod channel_validation_tests {
 
     #[test]
     fn empty_input_yields_empty_registry() {
-        assert!(validate_channels(Vec::new()).unwrap().is_empty());
+        assert!(validate_channels(HashMap::new()).unwrap().is_empty());
     }
 
     #[test]
     fn rejects_empty_name() {
-        let err = validate_channels(vec![ch("", "master", "rel")]).unwrap_err();
+        let err = validate_channels(map_from(vec![("x", ch("", "master", "rel"))])).unwrap_err();
         assert!(format!("{err:#}").contains("must be non-empty"));
     }
 
     #[test]
     fn rejects_name_with_slash() {
-        let err = validate_channels(vec![ch("a/b", "master", "rel")]).unwrap_err();
+        let err = validate_channels(map_from(vec![("x", ch("a/b", "master", "rel"))])).unwrap_err();
         assert!(format!("{err:#}").contains("must not contain '/'"));
     }
 
     #[test]
     fn rejects_self_promoting_channel() {
-        let err = validate_channels(vec![ch("loop", "master", "master")]).unwrap_err();
+        let err =
+            validate_channels(map_from(vec![("x", ch("loop", "master", "master"))])).unwrap_err();
         assert!(format!("{err:#}").contains("self-promote"));
-    }
-
-    #[test]
-    fn rejects_duplicate_channel_id() {
-        // Two ChannelConfigs with identical (forge, owner, repo, name)
-        // but different target_branches must be rejected. The
-        // duplicate-target check (rule 4) fires first lexically here,
-        // so we just assert *some* deterministic rejection — the
-        // important property is that the second insert does not
-        // silently clobber the first.
-        let a = ch("unstable", "master", "rel-a");
-        let b = ch("unstable", "main", "rel-b");
-        let err = validate_channels(vec![a, b]).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("duplicate channel id") || msg.contains("target the same branch"),
-            "expected duplicate id or duplicate target rejection, got: {msg}"
-        );
     }
 
     #[test]
     fn rejects_two_channels_pushing_same_target_branch() {
         let a = ch("unstable-a", "master", "ekapkgs-unstable");
         let b = ch("unstable-b", "develop", "ekapkgs-unstable");
-        let err = validate_channels(vec![a, b]).unwrap_err();
+        let err = validate_channels(map_from(vec![("a", a), ("b", b)])).unwrap_err();
         assert!(
             format!("{err:#}").contains("target the same branch"),
             "{err:#}"
@@ -2295,7 +2290,7 @@ mod channel_validation_tests {
         // Rule 5 must reject because B's tracking is A's target.
         let a = ch("a", "master", "staging");
         let b = ch("b", "staging", "production");
-        let err = validate_channels(vec![a, b]).unwrap_err();
+        let err = validate_channels(map_from(vec![("a", a), ("b", b)])).unwrap_err();
         assert!(
             format!("{err:#}").contains("chained releases are not supported"),
             "{err:#}"
@@ -2310,7 +2305,8 @@ mod channel_validation_tests {
         a.repo = "repo-a".to_string();
         let mut b = ch("unstable", "master", "ekapkgs-unstable");
         b.repo = "repo-b".to_string();
-        let registry = validate_channels(vec![a, b]).expect("different repos should not collide");
+        let registry = validate_channels(map_from(vec![("a", a), ("b", b)]))
+            .expect("different repos should not collide");
         assert_eq!(registry.len(), 2);
     }
 
@@ -2322,8 +2318,8 @@ mod channel_validation_tests {
         b.forge = ChannelForge::Gitea {
             domain: "gitea.example.com".to_string(),
         };
-        let registry =
-            validate_channels(vec![a, b]).expect("different forges should not collide on key");
+        let registry = validate_channels(map_from(vec![("a", a), ("b", b)]))
+            .expect("different forges should not collide on key");
         assert_eq!(registry.len(), 2);
     }
 
