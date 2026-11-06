@@ -705,12 +705,12 @@ let
         '';
       };
       channels = mkOption {
-        type = types.listOf channelType;
-        default = [ ];
+        type = types.attrsOf channelType;
+        default = { };
         description = ''
-          List of release channels for automated continuous delivery. Each
-          channel monitors a tracking branch and fast-forwards a target branch
-          when specified jobs succeed.
+          Release channels for automated continuous delivery, keyed by an
+          arbitrary identifier. Each channel monitors a tracking branch and
+          fast-forwards a target branch when specified jobs succeed.
 
           See `docs/channels.md` for detailed configuration and operational guidance.
         '';
