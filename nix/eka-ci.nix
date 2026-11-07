@@ -2,10 +2,16 @@
   lib,
   stdenv,
   rustPlatform,
+  makeWrapper,
   pkg-config,
   protobuf,
   openssl,
   elmPackages,
+  nix,
+  iets,
+  git,
+  bubblewrap,
+  passt,
 }:
 
 let
@@ -61,6 +67,7 @@ rustPlatform.buildRustPackage {
   nativeBuildInputs = [
     pkg-config
     protobuf
+    makeWrapper
   ];
 
   buildInputs = [
@@ -70,6 +77,19 @@ rustPlatform.buildRustPackage {
   postInstall = ''
     mkdir -p $out/share/eka-ci
     ln -s ${frontend} $out/share/eka-ci/static
+
+    for bin in $out/bin/*; do
+      wrapProgram "$bin" \
+        --prefix PATH : ${
+          lib.makeBinPath [
+            nix
+            iets
+            git
+            bubblewrap
+            passt
+          ]
+        }
+    done
   '';
 
   env = {
