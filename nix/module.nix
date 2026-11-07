@@ -346,7 +346,7 @@ let
         type = types.ints.between 10 86400;
         default = 1800;
         description = ''
-          Wall-clock limit, in seconds, for one `nix-eval-jobs` run. The
+          Wall-clock limit, in seconds, for one `iets eval-jobs` run. The
           whole evaluation sandbox is killed when it elapses.
         '';
       };
@@ -355,23 +355,16 @@ let
         default = 8192;
         description = ''
           Address-space limit (`RLIMIT_AS`), in MiB, for every process inside
-          the evaluation sandbox. `nix-eval-jobs` workers are recycled at half
+          the evaluation sandbox. `iets eval-jobs` workers are recycled at half
           of this value.
         '';
       };
-      allowed_uris = mkOption {
-        type = types.listOf types.str;
-        default = [ ];
-        example = [
-          "https://github.com/NixOS/nixpkgs/"
-          "github:NixOS/nixpkgs"
-        ];
+      provenance = mkOption {
+        type = types.bool;
+        default = false;
         description = ''
-          URI prefixes that eval-time fetchers (`builtins.fetchurl`,
-          `fetchTarball`, `fetchGit`, ...) may access. Evaluation runs with
-          `restrict-eval = true`, so an expression that pins nixpkgs with
-          `fetchTarball` needs that URL's prefix listed here. Empty blocks
-          all eval-time fetches.
+          Pass `--provenance` to `iets eval-jobs`, adding source position
+          (`file:line:col`) to each job in the eval output.
         '';
       };
     };
@@ -603,9 +596,9 @@ let
         type = evalType;
         default = { };
         description = ''
-          Evaluation sandbox settings. Every `nix-eval-jobs` run happens inside
-          bubblewrap + landlock with a cleared environment and
-          `restrict-eval`; see `docs/server-configuration.md`.
+          Evaluation sandbox settings. Every `iets eval-jobs` run happens inside
+          bubblewrap + landlock with a cleared environment; see
+          `docs/server-configuration.md`.
         '';
       };
       sandbox = mkOption {
@@ -884,7 +877,7 @@ in
         pkgs.bubblewrap
         pkgs.passt
         config.nix.package
-        pkgs.nix-eval-jobs
+        pkgs.iets
         pkgs.git
       ];
 

@@ -39,14 +39,18 @@ pub struct NixEvalDrv {
     /// Build platform system
     pub system: String,
 
-    /// Derivation `meta` attribute, present when `nix-eval-jobs --meta` is
-    /// passed. Optional because:
+    /// Derivation `meta` attribute, present when `--meta` is passed.
+    /// Optional because:
     ///   * older runs / test fixtures may not include it
     ///   * a derivation may have no `meta` attribute at all
     ///   * a malformed `meta` payload is logged and dropped (see
-    ///     [`crate::service::jobs::process_nix_eval_output`])
+    ///     [`crate::service::jobs::process_eval_output`])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<NixEvalMeta>,
+
+    /// iets `--provenance`: source position as `"file:line:col"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<String>,
 }
 
 impl NixEvalDrv {
@@ -157,11 +161,11 @@ pub struct DrvPackageMetadata {
     pub insecure: Option<bool>,
 }
 
-/// Subset of nix-eval-jobs `--meta` output we currently care about.
+/// Subset of iets eval-jobs `--meta` output we currently care about.
 ///
 /// All fields are `Option`/`default` so that:
 ///   * partially populated `meta` objects parse cleanly
-///   * additional fields nix-eval-jobs may emit are silently ignored
+///   * additional fields iets eval-jobs may emit are silently ignored
 ///
 /// We do NOT use `#[serde(deny_unknown_fields)]` here — `--meta` may include
 /// arbitrary additional attributes (`platforms`, `available`, `outputsToInstall`,
@@ -302,7 +306,7 @@ mod tests {
     #[test]
     fn test_deserialization() {
         // Generated with:
-        // `nix-eval-jobs --expr 'with import ./. {}; { inherit grpc; }'`
+        // `iets eval-jobs --expr 'with import ./. {}; { inherit grpc; }'`
         // while in nixpkgs directory
         let eval_drv = r#"{"attr":"cmake","attrPath":["cmake"],"drvPath":"/nix/store/3fr8b3xlygv2a64ff7fq7564j4sxv4lc-cmake-3.29.6.drv","inputDrvs":{"/nix/store/08s4j5nvddsbrjpachqwzai83xngxnc0-pkg-config-wrapper-0.29.2.drv":["out"],"/nix/store/0cgbdlz63qiqf5f8i1sljak1dfbzyrl5-openssl-3.0.14.drv":["dev"],"/nix/store/265x0i426vnqjma9khcfpi86m6hx4smr-bash-5.2p32.drv":["out"],"/nix/store/27zlixdsk0kx585j4dcjm53636mx7cis-libuv-1.48.0.drv":["dev"],"/nix/store/2vyizsckka60lhh0kylhbpdd1flb998v-cmake-3.29.6.tar.gz.drv":["out"],"/nix/store/4hzjv6r5v7h6hzad718jgc0hrm1gz8r1-gcc-wrapper-13.3.0.drv":["out"],"/nix/store/860zddz386bk0441flrg940ipbp0jp1z-xz-5.6.2.drv":["dev"],"/nix/store/9jvlq6qg9j1222w3zm3wgfv5qyqfqmxz-bzip2-1.0.8.drv":["dev"],"/nix/store/ax4q30iyf9wi95hswil021lg0cdqq6rl-libarchive-3.7.4.drv":["dev"],"/nix/store/bxq3kjf71wn92yisdbq18fzpvcl5pn31-expat-2.6.2.drv":["dev"],"/nix/store/kh6mps96srqgdvn03vq4gmqzl51s9w8h-glibc-2.39-52.drv":["bin","dev","out"],"/nix/store/lzc503qcc7f6ibq8sdbcri73wb62dj4r-zlib-1.3.1.drv":["dev"],"/nix/store/mzw7jzs6ix17ajh3z4kqzvh8l7abj4yr-rhash-1.4.4.drv":["out"],"/nix/store/v288gxsg679gyi9zpg0mhrv26vfmw4kr-stdenv-linux.drv":["out"],"/nix/store/vnq47hr4nwry8kgvfgmx0229id3q49dr-binutils-2.42.drv":["out"],"/nix/store/y99v9h2mcqbw91g7p3lnk292k0np0djr-curl-8.9.0.drv":["dev"]},"name":"cmake-3.29.6","outputs":{"debug":"/nix/store/xrh9g28kmsyjlw6qf46ngkvhac1llgvz-cmake-3.29.6-debug","out":"/nix/store/rz7j0kdkq8j522vpw6n8wjq2qv3if24g-cmake-3.29.6"},"system":"x86_64-linux"}"#;
 
@@ -311,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_deserialization_with_meta() {
-        // Synthesised from `nix-eval-jobs --meta` output shape, exercising:
+        // Synthesised from `iets eval-jobs --meta` output shape, exercising:
         //   * structured license object with spdxId/shortName/fullName/free
         //   * single maintainer with all fields
         //   * homepage as a single string

@@ -35,7 +35,7 @@ struct EvalRun {
 }
 
 async fn run(sb: &EvalSandbox, file: &Path) -> EvalRun {
-    let mut child = sb.spawn_nix_eval_jobs(file, &[]).await.unwrap();
+    let mut child = sb.spawn_eval_jobs(file, &[]).await.unwrap();
     let (mut out, mut err) = (String::new(), String::new());
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
@@ -84,7 +84,7 @@ in {{
 }
 
 #[tokio::test]
-#[ignore = "needs nix daemon, nix-eval-jobs and bwrap"]
+#[ignore = "needs nix daemon, iets and bwrap"]
 async fn untrusted_expression_cannot_escape() {
     // SAFETY: set before any other thread of this test reads the env.
     unsafe { std::env::set_var("EKACI_TEST_SECRET", SECRET) };
@@ -127,26 +127,23 @@ async fn untrusted_expression_cannot_escape() {
 }
 
 #[tokio::test]
-#[ignore = "needs nix daemon, nix-eval-jobs and bwrap"]
-async fn allowed_uris_admits_listed_prefix() {
-    let expr = r#"{ fetch = derivation { name = "f"; builder = "/bin/sh"; system = builtins.currentSystem;
-        h = builtins.hashFile "sha256" (builtins.fetchurl "https://example.com/"); }; }"#;
+#[ignore = "needs nix daemon, iets and bwrap"]
+async fn provenance_adds_pos_field() {
+    let expr = r#"{ hello = derivation { name = "hello"; builder = "/bin/sh"; system = builtins.currentSystem; }; }"#;
     let (_wt, file) = worktree(expr);
     let config = EvalSandboxConfig {
-        allowed_uris: vec!["https://example.com/".into()],
+        provenance: true,
         ..Default::default()
     };
     let run = run(&eval_sandbox(config), &file).await;
-    assert!(
-        entry(&run, "fetch")["drvPath"].is_string(),
-        "{:?} {}",
-        run.lines,
-        run.stderr
-    );
+    let e = entry(&run, "hello");
+    assert!(e["drvPath"].is_string(), "{:?} {}", run.lines, run.stderr);
+    // --provenance adds a pos field with file:line:col
+    assert!(e.get("pos").is_some(), "missing pos: {e}");
 }
 
 #[tokio::test]
-#[ignore = "needs nix daemon, nix-eval-jobs and bwrap"]
+#[ignore = "needs nix daemon, iets and bwrap"]
 async fn runaway_eval_is_killed_on_timeout() {
     let expr = r#"let
   inner = builtins.foldl' (b: j: b + j) 0 (builtins.genList (x: x) 1000);
