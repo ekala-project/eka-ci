@@ -17,7 +17,7 @@ pub trait EvalDatabase: Send + Sync {
     ) -> anyhow::Result<()>;
 }
 
-/// Metrics collection interface for nix-eval-jobs operations
+/// Metrics collection interface for eval-jobs operations
 pub trait EvalMetricsCollector: Send + Sync {
     /// Increment the total items counter (labeled by type: "drv" or "error")
     fn items_total_inc(&self, label: &str, count: u64);
@@ -28,7 +28,7 @@ pub trait EvalMetricsCollector: Send + Sync {
     /// Observe the number of output entries (drvs + errors)
     fn output_entries_observe(&self, count: f64);
 
-    /// Observe the number of bytes read from nix-eval-jobs
+    /// Observe the number of bytes read from iets eval-jobs
     fn output_bytes_observe(&self, bytes: f64);
 }
 

@@ -73,7 +73,7 @@ fn path_to_str(p: &Path) -> Result<&str> {
 /// Return the directory that contains all ekaci-managed git checkouts.
 /// Every worktree and master clone lives underneath this directory, so
 /// it serves as the containment boundary for path-safety checks before
-/// `nix eval` / `nix-eval-jobs` are invoked on PR-influenced paths.
+/// `nix eval` / `iets eval-jobs` are invoked on PR-influenced paths.
 ///
 /// In tests, the root can be overridden by setting the
 /// `EKACI_WORKSPACE_ROOT` environment variable to an absolute path; this

@@ -107,7 +107,7 @@ impl SchedulerService {
             channel_sender,
         );
 
-        // Shared reconstitution tracker prevents duplicate nix-eval-jobs
+        // Shared reconstitution tracker prevents duplicate iets eval-jobs
         // invocations when many GC'd drvs from the same eval are rebuilt
         let reconstitution_tracker = Arc::new(
             crate::nix::reconstitute::ReconstitutionTracker::new(eval_sandbox),

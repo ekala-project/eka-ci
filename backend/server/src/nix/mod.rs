@@ -4,8 +4,8 @@ pub use evaluator::nix_utils::{
     get_output_sizes, is_drv_cached, output_references,
 };
 pub use evaluator::service::jobs::{
-    NIX_EVAL_JOBS_MAX_ENTRIES, NIX_EVAL_JOBS_MAX_LINE_BYTES, NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-    Truncation, process_nix_eval_output,
+    EVAL_JOBS_MAX_ENTRIES, EVAL_JOBS_MAX_LINE_BYTES, EVAL_JOBS_MAX_STDOUT_BYTES, Truncation,
+    process_eval_output,
 };
 pub use evaluator::types::{
     DrvInfo, DrvOutput, DrvPackageMetadata, NixEvalDrv, NixEvalError, NixEvalItem, NixEvalMeta,
@@ -70,7 +70,7 @@ pub struct EvalService {
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
     drv_map: Mutex<LruCache<DrvId, Drv>>,
-    /// M4: metrics for `nix-eval-jobs` output volume and truncation
+    /// M4: metrics for `iets eval-jobs` output volume and truncation
     /// events. Optional so unit/integration tests that don't care
     /// about observability can pass `None`.
     pub(crate) nix_eval_metrics: Option<Arc<NixEvalMetrics>>,
@@ -108,7 +108,7 @@ impl EvalService {
         match &task {
             EvalTask::Job(drv) => {
                 debug!("Processing Job task for: {}", drv.file_path);
-                let (_jobs, _errors) = self.run_nix_eval_jobs(&drv.file_path, &[], true).await?;
+                let (_jobs, _errors) = self.run_eval_jobs(&drv.file_path, &[], true).await?;
             },
             EvalTask::TraverseDrv(drv) => {
                 debug!("Processing TraverseDrv task for: {}", drv);
@@ -157,7 +157,7 @@ impl EvalService {
         // build scheduling required.
         let is_head = ci_info.base_commit.is_some();
         let (jobs, errors) = self
-            .run_nix_eval_jobs(&eval_job.file_path, &[], is_head)
+            .run_eval_jobs(&eval_job.file_path, &[], is_head)
             .await?;
         let gh_sender = self
             .github_sender
@@ -262,9 +262,7 @@ impl EvalService {
             .context("temp file path is not valid UTF-8")?;
 
         let original_root = sandbox::eval::readable_root(std::path::Path::new(file_path));
-        let (jobs, _errors) = self
-            .run_nix_eval_jobs(tmp_path, &[original_root], true)
-            .await?;
+        let (jobs, _errors) = self.run_eval_jobs(tmp_path, &[original_root], true).await?;
         drop(tmp_file);
         Ok(jobs)
     }

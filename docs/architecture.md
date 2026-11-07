@@ -23,7 +23,7 @@ The system consists of 7 core services initialized in `backend/server/src/servic
 1. **DbService** - SQLite database operations with connection pooling
 2. **GitService** - Git repository cloning, fetching, and worktree management
 3. **RepoReader** - CI configuration parsing from `.ekaci/config.json`
-4. **EvalService** - Nix expression evaluation using `nix-eval-jobs`
+4. **EvalService** - Nix expression evaluation using `iets eval-jobs`
 5. **SchedulerService** - Multi-tier build orchestration (composed of 3 sub-services)
 6. **GitHubService** - GitHub API integration (check runs, PR status updates via Octocrab)
 7. **WebService** - HTTP API and web interface (Axum)
@@ -152,7 +152,7 @@ CI configurations are stored in **`.ekaci/config.json`** at the repository root:
 }
 ```
 
-**Jobs** - Nix-based builds evaluated by `nix-eval-jobs`
+**Jobs** - Nix-based builds evaluated by `iets eval-jobs`
 **Checks** - Sandboxed imperative commands (linters, formatters, tests)
 
 ### Complete End-to-End Flow
@@ -194,7 +194,7 @@ RepoReader:
 ```rust
 EvalService:
   - Create "CI Configure Gate" GitHub check run
-  - Run: nix-eval-jobs --flake .#{job.file}
+  - Run: iets eval-jobs --flake .#{job.file}
   - Parse JSON stream of NixEvalDrv structs
 
   If evaluation fails and allow_failures=false:
@@ -776,7 +776,7 @@ db.close().await;
 ### Bottlenecks
 
 1. **SQLite**: Single-writer limitation for database updates
-2. **Evaluation**: `nix-eval-jobs` is CPU-bound (mitigated by caching)
+2. **Evaluation**: `iets eval-jobs` is CPU-bound (mitigated by caching)
 3. **Local builder**: Limited by machine resources
 4. **Log I/O**: Large builds produce MB of logs (mitigated by streaming)
 
@@ -871,7 +871,7 @@ db.close().await;
 - **Octocrab**: GitHub API client
 - **Serde**: JSON serialization
 - **bubblewrap**, **landlock** and **passt** (`pasta`): sandboxing and network filtering
-- **nix-eval-jobs**: Parallel Nix evaluation (external tool)
+- **iets eval-jobs**: Parallel Nix evaluation (external tool)
 - **Nix**: Build execution and derivation management
 
 ---

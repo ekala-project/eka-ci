@@ -14,11 +14,11 @@ fn error_json(attr: &str, msg: &str) -> String {
 
 #[tokio::test]
 async fn empty_input_yields_no_entries_and_no_truncation() {
-    let outcome = process_nix_eval_output(
+    let outcome = process_eval_output(
         Cursor::new(Vec::<u8>::new()),
-        NIX_EVAL_JOBS_MAX_ENTRIES,
-        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-        NIX_EVAL_JOBS_MAX_LINE_BYTES,
+        EVAL_JOBS_MAX_ENTRIES,
+        EVAL_JOBS_MAX_STDOUT_BYTES,
+        EVAL_JOBS_MAX_LINE_BYTES,
     )
     .await;
     assert_eq!(outcome.jobs.len(), 0);
@@ -37,11 +37,11 @@ async fn happy_path_parses_drv_and_error_lines() {
     data.push_str(&drv_json("c"));
     data.push('\n');
 
-    let outcome = process_nix_eval_output(
+    let outcome = process_eval_output(
         Cursor::new(data.as_bytes().to_vec()),
-        NIX_EVAL_JOBS_MAX_ENTRIES,
-        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-        NIX_EVAL_JOBS_MAX_LINE_BYTES,
+        EVAL_JOBS_MAX_ENTRIES,
+        EVAL_JOBS_MAX_STDOUT_BYTES,
+        EVAL_JOBS_MAX_LINE_BYTES,
     )
     .await;
     assert_eq!(outcome.jobs.len(), 2);
@@ -63,11 +63,11 @@ async fn malformed_json_lines_are_skipped_without_truncation() {
     data.push_str(&drv_json("also-good"));
     data.push('\n');
 
-    let outcome = process_nix_eval_output(
+    let outcome = process_eval_output(
         Cursor::new(data.as_bytes().to_vec()),
-        NIX_EVAL_JOBS_MAX_ENTRIES,
-        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-        NIX_EVAL_JOBS_MAX_LINE_BYTES,
+        EVAL_JOBS_MAX_ENTRIES,
+        EVAL_JOBS_MAX_STDOUT_BYTES,
+        EVAL_JOBS_MAX_LINE_BYTES,
     )
     .await;
     assert_eq!(
@@ -88,11 +88,11 @@ async fn non_utf8_lines_are_skipped() {
     data.extend_from_slice(drv_json("omega").as_bytes());
     data.push(b'\n');
 
-    let outcome = process_nix_eval_output(
+    let outcome = process_eval_output(
         Cursor::new(data),
-        NIX_EVAL_JOBS_MAX_ENTRIES,
-        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-        NIX_EVAL_JOBS_MAX_LINE_BYTES,
+        EVAL_JOBS_MAX_ENTRIES,
+        EVAL_JOBS_MAX_STDOUT_BYTES,
+        EVAL_JOBS_MAX_LINE_BYTES,
     )
     .await;
     assert_eq!(outcome.jobs.len(), 2);
@@ -107,11 +107,11 @@ async fn max_entries_cap_halts_consumption() {
         data.push('\n');
     }
 
-    let outcome = process_nix_eval_output(
+    let outcome = process_eval_output(
         Cursor::new(data.as_bytes().to_vec()),
         3,
-        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-        NIX_EVAL_JOBS_MAX_LINE_BYTES,
+        EVAL_JOBS_MAX_STDOUT_BYTES,
+        EVAL_JOBS_MAX_LINE_BYTES,
     )
     .await;
     assert_eq!(outcome.jobs.len(), 3);
@@ -130,11 +130,11 @@ async fn max_bytes_cap_halts_consumption_before_parse_completes() {
     }
     assert!(data.len() > 50_000, "test prerequisite");
 
-    let outcome = process_nix_eval_output(
+    let outcome = process_eval_output(
         Cursor::new(data.as_bytes().to_vec()),
-        NIX_EVAL_JOBS_MAX_ENTRIES,
+        EVAL_JOBS_MAX_ENTRIES,
         50_000,
-        NIX_EVAL_JOBS_MAX_LINE_BYTES,
+        EVAL_JOBS_MAX_LINE_BYTES,
     )
     .await;
     assert_eq!(outcome.truncation, Truncation::MaxBytes);
@@ -144,10 +144,10 @@ async fn max_bytes_cap_halts_consumption_before_parse_completes() {
 #[tokio::test]
 async fn max_line_bytes_cap_stops_newline_less_flood() {
     let data = vec![b'x'; 4 * 1024];
-    let outcome = process_nix_eval_output(
+    let outcome = process_eval_output(
         Cursor::new(data),
-        NIX_EVAL_JOBS_MAX_ENTRIES,
-        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
+        EVAL_JOBS_MAX_ENTRIES,
+        EVAL_JOBS_MAX_STDOUT_BYTES,
         1024,
     )
     .await;
@@ -167,10 +167,10 @@ async fn max_line_bytes_accepts_line_exactly_at_cap() {
     let mut data = padded.clone();
     data.push('\n');
 
-    let outcome = process_nix_eval_output(
+    let outcome = process_eval_output(
         Cursor::new(data.into_bytes()),
-        NIX_EVAL_JOBS_MAX_ENTRIES,
-        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
+        EVAL_JOBS_MAX_ENTRIES,
+        EVAL_JOBS_MAX_STDOUT_BYTES,
         line_len,
     )
     .await;
@@ -196,11 +196,11 @@ fn outcome_from(data: String) -> ConsumeOutcome {
     tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(process_nix_eval_output(
+        .block_on(process_eval_output(
             Cursor::new(data.into_bytes()),
-            NIX_EVAL_JOBS_MAX_ENTRIES,
-            NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-            NIX_EVAL_JOBS_MAX_LINE_BYTES,
+            EVAL_JOBS_MAX_ENTRIES,
+            EVAL_JOBS_MAX_STDOUT_BYTES,
+            EVAL_JOBS_MAX_LINE_BYTES,
         ))
 }
 
@@ -215,7 +215,7 @@ fn timeout_reports_a_clear_error_even_with_output() {
     let err = check_exit(SandboxExit::TimedOut(limit), &outcome(1), "").unwrap_err();
     assert_eq!(
         err.to_string(),
-        "nix-eval-jobs exceeded the evaluation timeout of 1800s and was killed"
+        "iets eval-jobs exceeded the evaluation timeout of 1800s and was killed"
     );
 }
 

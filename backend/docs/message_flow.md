@@ -161,7 +161,7 @@ EvalTask::GithubJobPR(eval_job, ci_info)
        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ EvalService (backend/server/src/nix/mod.rs)                 │
-│ - Run: nix-eval-jobs --file {file} --gc-roots-dir ...       │
+│ - Run: iets eval-jobs --file {file} --gc-roots-dir ...       │
 │ - Parse NDJSON output stream                                │
 │ - Extract derivations: { drvPath, outputs, system, ... }    │
 └──────┬──────────────────────────────────────────────────────┘
@@ -340,7 +340,7 @@ GitHubTask::CheckComplete  GitHubTask::CheckFailed            │
 | Gate Name | Created When | Purpose | Completion Trigger |
 |-----------|--------------|---------|-------------------|
 | `eka-ci / configure` | RepoReader starts | Show config parsing | All jobs/checks dispatched |
-| `eka-ci / eval / {job}` | Eval starts | Show evaluation status | nix-eval-jobs completes |
+| `eka-ci / eval / {job}` | Eval starts | Show evaluation status | iets eval-jobs completes |
 | `{attr} / New\|Changed ({job})` | Per-drv after eval | Show individual build | Build completes or cache hit |
 | `{check_name}` | Custom check discovered | Show check execution | Check command finishes |
 | `eka-ci / approval-required` | User not approved | Block CI until approval | Manual admin approval |
@@ -368,7 +368,7 @@ EKA-CI Gate Transitions:
 3. CompleteCIConfigureGate → completed (success/failure)
 
 1. CreateCIEvalJob → queued
-2. (EvalService runs nix-eval-jobs)
+2. (EvalService runs iets eval-jobs)
 3. → in_progress (during evaluation)
 4. CompleteCIEvalJob → completed (success)
    OR FailCIEvalJob → completed (failure)

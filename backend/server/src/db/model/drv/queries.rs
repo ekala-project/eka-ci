@@ -183,7 +183,7 @@ ON CONFLICT(drv_path) DO UPDATE SET
     Ok(())
 }
 
-/// Persist package metadata extracted from `nix-eval-jobs --meta` onto
+/// Persist package metadata extracted from `iets eval-jobs --meta` onto
 /// pre-existing `Drv` rows. Uses `COALESCE` so a `None` field never blanks
 /// out a previously populated value, and silently skips drvs whose row does
 /// not (yet) exist in `Drv` — those will be enriched on a future evaluation.

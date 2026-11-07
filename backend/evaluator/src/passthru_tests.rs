@@ -1,7 +1,7 @@
 //! Generate a Nix expression that evaluates `passthru.tests` for a set of
 //! changed attribute paths.
 //!
-//! The generated file is fed to `nix-eval-jobs` to discover test derivations
+//! The generated file is fed to `iets eval-jobs` to discover test derivations
 //! for packages that were directly modified in a PR.
 
 use std::fmt::Write;
@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 /// `builtins.tryEval` so packages without `passthru.tests` gracefully
 /// evaluate to `{}` (producing zero test derivations).
 ///
-/// Returns a `NamedTempFile` whose path can be passed to `nix-eval-jobs`.
+/// Returns a `NamedTempFile` whose path can be passed to `iets eval-jobs`.
 /// The caller must keep the handle alive until evaluation completes.
 pub fn generate_passthru_tests_expr(
     original_file: &str,
@@ -46,7 +46,7 @@ fn build_nix_source(original_file: &str, changed_attrs: &[String]) -> String {
     //   1. to access the package itself (may throw if the attr is aliased/removed)
     //   2. to access `passthru.tests` (may not exist)
     //
-    // If either step fails the attr evaluates to `{}` and nix-eval-jobs
+    // If either step fails the attr evaluates to `{}` and iets eval-jobs
     // produces zero derivations for it.
     let _ = writeln!(nix, "let");
     let _ = writeln!(nix, "  pkgs = import {} {{}};", original_file);
@@ -85,14 +85,14 @@ fn build_nix_source(original_file: &str, changed_attrs: &[String]) -> String {
 ///
 /// Simple attrs like `hello` pass through unchanged.
 fn attr_to_nix_accessor(attr: &str) -> String {
-    // Attr paths from nix-eval-jobs are already dot-separated and safe
+    // Attr paths from iets eval-jobs are already dot-separated and safe
     // (they consist of Nix identifiers). We split and rejoin with dots
     // to validate the structure, but the result is the same string for
     // well-formed inputs.
     attr.split('.')
         .map(|component| {
             // If a component contains characters that aren't valid bare
-            // Nix identifiers, quote it. In practice nix-eval-jobs attrs
+            // Nix identifiers, quote it. In practice iets eval-jobs attrs
             // are always bare identifiers, but this is defensive.
             if needs_quoting(component) {
                 format!("\"{}\"", component)
