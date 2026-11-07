@@ -277,7 +277,7 @@ impl GraphMetrics {
     }
 }
 
-/// Metrics for `nix-eval-jobs` invocations (M4: observe eval output
+/// Metrics for `iets eval-jobs` invocations (M4: observe eval output
 /// volume so operators can alert on truncation events and track
 /// adversarial / accidental fan-out).
 #[derive(Clone)]
@@ -299,8 +299,8 @@ impl NixEvalMetrics {
     pub fn new(registry: &Registry) -> anyhow::Result<Arc<Self>> {
         let items_total = IntCounterVec::new(
             Opts::new(
-                "nix_eval_jobs_items_total",
-                "Number of parsed nix-eval-jobs output items by kind",
+                "eval_jobs_items_total",
+                "Number of parsed eval-jobs output items by kind",
             )
             .namespace("eka_ci"),
             &["kind"],
@@ -308,8 +308,8 @@ impl NixEvalMetrics {
 
         let truncated_total = IntCounterVec::new(
             Opts::new(
-                "nix_eval_jobs_truncated_total",
-                "Number of nix-eval-jobs invocations truncated due to resource caps",
+                "eval_jobs_truncated_total",
+                "Number of eval-jobs invocations truncated due to resource caps",
             )
             .namespace("eka_ci"),
             &["reason"],
@@ -317,8 +317,8 @@ impl NixEvalMetrics {
 
         let output_entries = prometheus::Histogram::with_opts(
             prometheus::HistogramOpts::new(
-                "nix_eval_jobs_output_entries",
-                "Distribution of entry counts emitted per nix-eval-jobs invocation",
+                "eval_jobs_output_entries",
+                "Distribution of entry counts emitted per eval-jobs invocation",
             )
             .namespace("eka_ci")
             .buckets(vec![
@@ -328,8 +328,8 @@ impl NixEvalMetrics {
 
         let output_bytes = prometheus::Histogram::with_opts(
             prometheus::HistogramOpts::new(
-                "nix_eval_jobs_output_bytes",
-                "Distribution of bytes emitted per nix-eval-jobs invocation",
+                "eval_jobs_output_bytes",
+                "Distribution of bytes emitted per eval-jobs invocation",
             )
             .namespace("eka_ci")
             .buckets(vec![

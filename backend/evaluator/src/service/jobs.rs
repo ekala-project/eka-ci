@@ -17,9 +17,9 @@ use crate::types::nix_eval_jobs::{NixEvalDrv, NixEvalError, NixEvalItem};
 //
 // M4: the output consumer bounds every growth axis so an adversarial
 // or accidentally-huge flake cannot OOM the server:
-//   - `NIX_EVAL_JOBS_MAX_ENTRIES` caps total parsed items (drvs + errors).
-//   - `NIX_EVAL_JOBS_MAX_STDOUT_BYTES` caps total bytes read from nix-eval-jobs stdout.
-//   - `NIX_EVAL_JOBS_MAX_LINE_BYTES` caps the length of any single JSONL line (prevents a
+//   - `EVAL_JOBS_MAX_ENTRIES` caps total parsed items (drvs + errors).
+//   - `EVAL_JOBS_MAX_STDOUT_BYTES` caps total bytes read from iets stdout.
+//   - `EVAL_JOBS_MAX_LINE_BYTES` caps the length of any single JSONL line (prevents a
 //     newline-less adversarial stream from growing the line buffer without bound).
 //
 // On any cap hit, the child is killed and reaped, the caller receives
@@ -27,18 +27,18 @@ use crate::types::nix_eval_jobs::{NixEvalDrv, NixEvalError, NixEvalItem};
 // incremented with the trigger reason.
 
 /// Maximum number of parsed output entries (drvs + errors combined)
-/// accepted from a single nix-eval-jobs invocation.
-pub const NIX_EVAL_JOBS_MAX_ENTRIES: usize = 25_000;
+/// accepted from a single `iets eval-jobs` invocation.
+pub const EVAL_JOBS_MAX_ENTRIES: usize = 25_000;
 
-/// Maximum total bytes accepted from nix-eval-jobs stdout per
+/// Maximum total bytes accepted from `iets eval-jobs` stdout per
 /// invocation (128 MiB — well beyond any legitimate flake, still
 /// bounded enough to prevent OOM).
-pub const NIX_EVAL_JOBS_MAX_STDOUT_BYTES: u64 = 128 * 1024 * 1024;
+pub const EVAL_JOBS_MAX_STDOUT_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Maximum size of any single JSONL line emitted by nix-eval-jobs
+/// Maximum size of any single JSONL line emitted by `iets eval-jobs`
 /// (1 MiB — a single `NixEvalDrv` JSON encoding rarely exceeds a few
 /// kilobytes).
-pub const NIX_EVAL_JOBS_MAX_LINE_BYTES: usize = 1024 * 1024;
+pub const EVAL_JOBS_MAX_LINE_BYTES: usize = 1024 * 1024;
 
 /// Reason the output consumer stopped early.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +65,7 @@ impl Truncation {
     }
 }
 
-/// Result of consuming a nix-eval-jobs stdout stream with explicit
+/// Result of consuming an `iets eval-jobs` stdout stream with explicit
 /// resource caps.
 pub struct ConsumeOutcome {
     pub jobs: Vec<NixEvalDrv>,
@@ -74,7 +74,7 @@ pub struct ConsumeOutcome {
     pub truncation: Truncation,
 }
 
-/// Consume nix-eval-jobs JSONL output with explicit resource caps.
+/// Consume `iets eval-jobs` JSONL output with explicit resource caps.
 ///
 /// Parses one line at a time, enforcing:
 /// - total entries (drvs + errors) <= `max_entries`
@@ -86,7 +86,7 @@ pub struct ConsumeOutcome {
 /// The function never panics; it stops at the first cap hit and
 /// returns whatever was successfully parsed so callers can log
 /// partial context.
-pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
+pub async fn process_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
     mut reader: R,
     max_entries: usize,
     max_bytes: u64,
@@ -109,7 +109,7 @@ pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
             match limited.read_until(b'\n', &mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
-                    warn!(error = %e, "Error reading nix-eval-jobs stdout");
+                    warn!(error = %e, "Error reading iets eval-jobs stdout");
                     break;
                 },
             }
@@ -146,7 +146,7 @@ pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
         if has_newline {
             buf.pop(); // trim trailing '\n'
             if buf.last() == Some(&b'\r') {
-                buf.pop(); // trim '\r' too (defensive — nix-eval-jobs is LF)
+                buf.pop(); // trim '\r' too (defensive — iets is LF)
             }
         }
         if buf.is_empty() {
@@ -156,7 +156,7 @@ pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
         let line = match std::str::from_utf8(&buf) {
             Ok(s) => s,
             Err(e) => {
-                warn!(error = %e, "Non-UTF-8 nix-eval-jobs line discarded");
+                warn!(error = %e, "Non-UTF-8 iets eval-jobs line discarded");
                 continue;
             },
         };
@@ -164,7 +164,7 @@ pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
         match serde_json::from_str::<NixEvalItem>(line) {
             Err(e) => {
                 warn!(
-                    "Encountered error when deserializing nix-eval-jobs output: {:?}",
+                    "Encountered error when deserializing iets eval-jobs output: {:?}",
                     e
                 );
                 continue;
@@ -194,9 +194,9 @@ pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
-/// Run nix-eval-jobs and process output with resource caps.
+/// Run `iets eval-jobs` and process output with resource caps.
 ///
-/// This function spawns nix-eval-jobs, consumes its output with the
+/// This function spawns `iets eval-jobs`, consumes its output with the
 /// standard resource caps, and returns the parsed derivations and errors.
 /// If a resource cap is hit, the child process is killed and an error is
 /// returned.
@@ -205,7 +205,7 @@ pub async fn process_nix_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
 /// - `file_path`: Path to the Nix file to evaluate
 /// - `metrics`: Optional metrics collector for observability
 /// - `on_drv_traversed`: Optional callback invoked for each drv with its input_drvs
-pub async fn run_nix_eval_jobs<F>(
+pub async fn run_eval_jobs<F>(
     sandbox: &EvalSandbox,
     file_path: &str,
     extra_roots: &[PathBuf],
@@ -219,7 +219,7 @@ where
     ) -> Result<(), anyhow::Error>,
 {
     let mut child = sandbox
-        .spawn_nix_eval_jobs(Path::new(file_path), extra_roots)
+        .spawn_eval_jobs(Path::new(file_path), extra_roots)
         .await?;
     let (outcome, stderr_output) = consume_child_output(&mut child).await?;
 
@@ -258,7 +258,7 @@ async fn consume_child_output(
         tokio::spawn(async move {
             let mut buf = String::new();
             if let Err(e) = stderr.read_to_string(&mut buf).await {
-                debug!("reading nix-eval-jobs stderr failed: {e}");
+                debug!("reading iets eval-jobs stderr failed: {e}");
             }
             buf
         })
@@ -267,12 +267,12 @@ async fn consume_child_output(
     let stdout = child
         .stdout
         .take()
-        .context("nix-eval-jobs stdout was not captured")?;
-    let outcome = process_nix_eval_output(
+        .context("iets eval-jobs stdout was not captured")?;
+    let outcome = process_eval_output(
         BufReader::new(stdout),
-        NIX_EVAL_JOBS_MAX_ENTRIES,
-        NIX_EVAL_JOBS_MAX_STDOUT_BYTES,
-        NIX_EVAL_JOBS_MAX_LINE_BYTES,
+        EVAL_JOBS_MAX_ENTRIES,
+        EVAL_JOBS_MAX_STDOUT_BYTES,
+        EVAL_JOBS_MAX_LINE_BYTES,
     )
     .await;
     if outcome.truncation != Truncation::None {
@@ -281,13 +281,13 @@ async fn consume_child_output(
 
     let stderr_output = match stderr_handle {
         Some(handle) => handle.await.unwrap_or_else(|e| {
-            warn!("nix-eval-jobs stderr drain task failed: {e}");
+            warn!("iets eval-jobs stderr drain task failed: {e}");
             String::new()
         }),
         None => String::new(),
     };
     if !stderr_output.is_empty() {
-        debug!("nix-eval-jobs stderr: {}", stderr_output.trim());
+        debug!("iets eval-jobs stderr: {}", stderr_output.trim());
     }
     Ok((outcome, stderr_output))
 }
@@ -299,7 +299,7 @@ async fn fail_truncated(
 ) -> anyhow::Error {
     child.kill();
     if let Err(e) = child.wait().await {
-        warn!("nix-eval-jobs child wait failed: {:?}", e);
+        warn!("iets eval-jobs child wait failed: {:?}", e);
     }
 
     if let Some(m) = metrics {
@@ -311,11 +311,11 @@ async fn fail_truncated(
         jobs = outcome.jobs.len(),
         errors = outcome.errors.len(),
         bytes_read = outcome.bytes_read,
-        "nix-eval-jobs output truncated"
+        "iets eval-jobs output truncated"
     );
 
     anyhow!(
-        "nix-eval-jobs output exceeded resource cap ({}): jobs={}, errors={}, bytes={}",
+        "iets eval-jobs output exceeded resource cap ({}): jobs={}, errors={}, bytes={}",
         outcome.truncation.label(),
         outcome.jobs.len(),
         outcome.errors.len(),
@@ -338,7 +338,7 @@ fn check_exit(
 ) -> anyhow::Result<()> {
     let status = match exit {
         SandboxExit::TimedOut(limit) => bail!(
-            "nix-eval-jobs exceeded the evaluation timeout of {}s and was killed",
+            "iets eval-jobs exceeded the evaluation timeout of {}s and was killed",
             limit.as_secs()
         ),
         SandboxExit::Exited(status) => status,
@@ -348,11 +348,11 @@ fn check_exit(
     }
     if outcome.jobs.is_empty() && outcome.errors.is_empty() {
         bail!(
-            "nix-eval-jobs failed ({status}) without producing output: {}",
+            "iets eval-jobs failed ({status}) without producing output: {}",
             stderr_tail(stderr_output)
         );
     }
-    warn!("nix-eval-jobs exited with {status} after producing output");
+    warn!("iets eval-jobs exited with {status} after producing output");
     Ok(())
 }
 

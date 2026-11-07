@@ -4,7 +4,7 @@
   cargo,
   clippy,
   elmPackages,
-  nix-eval-jobs,
+  iets,
   mkShell,
   openssl,
   pkg-config,
@@ -32,7 +32,7 @@ mkShell {
     ])
     pkg-config
     protobuf
-    nix-eval-jobs
+    iets
     rust-analyzer
     elmPackages.elm
     dev-server

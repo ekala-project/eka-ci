@@ -164,7 +164,7 @@ impl DbService {
         github::create_jobs_for_jobset(jobset_id, jobs, base_jobset_jobs.as_deref(), &self.pool)
             .await?;
 
-        // Persist package metadata derived from `nix-eval-jobs --meta` onto
+        // Persist package metadata derived from `iets eval-jobs --meta` onto
         // the `Drv` rows that were created/ensured above. We tolerate per-drv DrvId parse failures
         // by logging and dropping (consistent with the existing eval path).
         let metadata_items: Vec<(DrvId, _)> = jobs

@@ -256,11 +256,11 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let (eval_sender, eval_receiver) = channel::<EvalTask>(1000);
 
-    // M4: register nix-eval-jobs observability metrics on the shared
+    // M4: register eval-jobs observability metrics on the shared
     // Prometheus registry so `/v1/metrics` exposes truncation counters
     // and output-size histograms to operators.
     let nix_eval_metrics = NixEvalMetrics::new(&scheduler_service.metrics_registry())
-        .context("failed to register nix-eval-jobs metrics")?;
+        .context("failed to register eval-jobs metrics")?;
 
     let eval_service = EvalService::new(
         eval_sender.clone(),

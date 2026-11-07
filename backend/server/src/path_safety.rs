@@ -1,5 +1,5 @@
 //! Filesystem path safety helpers used before invoking external tools
-//! (`nix eval`, `nix-eval-jobs`, etc.) on paths influenced by untrusted
+//! (`nix eval`, `iets eval-jobs`, etc.) on paths influenced by untrusted
 //! sources (e.g. PR branch content or the `.ekaci/config.json` file read
 //! from a checked-out worktree).
 //!

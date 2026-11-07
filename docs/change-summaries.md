@@ -189,7 +189,7 @@ DELETE FROM RebuildImpactCache WHERE head_sha = ? AND base_sha = ? AND job = ?;
 
 ### "Metadata unavailable counter is non-zero"
 
-- Means the eval pipeline did not populate `pname`/`version`/`license`/`maintainers` for any drv on the head side. Check the `nix-eval-jobs` invocation produced `meta` blocks.
+- Means the eval pipeline did not populate `pname`/`version`/`license`/`maintainers` for any drv on the head side. Check the `iets eval-jobs` invocation produced `meta` blocks.
 - Affects display only — `Added`/`Removed` classification falls back to `RebuildOnly` rows.
 
 ---

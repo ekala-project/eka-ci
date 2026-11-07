@@ -128,7 +128,7 @@ nix derivation show /nix/store/...-hello-2.12.1.drv | jq '.[].outputs | keys'
 # ["out"]
 ```
 
-Or from `nix-eval-jobs` output, which ekaci already parses.
+Or from `iets eval-jobs` output, which ekaci already parses.
 
 ### `main_program` (primary binary name)
 

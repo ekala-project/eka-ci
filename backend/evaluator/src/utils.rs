@@ -1,6 +1,6 @@
 /// Extract pname from a bare derivation name (no `/nix/store/<hash>-` prefix).
 ///
-/// The `name` field of `nix-eval-jobs` output is normally `${pname}-${version}`
+/// The `name` field of `iets eval-jobs` output is normally `${pname}-${version}`
 /// (e.g., `"hello-2.12.1"` or `"python3.12-setuptools-69.0.0"`). This function
 /// strips trailing version-looking suffixes to extract the package name.
 ///

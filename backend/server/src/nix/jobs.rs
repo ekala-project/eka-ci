@@ -7,14 +7,14 @@ use anyhow::Result;
 use crate::nix::{NixEvalDrv, NixEvalError};
 
 impl super::EvalService {
-    /// Run nix-eval-jobs and optionally traverse all evaluated drvs to
+    /// Run `iets eval-jobs` and optionally traverse all evaluated drvs to
     /// populate the dependency graph and ingress queue.
     ///
     /// `traverse` should be `true` for head-commit (PR) evaluations
     /// that feed into the build scheduler, and `false` for base-commit
     /// evaluations that only need the evaluated attr/drv list for
     /// jobset diff computation.
-    pub async fn run_nix_eval_jobs(
+    pub async fn run_eval_jobs(
         &self,
         file_path: &str,
         extra_roots: &[PathBuf],
@@ -30,15 +30,11 @@ impl super::EvalService {
         let traverse_fn =
             |drv_path: &str,
              input_drvs: &Option<std::collections::HashMap<String, Vec<String>>>| {
-                // We need to call traverse_drvs synchronously, but it's async
-                // For now, just return Ok since the actual traversal happens after all jobs are
-                // processed
                 let _ = (drv_path, input_drvs); // Suppress unused warnings
                 Ok(())
             };
 
-        // Call the evaluator's run_nix_eval_jobs
-        let (jobs, errors) = evaluator::service::run_nix_eval_jobs(
+        let (jobs, errors) = evaluator::service::run_eval_jobs(
             &self.eval_sandbox,
             file_path,
             extra_roots,
