@@ -7,6 +7,8 @@
     treefmt-nix.url = "github:numtide/treefmt-nix";
     fenix.url = "github:nix-community/fenix";
     fenix.inputs.nixpkgs.follows = "nixpkgs";
+    iets-src.url = "github:numtide/iets";
+    iets-src.flake = false;
   };
 
   outputs =
@@ -16,9 +18,10 @@
       utils,
       treefmt-nix,
       fenix,
+      iets-src,
     }:
     let
-      localOverlay = import ./nix/overlay.nix;
+      localOverlay = import ./nix/overlay.nix { inherit iets-src; };
     in
     utils.lib.eachDefaultSystem (system: rec {
       legacyPackages = import nixpkgs {
