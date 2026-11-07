@@ -274,20 +274,19 @@ Security-related settings.
 
 **Type:** `submodule`
 
-Evaluation sandbox settings. Every `nix-eval-jobs` run happens inside bubblewrap +
-landlock with a cleared environment and `restrict-eval`; see
+Evaluation sandbox settings. Every `iets eval-jobs` run happens inside bubblewrap +
+landlock with a cleared environment; see
 [Server Configuration](./server-configuration.md#eval).
 
 - **`eval.timeout_secs`** (`integer between 10 and 86400`, default `1800`): Wall-clock
-  limit, in seconds, for one `nix-eval-jobs` run. The whole sandbox is killed when it
+  limit, in seconds, for one `iets eval-jobs` run. The whole sandbox is killed when it
   elapses.
 - **`eval.memory_limit_mb`** (`integer between 1024 and 1048576`, default `8192`):
   Address-space limit (`RLIMIT_AS`), in MiB, for every process in the sandbox.
-- **`eval.allowed_uris`** (`list of string`, default `[]`): URI prefixes that eval-time
-  fetchers may access. Expressions that pin nixpkgs with `fetchTarball` need that URL's
-  prefix listed. Empty blocks all eval-time fetches.
+- **`eval.provenance`** (`boolean`, default `false`): Pass `--provenance` to add source
+  positions to eval output.
 
-The module puts `bubblewrap`, `passt`, `nix-eval-jobs` and Nix on the service `PATH`, and
+The module puts `bubblewrap`, `passt`, `iets` and Nix on the service `PATH`, and
 relaxes the unit hardening just enough for the sandbox: `RestrictNamespaces = false`,
 `ProtectKernelTunables = false`, `ProtectKernelLogs = false`, `ProtectHostname = false` and
 `ProcSubset = "all"` (bwrap
@@ -304,7 +303,7 @@ daemon's network. See the daemon caveat in
 ```nix
 settings.eval = {
   timeout_secs = 3600;
-  allowed_uris = [ "https://github.com/NixOS/nixpkgs/" ];
+  provenance = true;
 };
 ```
 

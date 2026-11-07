@@ -44,9 +44,9 @@ audit_hooks              = true
 
 # Evaluation sandbox
 [eval]
-timeout_secs    = 1800    # kill nix-eval-jobs after 30 minutes
+timeout_secs    = 1800    # kill iets eval-jobs after 30 minutes
 memory_limit_mb = 8192    # RLIMIT_AS per sandboxed process
-allowed_uris    = ["https://github.com/NixOS/nixpkgs/"]
+provenance      = false   # add source position to eval output
 
 # Network policy for every sandbox with network access
 [sandbox]
@@ -118,7 +118,7 @@ implemented — see the project README for current status.
 
 ### `[eval]`
 
-Every `nix-eval-jobs` run (PR/branch evaluation, `passthru.tests`, and re-evaluation of
+Every `iets eval-jobs` run (PR/branch evaluation, `passthru.tests`, and re-evaluation of
 garbage-collected `.drv` files) executes inside an evaluation sandbox, because the Nix code
 comes from untrusted pull requests. One evaluation is not covered yet: listing a flake's
 `checks`/`packages` (`nix eval` of the pull request's flake, used when those flake outputs
@@ -135,23 +135,18 @@ limits; it is slated for removal in a later change.
 - **landlock**, applied by `ekaci-sandbox-helper` inside the namespace, restricts file
   access to the same paths. It is best-effort: on a kernel without landlock the sandbox
   degrades to bubblewrap only and the server logs a warning at startup.
-- **Nix** runs with `restrict-eval = true` and an explicit `allowed-uris`, so
-  `builtins.readFile`/`import` outside the worktree and eval-time fetches to unlisted
-  URLs fail.
+- **iets** runs with `--pure-eval` by default; filesystem and network restrictions are
+  enforced by bwrap + landlock + passt (not by Nix-level `restrict-eval`).
 - **Network** is filtered (see [`[sandbox]`](#sandbox)): even an allowlisted URI cannot
   reach the host or its private networks directly.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `timeout_secs` | `1800` | Wall-clock limit per evaluation (10–86400). On expiry the whole sandbox is killed and the evaluation fails with a timeout error. |
-| `memory_limit_mb` | `8192` | `RLIMIT_AS` for each process in the sandbox (≥ 1024). `nix-eval-jobs` workers are recycled at half this value. |
-| `allowed_uris` | `[]` | URI prefixes eval-time fetchers may access (Nix `allowed-uris`). |
+| `memory_limit_mb` | `8192` | `RLIMIT_AS` for each process in the sandbox (≥ 1024). `iets eval-jobs` workers are recycled at half this value. |
+| `provenance` | `false` | Pass `--provenance` to `iets eval-jobs`, adding source position (`file:line:col`) to each job output. |
 
-**`allowed_uris` and pinned nixpkgs.** With the default empty list, *any* eval-time fetch
-fails. Repositories that pin inputs with `builtins.fetchTarball`/`fetchurl`/`fetchGit`
-(e.g. `fetchTarball "https://github.com/NixOS/nixpkgs/archive/<rev>.tar.gz"`) need the URL
-prefix listed. Fixed-output derivations such as `pkgs.fetchurl` are not affected: they
-run at build time, not eval time. Note also that `NIX_PATH` is not passed through, so
+Note that `NIX_PATH` is not passed through, so
 `<nixpkgs>` lookups do not resolve inside evaluations.
 
 **Requirements.** `bwrap` and `pasta` (from [passt](https://passt.top)) must be on the

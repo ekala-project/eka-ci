@@ -14,7 +14,8 @@ use crate::{
 pub struct EvalSandboxConfig {
     pub timeout: Duration,
     pub memory_limit_mb: u64,
-    pub allowed_uris: Vec<String>,
+    /// Pass `--provenance` to `iets eval-jobs`.
+    pub provenance: bool,
 }
 
 impl Default for EvalSandboxConfig {
@@ -22,7 +23,7 @@ impl Default for EvalSandboxConfig {
         Self {
             timeout: DEFAULT_TIMEOUT,
             memory_limit_mb: DEFAULT_MEMORY_LIMIT_MB,
-            allowed_uris: Vec::new(),
+            provenance: false,
         }
     }
 }
@@ -38,20 +39,20 @@ impl EvalSandbox {
         Self { sandbox, config }
     }
 
-    pub async fn spawn_nix_eval_jobs(
+    pub async fn spawn_eval_jobs(
         &self,
         file: &Path,
         extra_roots: &[PathBuf],
     ) -> Result<SandboxedChild> {
-        let program = resolve_program("nix-eval-jobs")?;
-        let spec = self.nix_eval_jobs_spec(program, file, extra_roots);
+        let program = resolve_program("iets")?;
+        let spec = self.eval_jobs_spec(program, file, extra_roots);
         self.sandbox
             .spawn(&spec)
             .await
-            .context("failed to start sandboxed nix-eval-jobs")
+            .context("failed to start sandboxed iets eval-jobs")
     }
 
-    fn nix_eval_jobs_spec(
+    fn eval_jobs_spec(
         &self,
         program: PathBuf,
         file: &Path,
@@ -64,7 +65,7 @@ impl EvalSandbox {
             }
         }
         let mut spec = SandboxSpec::new(program)
-            .args(nix_eval_jobs_args(&self.config, file, &roots))
+            .args(iets_eval_jobs_args(&self.config, file, &roots))
             .network(Network::Filtered)
             .timeout(self.config.timeout)
             .memory_limit_bytes(self.config.memory_limit_mb.saturating_mul(1024 * 1024));
@@ -75,26 +76,21 @@ impl EvalSandbox {
     }
 }
 
-pub fn nix_eval_jobs_args(
+pub fn iets_eval_jobs_args(
     cfg: &EvalSandboxConfig,
     file: &Path,
     roots: &[PathBuf],
 ) -> Vec<OsString> {
+    // "eval-jobs" subcommand — iets is a multi-tool binary.
     let mut args: Vec<OsString> = vec![
-        "--option".into(),
-        "restrict-eval".into(),
-        "true".into(),
-        "--option".into(),
-        "allowed-uris".into(),
-        cfg.allowed_uris.join(" ").into(),
-        // restrict-eval does not cover builtins.getFlake, which could fetch any URL.
-        "--option".into(),
-        "experimental-features".into(),
-        "nix-command".into(),
+        "eval-jobs".into(),
         // Recycle workers before RLIMIT_AS turns an allocation failure into a crash.
         "--max-memory-size".into(),
         (cfg.memory_limit_mb / 2).max(1).to_string().into(),
     ];
+    if cfg.provenance {
+        args.push("--provenance".into());
+    }
     // Named entries keep `<nixpkgs>`-style lookups from resolving into the roots.
     for (i, root) in roots.iter().enumerate() {
         let mut entry = OsString::from(format!("ekaci-root-{i}="));
@@ -125,21 +121,31 @@ mod tests {
     }
 
     #[test]
-    fn args_enable_restrict_eval_and_allowed_uris() {
+    fn args_default_flags() {
         let cfg = EvalSandboxConfig {
-            allowed_uris: vec!["https://a/".into(), "github:".into()],
             memory_limit_mb: 4096,
             ..Default::default()
         };
         let roots = [PathBuf::from("/w")];
-        let s = joined(&nix_eval_jobs_args(&cfg, Path::new("/w/f.nix"), &roots));
-        assert!(
-            s.starts_with("--option restrict-eval true --option allowed-uris https://a/ github:")
-        );
-        assert!(s.contains("--option experimental-features nix-command -"));
-        assert!(s.contains("--max-memory-size 2048"));
+        let s = joined(&iets_eval_jobs_args(&cfg, Path::new("/w/f.nix"), &roots));
+        assert!(s.starts_with("eval-jobs --max-memory-size 2048"));
         assert!(s.contains("-I ekaci-root-0=/w"));
         assert!(s.ends_with("--show-input-drvs --meta /w/f.nix"));
+        // iets-only flags absent by default
+        assert!(!s.contains("--check-cache-status"));
+        assert!(!s.contains("--provenance"));
+    }
+
+    #[test]
+    fn args_iets_only_flags() {
+        let cfg = EvalSandboxConfig {
+            memory_limit_mb: 4096,
+            provenance: true,
+            ..Default::default()
+        };
+        let roots = [PathBuf::from("/w")];
+        let s = joined(&iets_eval_jobs_args(&cfg, Path::new("/w/f.nix"), &roots));
+        assert!(s.contains("--provenance"));
     }
 
     #[test]
@@ -153,7 +159,7 @@ mod tests {
             PathBuf::from("/w/f.nix"),
             PathBuf::from("/x"),
         ];
-        let spec = sb.nix_eval_jobs_spec("/bin/nej".into(), Path::new("/w/f.nix"), &extra);
+        let spec = sb.eval_jobs_spec("/bin/iets".into(), Path::new("/w/f.nix"), &extra);
         assert_eq!(
             spec.ro_paths,
             vec![PathBuf::from("/w/f.nix"), PathBuf::from("/x")]

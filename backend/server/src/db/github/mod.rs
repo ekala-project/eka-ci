@@ -216,6 +216,7 @@ mod tests {
             outputs: Default::default(),
             system: "x86_64-linux".to_string(),
             meta: None,
+            pos: None,
         }
     }
 

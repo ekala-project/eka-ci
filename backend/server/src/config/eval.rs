@@ -15,8 +15,9 @@ pub struct EvalConfig {
     pub timeout_secs: u64,
     #[serde(default = "default_memory_limit_mb")]
     pub memory_limit_mb: u64,
+    /// Pass `--provenance` to `iets eval-jobs` (default: false).
     #[serde(default)]
-    pub allowed_uris: Vec<String>,
+    pub provenance: bool,
 }
 
 impl Default for EvalConfig {
@@ -24,7 +25,7 @@ impl Default for EvalConfig {
         Self {
             timeout_secs: default_timeout_secs(),
             memory_limit_mb: default_memory_limit_mb(),
-            allowed_uris: Vec::new(),
+            provenance: false,
         }
     }
 }
@@ -58,15 +59,6 @@ impl EvalConfig {
     pub(crate) fn validate(raw: Option<EvalConfig>) -> anyhow::Result<EvalConfig> {
         let config = raw.unwrap_or_default();
         validate_limits("eval", config.timeout_secs, config.memory_limit_mb)?;
-        if let Some(uri) = config
-            .allowed_uris
-            .iter()
-            .find(|u| u.trim().is_empty() || u.contains(char::is_whitespace))
-        {
-            bail!(
-                "[eval] allowed_uris entries must be non-empty and contain no whitespace: {uri:?}"
-            );
-        }
         Ok(config)
     }
 
@@ -81,7 +73,7 @@ impl EvalConfig {
         EvalSandboxConfig {
             timeout: Duration::from_secs(self.timeout_secs),
             memory_limit_mb: self.memory_limit_mb,
-            allowed_uris: self.allowed_uris.clone(),
+            provenance: self.provenance,
         }
     }
 }
@@ -107,19 +99,16 @@ mod tests {
         assert!(bad(|c| c.timeout_secs = 0));
         assert!(bad(|c| c.timeout_secs = u64::MAX));
         assert!(bad(|c| c.memory_limit_mb = 256));
-        assert!(bad(|c| c.allowed_uris = vec!["a b".into()]));
-        assert!(bad(|c| c.allowed_uris = vec![String::new()]));
     }
 
     #[test]
     fn parses_toml_section() {
-        let c: EvalConfig = toml_from_str(
-            "timeout_secs = 60\nmemory_limit_mb = 2048\nallowed_uris = [\"https://github.com/\"]",
-        );
+        let c: EvalConfig =
+            toml_from_str("timeout_secs = 60\nmemory_limit_mb = 2048\nprovenance = true");
         let s = EvalConfig::validate(Some(c)).unwrap().sandbox_config();
         assert_eq!(s.timeout, Duration::from_secs(60));
         assert_eq!(s.memory_limit_mb, 2048);
-        assert_eq!(s.allowed_uris, vec!["https://github.com/".to_string()]);
+        assert!(s.provenance);
     }
 
     fn toml_from_str(s: &str) -> EvalConfig {
