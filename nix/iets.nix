@@ -3,13 +3,16 @@
   rustPlatform,
   installShellFiles,
   gitMinimal,
-  src,
+  # Defaults to the iets revision pinned in flake.lock, so the overlay works
+  # without flakes (e.g. when eka-ci is a `flake = false` input).
+  iets-src ? builtins.fetchTree (builtins.fromJSON (builtins.readFile ../flake.lock))
+    .nodes.iets-src.locked,
 }:
 
 rustPlatform.buildRustPackage {
   pname = "iets";
-  version = lib.fileContents "${src}/VERSION";
-  inherit src;
+  version = lib.fileContents "${iets-src}/VERSION";
+  src = iets-src;
 
   cargoHash = "sha256-EM2mV/cs9Isr8bgbe6QKgkDiYYmBLY9MyI8NWza/B2I=";
 
