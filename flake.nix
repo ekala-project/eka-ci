@@ -37,7 +37,7 @@
       };
 
       packages.default = legacyPackages.eka-ci;
-      packages.module-docs = legacyPackages.callPackage ./nix/option-docs.nix { inherit iets-src; };
+      packages.module-docs = legacyPackages.callPackage ./nix/option-docs.nix { };
       devShells.default = legacyPackages.dev-shell;
       checks.module = import ./nix/module-test.nix self legacyPackages;
       formatter =
@@ -52,6 +52,11 @@
     })
     // {
       overlays.default = localOverlay;
-      nixosModules.daemon = import ./nix/module.nix iets-src;
+      nixosModules.daemon = {
+        imports = [
+          (import ./nix/module.nix)
+          { nixpkgs.overlays = [ localOverlay ]; }
+        ];
+      };
     };
 }
