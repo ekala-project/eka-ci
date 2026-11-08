@@ -1,5 +1,4 @@
 {
-  iets-src,
   lib,
   pkgs,
   runCommand,
@@ -8,7 +7,7 @@
 let
   eval = lib.evalModules {
     modules = [
-      (import ./module.nix iets-src)
+      (import ./module.nix)
       # Stub module providing NixOS options that our module references
       {
         options = {

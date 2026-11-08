@@ -1,4 +1,3 @@
-iets-src:
 {
   config,
   lib,
@@ -836,8 +835,8 @@ in
   };
 
   config = mkIf cfg.enable {
-    # Make the eka-ci package available via the overlay supplied by this flake.
-    nixpkgs.overlays = [ (import ./overlay.nix { inherit iets-src; }) ];
+    # The eka-ci overlay must be applied by the caller (the flake's
+    # nixosModules.daemon bundles it automatically).
 
     networking.firewall.allowedTCPPorts = lib.optional cfg.openFirewall cfg.settings.web.port;
 
