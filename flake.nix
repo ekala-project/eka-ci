@@ -21,7 +21,9 @@
       iets-src,
     }:
     let
-      localOverlay = import ./nix/overlay.nix { inherit iets-src; };
+      localOverlay = nixpkgs.lib.composeExtensions (import ./nix/overlay.nix) (
+        final: prev: { iets = prev.iets.override { inherit iets-src; }; }
+      );
     in
     utils.lib.eachDefaultSystem (system: rec {
       legacyPackages = import nixpkgs {
