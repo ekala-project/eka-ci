@@ -269,7 +269,23 @@ impl RecorderWorker {
     /// This calculates the closure size for a successful build, stores it in the database,
     /// and compares it against the baseline (base branch) if size checks are configured.
     /// If the size increase exceeds the threshold, sends a neutral GitHub check with warning.
-    // TODO: closure size will be a future feature
+    // TODO(closure-size): not wired in yet, so closure size is not advertised. Before
+    // enabling the call in `request_handler.rs`:
+    // - The shared output-size path has to work first: `drv_id.store_path()` is bound
+    //   against `Drv.drv_path`, which stores the bare `hash-name.drv`, so the `Drv` row
+    //   update and the ROWID lookup for `DrvRuntimeRefs` never match; and the baseline
+    //   query joins `DrvBuildMetadata`, which nothing inserts, and is keyed by
+    //   `drv_path`, which differs between base and head whenever the package changed.
+    //   The baseline needs to be keyed by attr path against the base branch's jobset.
+    // - `GitHubTask::UpdateBuildStatusWithSizeWarning` has no notion of which metric
+    //   it reports (the check-run text says "Output size"), so a closure warning is
+    //   only logged below. Add a metric field with `#[serde(default)]` (the task is
+    //   journaled), and decide how it coexists with an output-size warning on the
+    //   same check run.
+    // - `closure_size` sums the per-output closures, counting runtime dependencies
+    //   shared by several outputs once per output.
+    // The schema already exists (`20260416_build_closure_sizes.sql`,
+    // `DrvRuntimeRefs.closure_size`), so no migration is needed.
     #[allow(dead_code)]
     pub(super) async fn check_closure_size(
         &self,

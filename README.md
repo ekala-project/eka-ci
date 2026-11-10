@@ -10,7 +10,7 @@ Curating a Nix repository shouldn't be bottlenecked by manual review. EkaCI auto
 
 - **Differential evaluation** -- only builds derivations that actually changed between base and head
 - **Change summaries** -- added, removed, newly-succeeding, newly-failing, still-failing builds at a glance
-- **Closure size tracking** -- per-commit output and closure sizes with threshold warnings
+- **Output size tracking** -- per-commit output (NAR) sizes with threshold warnings
 - **Dependency failure tracing** -- trace any failure back to its root-cause derivation
 - **Release channels** -- gated branch promotion when required jobs pass
 - **Search index generation** -- SQLite FTS5 databases for package/file/option search (powers ekapkgs-cli)
@@ -32,7 +32,7 @@ Curating a Nix repository shouldn't be bottlenecked by manual review. EkaCI auto
 | **Credential sources**           | 10 (Vault, AWS SM, systemd creds, ...) | Environment | Environment |
 | **Build metrics**                | Prometheus (queue depth, phase timing, cache hit rate) | Prometheus | N/A |
 | **MCP endpoint for AI agents**   | `/v1/mcp` with 6 diagnostic tools | N/A | N/A |
-| **Closure size tracking**        | Output + closure size with historical baseline | N/A | N/A |
+| **Output size tracking**         | Output (NAR) size with historical baseline | N/A | N/A |
 | **gRPC builder protocol**        | Dynamic registration and dispatch | N/A | N/A |
 
 ## Features
@@ -91,7 +91,7 @@ Curating a Nix repository shouldn't be bottlenecked by manual review. EkaCI auto
 - Prometheus endpoint (`/metrics`): queue depth, success/failure rates, phase timing, cache hit rates, builder health
 - Build log capture with WebSocket streaming
 - Structured logging via `tracing`
-- Closure and output size tracking with historical baselines and configurable threshold warnings
+- Output (NAR) size tracking with historical baselines and configurable threshold warnings
 
 ### Search Index Generation
 

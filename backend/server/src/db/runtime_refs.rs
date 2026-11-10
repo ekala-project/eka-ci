@@ -139,7 +139,8 @@ pub async fn update_output_size(
 /// * `drv_id` - ROWID from Drv table
 /// * `output_name` - Name of the output
 /// * `closure_size` - Closure size in bytes
-// TODO: closure size will be a future feature
+// TODO(closure-size): unused until `RecorderWorker::check_closure_size` is wired in; see
+// the TODO there (`scheduler/recorder/size_checks.rs`).
 #[allow(dead_code)]
 pub async fn update_closure_size(
     pool: &SqlitePool,

@@ -12,7 +12,7 @@ To do that, Eka CI focuses on the things that actually matter for a Nix reposito
 
 - **Does evaluation still succeed?**
 - **Which packages were added, removed, newly succeed, or newly fail?**
-- **What is the closure-size and dependency impact of the change?**
+- **What is the output-size and dependency impact of the change?**
 - **What does the rebuild blast radius look like across systems?**
 
 Manual review processes do not scale to repositories the size of Nixpkgs. Eka CI replaces
@@ -28,8 +28,8 @@ that workflow with a small set of strong signals attached directly to each pull 
   environment variables to Vault, AWS Secrets Manager, and `systemd-creds`.
 - **Change summaries and rebuild impact** — per-PR diffs of which packages changed and how
   many derivations have to rebuild, posted as a single GitHub check.
-- **Build metrics** — output (NAR) size and closure size tracked over time, compared against
-  the base branch, with configurable thresholds.
+- **Build metrics** — output (NAR) size tracked over time, compared against the base branch,
+  with configurable thresholds.
 - **PR comment commands** — `@eka-ci merge` and friends for queueing merges from a comment.
 
 ## Components

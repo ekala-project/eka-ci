@@ -74,7 +74,10 @@ impl RecorderWorker {
                     }
                 }
 
-                // TODO: closure size will be a future feature
+                // TODO(closure-size): see the prerequisites on `check_closure_size`
+                // (`size_checks.rs`). When enabled, move this into the
+                // `was_built_locally` block above: `nix path-info -S` needs the
+                // whole runtime closure in the local store.
                 // if let Err(e) = self.check_closure_size(drv, &job_infos).await {
                 //     warn!(
                 //         "Failed to check closure size for {}: {}",
