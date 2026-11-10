@@ -24,17 +24,17 @@ struct PathInfoData {
     closure_size: u64,
 }
 
-/// Run `nix path-info --json` for the given paths and parse the result.
+/// Run `nix path-info --json` with `flags` for the given paths and parse the
+/// result.
 fn query_path_infos(
     output_paths: &[String],
-    include_closure: bool,
+    flags: &[&str],
 ) -> Result<HashMap<String, PathInfoData>> {
     let mut cmd = Command::new("nix");
-    cmd.arg("path-info");
-    if include_closure {
-        cmd.arg("-S");
-    }
-    cmd.arg("--json").args(output_paths);
+    cmd.arg("path-info")
+        .args(flags)
+        .arg("--json")
+        .args(output_paths);
 
     let output = cmd.output().context("Failed to execute 'nix path-info'")?;
 
@@ -59,7 +59,7 @@ pub fn get_output_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>>
         return Ok(HashMap::new());
     }
 
-    let path_infos = query_path_infos(output_paths, false)?;
+    let path_infos = query_path_infos(output_paths, &[])?;
     Ok(path_infos
         .into_iter()
         .map(|(path, info)| (path, info.nar_size))
@@ -70,18 +70,34 @@ pub fn get_output_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>>
 ///
 /// Returns a map from store path → closure size in bytes (path + runtime deps).
 /// Paths not reported by `nix path-info` will be absent from the map.
-// TODO: closure size will be a future feature
-#[allow(dead_code)]
 pub fn get_closure_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>> {
     if output_paths.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let path_infos = query_path_infos(output_paths, true)?;
+    let path_infos = query_path_infos(output_paths, &["-S"])?;
     Ok(path_infos
         .into_iter()
         .map(|(path, info)| (path, info.closure_size))
         .collect())
+}
+
+/// Calculate the size of the combined closure of several store paths.
+///
+/// Unlike summing [`get_closure_sizes`], runtime dependencies shared by
+/// several paths (e.g. the outputs of one derivation) are counted once.
+pub fn get_combined_closure_size(output_paths: &[String]) -> Result<u64> {
+    if output_paths.is_empty() {
+        return Ok(0);
+    }
+
+    let path_infos = query_path_infos(output_paths, &["--recursive"])?;
+    Ok(sum_nar_sizes(&path_infos))
+}
+
+/// Total NAR size of a set of path infos, each path counted once.
+fn sum_nar_sizes(path_infos: &HashMap<String, PathInfoData>) -> u64 {
+    path_infos.values().map(|info| info.nar_size).sum()
 }
 
 /// Format bytes as human-readable size (e.g., "1.5 MB", "234 KB")
@@ -126,6 +142,21 @@ mod tests {
         let result = get_closure_sizes(&[]);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+
+        assert_eq!(get_combined_closure_size(&[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn combined_closure_counts_shared_paths_once() {
+        // `nix path-info --recursive --json out dev`: both outputs depend on
+        // glibc, which appears once in the result.
+        let json = r#"{
+            "/nix/store/aaa-hello": { "narSize": 100 },
+            "/nix/store/bbb-hello-dev": { "narSize": 10 },
+            "/nix/store/ccc-glibc": { "narSize": 1000 }
+        }"#;
+        let infos: HashMap<String, PathInfoData> = serde_json::from_str(json).unwrap();
+        assert_eq!(sum_nar_sizes(&infos), 1110);
     }
 
     #[test]

@@ -13,15 +13,18 @@ use super::GitHubService;
 use crate::db::github::CheckRun;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
+use crate::db::size::SizeMetric;
 
 /// The size comparison carried by `GitHubTask::UpdateBuildStatusWithSizeWarning`.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SizeWarningReport<'a> {
+    /// Which size grew.
+    pub metric: SizeMetric,
     /// Branch the baseline came from; empty if unknown.
     pub base_branch: &'a str,
-    /// Baseline output size in bytes.
+    /// Baseline size in bytes.
     pub baseline_size: u64,
-    /// Output size of this build in bytes.
+    /// Size of this build in bytes.
     pub current_size: u64,
     /// Increase over the baseline, in percent.
     pub increase_percent: f64,
@@ -46,22 +49,37 @@ impl SizeWarningReport<'_> {
             self.base_branch
         };
 
+        let (subject, advice) = match self.metric {
+            SizeMetric::Output => (
+                "output size",
+                "installation bloat. Consider reviewing the changes to reduce output size.",
+            ),
+            SizeMetric::Closure => (
+                "closure size (outputs plus runtime dependencies)",
+                "dependency bloat. Consider reviewing the changes for new or heavier runtime \
+                 dependencies.",
+            ),
+        };
+
         let title = format!(
-            "⚠️ Output size increased by {:.1}% (threshold: {:.1}%)",
-            self.increase_percent, self.threshold_percent
+            "⚠️ {} increased by {:.1}% (threshold: {:.1}%)",
+            self.metric.label(),
+            self.increase_percent,
+            self.threshold_percent
         );
         let summary = format!(
-            "The build output size has increased beyond the configured threshold.\n\n**Size \
+            "The build {} has increased beyond the configured threshold.\n\n**Size \
              Comparison:**\n- **Baseline ({}):** {}\n- **Current build:** {}\n- **Difference:** \
              {} ({:+.1}%)\n- **Threshold:** {:.1}%\n\nThis check is set to **neutral** \
-             (non-blocking) but indicates potential installation bloat. Consider reviewing the \
-             changes to reduce output size.",
+             (non-blocking) but indicates potential {}",
+            subject,
             branch,
             format_size(self.baseline_size),
             format_size(self.current_size),
             diff_formatted,
             self.increase_percent,
-            self.threshold_percent
+            self.threshold_percent,
+            advice
         );
         (title, summary)
     }
@@ -180,6 +198,7 @@ mod tests {
     #[test]
     fn text_names_branch_and_sizes() {
         let report = SizeWarningReport {
+            metric: SizeMetric::Output,
             base_branch: "master",
             baseline_size: 1_000_000,
             current_size: 1_500_000,
@@ -187,22 +206,48 @@ mod tests {
             threshold_percent: 10.0,
         };
         let (title, summary) = report.text();
-        assert!(title.contains("50.0%"), "{title}");
+        assert!(
+            title.starts_with("⚠️ Output size increased by 50.0%"),
+            "{title}"
+        );
         assert!(title.contains("threshold: 10.0%"), "{title}");
         assert!(summary.contains("**Baseline (master):**"), "{summary}");
         assert!(summary.contains("(+50.0%)"), "{summary}");
     }
 
+    /// The task is journaled: one written before `base_branch` and `metric`
+    /// existed still deserializes, as an output-size warning.
+    #[test]
+    fn journaled_task_without_metric_is_output_size() {
+        let json = r#"{"UpdateBuildStatusWithSizeWarning":{
+            "drv_id":"jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv",
+            "status":{"Completed":"Success"},
+            "baseline_size":1,"current_size":2,
+            "increase_percent":100.0,"threshold_percent":10.0}}"#;
+        let task: crate::github::GitHubTask = serde_json::from_str(json).unwrap();
+        match task {
+            crate::github::GitHubTask::UpdateBuildStatusWithSizeWarning {
+                metric,
+                base_branch,
+                ..
+            } => assert_eq!((metric, base_branch.as_str()), (SizeMetric::Output, "")),
+            other => panic!("unexpected task {:?}", other),
+        }
+    }
+
     #[test]
     fn text_without_branch_falls_back() {
         let report = SizeWarningReport {
+            metric: SizeMetric::Closure,
             base_branch: "",
             baseline_size: 2_000,
             current_size: 1_000,
             increase_percent: -50.0,
             threshold_percent: -60.0,
         };
-        let (_, summary) = report.text();
+        let (title, summary) = report.text();
+        assert!(title.starts_with("⚠️ Closure size"), "{title}");
+        assert!(summary.contains("closure size (outputs plus"), "{summary}");
         assert!(summary.contains("**Baseline (base branch):**"), "{summary}");
         assert!(summary.contains("**Difference:** -"), "{summary}");
     }

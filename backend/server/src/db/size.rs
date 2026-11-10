@@ -7,9 +7,54 @@
 //! drv path of a package changes whenever a PR changes it.
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 use crate::db::model::DrvId;
+
+/// Which size measurement a size check compares.
+///
+/// Journaled size-warning tasks written before closure sizes were checked
+/// have no metric and deserialize as [`SizeMetric::Output`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeMetric {
+    /// NAR size of the derivation's outputs.
+    #[default]
+    Output,
+    /// Size of the outputs together with their runtime dependencies.
+    Closure,
+}
+
+impl SizeMetric {
+    /// Both metrics, in the order they are measured.
+    pub const ALL: [SizeMetric; 2] = [SizeMetric::Output, SizeMetric::Closure];
+
+    /// Human-readable name, e.g. for check-run titles.
+    pub fn label(self) -> &'static str {
+        match self {
+            SizeMetric::Output => "Output size",
+            SizeMetric::Closure => "Closure size",
+        }
+    }
+
+    /// Column holding this metric in `Drv` and `DrvSizeBaselines`, and the
+    /// size column of its history table.
+    fn column(self) -> &'static str {
+        match self {
+            SizeMetric::Output => "output_size",
+            SizeMetric::Closure => "closure_size",
+        }
+    }
+
+    /// Per-commit history table for this metric.
+    fn history_table(self) -> &'static str {
+        match self {
+            SizeMetric::Output => "DrvOutputSizes",
+            SizeMetric::Closure => "DrvClosureSizes",
+        }
+    }
+}
 
 /// Identifies the base-branch baseline a PR build is compared against.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,31 +85,30 @@ pub async fn drv_rowid(pool: &SqlitePool, drv_id: &DrvId) -> Result<Option<i64>>
     Ok(rowid)
 }
 
-/// Get the baseline output size for an attr on a base branch.
+/// Get the baseline size of `metric` for an attr on a base branch.
 ///
 /// # Returns
-/// * `Ok(Some(size))` - Latest output size recorded for the attr on the branch
+/// * `Ok(Some(size))` - Latest size recorded for the attr on the branch
 /// * `Ok(None)` - No base-branch build of this attr has a recorded size yet
-pub async fn get_baseline_output_size(
+pub async fn get_baseline_size(
     pool: &SqlitePool,
     key: &BaselineKey<'_>,
+    metric: SizeMetric,
 ) -> Result<Option<u64>> {
-    let size: Option<Option<i64>> = sqlx::query_scalar(
-        r#"
-        SELECT output_size
-        FROM DrvSizeBaselines
-        WHERE owner = ? AND repo_name = ? AND branch = ? AND job = ? AND attr_path = ?
-          AND system = ?
-        "#,
-    )
-    .bind(key.owner)
-    .bind(key.repo_name)
-    .bind(key.branch)
-    .bind(key.job)
-    .bind(key.attr_path)
-    .bind(key.system)
-    .fetch_optional(pool)
-    .await?;
+    let query = format!(
+        "SELECT {} FROM DrvSizeBaselines WHERE owner = ? AND repo_name = ? AND branch = ? AND \
+         job = ? AND attr_path = ? AND system = ?",
+        metric.column()
+    );
+    let size: Option<Option<i64>> = sqlx::query_scalar(&query)
+        .bind(key.owner)
+        .bind(key.repo_name)
+        .bind(key.branch)
+        .bind(key.job)
+        .bind(key.attr_path)
+        .bind(key.system)
+        .fetch_optional(pool)
+        .await?;
 
     Ok(size.flatten().map(|s| s as u64))
 }
@@ -75,7 +119,8 @@ pub async fn get_baseline_output_size(
 /// Does nothing unless the jobset has a branch (see [`set_jobset_branch`]).
 /// When `drv_id` is given, only that derivation's jobs are copied; otherwise
 /// every job of the jobset whose derivation has a recorded size is. Existing
-/// baselines for the same attr are replaced.
+/// baselines for the same attr are replaced; a metric the new derivation has
+/// no size for keeps its previous baseline.
 ///
 /// Returns the number of baselines written.
 pub async fn record_size_baselines(
@@ -100,8 +145,8 @@ pub async fn record_size_baselines(
         ON CONFLICT (owner, repo_name, branch, job, attr_path, system) DO UPDATE SET
             drv_path = excluded.drv_path,
             git_commit = excluded.git_commit,
-            output_size = excluded.output_size,
-            closure_size = excluded.closure_size,
+            output_size = COALESCE(excluded.output_size, output_size),
+            closure_size = COALESCE(excluded.closure_size, closure_size),
             recorded_at = CURRENT_TIMESTAMP
         "#,
     )
@@ -126,176 +171,53 @@ pub async fn set_jobset_branch(pool: &SqlitePool, jobset_id: i64, branch: &str) 
     Ok(())
 }
 
-/// Store the output size for a derivation build
-///
-/// Records the output size in the historical tracking table, keyed by drv
-/// path and commit.
+/// Record a measured size in the per-commit history table of `metric`.
 ///
 /// # Arguments
 /// * `pool` - Database connection pool
 /// * `drv_id` - The derivation
-/// * `output_size` - Size in bytes
+/// * `metric` - Which size `size` is
+/// * `size` - Size in bytes
 /// * `git_commit` - Commit SHA this build corresponds to
 /// * `git_repo` - Repository URL
-pub async fn store_output_size(
+pub async fn store_size_history(
     pool: &SqlitePool,
     drv_id: &DrvId,
-    output_size: u64,
+    metric: SizeMetric,
+    size: u64,
     git_commit: &str,
     git_repo: &str,
 ) -> Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO DrvOutputSizes (drv_path, output_size, git_commit, git_repo)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(drv_path, git_commit, git_repo) DO UPDATE SET
-            output_size = excluded.output_size,
-            recorded_at = CURRENT_TIMESTAMP
-        "#,
-    )
-    .bind(drv_id)
-    .bind(output_size as i64)
-    .bind(git_commit)
-    .bind(git_repo)
-    .execute(pool)
-    .await?;
+    let (table, column) = (metric.history_table(), metric.column());
+    let query = format!(
+        "INSERT INTO {table} (drv_path, {column}, git_commit, git_repo) VALUES (?, ?, ?, ?) ON \
+         CONFLICT(drv_path, git_commit, git_repo) DO UPDATE SET {column} = excluded.{column}, \
+         recorded_at = CURRENT_TIMESTAMP"
+    );
+    sqlx::query(&query)
+        .bind(drv_id)
+        .bind(size as i64)
+        .bind(git_commit)
+        .bind(git_repo)
+        .execute(pool)
+        .await?;
 
     Ok(())
 }
 
-/// Update the output_size column in the Drv table
-///
-/// # Arguments
-/// * `pool` - Database connection pool
-/// * `drv_id` - The derivation
-/// * `output_size` - Size in bytes
-pub async fn update_drv_output_size(
+/// Set the `metric` column of the derivation's `Drv` row.
+pub async fn update_drv_size(
     pool: &SqlitePool,
     drv_id: &DrvId,
-    output_size: u64,
+    metric: SizeMetric,
+    size: u64,
 ) -> Result<()> {
-    sqlx::query(
-        r#"
-        UPDATE Drv
-        SET output_size = ?
-        WHERE drv_path = ?
-        "#,
-    )
-    .bind(output_size as i64)
-    .bind(drv_id)
-    .execute(pool)
-    .await?;
-
-    Ok(())
-}
-
-/// Get the baseline closure size for a derivation on a specific branch
-///
-/// This looks up the most recent recorded closure size for the given drv_path
-/// on the base branch (e.g., "main"). Used to compare current PR builds against
-/// the baseline to detect closure size increases.
-///
-/// # Arguments
-/// * `pool` - Database connection pool
-/// * `drv_path` - The derivation store path
-/// * `git_repo` - Repository URL (e.g., "https://github.com/owner/repo")
-/// * `base_branch` - Branch name to compare against (e.g., "main", "master")
-///
-/// # Returns
-/// * `Ok(Some(size))` - Found baseline closure size in bytes
-/// * `Ok(None)` - No baseline found (first time building this drv on base branch)
-/// * `Err` - Database error
-// TODO: closure size will be a future feature
-#[allow(dead_code)]
-pub async fn get_baseline_closure_size(
-    pool: &SqlitePool,
-    drv_path: &str,
-    git_repo: &str,
-    _base_branch: &str,
-) -> Result<Option<u64>> {
-    let size = sqlx::query_scalar::<_, Option<i64>>(
-        r#"
-        SELECT s.closure_size
-        FROM DrvClosureSizes s
-        INNER JOIN DrvBuildMetadata m ON s.drv_path = m.derivation AND s.git_commit = m.git_commit
-        WHERE s.drv_path = ?
-          AND s.git_repo = ?
-        ORDER BY s.recorded_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(drv_path)
-    .bind(git_repo)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(size.flatten().map(|s| s as u64))
-}
-
-/// Store the closure size for a derivation build
-///
-/// Records the closure size in the historical tracking table for future baseline comparisons.
-///
-/// # Arguments
-/// * `pool` - Database connection pool
-/// * `drv_path` - The derivation store path
-/// * `closure_size` - Closure size in bytes (includes all dependencies)
-/// * `git_commit` - Commit SHA this build corresponds to
-/// * `git_repo` - Repository URL
-// TODO: closure size will be a future feature
-#[allow(dead_code)]
-pub async fn store_closure_size(
-    pool: &SqlitePool,
-    drv_path: &str,
-    closure_size: u64,
-    git_commit: &str,
-    git_repo: &str,
-) -> Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO DrvClosureSizes (drv_path, closure_size, git_commit, git_repo)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(drv_path, git_commit, git_repo) DO UPDATE SET
-            closure_size = excluded.closure_size,
-            recorded_at = CURRENT_TIMESTAMP
-        "#,
-    )
-    .bind(drv_path)
-    .bind(closure_size as i64)
-    .bind(git_commit)
-    .bind(git_repo)
-    .execute(pool)
-    .await?;
-
-    Ok(())
-}
-
-/// Update the closure_size column in the Drv table
-///
-/// This is a convenience for updating the main Drv record with the calculated closure size.
-///
-/// # Arguments
-/// * `pool` - Database connection pool
-/// * `drv_path` - The derivation store path (DrvId)
-/// * `closure_size` - Closure size in bytes
-// TODO: closure size will be a future feature
-#[allow(dead_code)]
-pub async fn update_drv_closure_size(
-    pool: &SqlitePool,
-    drv_path: &str,
-    closure_size: u64,
-) -> Result<()> {
-    sqlx::query(
-        r#"
-        UPDATE Drv
-        SET closure_size = ?
-        WHERE drv_path = ?
-        "#,
-    )
-    .bind(closure_size as i64)
-    .bind(drv_path)
-    .execute(pool)
-    .await?;
+    let query = format!("UPDATE Drv SET {} = ? WHERE drv_path = ?", metric.column());
+    sqlx::query(&query)
+        .bind(size as i64)
+        .bind(drv_id)
+        .execute(pool)
+        .await?;
 
     Ok(())
 }
@@ -312,6 +234,8 @@ mod tests {
 
     const BASE_DRV: &str = "/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv";
     const HEAD_DRV: &str = "/nix/store/gciipqhqkdlqqn803zd4a389v86ran45-hello-2.12.2.drv";
+    const OUT: SizeMetric = SizeMetric::Output;
+    const CLOSURE: SizeMetric = SizeMetric::Closure;
 
     async fn insert_test_drv(pool: &SqlitePool, drv_path: &str) -> Result<DrvId> {
         let drv_id = DrvId::from_str(drv_path)?;
@@ -388,7 +312,7 @@ mod tests {
 
         assert!(drv_rowid(&pool, &drv_id).await?.is_some());
 
-        update_drv_output_size(&pool, &drv_id, 4096).await?;
+        update_drv_size(&pool, &drv_id, OUT, 4096).await?;
         assert_eq!(drv_output_size(&pool, &drv_id).await?, Some(4096));
         Ok(())
     }
@@ -399,7 +323,7 @@ mod tests {
     async fn baseline_does_not_need_build_metadata(pool: SqlitePool) -> Result<()> {
         let base_id = insert_test_drv(&pool, BASE_DRV).await?;
         let base_jobset = jobset_with_hello(&pool, "base-sha", BASE_DRV).await?;
-        update_drv_output_size(&pool, &base_id, 1000).await?;
+        update_drv_size(&pool, &base_id, OUT, 1000).await?;
         set_jobset_branch(&pool, base_jobset, "main").await?;
         assert_eq!(record_size_baselines(&pool, base_jobset, None).await?, 1);
 
@@ -408,7 +332,7 @@ mod tests {
             .await?;
         assert_eq!(metadata_rows, 0);
         assert_eq!(
-            get_baseline_output_size(&pool, &hello_key("main")).await?,
+            get_baseline_size(&pool, &hello_key("main"), OUT).await?,
             Some(1000)
         );
         Ok(())
@@ -420,7 +344,7 @@ mod tests {
     async fn baseline_is_keyed_by_attr_not_drv_path(pool: SqlitePool) -> Result<()> {
         let base_id = insert_test_drv(&pool, BASE_DRV).await?;
         let base_jobset = jobset_with_hello(&pool, "base-sha", BASE_DRV).await?;
-        update_drv_output_size(&pool, &base_id, 1000).await?;
+        update_drv_size(&pool, &base_id, OUT, 1000).await?;
         set_jobset_branch(&pool, base_jobset, "main").await?;
         record_size_baselines(&pool, base_jobset, None).await?;
 
@@ -429,18 +353,18 @@ mod tests {
         jobset_with_hello(&pool, "head-sha", HEAD_DRV).await?;
 
         assert_eq!(
-            get_baseline_output_size(&pool, &hello_key("main")).await?,
+            get_baseline_size(&pool, &hello_key("main"), OUT).await?,
             Some(1000)
         );
         assert_eq!(
-            get_baseline_output_size(&pool, &hello_key("dev")).await?,
+            get_baseline_size(&pool, &hello_key("dev"), OUT).await?,
             None
         );
         let other_system = BaselineKey {
             system: "aarch64-linux",
             ..hello_key("main")
         };
-        assert_eq!(get_baseline_output_size(&pool, &other_system).await?, None);
+        assert_eq!(get_baseline_size(&pool, &other_system, OUT).await?, None);
         Ok(())
     }
 
@@ -455,19 +379,80 @@ mod tests {
 
         let head_id = insert_test_drv(&pool, HEAD_DRV).await?;
         let head_jobset = jobset_with_hello(&pool, "head-sha", HEAD_DRV).await?;
-        update_drv_output_size(&pool, &head_id, 10).await?;
+        update_drv_size(&pool, &head_id, OUT, 10).await?;
         assert_eq!(record_size_baselines(&pool, head_jobset, None).await?, 0);
 
         // A later base build replaces the baseline for the attr.
-        update_drv_output_size(&pool, &base_id, 2000).await?;
+        update_drv_size(&pool, &base_id, OUT, 2000).await?;
         assert_eq!(
             record_size_baselines(&pool, jobset, Some(&base_id)).await?,
             1
         );
         assert_eq!(
-            get_baseline_output_size(&pool, &hello_key("main")).await?,
+            get_baseline_size(&pool, &hello_key("main"), OUT).await?,
             Some(2000)
         );
+        Ok(())
+    }
+
+    /// Closure sizes share the baseline row (and key) of the output size.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn closure_baseline_shares_the_attr_key(pool: SqlitePool) -> Result<()> {
+        let base_id = insert_test_drv(&pool, BASE_DRV).await?;
+        let jobset = jobset_with_hello(&pool, "base-sha", BASE_DRV).await?;
+        set_jobset_branch(&pool, jobset, "main").await?;
+        update_drv_size(&pool, &base_id, CLOSURE, 50_000).await?;
+        assert_eq!(record_size_baselines(&pool, jobset, None).await?, 1);
+        assert_eq!(
+            get_baseline_size(&pool, &hello_key("main"), OUT).await?,
+            None
+        );
+        update_drv_size(&pool, &base_id, OUT, 1000).await?;
+        record_size_baselines(&pool, jobset, Some(&base_id)).await?;
+
+        let key = hello_key("main");
+        assert_eq!(get_baseline_size(&pool, &key, CLOSURE).await?, Some(50_000));
+        assert_eq!(get_baseline_size(&pool, &key, OUT).await?, Some(1000));
+        Ok(())
+    }
+
+    /// A newer base build whose closure was not measured keeps the previous
+    /// closure baseline instead of clearing it.
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn unmeasured_metric_keeps_previous_baseline(pool: SqlitePool) -> Result<()> {
+        let old_id = insert_test_drv(&pool, BASE_DRV).await?;
+        let old = jobset_with_hello(&pool, "old-sha", BASE_DRV).await?;
+        set_jobset_branch(&pool, old, "main").await?;
+        update_drv_size(&pool, &old_id, OUT, 1000).await?;
+        update_drv_size(&pool, &old_id, CLOSURE, 50_000).await?;
+        record_size_baselines(&pool, old, None).await?;
+
+        let new_id = insert_test_drv(&pool, HEAD_DRV).await?;
+        let new = jobset_with_hello(&pool, "new-sha", HEAD_DRV).await?;
+        set_jobset_branch(&pool, new, "main").await?;
+        update_drv_size(&pool, &new_id, OUT, 1200).await?;
+        record_size_baselines(&pool, new, None).await?;
+
+        let key = hello_key("main");
+        assert_eq!(get_baseline_size(&pool, &key, OUT).await?, Some(1200));
+        assert_eq!(get_baseline_size(&pool, &key, CLOSURE).await?, Some(50_000));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn size_history_goes_to_the_metric_table(pool: SqlitePool) -> Result<()> {
+        let drv_id = DrvId::from_str(BASE_DRV)?;
+        store_size_history(&pool, &drv_id, OUT, 10, "sha", "repo").await?;
+        store_size_history(&pool, &drv_id, CLOSURE, 30, "sha", "repo").await?;
+        store_size_history(&pool, &drv_id, CLOSURE, 40, "sha", "repo").await?;
+
+        let output: i64 = sqlx::query_scalar("SELECT output_size FROM DrvOutputSizes")
+            .fetch_one(&pool)
+            .await?;
+        let closure: Vec<i64> = sqlx::query_scalar("SELECT closure_size FROM DrvClosureSizes")
+            .fetch_all(&pool)
+            .await?;
+        assert_eq!((output, closure), (10, vec![40]));
         Ok(())
     }
 

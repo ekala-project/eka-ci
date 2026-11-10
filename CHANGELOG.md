@@ -57,6 +57,10 @@
   recorded from base-branch evaluations per job, attr path and system
   (`DrvSizeBaselines`), and a warning completes the check run as neutral
   instead of being overwritten by the success update
+- Closure-size checks: the closure size (outputs plus runtime dependencies,
+  shared paths counted once) of each locally built derivation is recorded
+  and compared against the same base-branch baseline as the output size,
+  with the same `size_check` threshold. Check-run warnings name the metric
 
 ### passthru.tests evaluation (nixpkgs-CI workflow)
 

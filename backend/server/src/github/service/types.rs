@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::checks::types::CheckResultMessage;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
+use crate::db::size::SizeMetric;
 use crate::nix::{NixEvalDrv, NixEvalError};
 use crate::skills::types::SkillResultMessage;
 
@@ -317,6 +318,10 @@ pub enum GitHubTask {
         /// this field existed.
         #[serde(default)]
         base_branch: String,
+        /// Which size grew. Tasks journaled before closure sizes were
+        /// checked deserialize as output size.
+        #[serde(default)]
+        metric: SizeMetric,
     },
     CreateJobSet {
         ci_check_info: Arc<CICheckInfo>,
