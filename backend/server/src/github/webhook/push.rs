@@ -159,6 +159,7 @@ async fn handle_tracking_branch(
         owner: owner.to_string(),
         repo_name: repo_name.to_string(),
         sha: sha.to_string(),
+        branch: Some(branch.to_string()),
     };
     if let Err(e) = git_sender.send(task).await {
         warn!(

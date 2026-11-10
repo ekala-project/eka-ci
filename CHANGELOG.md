@@ -48,6 +48,12 @@
   openssl instead of the vendored one, and a RUNPATH fix for rust-lld.
   `nix/overlay.nix` now takes the fenix flake as an argument (direct
   importers must pass it); `overlays.default` is unchanged for consumers
+- Output-size checks work again: sizes were looked up by store path
+  instead of the stored drv path, the baseline query joined a table nothing
+  writes to, and the job's `size_check` was never parsed. Baselines are now
+  recorded from base-branch evaluations per job, attr path and system
+  (`DrvSizeBaselines`), and a warning completes the check run as neutral
+  instead of being overwritten by the success update
 
 ### passthru.tests evaluation (nixpkgs-CI workflow)
 

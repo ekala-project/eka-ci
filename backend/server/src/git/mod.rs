@@ -24,6 +24,10 @@ pub enum GitTask {
         owner: String,
         repo_name: String,
         sha: String,
+        /// Tracking branch that was pushed. `None` for tasks journaled
+        /// before this field existed.
+        #[serde(default)]
+        branch: Option<String>,
     },
 }
 
@@ -74,6 +78,7 @@ impl AsyncService<GitTask> for GitService {
                 owner,
                 repo_name,
                 sha,
+                branch,
             } => {
                 workspace.create_worktree().await?;
                 let ci_info = CICheckInfo {
@@ -81,6 +86,7 @@ impl AsyncService<GitTask> for GitService {
                     base_commit: None,
                     owner,
                     repo_name,
+                    branch,
                 };
                 let repo_task = RepoTask::ReadGitHub {
                     repo_path: workspace.worktree_path(),

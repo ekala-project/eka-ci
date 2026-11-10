@@ -27,6 +27,7 @@ mod checks;
 pub mod graphql_batch;
 mod jobsets;
 mod passthru_filter;
+mod size_warning;
 mod task_handler;
 mod types;
 

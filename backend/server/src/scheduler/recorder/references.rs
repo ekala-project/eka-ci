@@ -69,12 +69,7 @@ impl RecorderWorker {
 
         // Get the drv ROWID from database to use as foreign key
         let pool = &self.db_service.pool;
-        let drv_rowid: Option<i64> = sqlx::query_scalar("SELECT ROWID FROM Drv WHERE drv_path = ?")
-            .bind(drv_id.store_path())
-            .fetch_optional(pool)
-            .await?;
-
-        let drv_rowid = match drv_rowid {
+        let drv_rowid = match crate::db::size::drv_rowid(pool, drv_id).await? {
             Some(id) => id,
             None => {
                 warn!(

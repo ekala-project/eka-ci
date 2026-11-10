@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tracing::{debug, warn};
 
+use super::size_eval::SizeWarning;
 use super::{RecorderTask, RecorderWorker};
 use crate::channels::types::ChannelTask;
 use crate::config::ChannelForge;
@@ -19,6 +20,7 @@ impl RecorderWorker {
         drv: &Arc<drv_id::DrvId>,
         task: &RecorderTask,
         job_infos: &[crate::db::github::JobInfo],
+        size_warning: Option<SizeWarning>,
     ) -> anyhow::Result<()> {
         use build_event::*;
         use {DrvBuildResult as DBR, DrvBuildState as DBS};
@@ -62,9 +64,14 @@ impl RecorderWorker {
             .await?
             .is_empty();
         if has_check_runs {
-            let github_task = GitHubTask::UpdateBuildStatus {
-                drv_id: Arc::clone(drv),
-                status: task.result.clone(),
+            // A size warning replaces the plain status update: sending both
+            // would let the success update overwrite the neutral warning.
+            let github_task = match size_warning {
+                Some(warning) => warning.into_github_task(Arc::clone(drv)),
+                None => GitHubTask::UpdateBuildStatus {
+                    drv_id: Arc::clone(drv),
+                    status: task.result.clone(),
+                },
             };
             if let Err(e) = github_sender.send(github_task).await {
                 warn!(
