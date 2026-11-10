@@ -38,6 +38,9 @@
   git invocations; only full object ids are fetched directly as a refspec
 - Accept `allow-eval-failures` as an alias of `allow_eval_failures` in
   `.ekaci/config.json` (it was silently ignored) and warn on unknown keys
+- Warn at startup when `ekaci.toml` still sets the removed
+  `[eval] allowed_uris`; it has had no effect since evaluation moved to
+  `iets` and was silently ignored
 - Docs: config path is `.ekaci/config.json`, flake mode status, GitHub App
   Contents permission, push events required for release channels
 - NixOS module: drop `null` settings when generating `ekaci.toml`; put
