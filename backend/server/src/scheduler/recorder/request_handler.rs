@@ -29,6 +29,7 @@ impl RecorderWorker {
         };
 
         let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
+        let mut size_warning = None;
 
         match &task.result {
             DBS::Completed(DBR::Success) => {
@@ -65,12 +66,13 @@ impl RecorderWorker {
                     }
 
                     // Calculate and check output size if configured
-                    if let Err(e) = self.check_output_size(drv, &job_infos).await {
-                        warn!(
+                    match self.check_output_size(drv, &job_infos).await {
+                        Ok(warning) => size_warning = warning,
+                        Err(e) => warn!(
                             "Failed to check output size for {}: {}",
                             drv.store_path(),
                             e
-                        );
+                        ),
                     }
                 }
 
@@ -306,7 +308,7 @@ impl RecorderWorker {
             },
         }
 
-        self.notify_forge_and_channels(drv, task, &job_infos)
+        self.notify_forge_and_channels(drv, task, &job_infos, size_warning)
             .await?;
 
         // Broadcast job stats updates for all affected jobs

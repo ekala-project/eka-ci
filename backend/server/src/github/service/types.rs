@@ -153,6 +153,11 @@ pub struct CICheckInfo {
     pub base_commit: Option<String>,
     pub owner: String,
     pub repo_name: String,
+    /// Branch whose tip `commit` is, for base-branch evaluations (a PR's base
+    /// or a tracking-branch push). `None` for PR heads. Jobsets created from
+    /// a base-branch evaluation provide the size-check baselines.
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
 impl CICheckInfo {
@@ -176,6 +181,7 @@ impl CICheckInfo {
             base_commit: None,
             owner,
             repo_name,
+            branch: Some(pr.base.ref_field.clone()),
         })
     }
 
@@ -200,6 +206,7 @@ impl CICheckInfo {
             base_commit: Some(base_commit),
             owner,
             repo_name,
+            branch: None,
         })
     }
 
@@ -306,6 +313,10 @@ pub enum GitHubTask {
         current_size: u64,
         increase_percent: f64,
         threshold_percent: f64,
+        /// Branch the baseline came from. Empty for tasks journaled before
+        /// this field existed.
+        #[serde(default)]
+        base_branch: String,
     },
     CreateJobSet {
         ci_check_info: Arc<CICheckInfo>,

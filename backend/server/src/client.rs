@@ -433,6 +433,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                                 base_commit: None,
                                 owner: jobset_info.owner.clone(),
                                 repo_name: jobset_info.repo_name.clone(),
+                                branch: None,
                             }),
                             job_name: jobset_info.job.clone(),
                             conclusion: octocrab::params::checks::CheckRunConclusion::Success

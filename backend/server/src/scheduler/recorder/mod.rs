@@ -23,6 +23,7 @@ mod hooks;
 mod references;
 mod request_handler;
 mod size_checks;
+mod size_eval;
 mod state;
 
 /// `derivation` is `Arc<DrvId>` so `handle_recorder_request` can fan out the

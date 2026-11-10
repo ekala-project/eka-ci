@@ -9,10 +9,9 @@ use tracing::{debug, info, warn};
 use super::GitHubService;
 use crate::ci::config as ci_config;
 use crate::db::github::NewOrChangedJob;
-use crate::db::model::DrvId;
 use crate::db::model::build_event::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
 use crate::github::service::types::JobDifference;
-use crate::github::service::{CHANGE_SUMMARY_DEBOUNCE, CICheckInfo, GitHubTask, actions};
+use crate::github::service::{CHANGE_SUMMARY_DEBOUNCE, CICheckInfo, GitHubTask};
 use crate::nix::NixEvalDrv;
 
 impl GitHubService {
@@ -47,6 +46,10 @@ impl GitHubService {
                 base_sha,
             )
             .await?;
+
+        if let Some(branch) = ci_check_info.branch.as_deref() {
+            self.record_base_branch_jobset(jobset_id, branch).await;
+        }
 
         // This is only relevant on PRs, missing a base commit denotes that
         // this jobset creation is done for a base_commit
@@ -99,6 +102,30 @@ impl GitHubService {
             }
         }
         Ok(())
+    }
+
+    /// Mark a jobset as an evaluation of `branch` and seed size-check
+    /// baselines from the sizes already recorded for its derivations.
+    ///
+    /// Base-branch derivations are not built here; most were built earlier as
+    /// a PR head. Ones that finish building later are recorded by the
+    /// recorder. Failures are logged: baselines must not block the jobset.
+    async fn record_base_branch_jobset(&self, jobset_id: i64, branch: &str) {
+        let pool = &self.db_service.pool;
+        if let Err(e) = crate::db::size::set_jobset_branch(pool, jobset_id, branch).await {
+            warn!("Failed to record branch of jobset {}: {}", jobset_id, e);
+            return;
+        }
+        match crate::db::size::record_size_baselines(pool, jobset_id, None).await {
+            Ok(n) => debug!(
+                "Seeded {} size baselines on {} from jobset {}",
+                n, branch, jobset_id
+            ),
+            Err(e) => warn!(
+                "Failed to seed size baselines from jobset {}: {}",
+                jobset_id, e
+            ),
+        }
     }
 
     /// Check if passthru.tests is enabled for this job and, if so,
@@ -449,36 +476,6 @@ impl GitHubService {
             job_name,
         );
 
-        Ok(())
-    }
-
-    pub(super) async fn handle_update_build_status_with_size_warning(
-        &self,
-        drv_id: &DrvId,
-        status: &DrvBuildState,
-        baseline_size: u64,
-        current_size: u64,
-        increase_percent: f64,
-        threshold_percent: f64,
-    ) -> Result<()> {
-        let check_runs = self.db_service.check_runs_for_drv_path(drv_id).await?;
-        for check_run in check_runs {
-            debug!(
-                "Updating checkrun with size warning for {}",
-                &check_run.check_run_id
-            );
-            let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
-            actions::update_check_run_with_size_warning(
-                &octocrab,
-                &check_run,
-                status,
-                baseline_size,
-                current_size,
-                increase_percent,
-                threshold_percent,
-            )
-            .await?;
-        }
         Ok(())
     }
 }

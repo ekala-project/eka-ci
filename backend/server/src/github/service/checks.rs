@@ -114,6 +114,7 @@ impl GitHubService {
             base_commit: None,
             owner: jobset_info.owner.clone(),
             repo_name: jobset_info.repo_name.clone(),
+            branch: None,
         };
 
         // Check if this is a grouped (dotted) attr path
