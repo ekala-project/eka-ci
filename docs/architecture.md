@@ -194,7 +194,7 @@ RepoReader:
 ```rust
 EvalService:
   - Create "CI Configure Gate" GitHub check run
-  - Run: iets eval-jobs --flake .#{job.file}
+  - Run (sandboxed): iets eval-jobs --show-input-drvs --meta {job.file}
   - Parse JSON stream of NixEvalDrv structs
 
   If evaluation fails and allow_failures=false:

@@ -135,10 +135,11 @@ limits; it is slated for removal in a later change.
 - **landlock**, applied by `ekaci-sandbox-helper` inside the namespace, restricts file
   access to the same paths. It is best-effort: on a kernel without landlock the sandbox
   degrades to bubblewrap only and the server logs a warning at startup.
-- **iets** runs with `--pure-eval` by default; filesystem and network restrictions are
-  enforced by bwrap + landlock + passt (not by Nix-level `restrict-eval`).
-- **Network** is filtered (see [`[sandbox]`](#sandbox)): even an allowlisted URI cannot
-  reach the host or its private networks directly.
+- **iets** evaluates the job file in pure mode (its default for a file argument; Eka CI does
+  not pass `--impure`); filesystem and network restrictions are enforced by bwrap +
+  landlock + passt (not by Nix-level `restrict-eval` / `allowed-uris`).
+- **Network** is filtered (see [`[sandbox]`](#sandbox)): fetches made during evaluation
+  cannot reach the host or its private networks directly.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

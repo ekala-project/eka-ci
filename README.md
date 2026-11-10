@@ -39,7 +39,7 @@ Curating a Nix repository shouldn't be bottlenecked by manual review. EkaCI auto
 
 ### Nix Evaluation and Building
 
-- Differential evaluation via `nix-eval-jobs` -- only changed derivations are built
+- Differential evaluation via `iets eval-jobs` -- only changed derivations are built
 - In-memory dependency graph with configurable LRU cache (default 100k nodes)
 - Three-tier scheduler: ingress (dependency eligibility) -> build queue (platform routing) -> platform queue (builder selection)
 - Dedicated FOD queue to prevent network-bound fetches from starving compute builds
