@@ -82,8 +82,10 @@ impl GitHubService {
                 increase_percent,
                 threshold_percent,
                 base_branch,
+                metric,
             } => {
                 let warning = super::size_warning::SizeWarningReport {
+                    metric: *metric,
                     base_branch,
                     baseline_size: *baseline_size,
                     current_size: *current_size,
