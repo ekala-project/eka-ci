@@ -65,26 +65,13 @@ impl RecorderWorker {
                         );
                     }
 
-                    // Calculate and check output size if configured
-                    match self.check_output_size(drv, &job_infos).await {
+                    // Measure output and closure sizes and compare them
+                    // against the base branch, if configured
+                    match self.check_sizes(drv, &job_infos).await {
                         Ok(warning) => size_warning = warning,
-                        Err(e) => warn!(
-                            "Failed to check output size for {}: {}",
-                            drv.store_path(),
-                            e
-                        ),
+                        Err(e) => warn!("Failed to check sizes for {}: {}", drv.store_path(), e),
                     }
                 }
-
-                // TODO: closure size will be a future feature
-                // if let Err(e) = self.check_closure_size(drv, &job_infos).await {
-                //     warn!(
-                //         "Failed to check closure size for {}: {}",
-                //         drv.store_path(),
-                //         e
-                //     );
-                //     // Don't fail the build if closure size check fails
-                // }
 
                 // Clear transitive failures in database first (source of
                 // truth for crash recovery), then update the in-memory

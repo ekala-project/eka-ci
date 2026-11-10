@@ -46,17 +46,20 @@ A *job* describes a Nix expression to evaluate and the derivations to build from
 
 When `size_check` is set, Eka CI:
 
-1. Calculates output (NAR) and closure size for each successful build.
+1. Calculates the output (NAR) size and the closure size (the outputs plus their
+   runtime dependencies, each store path counted once) of each successful build that
+   Eka CI built itself. Sizes are not measured for substituted outputs.
 2. Stores sizes in historical tables, keyed by commit and repository, and keeps a
    baseline per job, attribute path and system for each base branch. The baseline is
    recorded from the sizes of the derivations a base-branch evaluation (the pull
    request base or a push to a tracked branch) references, as far as Eka CI has
    built them.
-3. Compares a pull request's build against the baseline of the same attribute on
-   `base_branch`.
-4. When the increase exceeds `max_increase_percent`, completes the build's check run
-   with a *neutral* conclusion and a size comparison instead of success. The warning
-   is not part of the change summary, which is posted before builds finish.
+3. Compares both sizes of a pull request's build against the baseline of the same
+   attribute on `base_branch`. Both use the same `max_increase_percent`.
+4. When an increase exceeds `max_increase_percent`, completes the build's check run
+   with a *neutral* conclusion and a size comparison instead of success. If both sizes
+   exceed it, the one with the larger increase is shown. The warning is not part of the
+   change summary, which is posted before builds finish.
 
 ## Checks
 
