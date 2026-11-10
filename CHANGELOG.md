@@ -2,14 +2,26 @@
 
 ## Unreleased
 
+### Evaluation with iets
+
+- Evaluate jobs with `iets eval-jobs` instead of `nix-eval-jobs` (same JSON
+  lines output, with `--meta` and `--show-input-drvs`); iets evaluates the
+  job file in pure mode
+- `[eval] allowed_uris` (Nix `restrict-eval`) is replaced by
+  `[eval] provenance`, which passes `--provenance` to add each derivation's
+  source position (`pos`); an `allowed_uris` key left in `ekaci.toml` is
+  ignored
+- The Nix package wraps the eka-ci binaries with `nix`, `iets`, `git`,
+  `bubblewrap` and `passt` on `PATH`
+
 ### Sandbox for evaluation and checks
 
 - New `sandbox` workspace crate (bubblewrap + landlock via
   `ekaci-sandbox-helper`) with no unsandboxed fallback; the server refuses to
   start if the preflight fails
-- Every `nix-eval-jobs` run is sandboxed: cleared environment, only the store,
-  the worktree and a few `/etc` files (not `/etc/nix`) visible, `restrict-eval` with
-  `[eval] allowed_uris`, wall-clock and memory limits (`[eval]`). Not yet
+- Every `iets eval-jobs` run is sandboxed: cleared environment, only the store,
+  the worktree and a few `/etc` files (not `/etc/nix`) visible, wall-clock and
+  memory limits (`[eval]`). Not yet
   covered: the `nix eval` that lists a flake's `checks`/`packages` still runs
   unsandboxed
 - Repository checks and their dev-shell capture (`nix develop` /
@@ -41,7 +53,7 @@
 - Docs: config path is `.ekaci/config.json`, flake mode status, GitHub App
   Contents permission, push events required for release channels
 - NixOS module: drop `null` settings when generating `ekaci.toml`; put
-  `nix`, `nix-eval-jobs` and `git` on the service `PATH` (the service did
+  `nix`, `iets` and `git` on the service `PATH` (the service did
   not start: `nix config show` failed with ENOENT)
 - Nix package builds again: stable Rust from fenix (nixpkgs' rustc is too
   old), `outputHashes` for the harmonia git dependency, `protobuf`, system
@@ -58,7 +70,7 @@
   rebuilds — only directly-modified packages trigger test evaluation
 - Generate a Nix expression that safely evaluates each changed package's
   `passthru.tests` (using `builtins.tryEval` to handle missing tests
-  gracefully), then feed it through the existing `nix-eval-jobs` pipeline
+  gracefully), then feed it through the existing `iets eval-jobs` pipeline
 - Test derivations flow through the standard build pipeline and appear
   as a separate `{job}/passthru-tests` jobset with individual check runs
 

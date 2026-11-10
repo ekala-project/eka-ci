@@ -161,7 +161,7 @@ EvalTask::GithubJobPR(eval_job, ci_info)
        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ EvalService (backend/server/src/nix/mod.rs)                 │
-│ - Run: iets eval-jobs --file {file} --gc-roots-dir ...       │
+│ - Run: iets eval-jobs --show-input-drvs --meta {file}       │
 │ - Parse NDJSON output stream                                │
 │ - Extract derivations: { drvPath, outputs, system, ... }    │
 └──────┬──────────────────────────────────────────────────────┘
