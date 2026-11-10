@@ -38,11 +38,14 @@ pub use spawn::spawn_logged;
 
 mod checks;
 pub mod skills;
+mod startup_summary;
 
 pub mod websocket;
 pub use websocket::WebSocketService;
 
 pub async fn start_services(config: Config) -> Result<()> {
+    let config_summary = startup_summary::StartupSummary::capture(&config);
+
     let db_service = DbService::new(&config.db_path)
         .await
         .context("attempted to create DB pool")?;
@@ -431,6 +434,8 @@ pub async fn start_services(config: Config) -> Result<()> {
         scheduler_service.ingress_request_sender(),
     )
     .await?;
+
+    config_summary.log();
 
     tokio::select! {
         biased;
