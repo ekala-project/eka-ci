@@ -146,6 +146,10 @@ limits; it is slated for removal in a later change.
 | `memory_limit_mb` | `8192` | `RLIMIT_AS` for each process in the sandbox (≥ 1024). `iets eval-jobs` workers are recycled at half this value. |
 | `provenance` | `false` | Pass `--provenance` to `iets eval-jobs`, adding source position (`file:line:col`) to each job output. |
 
+`allowed_uris` was removed with the switch to `iets`, which evaluates in pure mode, with
+eval-time network access controlled by the sandbox. Setting it has no effect; the server
+logs a warning at startup asking to remove it.
+
 Note that `NIX_PATH` is not passed through, so
 `<nixpkgs>` lookups do not resolve inside evaluations.
 
