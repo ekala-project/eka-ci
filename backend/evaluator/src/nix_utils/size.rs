@@ -70,7 +70,8 @@ pub fn get_output_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>>
 ///
 /// Returns a map from store path → closure size in bytes (path + runtime deps).
 /// Paths not reported by `nix path-info` will be absent from the map.
-// TODO: closure size will be a future feature
+// TODO(closure-size): unused until eka-ci's recorder calls `check_closure_size`; see the TODO
+// in `backend/server/src/scheduler/recorder/size_checks.rs`.
 #[allow(dead_code)]
 pub fn get_closure_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>> {
     if output_paths.is_empty() {

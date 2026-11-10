@@ -40,6 +40,8 @@
   `.ekaci/config.json` (it was silently ignored) and warn on unknown keys
 - Docs: config path is `.ekaci/config.json`, flake mode status, GitHub App
   Contents permission, push events required for release channels
+- Docs: stop advertising closure-size tracking; only output (NAR) size is
+  measured. Closure size has schema and code but is not wired in yet
 - NixOS module: drop `null` settings when generating `ekaci.toml`; put
   `nix`, `nix-eval-jobs` and `git` on the service `PATH` (the service did
   not start: `nix config show` failed with ENOENT)

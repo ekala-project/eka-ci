@@ -40,17 +40,19 @@ A *job* describes a Nix expression to evaluate and the derivations to build from
 | `attr_path` | no | Optional sub-attribute path inside the file. |
 | `allow_eval_failures` | no | If `true`, evaluation errors do not fail the check. |
 | `caches` | no | List of cache IDs (defined server-side) to push successful builds to. |
-| `size_check` | no | Configures output- and closure-size monitoring. |
+| `size_check` | no | Configures output-size monitoring. |
 
 ### Size checks
 
 When `size_check` is set, Eka CI:
 
-1. Calculates output (NAR) and closure size for each successful build.
+1. Calculates the output (NAR) size of each successful build.
 2. Stores sizes in historical tables, keyed by commit and repository.
 3. Compares against the most recent successful build on `base_branch`.
-4. Logs warnings (and surfaces them in the change summary) when the increase exceeds
-   `max_increase_percent`.
+4. Logs a warning and sets the derivation's GitHub check run to *neutral* with a size
+   warning when the increase exceeds `max_increase_percent`.
+
+Closure size (an output plus its runtime dependencies) is not tracked yet.
 
 ## Checks
 
