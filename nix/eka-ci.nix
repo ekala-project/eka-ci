@@ -6,6 +6,9 @@
   pkg-config,
   protobuf,
   openssl,
+  aws-lc,
+  sqlite,
+  zstd,
   elmPackages,
   nix,
   iets,
@@ -72,6 +75,9 @@ rustPlatform.buildRustPackage {
 
   buildInputs = [
     openssl
+    aws-lc
+    sqlite
+    zstd
   ];
 
   postInstall = ''

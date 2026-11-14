@@ -39,6 +39,7 @@
       };
 
       packages.default = legacyPackages.eka-ci;
+      packages.iets = legacyPackages.iets;
       packages.module-docs = legacyPackages.callPackage ./nix/option-docs.nix { };
       devShells.default = legacyPackages.dev-shell;
       checks.module = import ./nix/module-test.nix self legacyPackages;
