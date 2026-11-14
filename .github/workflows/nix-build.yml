@@ -1,0 +1,29 @@
+name: Nix build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    name: Nix build (${{ matrix.nixpkgs }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # "locked" uses flake.lock; "nixos-unstable" catches breakage from
+        # upstream nixpkgs changes (e.g. rustPlatform defaults), which is
+        # what downstream NixOS configurations consume via the overlay.
+        nixpkgs: [locked, nixos-unstable]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: cachix/install-nix-action@v25
+    - name: Build packages
+      run: |
+        args=()
+        if [ "${{ matrix.nixpkgs }}" != locked ]; then
+          args+=(--override-input nixpkgs "github:NixOS/nixpkgs/${{ matrix.nixpkgs }}")
+        fi
+        nix build --print-build-logs "${args[@]}" .#default .#iets
