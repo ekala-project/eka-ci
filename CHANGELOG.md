@@ -14,6 +14,14 @@
 - The Nix package wraps the eka-ci binaries with `nix`, `iets`, `git`,
   `bubblewrap` and `passt` on `PATH`
 
+### Web UI
+
+- Fix the web UI rendering a blank page: `ports.js` (WebSocket and
+  token-storage ports) and `styles/custom.css` were never committed because
+  `frontend/.gitignore` ignored everything in `static/` except `index.html`,
+  so the deployed bundle 404'd on them and Elm never started. Both files are
+  now tracked, and only the generated `static/main.js` is ignored
+
 ### Sandbox for evaluation and checks
 
 - New `sandbox` workspace crate (bubblewrap + landlock via
