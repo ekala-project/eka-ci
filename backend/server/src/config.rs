@@ -675,8 +675,10 @@ pub struct GitLabInstanceConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum ChannelForge {
     /// github.com (only one supported instance today).
+    #[serde(rename = "github", alias = "git-hub")]
     GitHub,
     /// A configured GitLab instance keyed by domain.
+    #[serde(rename = "gitlab", alias = "git-lab")]
     GitLab { domain: String },
     /// A configured Gitea instance keyed by domain.
     Gitea { domain: String },
@@ -2344,6 +2346,24 @@ mod channel_validation_tests {
         assert_eq!(
             gitlab.channel_id(),
             "gitlab:gitlab.example.com/ekacorp/ekapkgs/unstable",
+        );
+    }
+
+    #[test]
+    fn forge_names_parse_as_github_and_gitlab() {
+        let parse = |v: serde_json::Value| serde_json::from_value::<ChannelForge>(v).unwrap();
+        assert_eq!(parse(serde_json::json!("github")), ChannelForge::GitHub);
+        assert_eq!(
+            parse(serde_json::json!({"gitlab": {"domain": "gl.example.com"}})),
+            ChannelForge::GitLab {
+                domain: "gl.example.com".to_string()
+            },
+        );
+        // Legacy kebab-case spellings remain accepted.
+        assert_eq!(parse(serde_json::json!("git-hub")), ChannelForge::GitHub);
+        assert_eq!(
+            serde_json::to_value(ChannelForge::GitHub).unwrap(),
+            serde_json::json!("github"),
         );
     }
 }

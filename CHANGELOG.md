@@ -61,6 +61,10 @@
   shared paths counted once) of each locally built derivation is recorded
   and compared against the same base-branch baseline as the output size,
   with the same `size_check` threshold. Check-run warnings name the metric
+- Channel `forge` values are now spelled `github` and `gitlab` in
+  `ekaci.toml` (previously only `git-hub`/`git-lab` parsed, so
+  `forge = "github"` failed at startup); the old spellings are still
+  accepted as aliases
 
 ### passthru.tests evaluation (nixpkgs-CI workflow)
 
