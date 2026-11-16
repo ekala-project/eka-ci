@@ -178,6 +178,16 @@ Require maintainer approval before building PRs from external contributors.
 
 Require approval before building entries pulled from the GitHub merge queue.
 
+### `settings.admins`
+
+**Type:** list of `{ username : string; github_id : positive integer; }`
+**Default:** `[ ]`
+
+GitHub users who are always admins. On every startup they are added to the
+PR-approval allow-list and promoted to admin, and they are granted admin when
+they log in to the web UI. This keeps a freshly created database from being
+left without an admin. Get a user's id with `gh api users/<username> -q .id`.
+
 ### `settings.build_no_output_timeout_seconds`
 
 **Type:** `integer between 30 and 86400`

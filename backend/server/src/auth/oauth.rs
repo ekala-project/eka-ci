@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -24,6 +27,8 @@ pub struct OAuthConfig {
     // struct embedding this) cannot leak the client secret.
     pub client_secret: Redacted<String>,
     pub redirect_url: String,
+    /// GitHub ids declared as admins in `ekaci.toml`; granted admin on login.
+    pub admin_github_ids: Arc<HashSet<i64>>,
 }
 
 impl OAuthConfig {
@@ -121,7 +126,11 @@ pub async fn handle_callback(
     })?;
 
     // Upsert user in database
-    let user = upsert_user(&state.db, &github_user, access_token)
+    let config_admin = state
+        .oauth_config
+        .admin_github_ids
+        .contains(&github_user.id);
+    let user = upsert_user(&state.db, &github_user, access_token, config_admin)
         .await
         .map_err(|e| {
             (
@@ -214,6 +223,7 @@ async fn upsert_user(
     db: &SqlitePool,
     github_user: &GitHubUserInfo,
     access_token: &str,
+    config_admin: bool,
 ) -> Result<AuthenticatedUser, sqlx::Error> {
     // Check if user exists
     let existing_user = sqlx::query_as::<_, AuthenticatedUser>(
@@ -230,12 +240,14 @@ async fn upsert_user(
              SET github_username = ?,
                  github_avatar_url = ?,
                  github_access_token = ?,
+                 is_admin = (is_admin OR ?),
                  last_login = CURRENT_TIMESTAMP
              WHERE github_id = ?",
         )
         .bind(&github_user.login)
         .bind(&github_user.avatar_url)
         .bind(access_token)
+        .bind(config_admin)
         .bind(github_user.id)
         .execute(db)
         .await?;
@@ -244,10 +256,11 @@ async fn upsert_user(
         user.github_username = github_user.login.clone();
         user.github_avatar_url = github_user.avatar_url.clone();
         user.github_access_token = access_token.to_string();
+        user.is_admin |= config_admin;
 
         Ok(user)
     } else {
-        // Insert new user (not admin by default)
+        // Insert new user (admin only if declared in ekaci.toml)
         sqlx::query(
             "INSERT INTO AuthenticatedUsers
              (github_id, github_username, github_avatar_url, github_access_token, is_admin)
@@ -257,7 +270,7 @@ async fn upsert_user(
         .bind(&github_user.login)
         .bind(&github_user.avatar_url)
         .bind(access_token)
-        .bind(false)
+        .bind(config_admin)
         .execute(db)
         .await?;
 

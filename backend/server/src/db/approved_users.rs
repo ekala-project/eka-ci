@@ -1,6 +1,8 @@
 use anyhow::Result;
 use sqlx::{FromRow, Pool, Sqlite};
 
+use crate::config::AdminUserConfig;
+
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
 pub struct ApprovedUser {
     pub github_username: String,
@@ -63,11 +65,70 @@ pub async fn list_approved_users(pool: &Pool<Sqlite>) -> Result<Vec<ApprovedUser
     Ok(users)
 }
 
+/// Seed operator-declared admins (`[[admins]]` in `ekaci.toml`).
+///
+/// Each admin is added to `ApprovedUsers` (no-op if already present) and,
+/// if they have logged in before, promoted in `AuthenticatedUsers`. Admins
+/// who have never logged in are promoted on their first login instead.
+pub async fn seed_admins(admins: &[AdminUserConfig], pool: &Pool<Sqlite>) -> Result<()> {
+    for admin in admins {
+        sqlx::query(
+            "INSERT OR IGNORE INTO ApprovedUsers (github_username, github_id, notes) VALUES (?, \
+             ?, 'admin from ekaci.toml')",
+        )
+        .bind(&admin.username)
+        .bind(admin.github_id)
+        .execute(pool)
+        .await?;
+
+        sqlx::query("UPDATE AuthenticatedUsers SET is_admin = 1 WHERE github_id = ?")
+            .bind(admin.github_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn test_seed_admins(pool: SqlitePool) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO AuthenticatedUsers (github_id, github_username, github_access_token) \
+             VALUES (2, 'bob', 'tok')",
+        )
+        .execute(&pool)
+        .await?;
+        let admins = [
+            AdminUserConfig {
+                username: "alice".into(),
+                github_id: 1,
+            },
+            AdminUserConfig {
+                username: "bob".into(),
+                github_id: 2,
+            },
+        ];
+
+        // Seeding twice must be idempotent.
+        seed_admins(&admins, &pool).await?;
+        seed_admins(&admins, &pool).await?;
+
+        assert!(is_user_approved("alice", 1, &pool).await?);
+        assert!(is_user_approved("bob", 2, &pool).await?);
+        assert_eq!(list_approved_users(&pool).await?.len(), 2);
+
+        let bob_admin: bool =
+            sqlx::query_scalar("SELECT is_admin FROM AuthenticatedUsers WHERE github_id = 2")
+                .fetch_one(&pool)
+                .await?;
+        assert!(bob_admin);
+        Ok(())
+    }
 
     #[sqlx::test(migrations = "./sql/migrations")]
     async fn test_approved_users(pool: SqlitePool) -> anyhow::Result<()> {

@@ -30,6 +30,11 @@ build_no_output_timeout_seconds = 1200   # 20 minutes
 graph_lru_capacity              = 100000 # see lru-cache-tuning.md
 require_approval                = false  # require approval for external PRs
 
+# Users who are always admins (see `[[admins]]` below)
+[[admins]]
+username  = "octocat"
+github_id = 583231
+
 # OAuth (optional, for the web UI)
 [oauth]
 client_id     = "github-oauth-client-id"
@@ -110,6 +115,21 @@ fixed-output derivations.
 When `true`, builds for pull requests from external (non-collaborator) authors are queued
 but not executed until a maintainer approves. The approval workflow is partially
 implemented — see the project README for current status.
+
+### `[[admins]]`
+
+GitHub users who are always admins. Each entry needs the `username` and the
+numeric `github_id` (`gh api users/<username> -q .id`); the id is what is
+matched, since usernames can change.
+
+On every startup each admin is added to the approved-users list (so their PRs
+pass `require_approval`) and, if they have logged in before, promoted to admin.
+Admins who have not logged in yet are granted admin on their first web-UI
+login. Approved-user and admin status otherwise live only in the database, so
+without this a fresh database has no admin able to approve anyone.
+
+Demoting a configured admin through the API only lasts until their next login
+or a server restart; remove them from the config instead.
 
 ### `[security]`
 

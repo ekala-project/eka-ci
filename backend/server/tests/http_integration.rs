@@ -108,6 +108,7 @@ async fn create_test_server_with_options(
         client_id: "test-client-id".to_string(),
         client_secret: Redacted::new("test-client-secret".to_string()),
         redirect_url: "http://localhost/callback".to_string(),
+        admin_github_ids: Default::default(),
     };
 
     // Create git channel. Tests use a default-capacity throw-away

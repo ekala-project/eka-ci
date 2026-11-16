@@ -12,11 +12,13 @@ use tracing::{debug, info, warn};
 
 use crate::secret::Redacted;
 
+mod admins;
 mod checks;
 mod eval;
 mod models;
 mod remote_builder;
 mod sandbox;
+pub use admins::AdminUserConfig;
 pub use checks::ChecksConfig;
 pub use eval::EvalConfig;
 pub use models::{ModelConfig, ModelProvider, ModelsRegistry};
@@ -114,6 +116,8 @@ struct ConfigFile {
     eval: Option<EvalConfig>,
     sandbox: Option<SandboxConfig>,
     checks: Option<ChecksConfig>,
+    /// Admin users seeded into the database on startup.
+    admins: Option<Vec<AdminUserConfig>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -1261,6 +1265,8 @@ pub struct Config {
     pub eval: EvalConfig,
     pub sandbox: SandboxConfig,
     pub checks: ChecksConfig,
+    /// Operator-declared admins; approved for PRs and granted web-UI admin.
+    pub admins: Vec<AdminUserConfig>,
 }
 
 #[derive(Debug)]
@@ -1625,6 +1631,7 @@ impl Config {
             eval: EvalConfig::validate(file.eval)?,
             sandbox: SandboxConfig::validate(file.sandbox)?,
             checks: ChecksConfig::validate(file.checks)?,
+            admins: admins::validate_admins(file.admins)?,
         })
     }
 
@@ -1740,6 +1747,7 @@ mod redaction_tests {
             eval: EvalConfig::default(),
             sandbox: SandboxConfig::default(),
             checks: ChecksConfig::default(),
+            admins: Vec::new(),
         };
         // Both the compact and pretty Debug forms must redact every secret.
         assert_no_secret(&format!("{config:?}"), "Config {:?}");
@@ -1847,6 +1855,7 @@ mod redaction_tests {
             eval: EvalConfig::default(),
             sandbox: SandboxConfig::default(),
             checks: ChecksConfig::default(),
+            admins: Vec::new(),
         };
 
         let debug_output = format!("{config:?}");
