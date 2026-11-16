@@ -1,9 +1,7 @@
 use std::hash::{Hash, Hasher};
-use std::str::FromStr;
 
 use sqlx::FromRow;
 
-use crate::db::DbService;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 
@@ -66,26 +64,15 @@ pub struct Drv {
 }
 
 impl Drv {
-    /// Calls `nix derivation show` to retrieve system and requiredSystemFeatures
-    pub async fn fetch_info(drv_path: &str, db_service: &DbService) -> anyhow::Result<Self> {
-        use crate::nix::derivation_show::drv_output;
-
-        // Check to see if the drv has already been encountered
-        let drv_id = DrvId::from_str(drv_path)?;
-        let maybe_drv = db_service.get_drv(&drv_id).await?;
-        if let Some(drv) = maybe_drv {
-            return Ok(drv);
-        }
-
-        // This is the first time we have encountered this drv
-        let drv_output = drv_output(drv_path).await?;
-        let is_fod = drv_output.is_fod();
-        Ok(Drv {
-            drv_path: DrvId::from_str(drv_path)?,
-            system: drv_output.system,
-            prefer_local_build: drv_output.prefer_local,
-            required_system_features: drv_output.required_system_features_str,
-            is_fod,
+    /// Build a new, queued `Drv` row from parsed `nix derivation show`
+    /// output (see `crate::nix::traverse`, which batches the lookups).
+    pub fn from_info(drv_path: DrvId, info: &crate::nix::DrvInfo) -> Self {
+        Drv {
+            drv_path,
+            system: info.system.clone(),
+            prefer_local_build: info.prefer_local,
+            required_system_features: info.required_system_features_str.clone(),
+            is_fod: info.is_fod(),
             build_state: DrvBuildState::Queued,
             output_size: None,  // Will be calculated after successful build
             closure_size: None, // Will be calculated after successful build
@@ -100,7 +87,7 @@ impl Drv {
             meta_position: None,
             broken: None,
             insecure: None,
-        })
+        }
     }
 }
 

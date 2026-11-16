@@ -102,6 +102,21 @@ pub struct RawDrvInfo {
 
     /// Map of output names to their store paths
     pub outputs: Option<HashMap<String, DrvOutputInfo>>,
+
+    /// Versioned format (v4): `inputs.drvs`, keyed by drv basename.
+    pub inputs: Option<DrvInputs>,
+
+    /// Legacy format: `inputDrvs`, keyed by full drv store path.
+    #[serde(rename = "inputDrvs")]
+    pub input_drvs: Option<HashMap<String, Value>>,
+}
+
+/// The `inputs` object of the versioned format. Only the input drvs are
+/// read; `srcs` are plain store paths, not derivations.
+#[derive(Debug, Deserialize)]
+pub struct DrvInputs {
+    #[serde(default)]
+    pub drvs: HashMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +128,11 @@ pub struct DrvOutputInfo {
 
 impl RawDrvInfo {
     pub fn into_drv_info(self) -> Result<DrvInfo> {
+        let input_drvs: Vec<String> = match (self.inputs, self.input_drvs) {
+            (Some(inputs), _) => inputs.drvs.into_keys().collect(),
+            (None, Some(legacy)) => legacy.into_keys().collect(),
+            (None, None) => Vec::new(),
+        };
         let attrs = if let Some(sa) = self.structured_attrs {
             // Versioned format (v4) with top-level structuredAttrs
             sa
@@ -146,6 +166,7 @@ impl RawDrvInfo {
             required_system_features,
             required_system_features_str,
             system: self.system,
+            input_drvs,
         };
 
         Ok(info)
@@ -165,6 +186,9 @@ pub struct DrvInfo {
     // to a HashSet
     pub required_system_features_str: Option<String>,
     pub system: String,
+    /// Direct input derivations (the drv's dependency edges), as printed
+    /// by nix: basenames in the versioned format, store paths in legacy.
+    pub input_drvs: Vec<String>,
 }
 
 impl DrvInfo {
@@ -175,36 +199,65 @@ impl DrvInfo {
 
 /// Do `nix derivation show` but filter for the things we care about
 pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
+    let drv_paths = [drv_path.to_string()];
+    drv_outputs(&drv_paths)
+        .await?
+        .into_iter()
+        .next()
+        .with_context(|| format!("Empty `nix derivation show` output for {}", drv_path))
+        .map(|(_, info)| info)
+}
+
+/// Run a single `nix derivation show` over every path in `drv_paths`.
+///
+/// This replaces one subprocess per drv with one per batch. Nix rejects
+/// the whole call if any path is missing or unreadable, so callers that
+/// need per-drv error isolation should retry a failed batch path by path.
+///
+/// Returns `(key, info)` pairs where `key` is the drv as nix printed it:
+/// a basename in the versioned format, a full store path in legacy.
+pub async fn drv_outputs(drv_paths: &[String]) -> anyhow::Result<Vec<(String, DrvInfo)>> {
     use anyhow::bail;
 
-    debug!("Fetching derivation information, {:?}", &drv_path);
+    if drv_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    debug!(
+        "Fetching derivation information for {} drvs",
+        drv_paths.len()
+    );
     let output = Command::new("nix")
         .kill_on_drop(true)
-        .args(["derivation", "show", drv_path])
+        .args(["derivation", "show"])
+        .args(drv_paths)
         .output()
-        .await?
-        .stdout;
-    if output.is_empty() {
-        bail!("failed to fetch info for {:?}", drv_path);
-    } else {
-        debug!("Successfully fetched info for {}", drv_path);
+        .await?;
+    if !output.status.success() || output.stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "nix derivation show failed for {} drvs (first: {}): {}",
+            drv_paths.len(),
+            drv_paths[0],
+            stderr.trim()
+        );
     }
 
-    let str = String::from_utf8(output)?;
+    let str = String::from_utf8(output.stdout)?;
     let drv_output: DrvOutput = serde_json::from_str(&str).with_context(|| {
         let snippet = if str.len() > 200 { &str[..200] } else { &str };
         format!(
-            "Failed to parse `nix derivation show` output for {}: {}...",
-            drv_path, snippet
+            "Failed to parse `nix derivation show` output: {}...",
+            snippet
         )
     })?;
-    let drv_info = drv_output
+    drv_output
         .into_drvs()
         .into_iter()
-        .next()
-        .with_context(|| format!("Empty `nix derivation show` output for {}", drv_path))?
-        .1;
-    drv_info
-        .into_drv_info()
-        .with_context(|| format!("Failed to extract drv info for {}", drv_path))
+        .map(|(key, raw)| {
+            let info = raw
+                .into_drv_info()
+                .with_context(|| format!("Failed to extract drv info for {}", key))?;
+            Ok((key, info))
+        })
+        .collect()
 }

@@ -607,6 +607,8 @@ pub async fn get_drv_dependents(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyhow::
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use anyhow::bail;
     use sqlx::SqlitePool;
 

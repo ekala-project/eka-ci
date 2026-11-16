@@ -15,6 +15,7 @@ use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::graph::{GraphCommand, GraphService};
 use eka_ci_server::metrics::WebhookMetrics;
+use eka_ci_server::nix::derivation_show::drv_output;
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
 use eka_ci_server::secret::Redacted;
 use eka_ci_server::services::WebSocketService;
@@ -238,9 +239,12 @@ async fn test_drv_state_updates_via_api() {
     println!("Created test derivation: {}", drv_path);
 
     // Fetch drv info and insert into DB
-    let drv = Drv::fetch_info(&drv_path, &ctx.db_service)
-        .await
-        .expect("Failed to fetch drv info");
+    let drv = Drv::from_info(
+        drv_path.parse().expect("invalid drv path"),
+        &drv_output(&drv_path)
+            .await
+            .expect("Failed to fetch drv info"),
+    );
 
     insert_test_drv(&ctx.db_service, &drv)
         .await
