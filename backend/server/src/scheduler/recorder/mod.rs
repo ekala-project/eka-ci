@@ -68,6 +68,7 @@ pub(super) struct RecorderWorker {
     cache_configs: std::sync::Arc<std::collections::HashMap<String, crate::config::CacheConfig>>,
     channel_sender: Option<mpsc::Sender<ChannelTask>>,
     journal: TaskJournal<RecorderTask>,
+    size_checker: size_checks::SizeChecker,
 }
 
 impl RecorderService {
@@ -143,6 +144,7 @@ impl RecorderWorker {
         channel_sender: Option<mpsc::Sender<ChannelTask>>,
         pool: sqlx::SqlitePool,
     ) -> Self {
+        let size_checker = size_checks::SizeChecker::new(pool.clone(), github_sender.clone());
         Self {
             db_service,
             ingress_sender,
@@ -155,6 +157,7 @@ impl RecorderWorker {
             cache_configs,
             channel_sender,
             journal: TaskJournal::new(pool, "recorder"),
+            size_checker,
         }
     }
 

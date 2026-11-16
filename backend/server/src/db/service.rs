@@ -121,6 +121,9 @@ impl DbService {
 
         let jobset_id =
             github::create_jobset(sha, name, owner, repo_name, config_json, &self.pool).await?;
+        if let Some(base) = base_sha {
+            github::set_jobset_base_sha(jobset_id, base, &self.pool).await?;
+        }
 
         // If we have a base commit, query its jobset to compute differences during insertion
         let base_jobset_jobs = if let Some(base) = base_sha {

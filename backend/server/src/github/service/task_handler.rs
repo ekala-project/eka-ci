@@ -92,7 +92,19 @@ impl GitHubService {
                     increase_percent: *increase_percent,
                     threshold_percent: *threshold_percent,
                 };
-                self.handle_update_build_status_with_size_warning(drv_id, status, &warning)
+                self.handle_update_build_status_with_size_warnings(drv_id, status, &[warning])
+                    .await?;
+            },
+            GitHubTask::UpdateBuildStatusWithSizeWarnings {
+                drv_id,
+                status,
+                warnings,
+            } => {
+                let reports: Vec<_> = warnings
+                    .iter()
+                    .map(super::size_warning::SizeWarningReport::from_warning)
+                    .collect();
+                self.handle_update_build_status_with_size_warnings(drv_id, status, &reports)
                     .await?;
             },
             GitHubTask::CreateJobSet {

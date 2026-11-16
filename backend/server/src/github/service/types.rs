@@ -323,6 +323,14 @@ pub enum GitHubTask {
         #[serde(default)]
         metric: SizeMetric,
     },
+    /// Mark the derivation's check runs neutral and report every size that
+    /// grew beyond its threshold. Supersedes `UpdateBuildStatusWithSizeWarning`,
+    /// which is kept for tasks already in the journal.
+    UpdateBuildStatusWithSizeWarnings {
+        drv_id: Arc<DrvId>,
+        status: DrvBuildState,
+        warnings: Vec<crate::db::size::SizeWarning>,
+    },
     CreateJobSet {
         ci_check_info: Arc<CICheckInfo>,
         name: String,

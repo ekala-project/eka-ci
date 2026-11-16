@@ -69,7 +69,12 @@ async fn measure(
     let per_output = HashMap::from([("out".to_string(), size)]);
     persist_size(&db.pool, &drv_id, metric, size, &per_output).await?;
     let job_infos = db.get_job_info_for_drv(&drv_id).await?;
-    evaluate_size(&db.pool, &drv_id, &job_infos, metric, size).await
+    let mut warnings = evaluate_size(&db.pool, &drv_id, &job_infos, metric, size).await?;
+    assert!(
+        warnings.len() <= 1,
+        "one job, one warning at most: {warnings:?}"
+    );
+    Ok(warnings.pop())
 }
 
 async fn build(db: &DbService, drv_path: &str, size: u64) -> Result<Option<SizeWarning>> {
@@ -96,21 +101,18 @@ async fn warning_fires_against_base_branch_baseline() -> Result<()> {
     assert_eq!(warning.current_size, 1_500_000);
     assert!((warning.increase_percent - 50.0).abs() < 1e-9);
     assert_eq!(warning.threshold_percent, 10.0);
+    assert_eq!(warning.attr, "hello");
 
     let drv_id = Arc::new(DrvId::from_str(HEAD_DRV)?);
-    match warning.into_github_task(Arc::clone(&drv_id)) {
-        GitHubTask::UpdateBuildStatusWithSizeWarning {
+    match size_warnings_task(Arc::clone(&drv_id), vec![warning.clone()]) {
+        GitHubTask::UpdateBuildStatusWithSizeWarnings {
             drv_id: task_drv,
             status,
-            baseline_size,
-            current_size,
-            base_branch,
-            ..
+            warnings,
         } => {
             assert_eq!(task_drv, drv_id);
             assert_eq!(status, DrvBuildState::Completed(DrvBuildResult::Success));
-            assert_eq!((baseline_size, current_size), (1_000_000, 1_500_000));
-            assert_eq!(base_branch, "master");
+            assert_eq!(warnings, vec![warning]);
         },
         other => panic!("unexpected task {:?}", other),
     }
@@ -143,14 +145,6 @@ async fn closure_warning_fires_against_base_branch_baseline() -> Result<()> {
         .expect("100% closure increase exceeds the 10% threshold");
     assert_eq!(warning.metric, closure);
     assert_eq!(warning.baseline_size, 1_000_000);
-
-    let drv_id = Arc::new(DrvId::from_str(HEAD_DRV)?);
-    match warning.into_github_task(drv_id) {
-        GitHubTask::UpdateBuildStatusWithSizeWarning { metric, .. } => {
-            assert_eq!(metric, closure)
-        },
-        other => panic!("unexpected task {:?}", other),
-    }
 
     let closure_size: Option<i64> =
         sqlx::query_scalar("SELECT closure_size FROM Drv WHERE drv_path = ?")
@@ -214,30 +208,42 @@ async fn job_size_check_reads_single_job_config(pool: SqlitePool) -> Result<()> 
     Ok(())
 }
 
+fn size_check(closure: Option<f64>) -> SizeCheck {
+    SizeCheck {
+        max_increase_percent: 10.0,
+        max_closure_increase_percent: closure,
+        base_branch: "main".to_string(),
+    }
+}
+
 #[test]
 fn compare_sizes_threshold() {
-    let size_check = SizeCheck {
-        max_increase_percent: 10.0,
-        base_branch: "main".to_string(),
-    };
+    let size_check = size_check(None);
     let out = SizeMetric::Output;
-    assert!(compare_sizes(&size_check, out, 100, 110).is_none());
-    assert!(compare_sizes(&size_check, out, 100, 50).is_none());
-    assert!(compare_sizes(&size_check, out, 0, 100).is_none());
-    let warning = compare_sizes(&size_check, SizeMetric::Closure, 100, 111);
+    assert!(compare_sizes(&size_check, out, "a", 100, 110).is_none());
+    assert!(compare_sizes(&size_check, out, "a", 100, 50).is_none());
+    assert!(compare_sizes(&size_check, out, "a", 0, 100).is_none());
+    let warning = compare_sizes(&size_check, SizeMetric::Closure, "a", 100, 111);
     assert_eq!(warning.map(|w| w.metric), Some(SizeMetric::Closure));
 }
 
 #[test]
-fn worse_warning_has_larger_increase() {
-    let size_check = SizeCheck {
-        max_increase_percent: 10.0,
-        base_branch: "main".to_string(),
-    };
-    let output = compare_sizes(&size_check, SizeMetric::Output, 100, 120);
-    let closure = compare_sizes(&size_check, SizeMetric::Closure, 100, 150);
-    let worst = SizeWarning::worse(output.clone(), closure.clone());
-    assert_eq!(worst.map(|w| w.metric), Some(SizeMetric::Closure));
-    assert_eq!(SizeWarning::worse(output.clone(), None), output);
-    assert_eq!(SizeWarning::worse(None, closure.clone()), closure);
+fn closure_threshold_override() {
+    let size_check = size_check(Some(50.0));
+    let closure = SizeMetric::Closure;
+    assert!(compare_sizes(&size_check, closure, "a", 100, 140).is_none());
+    let warning = compare_sizes(&size_check, closure, "a", 100, 160).unwrap();
+    assert_eq!(warning.threshold_percent, 50.0);
+    // The output threshold is unaffected.
+    assert!(compare_sizes(&size_check, SizeMetric::Output, "a", 100, 120).is_some());
+}
+
+#[test]
+fn dedupe_keeps_each_metric_once() {
+    let size_check = size_check(None);
+    let output = compare_sizes(&size_check, SizeMetric::Output, "a", 100, 120).unwrap();
+    let closure = compare_sizes(&size_check, SizeMetric::Closure, "a", 100, 150).unwrap();
+    let other_attr = compare_sizes(&size_check, SizeMetric::Output, "b", 100, 120).unwrap();
+    let all = vec![output.clone(), closure.clone(), output, other_attr];
+    assert_eq!(dedupe(all).len(), 3);
 }

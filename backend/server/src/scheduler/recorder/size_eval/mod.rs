@@ -19,48 +19,25 @@ use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::size::{self, BaselineKey, SizeMetric};
 use crate::github::GitHubTask;
 
-/// A successful build whose output or closure grew beyond its job's
-/// threshold.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SizeWarning {
-    /// Which size grew.
-    pub metric: SizeMetric,
-    /// Base branch the baseline was taken from.
-    pub base_branch: String,
-    /// Baseline size in bytes.
-    pub baseline_size: u64,
-    /// Size of this build in bytes.
-    pub current_size: u64,
-    /// Increase over the baseline, in percent.
-    pub increase_percent: f64,
-    /// Configured `max_increase_percent`.
-    pub threshold_percent: f64,
+pub(crate) use crate::db::size::SizeWarning;
+
+/// The GitHub task that marks the derivation's check runs neutral with
+/// `warnings`. Sent after the plain success update; both travel the same
+/// GraphQL batch queue, so the warning lands last.
+pub(crate) fn size_warnings_task(drv_id: Arc<DrvId>, warnings: Vec<SizeWarning>) -> GitHubTask {
+    GitHubTask::UpdateBuildStatusWithSizeWarnings {
+        drv_id,
+        status: DrvBuildState::Completed(DrvBuildResult::Success),
+        warnings,
+    }
 }
 
-impl SizeWarning {
-    /// The GitHub task that marks the derivation's check runs neutral with
-    /// this warning. Sent in place of the plain success update.
-    pub(crate) fn into_github_task(self, drv_id: Arc<DrvId>) -> GitHubTask {
-        GitHubTask::UpdateBuildStatusWithSizeWarning {
-            drv_id,
-            status: DrvBuildState::Completed(DrvBuildResult::Success),
-            baseline_size: self.baseline_size,
-            current_size: self.current_size,
-            increase_percent: self.increase_percent,
-            threshold_percent: self.threshold_percent,
-            base_branch: self.base_branch,
-            metric: self.metric,
-        }
-    }
-
-    /// The warning with the larger increase, if any.
-    pub(crate) fn worse(a: Option<Self>, b: Option<Self>) -> Option<Self> {
-        match (a, b) {
-            (Some(a), Some(b)) if b.increase_percent > a.increase_percent => Some(b),
-            (Some(a), _) => Some(a),
-            (None, b) => b,
-        }
-    }
+/// Drop duplicate warnings: a derivation in several jobsets of the same job
+/// and base branch (e.g. re-pushes of a PR) is compared to the same baseline.
+pub(crate) fn dedupe(mut warnings: Vec<SizeWarning>) -> Vec<SizeWarning> {
+    let mut seen = std::collections::HashSet::new();
+    warnings.retain(|w| seen.insert((w.metric, w.base_branch.clone(), w.attr.clone())));
+    warnings
 }
 
 /// Compare the `metric` size of `drv_id` against the base-branch baseline of
@@ -68,19 +45,19 @@ impl SizeWarning {
 ///
 /// Before comparing, records the size in the per-commit history and, for
 /// jobs in base-branch jobsets, as the new baseline for that attr. Returns
-/// the warning with the largest increase, if any job exceeded its threshold.
+/// a warning for every job whose threshold was exceeded.
 pub(crate) async fn evaluate_size(
     pool: &SqlitePool,
     drv_id: &DrvId,
     job_infos: &[JobInfo],
     metric: SizeMetric,
     current: u64,
-) -> Result<Option<SizeWarning>> {
+) -> Result<Vec<SizeWarning>> {
     let Some(drv) = crate::db::model::drv::get_drv(drv_id, pool).await? else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
 
-    let mut worst: Option<SizeWarning> = None;
+    let mut warnings = Vec::new();
     for job_info in job_infos {
         let jobset = match crate::db::github::get_jobset_info(job_info.jobset_id, pool).await {
             Ok(info) => info,
@@ -109,12 +86,12 @@ pub(crate) async fn evaluate_size(
             continue;
         };
 
-        let warning = compare_sizes(&size_check, metric, baseline, current);
+        let warning = compare_sizes(&size_check, metric, &job_info.name, baseline, current);
         log_comparison(drv_id, &key, metric, (baseline, current), warning.is_some());
-        worst = SizeWarning::worse(worst, warning);
+        warnings.extend(warning);
     }
 
-    Ok(worst)
+    Ok(warnings)
 }
 
 /// Write a measured size to the `Drv` row (`total`) and to the per-output
@@ -156,24 +133,30 @@ pub(crate) async fn persist_size(
 }
 
 /// Return a warning if `current` exceeds `baseline` by more than the
-/// configured percentage.
+/// configured percentage for `metric`.
 fn compare_sizes(
     size_check: &SizeCheck,
     metric: SizeMetric,
+    attr: &str,
     baseline: u64,
     current: u64,
 ) -> Option<SizeWarning> {
     if baseline == 0 {
         return None;
     }
+    let threshold_percent = match metric {
+        SizeMetric::Output => size_check.max_increase_percent,
+        SizeMetric::Closure => size_check.closure_threshold_percent(),
+    };
     let increase_percent = (current as f64 - baseline as f64) / baseline as f64 * 100.0;
-    (increase_percent > size_check.max_increase_percent).then(|| SizeWarning {
+    (increase_percent > threshold_percent).then(|| SizeWarning {
         metric,
         base_branch: size_check.base_branch.clone(),
+        attr: attr.to_string(),
         baseline_size: baseline,
         current_size: current,
         increase_percent,
-        threshold_percent: size_check.max_increase_percent,
+        threshold_percent,
     })
 }
 
@@ -181,7 +164,7 @@ fn compare_sizes(
 ///
 /// `GitHubJobSets.config_json` holds the single job's config (a [`Job`]),
 /// not the whole `.ekaci/config.json`.
-async fn job_size_check(pool: &SqlitePool, jobset_id: i64) -> Result<Option<SizeCheck>> {
+pub(crate) async fn job_size_check(pool: &SqlitePool, jobset_id: i64) -> Result<Option<SizeCheck>> {
     let config_json: Option<String> =
         sqlx::query_scalar("SELECT config_json FROM GitHubJobSets WHERE ROWID = ?")
             .bind(jobset_id)

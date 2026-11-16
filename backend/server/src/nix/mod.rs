@@ -1,7 +1,7 @@
 // Re-export evaluator types and functions for backward compatibility
 pub use evaluator::nix_utils::{
     self as size, DryRunReport, drv_references, drv_requisites, format_size, get_drv_outputs,
-    get_output_sizes, is_drv_cached, output_references,
+    is_drv_cached, output_references,
 };
 pub use evaluator::service::jobs::{
     EVAL_JOBS_MAX_ENTRIES, EVAL_JOBS_MAX_LINE_BYTES, EVAL_JOBS_MAX_STDOUT_BYTES, Truncation,

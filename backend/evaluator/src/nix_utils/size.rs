@@ -1,103 +1,231 @@
-use std::collections::HashMap;
-use std::process::Command;
+//! Output (NAR) and closure size measurement via `nix path-info`.
+//!
+//! A single `nix path-info --recursive --json` call returns the NAR size and
+//! the references of every path in the combined runtime closure of the
+//! requested outputs. From that we derive:
+//!
+//! - the NAR size of each output,
+//! - the closure size of each output (the output plus its runtime deps),
+//! - the total output size of the derivation (sum of its outputs), and
+//! - the total closure size of the derivation, counting each path once even when
+//!   several outputs share it.
+
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use tokio::process::Command;
 
-/// Information about a Nix store path from `nix path-info`
-///
-/// The JSON output is an object like:
-/// ```json
-/// {
-///   "/nix/store/...": {
-///     "narSize": 123,
-///     "closureSize": 456,  // only with -S flag
-///     ...
-///   }
-/// }
-/// ```
-#[derive(Debug, Deserialize)]
-struct PathInfoData {
-    #[serde(rename = "narSize")]
-    nar_size: u64,
-    #[serde(rename = "closureSize", default)]
-    closure_size: u64,
+/// Sizes of one output of a derivation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputSize {
+    /// NAR size of the output path itself, in bytes.
+    pub nar_size: u64,
+    /// NAR size of the output and everything it references at runtime.
+    pub closure_size: u64,
 }
 
-/// Run `nix path-info --json` with `flags` for the given paths and parse the
-/// result.
-fn query_path_infos(
+/// Sizes of all requested outputs of a derivation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutputSizeReport {
+    /// Per-output sizes, keyed by the full output store path.
+    pub outputs: HashMap<String, OutputSize>,
+    /// Sum of the NAR sizes of the requested outputs.
+    pub total_nar_size: u64,
+    /// NAR size of the union of the outputs' closures (shared paths counted once).
+    pub total_closure_size: u64,
+}
+
+/// One entry of `nix path-info --json`. Unknown fields are ignored.
+#[derive(Debug, Deserialize)]
+struct PathInfoEntry {
+    #[serde(rename = "narSize")]
+    nar_size: u64,
+    #[serde(default)]
+    references: Vec<String>,
+}
+
+/// Legacy (Nix < 2.19) array entry, which carries its own path.
+#[derive(Debug, Deserialize)]
+struct LegacyPathInfoEntry {
+    path: String,
+    #[serde(rename = "narSize", default)]
+    nar_size: Option<u64>,
+    #[serde(default)]
+    references: Vec<String>,
+}
+
+/// The shapes `nix path-info --json` has produced over time:
+/// - format 2 (Nix 2.33+ with `--json-format 2`): `{"info": {basename: entry}, ...}`
+/// - format 1 (Nix 2.19+): `{"/nix/store/...": entry}`
+/// - legacy (older Nix): `[{"path": "/nix/store/...", ...}]`
+///
+/// Invalid paths appear as `null` (formats 1 and 2) or without `narSize` (legacy).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum PathInfoJson {
+    V2 {
+        info: HashMap<String, Option<PathInfoEntry>>,
+    },
+    V1(HashMap<String, Option<PathInfoEntry>>),
+    Legacy(Vec<LegacyPathInfoEntry>),
+}
+
+/// Strip the store directory, so paths from every JSON format compare equal.
+fn base_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Parse `nix path-info --json` output into basename → (narSize, reference basenames).
+/// Paths reported as invalid are left out.
+fn parse_path_infos(json: &[u8]) -> Result<HashMap<String, (u64, Vec<String>)>> {
+    let parsed: PathInfoJson =
+        serde_json::from_slice(json).context("Failed to parse nix path-info JSON output")?;
+
+    let normalize = |path: &str, nar_size: u64, refs: Vec<String>| {
+        let refs = refs.iter().map(|r| base_name(r).to_string()).collect();
+        (base_name(path).to_string(), (nar_size, refs))
+    };
+
+    let infos = match parsed {
+        PathInfoJson::V2 { info: map } | PathInfoJson::V1(map) => map
+            .into_iter()
+            .filter_map(|(path, entry)| entry.map(|e| normalize(&path, e.nar_size, e.references)))
+            .collect(),
+        PathInfoJson::Legacy(entries) => entries
+            .into_iter()
+            .filter_map(|e| {
+                let nar_size = e.nar_size?;
+                Some(normalize(&e.path, nar_size, e.references))
+            })
+            .collect(),
+    };
+    Ok(infos)
+}
+
+/// Collect every path reachable from `root` through the reference graph.
+fn closure_of<'a>(
+    root: &'a str,
+    infos: &'a HashMap<String, (u64, Vec<String>)>,
+    seen: &mut HashSet<&'a str>,
+) -> Result<()> {
+    let mut stack = vec![root];
+    while let Some(path) = stack.pop() {
+        if !seen.insert(path) {
+            continue;
+        }
+        let (_, refs) = infos
+            .get(path)
+            .with_context(|| format!("nix path-info did not report closure member {path}"))?;
+        stack.extend(refs.iter().map(String::as_str));
+    }
+    Ok(())
+}
+
+fn sum_nar(paths: &HashSet<&str>, infos: &HashMap<String, (u64, Vec<String>)>) -> u64 {
+    paths
+        .iter()
+        .filter_map(|p| infos.get(*p))
+        .map(|i| i.0)
+        .sum()
+}
+
+/// Build the size report for `output_paths` from parsed path-info data.
+fn compute_report(
     output_paths: &[String],
-    flags: &[&str],
-) -> Result<HashMap<String, PathInfoData>> {
-    let mut cmd = Command::new("nix");
-    cmd.arg("path-info")
-        .args(flags)
-        .arg("--json")
-        .args(output_paths);
+    infos: &HashMap<String, (u64, Vec<String>)>,
+) -> Result<OutputSizeReport> {
+    let mut report = OutputSizeReport::default();
+    let mut union: HashSet<&str> = HashSet::new();
 
-    let output = cmd.output().context("Failed to execute 'nix path-info'")?;
+    for output in output_paths {
+        let name = base_name(output);
+        let (nar_size, _) = infos
+            .get(name)
+            .with_context(|| format!("{output} is not a valid path in the queried store"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "nix path-info failed with status {}: {}",
-            output.status,
-            stderr
+        let mut closure = HashSet::new();
+        closure_of(name, infos, &mut closure)?;
+        let closure_size = sum_nar(&closure, infos);
+        union.extend(closure);
+
+        report.total_nar_size += nar_size;
+        report.outputs.insert(
+            output.clone(),
+            OutputSize {
+                nar_size: *nar_size,
+                closure_size,
+            },
         );
     }
 
-    serde_json::from_slice(&output.stdout).context("Failed to parse nix path-info JSON output")
+    report.total_closure_size = sum_nar(&union, infos);
+    Ok(report)
 }
 
-/// Calculate per-path output (NAR) sizes for a list of Nix store paths.
+/// Measure the output and closure sizes of `output_paths`.
 ///
-/// Returns a map from store path → NAR size in bytes. Paths not reported by
-/// `nix path-info` will be absent from the map.
-pub fn get_output_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>> {
+/// `store` selects the store to query (`--store`); `None` means the default
+/// (local) store. Querying a binary cache URL works without downloading NARs,
+/// because NAR sizes and references come from the `.narinfo` files.
+///
+/// Fails if any output is not valid in the queried store.
+pub async fn measure_outputs(
+    output_paths: &[String],
+    store: Option<&str>,
+) -> Result<OutputSizeReport> {
     if output_paths.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(OutputSizeReport::default());
     }
 
-    let path_infos = query_path_infos(output_paths, &[])?;
-    Ok(path_infos
-        .into_iter()
-        .map(|(path, info)| (path, info.nar_size))
+    let mut cmd = Command::new("nix");
+    cmd.args(["path-info", "--recursive", "--json"]);
+    if let Some(store) = store {
+        cmd.args(["--store", store]);
+    }
+    cmd.args(output_paths);
+
+    let output = cmd
+        .output()
+        .await
+        .context("Failed to execute 'nix path-info'")?;
+
+    // Invalid paths make nix exit non-zero but may still print JSON; only
+    // trust the result when every output is present.
+    let infos = match parse_path_infos(&output.stdout) {
+        Ok(infos) => infos,
+        Err(_) if !output.status.success() => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "nix path-info failed with {}: {}",
+                output.status,
+                stderr.trim()
+            );
+        },
+        Err(e) => return Err(e),
+    };
+    compute_report(output_paths, &infos)
+}
+
+/// The substituters the local Nix is configured with (`nix config show substituters`).
+pub async fn configured_substituters() -> Result<Vec<String>> {
+    let output = Command::new("nix")
+        .args(["config", "show", "substituters"])
+        .output()
+        .await
+        .context("Failed to execute 'nix config show substituters'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("nix config show failed: {}", stderr.trim());
+    }
+
+    let mut seen = HashSet::new();
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| seen.insert(s.clone()))
         .collect())
-}
-
-/// Calculate per-path closure sizes for a list of Nix store paths.
-///
-/// Returns a map from store path → closure size in bytes (path + runtime deps).
-/// Paths not reported by `nix path-info` will be absent from the map.
-pub fn get_closure_sizes(output_paths: &[String]) -> Result<HashMap<String, u64>> {
-    if output_paths.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let path_infos = query_path_infos(output_paths, &["-S"])?;
-    Ok(path_infos
-        .into_iter()
-        .map(|(path, info)| (path, info.closure_size))
-        .collect())
-}
-
-/// Calculate the size of the combined closure of several store paths.
-///
-/// Unlike summing [`get_closure_sizes`], runtime dependencies shared by
-/// several paths (e.g. the outputs of one derivation) are counted once.
-pub fn get_combined_closure_size(output_paths: &[String]) -> Result<u64> {
-    if output_paths.is_empty() {
-        return Ok(0);
-    }
-
-    let path_infos = query_path_infos(output_paths, &["--recursive"])?;
-    Ok(sum_nar_sizes(&path_infos))
-}
-
-/// Total NAR size of a set of path infos, each path counted once.
-fn sum_nar_sizes(path_infos: &HashMap<String, PathInfoData>) -> u64 {
-    path_infos.values().map(|info| info.nar_size).sum()
 }
 
 /// Format bytes as human-readable size (e.g., "1.5 MB", "234 KB")
@@ -133,78 +261,73 @@ mod tests {
         assert_eq!(format_size(1536 * 1024 * 1024), "1.50 GB");
     }
 
-    #[test]
-    fn test_empty_paths() {
-        let result = get_output_sizes(&[]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+    #[tokio::test]
+    async fn test_empty_paths() {
+        let report = measure_outputs(&[], None).await.unwrap();
+        assert_eq!(report, OutputSizeReport::default());
+    }
 
-        let result = get_closure_sizes(&[]);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+    /// out → lib → glibc, dev → out. glibc is shared by both closures.
+    const V1: &str = r#"{
+        "/nix/store/aaa-pkg": {"narSize": 100, "references": ["/nix/store/ccc-lib", "/nix/store/aaa-pkg"], "ultimate": false},
+        "/nix/store/bbb-pkg-dev": {"narSize": 10, "references": ["/nix/store/aaa-pkg"]},
+        "/nix/store/ccc-lib": {"narSize": 1000, "references": ["/nix/store/ddd-glibc"]},
+        "/nix/store/ddd-glibc": {"narSize": 5000, "references": []}
+    }"#;
 
-        assert_eq!(get_combined_closure_size(&[]).unwrap(), 0);
+    const V2: &str = r#"{"info": {
+        "aaa-pkg": {"narSize": 100, "references": ["ccc-lib", "aaa-pkg"], "version": 2},
+        "bbb-pkg-dev": {"narSize": 10, "references": ["aaa-pkg"]},
+        "ccc-lib": {"narSize": 1000, "references": ["ddd-glibc"]},
+        "ddd-glibc": {"narSize": 5000, "references": []}
+    }, "storeDir": "/nix/store", "version": 2}"#;
+
+    const LEGACY: &str = r#"[
+        {"path": "/nix/store/aaa-pkg", "narSize": 100, "references": ["/nix/store/ccc-lib"]},
+        {"path": "/nix/store/bbb-pkg-dev", "narSize": 10, "references": ["/nix/store/aaa-pkg"]},
+        {"path": "/nix/store/ccc-lib", "narSize": 1000, "references": ["/nix/store/ddd-glibc"]},
+        {"path": "/nix/store/ddd-glibc", "narSize": 5000, "references": []}
+    ]"#;
+
+    fn outputs() -> Vec<String> {
+        vec![
+            "/nix/store/aaa-pkg".to_string(),
+            "/nix/store/bbb-pkg-dev".to_string(),
+        ]
+    }
+
+    fn assert_expected(report: &OutputSizeReport) {
+        let out = report.outputs["/nix/store/aaa-pkg"];
+        let dev = report.outputs["/nix/store/bbb-pkg-dev"];
+        assert_eq!(out.nar_size, 100);
+        assert_eq!(out.closure_size, 6100);
+        assert_eq!(dev.nar_size, 10);
+        assert_eq!(dev.closure_size, 6110);
+        assert_eq!(report.total_nar_size, 110);
+        // Shared paths are counted once, not 6100 + 6110.
+        assert_eq!(report.total_closure_size, 6110);
     }
 
     #[test]
-    fn combined_closure_counts_shared_paths_once() {
-        // `nix path-info --recursive --json out dev`: both outputs depend on
-        // glibc, which appears once in the result.
-        let json = r#"{
-            "/nix/store/aaa-hello": { "narSize": 100 },
-            "/nix/store/bbb-hello-dev": { "narSize": 10 },
-            "/nix/store/ccc-glibc": { "narSize": 1000 }
-        }"#;
-        let infos: HashMap<String, PathInfoData> = serde_json::from_str(json).unwrap();
-        assert_eq!(sum_nar_sizes(&infos), 1110);
+    fn report_from_every_json_format() {
+        for json in [V1, V2, LEGACY] {
+            let infos = parse_path_infos(json.as_bytes()).unwrap();
+            assert_expected(&compute_report(&outputs(), &infos).unwrap());
+        }
     }
 
     #[test]
-    fn test_parse_path_info_json() {
-        // Test parsing real-world nix path-info JSON output
-        let json_without_closure = r#"{
-            "/nix/store/test.drv": {
-                "ca": "text:sha256:abc123",
-                "deriver": null,
-                "narHash": "sha256-xyz",
-                "narSize": 3264,
-                "references": [],
-                "registrationTime": 1777484331,
-                "signatures": [],
-                "ultimate": false
-            }
-        }"#;
+    fn invalid_output_is_an_error() {
+        let json = r#"{"/nix/store/aaa-pkg": null}"#;
+        let infos = parse_path_infos(json.as_bytes()).unwrap();
+        let err = compute_report(&["/nix/store/aaa-pkg".to_string()], &infos).unwrap_err();
+        assert!(err.to_string().contains("not a valid path"), "{err}");
+    }
 
-        let result: Result<std::collections::HashMap<String, PathInfoData>, _> =
-            serde_json::from_str(json_without_closure);
-        assert!(result.is_ok(), "Should parse JSON without closureSize");
-        let map = result.unwrap();
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get("/nix/store/test.drv").unwrap().nar_size, 3264);
-        assert_eq!(map.get("/nix/store/test.drv").unwrap().closure_size, 0); // default value
-
-        let json_with_closure = r#"{
-            "/nix/store/test.drv": {
-                "ca": "text:sha256:abc123",
-                "closureSize": 2294600,
-                "deriver": null,
-                "narHash": "sha256-xyz",
-                "narSize": 3264,
-                "references": [],
-                "registrationTime": 1777484331,
-                "signatures": [],
-                "ultimate": false
-            }
-        }"#;
-
-        let result: Result<std::collections::HashMap<String, PathInfoData>, _> =
-            serde_json::from_str(json_with_closure);
-        assert!(result.is_ok(), "Should parse JSON with closureSize");
-        let map = result.unwrap();
-        assert_eq!(map.get("/nix/store/test.drv").unwrap().nar_size, 3264);
-        assert_eq!(
-            map.get("/nix/store/test.drv").unwrap().closure_size,
-            2294600
-        );
+    #[test]
+    fn missing_closure_member_is_an_error() {
+        let json = r#"{"/nix/store/aaa-pkg": {"narSize": 1, "references": ["/nix/store/zzz"]}}"#;
+        let infos = parse_path_infos(json.as_bytes()).unwrap();
+        assert!(compute_report(&["/nix/store/aaa-pkg".to_string()], &infos).is_err());
     }
 }

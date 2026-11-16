@@ -35,7 +35,7 @@ pub struct VariantBuildState {
     pub build_state: DrvBuildState,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 pub struct JobInfo {
     pub jobset_id: i64,
     pub name: String,

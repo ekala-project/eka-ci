@@ -29,7 +29,7 @@ impl RecorderWorker {
         };
 
         let job_infos = self.db_service.get_job_info_for_drv(drv).await?;
-        let mut size_warning = None;
+        let mut run_size_check = false;
 
         match &task.result {
             DBS::Completed(DBR::Success) => {
@@ -65,12 +65,9 @@ impl RecorderWorker {
                         );
                     }
 
-                    // Measure output and closure sizes and compare them
-                    // against the base branch, if configured
-                    match self.check_sizes(drv, &job_infos).await {
-                        Ok(warning) => size_warning = warning,
-                        Err(e) => warn!("Failed to check sizes for {}: {}", drv.store_path(), e),
-                    }
+                    // Output and closure sizes are measured in the
+                    // background once the forge has been notified (below).
+                    run_size_check = true;
                 }
 
                 // Clear transitive failures in database first (source of
@@ -295,8 +292,14 @@ impl RecorderWorker {
             },
         }
 
-        self.notify_forge_and_channels(drv, task, &job_infos, size_warning)
+        self.notify_forge_and_channels(drv, task, &job_infos)
             .await?;
+
+        // Spawned only now, so a size warning is queued after the plain
+        // success update above and is not overwritten by it.
+        if run_size_check {
+            self.size_checker.spawn(Arc::clone(drv), job_infos.clone());
+        }
 
         // Broadcast job stats updates for all affected jobs
         for job_info in job_infos {

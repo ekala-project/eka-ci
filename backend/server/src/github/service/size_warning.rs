@@ -85,18 +85,52 @@ impl SizeWarningReport<'_> {
     }
 }
 
+impl<'a> SizeWarningReport<'a> {
+    /// Report for a warning carried by `UpdateBuildStatusWithSizeWarnings`.
+    pub(super) fn from_warning(w: &'a crate::db::size::SizeWarning) -> Self {
+        Self {
+            metric: w.metric,
+            base_branch: &w.base_branch,
+            baseline_size: w.baseline_size,
+            current_size: w.current_size,
+            increase_percent: w.increase_percent,
+            threshold_percent: w.threshold_percent,
+        }
+    }
+}
+
+/// Check-run title and markdown summary for one or more warnings.
+fn render(reports: &[SizeWarningReport<'_>]) -> (String, String) {
+    if let [report] = reports {
+        return report.text();
+    }
+    let title = format!("⚠️ {} size thresholds exceeded", reports.len());
+    let summary = reports
+        .iter()
+        .map(|r| {
+            let (title, summary) = r.text();
+            format!("### {}\n\n{}", title, summary)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (title, summary)
+}
+
 impl GitHubService {
     /// Mark every check run of `drv_id` neutral with the size warning.
     ///
     /// Coalesced gates cover several variants, so they get the normal
     /// aggregate update instead: a single variant's warning must not
     /// overwrite the state of the others.
-    pub(super) async fn handle_update_build_status_with_size_warning(
+    pub(super) async fn handle_update_build_status_with_size_warnings(
         &self,
         drv_id: &DrvId,
         status: &DrvBuildState,
-        warning: &SizeWarningReport<'_>,
+        warnings: &[SizeWarningReport<'_>],
     ) -> Result<()> {
+        if warnings.is_empty() {
+            return Ok(());
+        }
         let check_runs = self.db_service.check_runs_for_drv_path(drv_id).await?;
         for check_run in check_runs {
             let variant_states = self
@@ -114,10 +148,11 @@ impl GitHubService {
             }
 
             debug!(
-                "Updating check run {} with size warning: {:.1}% increase (threshold: {:.1}%)",
-                check_run.check_run_id, warning.increase_percent, warning.threshold_percent
+                "Updating check run {} with {} size warning(s)",
+                check_run.check_run_id,
+                warnings.len()
             );
-            let (title, summary) = warning.text();
+            let (title, summary) = render(warnings);
             if self.queue_size_warning(&check_run, &title, &summary).await {
                 continue;
             }
@@ -233,6 +268,35 @@ mod tests {
             } => assert_eq!((metric, base_branch.as_str()), (SizeMetric::Output, "")),
             other => panic!("unexpected task {:?}", other),
         }
+    }
+
+    #[test]
+    fn several_warnings_are_all_reported() {
+        let output = SizeWarningReport {
+            metric: SizeMetric::Output,
+            base_branch: "master",
+            baseline_size: 1_000,
+            current_size: 1_500,
+            increase_percent: 50.0,
+            threshold_percent: 10.0,
+        };
+        let closure = SizeWarningReport {
+            metric: SizeMetric::Closure,
+            increase_percent: 20.0,
+            threshold_percent: 15.0,
+            ..output
+        };
+        let (title, summary) = render(&[output, closure]);
+        assert_eq!(title, "⚠️ 2 size thresholds exceeded");
+        assert!(
+            summary.contains("### ⚠️ Output size increased by 50.0%"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("### ⚠️ Closure size increased by 20.0%"),
+            "{summary}"
+        );
+        assert_eq!(render(&[output]), output.text());
     }
 
     #[test]

@@ -103,6 +103,16 @@
   shared paths counted once) of each locally built derivation is recorded
   and compared against the same base-branch baseline as the output size,
   with the same `size_check` threshold. Check-run warnings name the metric
+- Size checks: optional `size_check.max_closure_increase_percent` (defaults
+  to `max_increase_percent`); every exceeded size is reported on the check
+  run instead of only the largest; sizes come from one async
+  `nix path-info --recursive` call and are checked in a background task (at
+  most 4 at once) so they no longer block the recorder
+- Size baselines fall back to the pull request's base commit: when no
+  base-branch baseline exists for a changed attr, the base commit's
+  derivation is measured from the local store or the substituters'
+  `.narinfo` files and recorded as the baseline (new
+  `GitHubJobSets.base_sha`)
 - Channel `forge` values are now spelled `github` and `gitlab` in
   `ekaci.toml` (previously only `git-hub`/`git-lab` parsed, so
   `forge = "github"` failed at startup); the old spellings are still

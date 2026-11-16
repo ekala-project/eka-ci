@@ -61,6 +61,52 @@ pub async fn create_jobset(
     Ok(result)
 }
 
+/// Record the base commit a pull-request jobset was evaluated against.
+pub async fn set_jobset_base_sha(
+    jobset_id: i64,
+    base_sha: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query("UPDATE GitHubJobSets SET base_sha = ? WHERE ROWID = ?")
+        .bind(base_sha)
+        .bind(jobset_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// For `attr` in the pull-request jobset `jobset_id`, find the jobset of the
+/// base commit (same job, owner and repo) and the derivation `attr` had there.
+///
+/// Returns `None` when the jobset has no recorded base commit, the base
+/// commit was not evaluated, or the attribute is new in the pull request.
+pub async fn get_base_drv_for_attr(
+    jobset_id: i64,
+    attr: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<(i64, DrvId)>> {
+    let row = sqlx::query_as(
+        r#"
+        SELECT base.ROWID, d.drv_path
+        FROM GitHubJobSets head
+        JOIN GitHubJobSets base
+          ON base.sha = head.base_sha
+         AND base.job = head.job
+         AND base.owner = head.owner
+         AND base.repo_name = head.repo_name
+        JOIN Job j ON j.jobset = base.ROWID AND j.name = ?
+        JOIN Drv d ON d.ROWID = j.drv_id
+        WHERE head.ROWID = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(attr)
+    .bind(jobset_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 /// Query jobs from a specific commit's jobset
 /// Returns a mapping of job name -> drv_path for efficient lookup
 pub async fn get_jobset_jobs_by_sha(
