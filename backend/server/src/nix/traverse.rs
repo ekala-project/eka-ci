@@ -25,8 +25,11 @@ use crate::db::model::{Reference, Referrer};
 use crate::graph::GraphCommand;
 
 /// Drvs per `nix derivation show` / `nix-store --query --requisites`
-/// call. Store paths are ~90 bytes, so argv stays around 45 KiB.
-const BATCH_SIZE: usize = 500;
+/// call. `nix derivation show` prints ~4 KiB of JSON per drv on average
+/// (more for drvs with large envs), so a batch is a few hundred KiB and
+/// at most [`SHOW_CONCURRENCY`] of them are buffered at once. Larger
+/// batches are faster (500: ~3x) at the cost of more buffered output.
+const BATCH_SIZE: usize = 100;
 
 /// `nix derivation show` processes run at once.
 const SHOW_CONCURRENCY: usize = 4;
