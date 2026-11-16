@@ -172,6 +172,9 @@
   openssl instead of the vendored one, and a RUNPATH fix for rust-lld.
   `nix/overlay.nix` now takes the fenix flake as an argument (direct
   importers must pass it); `overlays.default` is unchanged for consumers
+- Local builders cover nix's `extra-platforms` as well as `system`, so
+  derivations for e.g. `i686-linux` on an `x86_64-linux` host are scheduled
+  on the local machine instead of waiting for a builder that never appears
 - Output-size checks work again: sizes were looked up by store path
   instead of the stored drv path, the baseline query joined a table nothing
   writes to, and the job's `size_check` was never parsed. Baselines are now
