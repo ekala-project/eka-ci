@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Derivation outputs
+
+- Fix output paths from `nix derivation show` in the versioned JSON format
+  (seen with Nix 2.35), which omits the store directory: size checks,
+  output references and post-build hooks received `<hash>-<name>` instead
+  of `/nix/store/<hash>-<name>`, failing every size check
+
 ### Eval traversal
 
 - Read evaluated drv closures with batched `nix derivation show` calls (100

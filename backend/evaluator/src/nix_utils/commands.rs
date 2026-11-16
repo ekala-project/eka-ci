@@ -268,7 +268,7 @@ pub async fn get_drv_outputs(drv_path: &str) -> Result<HashMap<String, String>> 
     let outputs_map: HashMap<String, String> = if let Some(outputs) = drv_info.outputs {
         outputs
             .into_iter()
-            .filter_map(|(name, info)| info.path.map(|p| (name, p)))
+            .filter_map(|(name, info)| info.into_store_path().map(|p| (name, p)))
             .collect()
     } else {
         // Fallback: if no outputs field, assume single "out" output
