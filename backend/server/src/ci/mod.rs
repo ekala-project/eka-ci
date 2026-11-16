@@ -1,5 +1,6 @@
 // Re-export the config module from the ci_config crate
 pub use ci_config as config;
+mod base;
 pub mod flake;
 
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ use crate::github::{CICheckInfo, GitHubTask};
 use crate::nix::{EvalJob, EvalTask};
 use crate::services::{AsyncService, TaskJournal};
 use crate::skills::types::SkillTask;
+pub use base::BaseCheckout;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RepoTask {
@@ -22,6 +24,10 @@ pub enum RepoTask {
     ReadGitHub {
         repo_path: PathBuf,
         ci_info: CICheckInfo,
+        /// For a PR head: the base commit's checkout, so each head job can
+        /// evaluate its base first when no base jobset exists.
+        #[serde(default)]
+        base: Option<Box<BaseCheckout>>,
     },
 }
 
@@ -133,6 +139,7 @@ impl RepoReader {
         &self,
         mut path: PathBuf,
         ci_info: &CICheckInfo,
+        base: Option<&BaseCheckout>,
     ) -> anyhow::Result<ConfigureSummary> {
         let root = path.clone();
         let mut summary = ConfigureSummary::default();
@@ -143,16 +150,7 @@ impl RepoReader {
             // Process jobs
             for (job_name, job) in config.jobs {
                 summary.job_names.push(job_name.clone());
-                if self
-                    .db_service
-                    .has_jobset(
-                        &ci_info.commit,
-                        &job_name,
-                        &ci_info.owner,
-                        &ci_info.repo_name,
-                    )
-                    .await?
-                {
+                if !self.needs_eval(ci_info, &job_name).await? {
                     // We don't need to revisit jobs which already been processed
                     // For base commits, it's common that they could get processed multiple times
                     continue;
@@ -167,6 +165,7 @@ impl RepoReader {
                     name: job_name,
                     allow_failures: job.allow_eval_failures,
                     config_json,
+                    base: base.and_then(|b| b.eval_job_for(&job.file)),
                 };
                 // TODO: Add jobset to db
                 self.eval_sender
@@ -444,11 +443,16 @@ impl AsyncService<RepoTask> for RepoReader {
                         name: "local".to_string(),
                         allow_failures: job.allow_eval_failures,
                         config_json,
+                        base: None,
                     };
                     self.eval_sender.send(EvalTask::Job(eval_job)).await?;
                 }
             },
-            RepoTask::ReadGitHub { repo_path, ci_info } => {
+            RepoTask::ReadGitHub {
+                repo_path,
+                ci_info,
+                base,
+            } => {
                 // Wrap once so both gate tasks share the same refcounted payload.
                 let ci_info = std::sync::Arc::new(ci_info);
                 let configure_task = GitHubTask::CreateCIConfigureGate {
@@ -460,7 +464,9 @@ impl AsyncService<RepoTask> for RepoReader {
                     .context("GitHub app was not instantiated")?;
                 github_sender.send(configure_task).await?;
 
-                let summary = self.process_github_repo_config(repo_path, &ci_info).await?;
+                let summary = self
+                    .process_github_repo_config(repo_path, &ci_info, base.as_deref())
+                    .await?;
 
                 let finish_configure_task = GitHubTask::CompleteCIConfigureGate {
                     ci_check_info: ci_info,

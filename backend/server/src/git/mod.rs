@@ -5,7 +5,7 @@ use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use crate::ci::RepoTask;
+use crate::ci::{BaseCheckout, RepoTask};
 use crate::github::CICheckInfo;
 use crate::services::{AsyncService, TaskJournal};
 
@@ -91,6 +91,7 @@ impl AsyncService<GitTask> for GitService {
                 let repo_task = RepoTask::ReadGitHub {
                     repo_path: workspace.worktree_path(),
                     ci_info,
+                    base: None,
                 };
                 self.repo_sender.send(repo_task).await?;
             },
@@ -125,13 +126,22 @@ impl AsyncService<GitTask> for GitService {
                 repo.create_worktree().await?;
                 let base_ci_info = CICheckInfo::from_gh_pr_base(&pr)?;
                 let head_ci_info = CICheckInfo::from_gh_pr_head(&pr)?;
+                // The base is sent first; the head also carries the base
+                // checkout so it can evaluate the base itself if the base
+                // jobset is missing when the head is evaluated.
+                let base_checkout = BaseCheckout {
+                    repo_path: base_repo.worktree_path(),
+                    ci_info: base_ci_info.clone(),
+                };
                 let base_task = RepoTask::ReadGitHub {
                     repo_path: base_repo.worktree_path(),
                     ci_info: base_ci_info,
+                    base: None,
                 };
                 let head_task = RepoTask::ReadGitHub {
                     repo_path: repo.worktree_path(),
                     ci_info: head_ci_info,
+                    base: Some(Box::new(base_checkout)),
                 };
                 self.repo_sender.send(base_task).await?;
                 self.repo_sender.send(head_task).await?;
