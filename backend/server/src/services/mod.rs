@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use prometheus::Registry;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::mpsc::{Sender, channel};
+use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -21,7 +21,7 @@ use crate::gitlab::GitLabService;
 use crate::graph::{GraphCommand, GraphService, GraphServiceHandle};
 use crate::metrics::{ChangeSummaryMetrics, GraphMetrics, NixEvalMetrics, WebhookMetrics};
 use crate::nix::{EvalService, EvalTask};
-use crate::scheduler::{IngressTask, SchedulerService};
+use crate::scheduler::{BuildabilityQueue, SchedulerService};
 use crate::search_index::SearchIndexService;
 use crate::services::checks::ChecksExecutor;
 use crate::services::skills::SkillsExecutor;
@@ -444,11 +444,7 @@ pub async fn start_services(config: Config) -> Result<()> {
     let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
 
-    enqueue_buildable_builds(
-        graph_handle.clone(),
-        scheduler_service.ingress_request_sender(),
-    )
-    .await?;
+    enqueue_buildable_builds(&graph_handle, &scheduler_service.buildability_queue()).await?;
 
     config_summary.log();
 
@@ -502,17 +498,35 @@ async fn build_sandboxes(
     ))
 }
 
+/// Re-check every drv that may be ready to build after a restart.
+///
+/// Buildability re-checks are held in memory (see `BuildabilityQueue`), so
+/// any pending at shutdown or crash are gone. Re-check every Buildable drv
+/// and every Queued drv whose deps have all succeeded (the spec's
+/// `crash_recovery`), instead of leaving the latter to the periodic sweep.
 async fn enqueue_buildable_builds(
-    graph_handle: GraphServiceHandle,
-    ingress_sender: Sender<IngressTask>,
+    graph_handle: &GraphServiceHandle,
+    buildability: &BuildabilityQueue,
 ) -> Result<()> {
-    let queued_drvs = graph_handle.get_buildable_drvs().await?;
+    let buildable = graph_handle.get_buildable_drvs().await?;
+    let queued_ready: Vec<_> = graph_handle
+        .shared_view()
+        .iter()
+        .filter(|e| {
+            e.value().build_state == shared::types::DrvBuildState::Queued
+                && graph_handle.is_buildable(e.key())
+        })
+        .map(|e| e.key().clone())
+        .collect();
 
-    info!("Checking {} drvs for build candidates", queued_drvs.len());
-    for shared_drv_id in queued_drvs {
+    info!(
+        "Checking {} buildable and {} ready queued drvs for build candidates",
+        buildable.len(),
+        queued_ready.len()
+    );
+    for shared_drv_id in buildable.into_iter().chain(queued_ready) {
         let server_drv_id = crate::graph_compat::to_server_drv_id(&shared_drv_id)?;
-        let ingress_task = IngressTask::CheckBuildable(std::sync::Arc::new(server_drv_id));
-        ingress_sender.send(ingress_task).await?;
+        buildability.push(std::sync::Arc::new(server_drv_id));
     }
 
     Ok(())
