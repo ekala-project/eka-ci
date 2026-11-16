@@ -12,6 +12,7 @@ use common::{TestContext, create_simple_drv, insert_test_drv, test_drv, wait_for
 use eka_ci_server::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use eka_ci_server::db::model::drv::Drv;
 use eka_ci_server::graph::{GraphCommand, GraphService};
+use eka_ci_server::nix::derivation_show::drv_output;
 use eka_ci_server::scheduler::{IngressTask, SchedulerService};
 use prometheus::Registry;
 use tokio::sync::mpsc::channel;
@@ -29,9 +30,12 @@ async fn test_build_simple_drv_success() {
     println!("Created test derivation: {}", drv_path);
 
     // Fetch derivation info and insert into DB
-    let drv = Drv::fetch_info(&drv_path, &ctx.db_service)
-        .await
-        .expect("Failed to fetch drv info");
+    let drv = Drv::from_info(
+        drv_path.parse().expect("invalid drv path"),
+        &drv_output(&drv_path)
+            .await
+            .expect("Failed to fetch drv info"),
+    );
 
     assert_eq!(drv.build_state, DrvBuildState::Queued);
 
@@ -136,9 +140,12 @@ async fn test_build_failure_retry_logic() {
     println!("Created test derivation that will fail: {}", drv_path);
 
     // Fetch derivation info and insert into DB
-    let drv = Drv::fetch_info(&drv_path, &ctx.db_service)
-        .await
-        .expect("Failed to fetch drv info");
+    let drv = Drv::from_info(
+        drv_path.parse().expect("invalid drv path"),
+        &drv_output(&drv_path)
+            .await
+            .expect("Failed to fetch drv info"),
+    );
 
     insert_test_drv(&ctx.db_service, &drv)
         .await

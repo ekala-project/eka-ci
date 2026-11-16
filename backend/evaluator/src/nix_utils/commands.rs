@@ -133,13 +133,31 @@ pub async fn dry_run_realise(drv_store_path: &str) -> Result<DryRunReport> {
 /// Retrieve the requisites of a drv. This is a global list of all direct
 /// and transitive drvs
 pub async fn drv_requisites(drv_path: &str) -> Result<Vec<String>> {
+    drv_requisites_many(&[drv_path.to_string()]).await
+}
+
+/// Retrieve the union of the requisites of every drv in `drv_paths` with
+/// a single `nix-store --query --requisites` call. Fails as a whole if
+/// any path is invalid.
+pub async fn drv_requisites_many(drv_paths: &[String]) -> Result<Vec<String>> {
+    if drv_paths.is_empty() {
+        return Ok(Vec::new());
+    }
     let output = Command::new("nix-store")
         .kill_on_drop(true)
-        .args(["--query", "--requisites", drv_path])
+        .args(["--query", "--requisites"])
+        .args(drv_paths)
         .output()
-        .await?
-        .stdout;
-    let drv_str = String::from_utf8(output)?;
+        .await?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "nix-store --query --requisites failed for {} drvs (first: {}): {}",
+            drv_paths.len(),
+            drv_paths[0],
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let drv_str = String::from_utf8(output.stdout)?;
 
     let drvs = drv_str
         .lines()

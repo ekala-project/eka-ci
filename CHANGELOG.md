@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Eval traversal
+
+- Read evaluated drv closures with batched `nix derivation show` calls (500
+  drvs per call, 4 at a time) instead of a `nix derivation show` and a
+  `nix-store --query --references` per drv; dependency edges come from each
+  drv's `inputDrvs`. On a 4,309-drv closure this is 9 processes instead of
+  8,618, and 3.7s / 1.8s CPU instead of 71s / 968s CPU
+- `batch_traverse` reads the union of all jobs' closures once instead of
+  re-reading drvs shared between jobs, and lists closures with batched
+  `nix-store --query --requisites`
+- A batch containing an unreadable drv is split until the bad drv is
+  isolated, so the rest of the batch is still recorded
+- `nix-store --query --requisites` failures are now reported instead of
+  being treated as an empty closure
+
 ### Shutdown
 
 - Fix `systemctl stop`/`restart` hanging until systemd's 90s timeout and

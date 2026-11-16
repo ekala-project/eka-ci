@@ -24,6 +24,12 @@ mod serialization {
 
         let drv = drv_info.into_drv_info().unwrap();
         assert_eq!(drv.pname, Some("cmake".to_owned()));
+        assert_eq!(drv.input_drvs.len(), 16);
+        assert!(
+            drv.input_drvs.contains(
+                &"/nix/store/226jq76cgkp09x6hxn42gqpk5vzndp0x-expat-2.7.2.drv".to_owned()
+            )
+        );
     }
 
     #[test]
@@ -59,6 +65,10 @@ mod serialization {
         let drv = drv_info.into_drv_info().unwrap();
         assert_eq!(drv.pname, Some("pytest".to_owned()));
         assert_eq!(drv.name, "python3.13-pytest-9.0.3");
+        assert_eq!(drv.input_drvs.len(), 22);
+        assert!(drv.input_drvs.contains(
+            &"0dsz43k2ws5kmp36q15h7drwd4d422wq-ensure-newer-sources-hook.drv".to_owned()
+        ));
         assert_eq!(drv.system, "x86_64-linux");
     }
 

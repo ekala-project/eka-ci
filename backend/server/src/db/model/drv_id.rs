@@ -74,34 +74,6 @@ impl DrvId {
         // DrvId is guaranteed to have format hash-name.drv where hash is 32 chars
         &self.0[..32]
     }
-
-    /// (&self, reference) pairs, for easy inserting into DB
-    pub async fn reference_pairs(&self) -> Result<Vec<(Referrer, Reference)>> {
-        use std::str::FromStr;
-
-        use tracing::warn;
-
-        use crate::nix::drv_references;
-
-        let refs = match drv_references(&self.store_path()).await {
-            Err(e) => {
-                warn!(
-                    "Failed to fetch references for {}: {:?}",
-                    self.store_path(),
-                    e
-                );
-                vec![]
-            },
-            Ok(x) => x,
-        };
-
-        let pairs = refs
-            .into_iter()
-            .flat_map(|x| DrvId::from_str(&x).map(|y| (self.clone(), y)))
-            .collect();
-
-        Ok(pairs)
-    }
 }
 
 impl std::str::FromStr for DrvId {
