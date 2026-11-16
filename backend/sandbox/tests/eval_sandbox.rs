@@ -67,7 +67,7 @@ fn entry<'a>(run: &'a EvalRun, attr: &str) -> &'a Value {
 fn escape_expr(secret_file: &Path) -> String {
     format!(
         r#"let
-  mk = name: derivation {{ inherit name; builder = "/bin/sh"; system = builtins.currentSystem; }};
+  mk = name: derivation {{ inherit name; builder = "/bin/sh"; system = "x86_64-linux"; }};
 in {{
   legit = mk "legit-${{import ./other.nix}}";
   env = mk "env-${{builtins.getEnv "EKACI_TEST_SECRET"}}";
@@ -108,12 +108,13 @@ async fn untrusted_expression_cannot_escape() {
             .ends_with("-env-.drv")
     );
     for (attr, reason) in [
-        ("readEtc", "forbidden in restricted mode"),
-        ("readSecret", "forbidden in restricted mode"),
-        ("fetch", "forbidden in restricted mode"),
-        ("getFlakeUrl", "'flakes' is disabled"),
-        ("getFlakeGh", "'flakes' is disabled"),
-        ("fetchTree", "attribute 'fetchTree' missing"),
+        // iets evaluates in pure mode, so these fail with pure-mode errors.
+        ("readEtc", "forbidden in pure evaluation mode"),
+        ("readSecret", "forbidden in pure evaluation mode"),
+        ("fetch", "requires a 'sha256' argument"),
+        ("getFlakeUrl", "unlocked flake reference"),
+        ("getFlakeGh", "unlocked flake reference"),
+        ("fetchTree", "pass the locked attribute set"),
     ] {
         let error = entry(&run, attr)["error"].as_str().unwrap_or_default();
         assert!(
@@ -129,7 +130,7 @@ async fn untrusted_expression_cannot_escape() {
 #[tokio::test]
 #[ignore = "needs nix daemon, iets and bwrap"]
 async fn provenance_adds_pos_field() {
-    let expr = r#"{ hello = derivation { name = "hello"; builder = "/bin/sh"; system = builtins.currentSystem; }; }"#;
+    let expr = r#"{ hello = derivation { name = "hello"; builder = "/bin/sh"; system = "x86_64-linux"; }; }"#;
     let (_wt, file) = worktree(expr);
     let config = EvalSandboxConfig {
         provenance: true,

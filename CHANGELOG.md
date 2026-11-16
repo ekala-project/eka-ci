@@ -13,6 +13,17 @@
   ignored
 - The Nix package wraps the eka-ci binaries with `nix`, `iets`, `git`,
   `bubblewrap` and `passt` on `PATH`
+- Fix every evaluation aborting at startup with `per-symbol table: mmap
+  failed ... Cannot allocate memory`: each iets process reserves ~36 GiB of
+  address space up front, so the eval sandbox's `RLIMIT_AS` (default
+  8 GiB) killed it before it read the job file. The eval sandbox no longer
+  sets `RLIMIT_AS`; `[eval] memory_limit_mb` is now passed to `iets
+  eval-jobs` as `--max-memory-size` (previously half of it), which replaces a
+  worker whose resident memory exceeds it. Use systemd `MemoryMax` for a hard
+  cap. `[checks]` still uses `RLIMIT_AS`
+- Update the eval-sandbox integration tests for iets' pure mode: use a
+  literal `system` instead of `builtins.currentSystem`, and expect pure-mode
+  errors from the sandbox-escape attempts
 
 ### Web UI
 

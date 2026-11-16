@@ -13,6 +13,14 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvalSandboxConfig {
     pub timeout: Duration,
+    /// Worker memory threshold, in MiB, passed to `iets eval-jobs` as
+    /// `--max-memory-size`: a worker whose resident memory exceeds it is
+    /// replaced after its current job.
+    ///
+    /// Deliberately not enforced with `RLIMIT_AS`: every iets process
+    /// reserves ~36 GiB of address space up front (a 4 GiB stack plus
+    /// `MAP_NORESERVE` interner tables), so any address-space limit below
+    /// that aborts evaluation before it reads the job file.
     pub memory_limit_mb: u64,
     /// Pass `--provenance` to `iets eval-jobs`.
     pub provenance: bool,
@@ -67,8 +75,7 @@ impl EvalSandbox {
         let mut spec = SandboxSpec::new(program)
             .args(iets_eval_jobs_args(&self.config, file, &roots))
             .network(Network::Filtered)
-            .timeout(self.config.timeout)
-            .memory_limit_bytes(self.config.memory_limit_mb.saturating_mul(1024 * 1024));
+            .timeout(self.config.timeout);
         if let Some(dir) = roots.iter().find(|r| r.is_dir()) {
             spec = spec.cwd(dir);
         }
@@ -84,9 +91,9 @@ pub fn iets_eval_jobs_args(
     // "eval-jobs" subcommand — iets is a multi-tool binary.
     let mut args: Vec<OsString> = vec![
         "eval-jobs".into(),
-        // Recycle workers before RLIMIT_AS turns an allocation failure into a crash.
+        // Recycle workers that outgrow the configured memory limit.
         "--max-memory-size".into(),
-        (cfg.memory_limit_mb / 2).max(1).to_string().into(),
+        cfg.memory_limit_mb.to_string().into(),
     ];
     if cfg.provenance {
         args.push("--provenance".into());
@@ -128,7 +135,7 @@ mod tests {
         };
         let roots = [PathBuf::from("/w")];
         let s = joined(&iets_eval_jobs_args(&cfg, Path::new("/w/f.nix"), &roots));
-        assert!(s.starts_with("eval-jobs --max-memory-size 2048"));
+        assert!(s.starts_with("eval-jobs --max-memory-size 4096"));
         assert!(s.contains("-I ekaci-root-0=/w"));
         assert!(s.ends_with("--show-input-drvs --meta /w/f.nix"));
         // iets-only flags absent by default
@@ -146,6 +153,20 @@ mod tests {
         let roots = [PathBuf::from("/w")];
         let s = joined(&iets_eval_jobs_args(&cfg, Path::new("/w/f.nix"), &roots));
         assert!(s.contains("--provenance"));
+    }
+
+    /// iets reserves far more address space than it uses; an `RLIMIT_AS`
+    /// on the eval sandbox makes every evaluation abort at startup.
+    #[test]
+    fn eval_spec_sets_no_address_space_limit() {
+        let sb = EvalSandbox::new(
+            Arc::new(Sandbox::with_paths("bwrap".into(), "helper".into())),
+            EvalSandboxConfig::default(),
+        );
+        let spec = sb.eval_jobs_spec("/bin/iets".into(), Path::new("/w/f.nix"), &[]);
+        assert_eq!(spec.memory_limit_bytes, None);
+        let bwrap = joined(&spec.bwrap_args(Path::new("/helper")));
+        assert!(!bwrap.contains("--mem"), "unexpected --mem in {bwrap}");
     }
 
     #[test]

@@ -282,7 +282,9 @@ landlock with a cleared environment; see
   limit, in seconds, for one `iets eval-jobs` run. The whole sandbox is killed when it
   elapses.
 - **`eval.memory_limit_mb`** (`integer between 1024 and 1048576`, default `8192`):
-  Address-space limit (`RLIMIT_AS`), in MiB, for every process in the sandbox.
+  Memory threshold, in MiB, for `iets eval-jobs` workers (`--max-memory-size`): a worker
+  whose resident memory exceeds it is replaced after its current job. Not a hard cap; set
+  `systemd.services.eka-ci.serviceConfig.MemoryMax` for one.
 - **`eval.provenance`** (`boolean`, default `false`): Pass `--provenance` to add source
   positions to eval output.
 
