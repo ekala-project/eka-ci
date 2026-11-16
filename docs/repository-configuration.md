@@ -44,22 +44,40 @@ A *job* describes a Nix expression to evaluate and the derivations to build from
 
 ### Size checks
 
+```json
+"size_check": {
+  "max_increase_percent": 10,
+  "max_closure_increase_percent": 25,
+  "base_branch": "master"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `max_increase_percent` | yes | Warn when the output (NAR) size grows by more than this percentage. |
+| `max_closure_increase_percent` | no | Warn when the closure size grows by more than this percentage. Defaults to `max_increase_percent`. |
+| `base_branch` | no | Branch whose baselines builds are compared against. Defaults to `main`. |
+
 When `size_check` is set, Eka CI:
 
 1. Calculates the output (NAR) size and the closure size (the outputs plus their
    runtime dependencies, each store path counted once) of each successful build that
-   Eka CI built itself. Sizes are not measured for substituted outputs.
+   Eka CI built itself. Sizes are not measured for substituted outputs. Measuring runs
+   in the background and does not delay the build's status.
 2. Stores sizes in historical tables, keyed by commit and repository, and keeps a
    baseline per job, attribute path and system for each base branch. The baseline is
    recorded from the sizes of the derivations a base-branch evaluation (the pull
    request base or a push to a tracked branch) references, as far as Eka CI has
-   built them.
-3. Compares both sizes of a pull request's build against the baseline of the same
-   attribute on `base_branch`. Both use the same `max_increase_percent`.
-4. When an increase exceeds `max_increase_percent`, completes the build's check run
-   with a *neutral* conclusion and a size comparison instead of success. If both sizes
-   exceed it, the one with the larger increase is shown. The warning is not part of the
-   change summary, which is posted before builds finish.
+   measured them.
+3. If a pull request changes an attribute that has no baseline yet, measures the
+   pull request's base-commit derivation of that attribute where its outputs already
+   are: in the local store or, using only `.narinfo` files, in one of the server's
+   configured substituters. The result becomes the baseline.
+4. Compares both sizes of a pull request's build against the baseline of the same
+   attribute on `base_branch`.
+5. When an increase exceeds its threshold, completes the build's check run with a
+   *neutral* conclusion and a size comparison for every size that grew too much. The
+   warning is not part of the change summary, which is posted before builds finish.
 
 ## Checks
 

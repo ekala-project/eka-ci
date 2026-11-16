@@ -43,15 +43,28 @@ pub struct PassthruTestsConfig {
     pub enable: bool,
 }
 
-/// Configuration for build output size checks
+/// Configuration for build output and closure size checks
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SizeCheck {
-    /// Maximum percentage increase allowed compared to baseline (base branch)
-    /// Example: 10.0 means build fails if output is >10% larger than base branch
+    /// Maximum percentage increase of the output (NAR) size allowed compared
+    /// to the baseline (base branch). Example: 10.0 warns if the outputs are
+    /// >10% larger than on the base branch.
     pub max_increase_percent: f64,
+    /// Maximum percentage increase of the closure size (outputs plus runtime
+    /// dependencies). Defaults to `max_increase_percent`.
+    #[serde(default)]
+    pub max_closure_increase_percent: Option<f64>,
     /// Base branch to compare against (default: "main")
     #[serde(default = "default_main_branch")]
     pub base_branch: String,
+}
+
+impl SizeCheck {
+    /// Threshold for closure-size increases, in percent.
+    pub fn closure_threshold_percent(&self) -> f64 {
+        self.max_closure_increase_percent
+            .unwrap_or(self.max_increase_percent)
+    }
 }
 
 fn default_main_branch() -> String {
@@ -322,6 +335,13 @@ mod tests {
         "base_branch": "main"
       }
     },
+    "closure-threshold": {
+      "file": "default.nix",
+      "size_check": {
+        "max_increase_percent": 5.0,
+        "max_closure_increase_percent": 20.0
+      }
+    },
     "no-size-check": {
       "file": "other.nix"
     }
@@ -330,7 +350,13 @@ mod tests {
         let config = serde_json::from_str::<CIConfig>(example_config)
             .expect("Failed to deserialize config with size_check");
 
-        assert_eq!(config.jobs.len(), 2);
+        assert_eq!(config.jobs.len(), 3);
+
+        let closure = config.jobs["closure-threshold"]
+            .size_check
+            .as_ref()
+            .unwrap();
+        assert_eq!(closure.closure_threshold_percent(), 20.0);
 
         // Verify size check configured correctly
         let job = config.jobs.get("my-package").unwrap();
@@ -338,6 +364,7 @@ mod tests {
         let size_check = job.size_check.as_ref().unwrap();
         assert_eq!(size_check.max_increase_percent, 5.0);
         assert_eq!(size_check.base_branch, "main");
+        assert_eq!(size_check.closure_threshold_percent(), 5.0);
 
         // Verify size check is optional
         let job2 = config.jobs.get("no-size-check").unwrap();

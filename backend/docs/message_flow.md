@@ -299,8 +299,25 @@ RecorderTask { derivation, result }
 │     - Determine overall conclusion                          │
 │     - GitHubTask::CompleteCIEvalJob                         │
 │     - Check auto-merge eligibility (if enabled)             │
+└──────┬──────────────────────────────────────────────────────┘
+       │ (success after a local build only)
+       ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Size check (background, scheduler/recorder/size_checks)     │
+│   - nix path-info -r: output (NAR) + closure size           │
+│   - Persist on Drv, DrvRuntimeRefs, per-commit history,     │
+│     DrvSizeBaselines (base-branch jobsets)                  │
+│   - No baseline for a changed attr: measure the PR's        │
+│     base-commit drv (local store / substituters)            │
+│   - Compare with the base_branch baseline; over threshold:  │
+│     GitHubTask::UpdateBuildStatusWithSizeWarnings           │
+│       → check run neutral with every exceeded size          │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+The size check is spawned after `UpdateBuildStatus` was sent, so its
+neutral update is queued behind the success update in the same GitHub
+batch queue and is not overwritten by it.
 
 ### 5. Custom Checks Flow (Parallel to Builds)
 

@@ -56,6 +56,27 @@ impl SizeMetric {
     }
 }
 
+/// A successful build whose output or closure grew beyond its job's
+/// threshold.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SizeWarning {
+    /// Which size grew.
+    pub metric: SizeMetric,
+    /// Base branch the baseline was taken from.
+    pub base_branch: String,
+    /// Attr path the comparison was made for.
+    #[serde(default)]
+    pub attr: String,
+    /// Baseline size in bytes.
+    pub baseline_size: u64,
+    /// Size of this build in bytes.
+    pub current_size: u64,
+    /// Increase over the baseline, in percent.
+    pub increase_percent: f64,
+    /// Configured threshold for `metric`, in percent.
+    pub threshold_percent: f64,
+}
+
 /// Identifies the base-branch baseline a PR build is compared against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaselineKey<'a> {
