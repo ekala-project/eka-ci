@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 pub use git::{GitProtocol, GitRepo, GitWorkspace, workspace_root};
 use octocrab::models::pulls::PullRequest;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::ci::{BaseCheckout, RepoTask};
 use crate::github::CICheckInfo;
@@ -96,6 +96,21 @@ impl AsyncService<GitTask> for GitService {
                 self.repo_sender.send(repo_task).await?;
             },
             GitTask::GitHubCheckout(pr) => {
+                let repo_full_name = pr
+                    .base
+                    .repo
+                    .as_ref()
+                    .and_then(|r| r.full_name.as_deref())
+                    .unwrap_or("<unknown>");
+                info!(
+                    event = "pr_eval_starting",
+                    repo = repo_full_name,
+                    pr_number = pr.number,
+                    head_sha = %pr.head.sha,
+                    "Starting evaluation for {}#{}",
+                    repo_full_name,
+                    pr.number
+                );
                 let pr_base_repo = GitRepo::from_gh_repo(
                     pr.base
                         .repo
