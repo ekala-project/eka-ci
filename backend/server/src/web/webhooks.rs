@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use super::state::AppState;
 use crate::webhook_security::verify_webhook_signature;
@@ -71,7 +71,7 @@ pub(super) async fn handle_github_webhook(
             }
 
             state.webhook_metrics.signature_verified_total.inc();
-            info!(
+            debug!(
                 event = "webhook_signature_verified",
                 "Webhook signature verified successfully"
             );
@@ -322,7 +322,7 @@ pub(super) async fn handle_gitea_webhook(
             }
 
             state.webhook_metrics.signature_verified_total.inc();
-            info!(
+            debug!(
                 event = "gitea_webhook_signature_verified",
                 "Gitea webhook signature verified successfully"
             );
