@@ -24,6 +24,9 @@
 - Update the eval-sandbox integration tests for iets' pure mode: use a
   literal `system` instead of `builtins.currentSystem`, and expect pure-mode
   errors from the sandbox-escape attempts
+- When `iets eval-jobs` fails without output, the logged error now includes
+  the first `error:` line of its stderr above the last ten lines; the tail
+  alone was usually `… while calling` trace frames with no error message
 
 ### Web UI
 

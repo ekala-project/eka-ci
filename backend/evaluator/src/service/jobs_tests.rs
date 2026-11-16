@@ -226,6 +226,30 @@ fn failure_without_output_is_an_error_with_stderr_tail() {
 }
 
 #[test]
+fn stderr_tail_keeps_error_headline_above_long_trace() {
+    let mut stderr = String::from("warning: unrelated\nerror: attribute 'currentSystem' missing\n");
+    for i in 0..30 {
+        stderr.push_str(&format!("       … while calling frame {i}\n"));
+    }
+    let err = check_exit(exited(1), &outcome(0), &stderr)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("error: attribute 'currentSystem' missing"),
+        "{err}"
+    );
+    assert!(err.contains("frame 29"), "{err}");
+    assert!(!err.contains("frame 0\n"), "{err}");
+    assert!(!err.contains("warning: unrelated"), "{err}");
+}
+
+#[test]
+fn stderr_tail_does_not_repeat_headline_inside_tail() {
+    let stderr = "error: short\n  … frame";
+    assert_eq!(stderr_tail(stderr), stderr);
+}
+
+#[test]
 fn failure_after_output_and_success_are_ok() {
     assert!(check_exit(exited(1), &outcome(1), "").is_ok());
     assert!(check_exit(exited(0), &outcome(0), "").is_ok());
