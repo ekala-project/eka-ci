@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Configuration
+
+- New `[[admins]]` setting (`services.eka-ci.settings.admins` in the NixOS
+  module): GitHub users listed there are added to the PR-approval allow-list
+  and promoted to admin on every startup, and granted admin on web-UI login.
+  Previously both lived only in the database, so a fresh database left
+  `require_approval` blocking every PR with no admin able to approve anyone
+
 ### Scheduler
 
 - Buildability re-checks are no longer dropped when the ingress channel is

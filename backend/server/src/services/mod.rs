@@ -53,6 +53,16 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     let db_pool = db_service.pool.clone();
 
+    // Seed operator-declared admins so a fresh database is never left
+    // without anyone able to approve PRs or use the admin API.
+    db_service
+        .seed_admins(&config.admins)
+        .await
+        .context("failed to seed admins from config")?;
+    if !config.admins.is_empty() {
+        info!("Seeded {} admin(s) from config", config.admins.len());
+    }
+
     // Prune stale RebuildImpactCache rows on startup. The cache is a
     // memoisation layer for `/v1/commits/{sha}/rebuild-impact`; rows
     // older than 7 days are very unlikely to be queried again and
@@ -339,6 +349,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         client_id: config.oauth.client_id.clone(),
         client_secret: config.oauth.client_secret.clone(),
         redirect_url: config.oauth.redirect_url.clone(),
+        admin_github_ids: Arc::new(config.admins.iter().map(|a| a.github_id).collect()),
     };
 
     // Initialize GitHub API client for permission checking

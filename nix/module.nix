@@ -202,6 +202,24 @@ let
     };
   };
 
+  adminType = types.submodule {
+    options = {
+      username = mkOption {
+        type = types.str;
+        example = "octocat";
+        description = "GitHub login of the admin.";
+      };
+      github_id = mkOption {
+        type = types.ints.positive;
+        example = 583231;
+        description = ''
+          Numeric GitHub user id, matched on login (usernames can change).
+          Look it up with `gh api users/<username> -q .id`.
+        '';
+      };
+    };
+  };
+
   webType = types.submodule {
     freeformType = settingsFormat.type;
     options = {
@@ -643,6 +661,22 @@ let
         type = types.bool;
         default = false;
         description = "Require approval before building entries pulled from the GitHub merge queue.";
+      };
+      admins = mkOption {
+        type = types.listOf adminType;
+        default = [ ];
+        example = [
+          {
+            username = "octocat";
+            github_id = 583231;
+          }
+        ];
+        description = ''
+          GitHub users who are always admins. On every startup they are
+          added to the PR-approval allow-list and promoted to admin, and
+          they are granted admin when they log in to the web UI. This keeps
+          a freshly created database from being left without an admin.
+        '';
       };
       build_no_output_timeout_seconds = mkOption {
         type = types.ints.between 30 86400;

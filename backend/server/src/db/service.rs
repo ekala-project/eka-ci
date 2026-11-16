@@ -312,6 +312,13 @@ impl DbService {
         approved_users::add_approved_user(username, user_id, notes, &self.pool).await
     }
 
+    pub async fn seed_admins(
+        &self,
+        admins: &[crate::config::AdminUserConfig],
+    ) -> anyhow::Result<()> {
+        approved_users::seed_admins(admins, &self.pool).await
+    }
+
     pub async fn remove_approved_user(&self, username: &str) -> anyhow::Result<()> {
         approved_users::remove_approved_user(username, &self.pool).await
     }
