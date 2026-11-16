@@ -179,6 +179,7 @@ pub async fn measure_outputs(
     }
 
     let mut cmd = Command::new("nix");
+    cmd.kill_on_drop(true);
     cmd.args(["path-info", "--recursive", "--json"]);
     if let Some(store) = store {
         cmd.args(["--store", store]);
@@ -210,6 +211,7 @@ pub async fn measure_outputs(
 /// The substituters the local Nix is configured with (`nix config show substituters`).
 pub async fn configured_substituters() -> Result<Vec<String>> {
     let output = Command::new("nix")
+        .kill_on_drop(true)
         .args(["config", "show", "substituters"])
         .output()
         .await

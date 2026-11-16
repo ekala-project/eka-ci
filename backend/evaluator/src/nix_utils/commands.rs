@@ -106,6 +106,7 @@ pub async fn dry_run_realise(drv_store_path: &str) -> Result<DryRunReport> {
     let output = tokio::time::timeout(
         DRY_RUN_TIMEOUT,
         Command::new("nix-store")
+            .kill_on_drop(true)
             .args(["--realise", "--dry-run", drv_store_path])
             .output(),
     )
@@ -133,6 +134,7 @@ pub async fn dry_run_realise(drv_store_path: &str) -> Result<DryRunReport> {
 /// and transitive drvs
 pub async fn drv_requisites(drv_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
+        .kill_on_drop(true)
         .args(["--query", "--requisites", drv_path])
         .output()
         .await?
@@ -154,6 +156,7 @@ pub async fn drv_requisites(drv_path: &str) -> Result<Vec<String>> {
 /// Retrieve the direct dependencies of a drv
 pub async fn drv_references(drv_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
+        .kill_on_drop(true)
         .args(["--query", "--references", drv_path])
         .output()
         .await?
@@ -184,6 +187,7 @@ pub async fn drv_references(drv_path: &str) -> Result<Vec<String>> {
 /// Vector of full store paths that are runtime dependencies
 pub async fn output_references(output_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
+        .kill_on_drop(true)
         .args(["--query", "--references", output_path])
         .output()
         .await?
@@ -210,6 +214,7 @@ pub async fn output_references(output_path: &str) -> Result<Vec<String>> {
 /// HashMap mapping output names (e.g., "out", "dev", "doc") to their store paths
 pub async fn get_drv_outputs(drv_path: &str) -> Result<HashMap<String, String>> {
     let output = Command::new("nix")
+        .kill_on_drop(true)
         .args(["derivation", "show", drv_path])
         .output()
         .await
@@ -251,6 +256,7 @@ pub async fn get_drv_outputs(drv_path: &str) -> Result<HashMap<String, String>> 
         // Fallback: if no outputs field, assume single "out" output
         // Try using nix-store --query --outputs as fallback
         let fallback_output = Command::new("nix-store")
+            .kill_on_drop(true)
             .args(["--query", "--outputs", drv_path])
             .output()
             .await?;

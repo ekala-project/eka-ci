@@ -179,6 +179,7 @@ pub async fn drv_output(drv_path: &str) -> anyhow::Result<DrvInfo> {
 
     debug!("Fetching derivation information, {:?}", &drv_path);
     let output = Command::new("nix")
+        .kill_on_drop(true)
         .args(["derivation", "show", drv_path])
         .output()
         .await?

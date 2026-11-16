@@ -33,6 +33,7 @@ pub use async_service::AsyncService;
 pub mod task_journal;
 pub use task_journal::TaskJournal;
 
+mod shutdown;
 pub mod spawn;
 pub use spawn::spawn_logged;
 
@@ -412,19 +413,33 @@ pub async fn start_services(config: Config) -> Result<()> {
     );
 
     // Note: AsyncService::run() already spawns internally, so we don't wrap in tokio::spawn
-    let graph_handle_task = tokio::spawn(graph_service.run(cancellation_token.clone()));
-    let git_handle = git_service.run(cancellation_token.clone());
-    let repo_handle = repo_service.run(cancellation_token.clone());
-    let eval_handle = eval_service.run(cancellation_token.clone());
-    let checks_handle = checks_service.run(cancellation_token.clone());
-    let skills_handle = skills_service.map(|svc| svc.run(cancellation_token.clone()));
-    let unix_handle = tokio::spawn(unix_service.run(cancellation_token.clone()));
-    let web_handle = tokio::spawn(web_service.run(cancellation_token.clone()));
-    let github_handle = maybe_github_service.map(|svc| svc.run(cancellation_token.clone()));
-    let gitlab_handle = gitlab_service.run(cancellation_token.clone());
-    let gitea_handle = gitea_service.run(cancellation_token.clone());
-    let channel_handle = channel_service.run(cancellation_token.clone());
-    let search_index_handle = search_index_service.map(|svc| svc.run(cancellation_token.clone()));
+    let token = &cancellation_token;
+    let mut handles = shutdown::ServiceHandles::default();
+    handles.push(
+        "GraphService",
+        tokio::spawn(graph_service.run(token.clone())),
+    );
+    handles.push("GitService", git_service.run(token.clone()));
+    handles.push("RepoReader", repo_service.run(token.clone()));
+    handles.push("EvalService", eval_service.run(token.clone()));
+    handles.push("ChecksExecutor", checks_service.run(token.clone()));
+    handles.push_opt(
+        "SkillsExecutor",
+        skills_service.map(|s| s.run(token.clone())),
+    );
+    handles.push("UnixService", tokio::spawn(unix_service.run(token.clone())));
+    handles.push("WebService", tokio::spawn(web_service.run(token.clone())));
+    handles.push_opt(
+        "GitHubService",
+        maybe_github_service.map(|s| s.run(token.clone())),
+    );
+    handles.push("GitLabService", gitlab_service.run(token.clone()));
+    handles.push("GiteaService", gitea_service.run(token.clone()));
+    handles.push("ChannelService", channel_service.run(token.clone()));
+    handles.push_opt(
+        "SearchIndexService",
+        search_index_service.map(|s| s.run(token.clone())),
+    );
 
     let mut sigterm = signal(SignalKind::terminate()).context("failed to get sigterm handle")?;
     let mut sigint = signal(SignalKind::interrupt()).context("failed to get sigint handle")?;
@@ -449,48 +464,18 @@ pub async fn start_services(config: Config) -> Result<()> {
 
     cancellation_token.cancel();
 
-    // Wait for the services to shutdown
-    _ = tokio::join!(
-        graph_handle_task,
-        eval_handle,
-        checks_handle,
-        unix_handle,
-        web_handle,
-        repo_handle,
-        git_handle,
-        gitlab_handle,
-        gitea_handle,
-        channel_handle,
-        scheduler_service.shutdown(),
+    // Wait for the services to shutdown, aborting any that ignore the
+    // cancellation token past the deadline.
+    handles.push(
+        "SchedulerService",
+        tokio::spawn(scheduler_service.shutdown()),
     );
-
-    // The GitHub service is only spawned when configured; await it
-    // explicitly here so shutdown waits for a clean exit and any join
-    // error is surfaced.
-    if let Some(handle) = github_handle {
-        if let Err(e) = handle.await {
-            warn!("GitHub service task exited with error: {:?}", e);
-        }
-    }
-
-    // SearchIndexService is optional; await its handle if it was spawned.
-    if let Some(handle) = search_index_handle {
-        if let Err(e) = handle.await {
-            warn!("SearchIndexService task exited with error: {:?}", e);
-        }
-    }
-
-    // SkillsExecutor is optional; await its handle if it was spawned.
-    if let Some(handle) = skills_handle {
-        if let Err(e) = handle.await {
-            warn!("SkillsExecutor task exited with error: {:?}", e);
-        }
-    }
+    handles.join(shutdown::SHUTDOWN_DEADLINE).await;
 
     db_pool.close().await;
 
     info!("Database service pool closed");
-    info!("All services shutdown gracefully");
+    info!("Shutdown complete");
 
     Ok(())
 }

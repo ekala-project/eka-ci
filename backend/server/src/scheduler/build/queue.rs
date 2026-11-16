@@ -252,6 +252,7 @@ async fn default_platform() -> anyhow::Result<Platform> {
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         Command::new("nix-instantiate")
+            .kill_on_drop(true)
             .args(["--eval", "--raw", "-E", "builtins.currentSystem"])
             .output(),
     )

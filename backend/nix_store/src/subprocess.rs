@@ -30,6 +30,7 @@ impl NixStore for SubprocessNixStore {
         let output = tokio::time::timeout(
             QUICK_TIMEOUT,
             Command::new("nix-store")
+                .kill_on_drop(true)
                 .args(["--check-validity", store_path])
                 .output(),
         )
@@ -42,6 +43,7 @@ impl NixStore for SubprocessNixStore {
 
     async fn query_references(&self, drv_path: &str) -> Result<Vec<String>> {
         let output = Command::new("nix-store")
+            .kill_on_drop(true)
             .args(["--query", "--references", drv_path])
             .output()
             .await?
@@ -59,6 +61,7 @@ impl NixStore for SubprocessNixStore {
 
     async fn query_requisites(&self, drv_path: &str) -> Result<Vec<String>> {
         let output = Command::new("nix-store")
+            .kill_on_drop(true)
             .args(["--query", "--requisites", drv_path])
             .output()
             .await?
@@ -76,6 +79,7 @@ impl NixStore for SubprocessNixStore {
 
     async fn query_derivation_output_map(&self, drv_path: &str) -> Result<HashMap<String, String>> {
         let output = Command::new("nix")
+            .kill_on_drop(true)
             .args(["derivation", "show", drv_path])
             .output()
             .await
@@ -105,6 +109,7 @@ impl NixStore for SubprocessNixStore {
         // didn't produce output paths
         if result.is_empty() {
             let fallback = Command::new("nix-store")
+                .kill_on_drop(true)
                 .args(["--query", "--outputs", drv_path])
                 .output()
                 .await?;
@@ -126,6 +131,7 @@ impl NixStore for SubprocessNixStore {
         let output = tokio::time::timeout(
             QUICK_TIMEOUT,
             Command::new("nix")
+                .kill_on_drop(true)
                 .args(["path-info", "--json", store_path])
                 .output(),
         )
@@ -168,7 +174,10 @@ impl NixStore for SubprocessNixStore {
     async fn store_ping(&self) -> Result<()> {
         let output = tokio::time::timeout(
             QUICK_TIMEOUT,
-            Command::new("nix").args(["store", "ping"]).output(),
+            Command::new("nix")
+                .kill_on_drop(true)
+                .args(["store", "ping"])
+                .output(),
         )
         .await
         .context("nix store ping timed out")?

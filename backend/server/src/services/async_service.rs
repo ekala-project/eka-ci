@@ -28,33 +28,51 @@ where
 
     fn run(mut self, cancel_token: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
-            let mut receiver = self.take_receiver().expect("receiver was already taken");
+            let receiver = self.take_receiver().expect("receiver was already taken");
+            self.serve(receiver, cancel_token).await;
+        })
+    }
 
+    /// Replay the journal, then process tasks until `cancel_token` fires
+    /// or the channel closes.
+    ///
+    /// Cancellation is observed while a task is in flight, not just
+    /// between tasks: a long-running `handle_task` (e.g. an eval that
+    /// traverses tens of thousands of drvs) is dropped as soon as the
+    /// token fires. This is safe because an interrupted task is never
+    /// acknowledged, so journaled services replay it on the next start.
+    fn serve(
+        &mut self,
+        mut receiver: mpsc::Receiver<T>,
+        cancel_token: CancellationToken,
+    ) -> impl std::future::Future<Output = ()> + std::marker::Send {
+        async move {
             // Replay any un-acknowledged tasks that survived a
             // previous crash. They are re-dispatched before we start
             // consuming new messages so ordering is best-effort.
-            self.replay_journal().await;
+            if cancel_token
+                .run_until_cancelled(self.replay_journal())
+                .await
+                .is_none()
+            {
+                warn!("Shutdown interrupted journal replay; remaining tasks replay on next start");
+                self.handle_closure().await;
+                return;
+            }
 
-            loop {
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        self.handle_closure().await;
-                        break;
-                    },
-                    maybe_task = receiver.recv() => {
-                        match maybe_task {
-                            Some(task) => {
-                                self.dispatch_with_journal(task).await;
-                            }
-                            None => {
-                                warn!("Receiver was closed");
-                                break;
-                            }
-                        }
-                    },
+            while let Some(maybe_task) = cancel_token.run_until_cancelled(receiver.recv()).await {
+                let Some(task) = maybe_task else {
+                    warn!("Receiver was closed");
+                    return;
+                };
+                let dispatch = self.dispatch_with_journal(task);
+                if cancel_token.run_until_cancelled(dispatch).await.is_none() {
+                    warn!("Shutdown interrupted an in-flight task; it replays on next start");
+                    break;
                 }
             }
-        })
+            self.handle_closure().await;
+        }
     }
 
     /// Replay un-acknowledged journal entries from a previous run.
@@ -140,5 +158,70 @@ where
         if let Err(e) = journal.acknowledge(id).await {
             warn!("failed to ack journal entry: {:?}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use super::*;
+
+    /// A service whose tasks never complete, standing in for a long
+    /// eval or a hung subprocess.
+    struct StuckService {
+        sender: mpsc::Sender<String>,
+        receiver: Option<mpsc::Receiver<String>>,
+        started: Arc<tokio::sync::Notify>,
+        closed: Arc<AtomicBool>,
+    }
+
+    impl AsyncService<String> for StuckService {
+        fn get_sender(&self) -> mpsc::Sender<String> {
+            self.sender.clone()
+        }
+
+        fn take_receiver(&mut self) -> Option<mpsc::Receiver<String>> {
+            self.receiver.take()
+        }
+
+        async fn handle_task(&self, _task: String) -> Result<()> {
+            self.started.notify_one();
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+
+        async fn handle_failure(&mut self, _error: Error) {}
+
+        async fn handle_closure(&mut self) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_in_flight_task() {
+        let (sender, receiver) = mpsc::channel(1);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let closed = Arc::new(AtomicBool::new(false));
+        let service = StuckService {
+            sender: sender.clone(),
+            receiver: Some(receiver),
+            started: started.clone(),
+            closed: closed.clone(),
+        };
+        let token = CancellationToken::new();
+        let handle = service.run(token.clone());
+
+        sender.send("task".to_string()).await.expect("send task");
+        started.notified().await;
+        token.cancel();
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("service did not exit after cancellation")
+            .expect("service task panicked");
+        assert!(closed.load(Ordering::SeqCst), "handle_closure not called");
     }
 }

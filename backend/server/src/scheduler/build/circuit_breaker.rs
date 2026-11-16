@@ -216,6 +216,7 @@ async fn probe_builder(remote_uri: &str) -> bool {
     tokio::time::timeout(
         PING_TIMEOUT,
         Command::new("nix")
+            .kill_on_drop(true)
             .args(["store", "ping", "--store", remote_uri])
             .output(),
     )

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Shutdown
+
+- Fix `systemctl stop`/`restart` hanging until systemd's 90s timeout and
+  SIGKILL: services only checked their cancellation token between tasks, so
+  an in-flight task (e.g. an eval traversing drvs with hundreds of
+  `nix`/`nix-store` children) blocked shutdown. Services now drop the
+  in-flight task on cancellation; journaled tasks are replayed on the next
+  start
+- `nix`, `nix-store`, `nix-build` and `git` subprocesses are spawned with
+  `kill_on_drop`, so cancelled or timed-out work no longer leaves orphaned
+  children
+- Shutdown waits at most 30s for services to exit, then logs the services
+  still running and aborts them
+
 ### Evaluation with iets
 
 - Evaluate jobs with `iets eval-jobs` instead of `nix-eval-jobs` (same JSON

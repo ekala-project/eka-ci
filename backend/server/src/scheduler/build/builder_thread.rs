@@ -326,6 +326,7 @@ impl NixBuild {
 
         // Spawn nix-build with stdout/stderr redirected
         let mut child = Command::new("nix-build")
+            .kill_on_drop(true)
             .args([self.drv_id.store_path()])
             .args(&self.build_args)
             .stdout(Stdio::piped())
@@ -525,6 +526,7 @@ async fn get_nix_log(drv_id: &DrvId) -> anyhow::Result<String> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         Command::new("nix")
+            .kill_on_drop(true)
             .args(["log", &drv_id.store_path()])
             .output(),
     )

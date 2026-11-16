@@ -225,13 +225,24 @@ impl SchedulerService {
     /// Wait for all internal service threads to complete.
     /// Should be called after the cancellation token has been cancelled.
     pub async fn shutdown(self) {
-        let _ = tokio::join!(
+        let (ingress, builder, recorder) = tokio::join!(
             self.ingress_thread,
             self.builder_thread,
             self.recorder_thread,
         );
-        if let Some(hook_thread) = self.hook_thread {
-            let _ = hook_thread.await;
+        let hook = match self.hook_thread {
+            Some(hook_thread) => hook_thread.await,
+            None => Ok(()),
+        };
+        for (name, result) in [
+            ("ingress", ingress),
+            ("builder", builder),
+            ("recorder", recorder),
+            ("hook", hook),
+        ] {
+            if let Err(e) = result {
+                tracing::error!("scheduler {} thread exited with error: {:?}", name, e);
+            }
         }
         tracing::info!("SchedulerService shutdown gracefully");
     }
