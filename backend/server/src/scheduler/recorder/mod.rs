@@ -13,7 +13,7 @@ use crate::db::model::{build_event, drv_id};
 use crate::github::GitHubTask;
 use crate::graph::{GraphCommand, GraphServiceHandle};
 use crate::hooks::types::HookTask;
-use crate::scheduler::ingress::IngressTask;
+use crate::scheduler::ingress::{BuildabilityQueue, IngressTask};
 use crate::services::TaskJournal;
 use crate::services::websocket::events::ServerEvent;
 
@@ -58,6 +58,9 @@ pub struct RecorderService {
 pub(super) struct RecorderWorker {
     /// To send buildable requests to builder service
     ingress_sender: mpsc::Sender<IngressTask>,
+    /// Buildability re-checks of referrers and unblocked drvs. Pushing
+    /// never blocks or drops, so the recorder cannot deadlock with ingress.
+    buildability: BuildabilityQueue,
     recorder_receiver: mpsc::Receiver<RecorderTask>,
     db_service: DbService,
     github_sender: Option<mpsc::Sender<GitHubTask>>,
@@ -104,12 +107,14 @@ impl RecorderService {
     pub fn run(
         self,
         ingress_sender: mpsc::Sender<IngressTask>,
+        buildability: BuildabilityQueue,
         cancellation_token: CancellationToken,
     ) -> JoinHandle<()> {
         let pool = self.db_service.pool.clone();
         let worker = RecorderWorker::new(
             self.db_service.clone(),
             ingress_sender,
+            buildability,
             self.recorder_receiver,
             self.github_sender,
             self.websocket_sender,
@@ -132,6 +137,7 @@ impl RecorderWorker {
     fn new(
         db_service: DbService,
         ingress_sender: mpsc::Sender<IngressTask>,
+        buildability: BuildabilityQueue,
         recorder_receiver: mpsc::Receiver<RecorderTask>,
         github_sender: Option<mpsc::Sender<GitHubTask>>,
         websocket_sender: Option<broadcast::Sender<ServerEvent>>,
@@ -148,6 +154,7 @@ impl RecorderWorker {
         Self {
             db_service,
             ingress_sender,
+            buildability,
             recorder_receiver,
             github_sender,
             websocket_sender,

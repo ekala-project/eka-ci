@@ -6,7 +6,6 @@ use tracing::{debug, warn};
 
 use super::{RecorderTask, RecorderWorker};
 use crate::db::model::build_event;
-use crate::scheduler::ingress::IngressTask;
 
 impl RecorderWorker {
     pub(super) async fn handle_recorder_request(&self, task: &RecorderTask) -> anyhow::Result<()> {
@@ -77,18 +76,9 @@ impl RecorderWorker {
                 self.db_service.clear_transitive_failures(drv).await?;
                 let unblocked_drvs = self.clear_graph_failure(drv).await?;
 
-                // Re-queue drvs that were unblocked
+                // Re-check drvs that were unblocked
                 for unblocked_drv in &unblocked_drvs {
-                    let task =
-                        IngressTask::CheckBuildable(std::sync::Arc::new(unblocked_drv.clone()));
-                    // Non-blocking to prevent recorder ↔ ingress deadlock.
-                    if let Err(e) = self.ingress_sender.try_send(task) {
-                        warn!(
-                            "ingress queue full, dropped CheckBuildable for {}: {}",
-                            unblocked_drv.store_path(),
-                            e
-                        );
-                    }
+                    self.buildability.push(Arc::new(unblocked_drv.clone()));
                 }
 
                 // Check direct referrers for buildability.
@@ -99,15 +89,7 @@ impl RecorderWorker {
                 let referrers = self.graph_handle.get_dependents_from_view(&shared_drv_id);
                 for referrer in referrers {
                     let server_referrer = crate::graph_compat::to_server_drv_id(&referrer)?;
-                    let task = IngressTask::CheckBuildable(std::sync::Arc::new(server_referrer));
-                    // Non-blocking: if ingress is full, the delayed
-                    // re-check from the GitHub service will catch it.
-                    if let Err(e) = self.ingress_sender.try_send(task) {
-                        warn!(
-                            "ingress queue full, dropped CheckBuildable for referrer: {}",
-                            e
-                        );
-                    }
+                    self.buildability.push(Arc::new(server_referrer));
                 }
             },
             DBS::Completed(DBR::Failure) => {
@@ -135,8 +117,7 @@ impl RecorderWorker {
                             .await?;
 
                         // Re-queue immediately for retry
-                        let task = IngressTask::CheckBuildable(Arc::clone(drv));
-                        self.ingress_sender.send(task).await?;
+                        self.buildability.push(Arc::clone(drv));
                     },
                     DBS::FailedRetry => {
                         // Second failure - permanent failure, propagate to downstream
@@ -233,8 +214,7 @@ impl RecorderWorker {
                             self.update_and_broadcast(drv, &old_state, &DBS::FailedRetry)
                                 .await?;
 
-                            let task = IngressTask::CheckBuildable(Arc::clone(drv));
-                            self.ingress_sender.send(task).await?;
+                            self.buildability.push(Arc::clone(drv));
                         },
                     }
                 } else {

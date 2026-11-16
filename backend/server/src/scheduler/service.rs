@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::build::{BuildQueue, BuildRequest, Builder, CircuitBreakerRegistry};
-use super::ingress::{IngressService, IngressTask};
+use super::ingress::{BuildabilityQueue, IngressService, IngressTask};
 use super::recorder::{RecorderService, RecorderTask};
 use crate::channels::types::ChannelTask;
 use crate::config::RemoteBuilder;
@@ -51,6 +51,7 @@ pub struct SchedulerService {
     // We may in the future need to recover an individual service, so retaining
     // a handle to the other service channels will be prequisite
     ingress_sender: mpsc::Sender<IngressTask>,
+    buildability: BuildabilityQueue,
     builder_sender: mpsc::Sender<BuildRequest>,
     recorder_sender: mpsc::Sender<RecorderTask>,
 
@@ -96,6 +97,7 @@ impl SchedulerService {
         let hook_sender = hook_executor.get_sender();
 
         let (ingress_service, ingress_sender) = IngressService::init(graph_handle.clone());
+        let buildability = ingress_service.buildability_queue();
         let (recorder_service, recorder_sender) = RecorderService::init(
             db_service.clone(),
             github_sender,
@@ -180,8 +182,11 @@ impl SchedulerService {
             db_service.pool.clone(),
             builder_features,
         );
-        let recorder_thread =
-            recorder_service.run(ingress_sender.clone(), cancellation_token.clone());
+        let recorder_thread = recorder_service.run(
+            ingress_sender.clone(),
+            buildability.clone(),
+            cancellation_token.clone(),
+        );
         let builder_thread = builder_service.run(cancellation_token.clone());
 
         let hook_thread = Some(hook_executor.run(cancellation_token));
@@ -198,6 +203,7 @@ impl SchedulerService {
             metrics_registry,
             store,
             ingress_sender,
+            buildability,
             builder_sender,
             recorder_sender,
             ingress_thread,
@@ -210,6 +216,11 @@ impl SchedulerService {
     /// Producer channel for sending build requests for eventual scheduling
     pub fn ingress_request_sender(&self) -> mpsc::Sender<IngressTask> {
         self.ingress_sender.clone()
+    }
+
+    /// Queue for buildability re-checks (see [`BuildabilityQueue`]).
+    pub fn buildability_queue(&self) -> BuildabilityQueue {
+        self.buildability.clone()
     }
 
     /// Get the Prometheus metrics registry for exposing via HTTP

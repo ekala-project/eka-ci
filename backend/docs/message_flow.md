@@ -21,7 +21,7 @@ EKA-CI uses an **actor-based message passing architecture** where services commu
 | **EvalService** | `backend/server/src/nix/mod.rs` | Nix evaluation executor | EvalTask | GraphCommand, IngressTask, GitHubTask |
 | **IngressService** | `backend/server/src/scheduler/ingress.rs` | Build request filter | IngressTask | BuildRequest, RecorderTask |
 | **BuildQueue** | `backend/server/src/scheduler/build/` | Build executor | BuildRequest | RecorderTask |
-| **RecorderService** | `backend/server/src/scheduler/recorder.rs` | Build result recorder | RecorderTask | IngressTask, GitHubTask, HookTask |
+| **RecorderService** | `backend/server/src/scheduler/recorder.rs` | Build result recorder | RecorderTask | BuildabilityQueue, IngressTask, GitHubTask, HookTask |
 | **GraphService** | `backend/server/src/graph/` | Dependency graph (in-memory) | GraphCommand | Responses via oneshot |
 | **GitHubService** | `backend/server/src/github/` | GitHub operations | GitHubTask | GitHub API calls |
 | **ChecksExecutor** | `backend/server/src/services/checks.rs` | Custom check runner | CheckTask | GitHubTask |
@@ -50,7 +50,7 @@ EKA-CI uses an **actor-based message passing architecture** where services commu
 ```rust
 pub enum IngressTask {
     EvalRequest(Arc<DrvId>),        // New drv from eval, status unknown
-    CheckBuildable(Arc<DrvId>),     // Dependency completed, recheck
+    CheckBuildable(Arc<DrvId>),     // Recheck (manual); the recorder uses BuildabilityQueue
     CheckSubstitution(Arc<DrvId>),  // Check if available in cache
     RebuildFailed(Arc<DrvId>),      // User-requested retry
     RebuildAllFailed,               // Retry all failed builds
@@ -58,6 +58,20 @@ pub enum IngressTask {
 ```
 
 **Purpose:** IngressService filters these to determine if builds are needed or can be skipped (cache hit).
+
+### BuildabilityQueue
+
+Buildability re-checks from the recorder (referrers of a successful build,
+drvs it unblocked, and retries after a first failure) do not go through the
+bounded ingress channel. They are pushed to `BuildabilityQueue`
+(`scheduler/ingress/buildable_queue.rs`): an in-memory FIFO plus a set, so
+pushing never blocks or drops and a drv already pending is not queued twice.
+Ingress drains it in batches of 512 alongside the channel, so re-checks do
+not wait behind a flood of `EvalRequest`s, and the recorder never blocks on
+ingress (ingress blocks on the recorder channel for cache hits, so the
+reverse would risk a deadlock). The queue is not journaled; on startup every
+Buildable drv and every Queued drv whose deps have all succeeded is
+re-checked (spec: `crash_recovery`, `inv_buildable_check_pending`).
 
 ### Build State Machine
 
@@ -279,7 +293,7 @@ RecorderTask { derivation, result }
 │ - Cachix push    │   │                         │            │
 │ - Attic push     │   ├─ First failure:         │            │
 │ - nix-copy       │   │   → FailedRetry         │            │
-└────────┬─────────┘   │   → CheckBuildable(self)│            │
+└────────┬─────────┘   │   → re-check(self)      │            │
          │             │      (immediate retry)  │            │
          │             │                         │            │
          ▼             ├─ Second failure:        │            │
@@ -303,7 +317,7 @@ RecorderTask { derivation, result }
 ┌─────────────────────────────────────────────────────────────┤
 │ Re-queue dependents (if unblocked)                          │
 │   For each dependent of this drv:                           │
-│     IngressTask::CheckBuildable(dependent)                  │
+│     BuildabilityQueue::push(dependent)                      │
 └──────┬──────────────────────────────────────────────────────┘
        │
        ▼
@@ -480,7 +494,7 @@ When drv X succeeds (any → Completed(Success)):
 3. For each blocked drv Y:
      If ALL of Y's deps are Completed(Success):
        Y.state ← Queued
-       Send IngressTask::CheckBuildable(Y)
+       BuildabilityQueue::push(Y)
 4. DELETE FROM DrvTransitiveFailures WHERE failed_drv = X
 ```
 
@@ -518,7 +532,7 @@ RecorderTask
   ├─ Execute hooks (cache push)
   ├─ Update GitHub check runs
   ├─ Clear or propagate failures
-  ├─ Re-queue dependents (CheckBuildable × N)
+  ├─ Re-queue dependents (BuildabilityQueue::push × N)
   ├─ Broadcast WebSocket event
   └─ Check jobset completion
 ```

@@ -14,12 +14,16 @@ use crate::scheduler::build::{BuildRequest, BuilderFeatureSnapshot};
 use crate::scheduler::recorder::RecorderTask;
 use crate::services::TaskJournal;
 
+mod buildable_queue;
+pub use buildable_queue::BuildabilityQueue;
+
 /// This acts as the service which filters incoming drv build requests
 /// and determines if the drv is "buildable", already successful,
 /// already failed, has a dependency failure, otherwise it will mark it as queued.
 pub struct IngressService {
     graph_handle: GraphServiceHandle,
     request_receiver: mpsc::Receiver<IngressTask>,
+    buildability: BuildabilityQueue,
 }
 
 pub struct IngressWorker {
@@ -33,6 +37,8 @@ pub struct IngressWorker {
     graph_handle: GraphServiceHandle,
     journal: TaskJournal<IngressTask>,
     builder_features: BuilderFeatureSnapshot,
+    /// Buildability re-checks; lossless and never blocks the producers.
+    buildability: BuildabilityQueue,
 }
 
 /// Variants carry `Arc<DrvId>` so fan-out senders (recorder, webhooks,
@@ -70,9 +76,15 @@ impl IngressService {
         let res = Self {
             graph_handle,
             request_receiver,
+            buildability: BuildabilityQueue::new(),
         };
 
         (res, request_sender)
+    }
+
+    /// Handle for queueing buildability re-checks (see [`BuildabilityQueue`]).
+    pub fn buildability_queue(&self) -> BuildabilityQueue {
+        self.buildability.clone()
     }
 
     pub fn run(
@@ -90,6 +102,7 @@ impl IngressService {
             graph_handle: self.graph_handle,
             journal: TaskJournal::new(pool, "ingress"),
             builder_features,
+            buildability: self.buildability,
         };
         tokio::spawn(async move {
             worker.ingest_requests(cancellation_token).await;
@@ -117,8 +130,8 @@ impl IngressWorker {
             Err(e) => warn!("failed to recover ingress journal: {:?}", e),
         }
 
-        // Periodic sweep interval to catch drvs whose CheckBuildable
-        // messages were dropped by try_send (see todo-spec-items #4, #7).
+        // Periodic sweep interval to re-send Buildable drvs deferred because
+        // the builder channel was full; also a safety net for Queued drvs.
         let mut sweep_interval = tokio::time::interval(std::time::Duration::from_secs(60));
         // Don't pile up ticks while we're busy processing tasks.
         sweep_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -128,29 +141,14 @@ impl IngressWorker {
         loop {
             tokio::select! {
                 request = self.request_receiver.recv() => {
-                    let task = match request {
-                        Some(task) => task,
-                        None => {
-                            warn!("Ingress receiver channel closed, shutting down");
-                            break;
-                        },
+                    let Some(task) = request else {
+                        warn!("Ingress receiver channel closed, shutting down");
+                        break;
                     };
-
-                    let jid = match self.journal.persist(&task).await {
-                        Ok(id) => Some(id),
-                        Err(e) => {
-                            warn!("failed to journal ingress task {:?}: {:?}", &task, e);
-                            None
-                        },
-                    };
-
-                    if let Err(e) = self.handle_ingress_request(&task).await {
-                        warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
-                    } else if let Some(id) = jid {
-                        if let Err(e) = self.journal.acknowledge(id).await {
-                            warn!("failed to ack ingress journal entry: {:?}", e);
-                        }
-                    }
+                    self.handle_journaled_request(task).await;
+                },
+                _ = self.buildability.notified() => {
+                    self.drain_buildable().await;
                 },
                 _ = sweep_interval.tick() => {
                     self.sweep_buildable_drvs().await;
@@ -164,10 +162,29 @@ impl IngressWorker {
         info!("IngressWorker service shutdown gracefully");
     }
 
+    /// Persist → handle → acknowledge one ingress channel task.
+    async fn handle_journaled_request(&self, task: IngressTask) {
+        let jid = match self.journal.persist(&task).await {
+            Ok(id) => Some(id),
+            Err(e) => {
+                warn!("failed to journal ingress task {:?}: {:?}", &task, e);
+                None
+            },
+        };
+
+        if let Err(e) = self.handle_ingress_request(&task).await {
+            warn!("Failed to handle ingress request {:?}: {:?}", &task, e);
+        } else if let Some(id) = jid {
+            if let Err(e) = self.journal.acknowledge(id).await {
+                warn!("failed to ack ingress journal entry: {:?}", e);
+            }
+        }
+    }
+
     /// Periodic sweep: find Queued/Buildable drvs whose deps are all
     /// Completed(Success) and re-send them to the builder. Catches drvs
-    /// that were deferred because the builder channel was full, or whose
-    /// CheckBuildable messages were dropped.
+    /// that were deferred because the builder channel was full; Queued drvs
+    /// should already have a re-check pending (see [`BuildabilityQueue`]).
     async fn sweep_buildable_drvs(&self) {
         let mut swept = 0u32;
         let shared_buildable =

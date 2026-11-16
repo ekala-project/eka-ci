@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Scheduler
+
+- Buildability re-checks are no longer dropped when the ingress channel is
+  full. The recorder pushed a `CheckBuildable` per referrer of every
+  successful build with `try_send`, and while an eval filled the 50k
+  channel with `EvalRequest`s these were dropped (37k in minutes on a large
+  PR), leaving drvs `Queued` until the 60s sweep. Re-checks now go into a
+  deduplicated, unbounded queue that ingress drains in batches alongside
+  the channel, so they also no longer wait behind slow `EvalRequest`s
+- The recorder no longer blocks on the ingress channel when re-queueing a
+  retry, removing a possible recorder ↔ ingress deadlock
+- On startup, Queued drvs whose dependencies have all succeeded are
+  re-checked right away, not only Buildable ones
+
 ### PR evaluation
 
 - A PR head is no longer evaluated before its base: when no jobset for the

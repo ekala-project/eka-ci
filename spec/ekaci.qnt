@@ -253,9 +253,10 @@ module ekaci {
   }
 
   // Periodic sweep: find Queued or Buildable drvs whose deps are all
-  // Completed(Success) and re-enqueue them to ingress. Catches:
-  //   - Queued drvs whose CheckBuildable try_send was dropped
-  //   - Buildable drvs deferred because the builder channel was full
+  // Completed(Success) and re-enqueue them to ingress. Buildability
+  // re-checks are never dropped (see inv_buildable_check_pending), so this
+  // only matters for Buildable drvs deferred because the builder channel
+  // was full; it stays a safety net for Queued drvs.
   action sweep_buildable(drv: DrvId): bool = all {
     nodes.keys().contains(drv),
     or(nodes.get(drv).state == Queued, nodes.get(drv).state == Buildable),
@@ -618,13 +619,20 @@ module ekaci {
       nodes.get(d).state == FailedRetry
     )
     val all_transient = building_drvs.union(failed_retry_drvs)
+    // Buildability re-checks are held in memory and lost on a crash; on
+    // startup every Queued drv whose deps have all succeeded is re-checked.
+    // (Normalizing Building/Buildable to Queued does not change any
+    // drv's buildability: neither state counts as a succeeded dep.)
+    val startup_recheck = nodes.keys().filter(d =>
+      nodes.get(d).state == Queued and is_buildable(d, deps, nodes)
+    )
     all {
       all_transient.size() > 0,
       nodes' = building_drvs.fold(nodes, (acc, d) =>
         val n = acc.get(d)
         acc.put(d, { ...n, state: Queued })
       ),
-      ingress_queue' = ingress_queue.union(all_transient),
+      ingress_queue' = ingress_queue.union(all_transient).union(startup_recheck),
       build_queue' = Set(),
       recorder_queue' = Set(),
       deps' = deps,
@@ -793,6 +801,23 @@ module ekaci {
     nodes.keys().forall(d =>
       if (nodes.get(d).state == FailedRetry)
         nodes.get(d).build_attempts >= 1
+      else true
+    )
+
+  // INV10: No lost buildability re-check. A Queued drv whose deps have all
+  // succeeded is still pending in ingress (or already in the build queue,
+  // or in the recorder after a substitution hit):
+  // every re-check enqueued by the recorder is kept, deduplicated, until
+  // ingress processes it. The periodic sweep is not needed for this; it only
+  // re-sends Buildable drvs deferred because the builder channel was full.
+  val inv_buildable_check_pending: bool =
+    nodes.keys().forall(d =>
+      if (nodes.get(d).state == Queued and is_buildable(d, deps, nodes))
+        or {
+          ingress_queue.contains(d),
+          build_queue.contains(d),
+          recorder_queue.exists(entry => entry._1 == d),
+        }
       else true
     )
 }
@@ -1159,6 +1184,31 @@ module ekaci_test {
     .then(record_success("ready"))
     .then(all {
       assert(nodes.get("ready").state == Completed(Success)),
+      unchanged,
+    })
+  }
+
+  // Test: a crash while a buildable drv is only pending in the recorder
+  // (substitution hit) loses that pending re-check; startup re-checks every
+  // Queued drv whose deps have succeeded, so it is re-queued to ingress.
+  run crash_rechecks_buildable_test = {
+    init
+    .then(eval_discover_leaf("rc_dep", "x86_64-linux", false))
+    .then(eval_discover_leaf("rc_other", "x86_64-linux", false))
+    // rc_other becomes Buildable, a transient state crash recovery resets
+    .then(ingress_process("rc_other"))
+    .then(substitution_hit("rc_dep"))
+    .then(all {
+      assert(not(ingress_queue.contains("rc_dep"))),
+      assert(nodes.get("rc_dep").state == Queued),
+      unchanged,
+    })
+    .then(crash_recovery)
+    .then(all {
+      assert(recorder_queue == Set()),
+      assert(ingress_queue.contains("rc_dep")),
+      assert(ingress_queue.contains("rc_other")),
+      assert(nodes.get("rc_other").state == Queued),
       unchanged,
     })
   }
