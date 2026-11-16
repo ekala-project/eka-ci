@@ -221,6 +221,7 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                 name: "client".to_string(),
                 allow_failures: true,
                 config_json: None, // No config for client-initiated jobs
+                base: None,
             };
             let task = EvalTask::Job(job);
             if let Err(e) = dispatch.eval_sender.send(task).await {

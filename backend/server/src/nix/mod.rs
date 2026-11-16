@@ -14,10 +14,13 @@ pub use evaluator::types::{
 pub use evaluator::utils::{pname_from_name, version_from_name};
 
 // Server-specific wrapper for eval jobs
+mod base_eval;
 mod jobs;
 mod traverse;
 
 pub mod reconstitute;
+
+pub use base_eval::BaseEvalJob;
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -42,6 +45,10 @@ pub struct EvalJob {
     pub allow_failures: bool,
     pub config_json: Option<String>, /* Serialized job config for hooks
                                       * TODO: support arguments */
+    /// For a PR head: the same job at the base commit, evaluated first when
+    /// no base jobset exists yet. Absent for base commits and branch evals.
+    #[serde(default)]
+    pub base: Option<BaseEvalJob>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -70,6 +77,9 @@ pub struct EvalService {
     github_sender: Option<mpsc::Sender<GitHubTask>>,
     graph_command_sender: mpsc::Sender<GraphCommand>,
     drv_map: Mutex<LruCache<DrvId, Drv>>,
+    /// `(base sha, job name)` of base jobsets sent to the GitHub service,
+    /// which may not have inserted them yet. See [`base_eval`].
+    dispatched_base_jobsets: Mutex<LruCache<(String, String), ()>>,
     /// M4: metrics for `iets eval-jobs` output volume and truncation
     /// events. Optional so unit/integration tests that don't care
     /// about observability can pass `None`.
@@ -96,6 +106,7 @@ impl EvalService {
             github_sender,
             graph_command_sender,
             drv_map: Mutex::new(LruCache::new(NonZeroUsize::new(5000).unwrap())),
+            dispatched_base_jobsets: Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
             nix_eval_metrics,
             eval_sandbox,
             journal: crate::services::TaskJournal::new(pool, "eval"),
@@ -156,6 +167,11 @@ impl EvalService {
         // for jobset diff computation — no graph population or
         // build scheduling required.
         let is_head = ci_info.base_commit.is_some();
+        if is_head {
+            // The head is diffed against the base jobset when inserted, so
+            // the base must be evaluated and sent first.
+            self.ensure_base_jobset(eval_job, ci_info).await?;
+        }
         let (jobs, errors) = self
             .run_eval_jobs(&eval_job.file_path, &[], is_head)
             .await?;
@@ -166,21 +182,8 @@ impl EvalService {
         // Clone once into Arc so the 2–3 downstream sends share one refcount.
         let ci_info = std::sync::Arc::new(ci_info.clone());
 
-        // Check if we should fail due to eval errors
         if !eval_job.allow_failures && !errors.is_empty() {
-            debug!(
-                "Eval job {} has {} errors and allow_failures is false, failing eval gate",
-                eval_job.name,
-                errors.len()
-            );
-            let fail_task = GitHubTask::FailCIEvalJob {
-                ci_check_info: ci_info,
-                job_name: eval_job.name.clone(),
-                errors,
-            };
-            gh_sender.send(fail_task).await?;
-            // Don't create jobset or queue builds when eval fails
-            return Ok(());
+            return self.fail_eval_gate(&ci_info, eval_job, jobs, errors).await;
         }
 
         let create_task = GitHubTask::CreateCIEvalJob {
@@ -188,14 +191,7 @@ impl EvalService {
             job_title: eval_job.name.clone(),
         };
         gh_sender.send(create_task).await?;
-
-        let gh_task = GitHubTask::CreateJobSet {
-            ci_check_info: std::sync::Arc::clone(&ci_info),
-            name: eval_job.name.to_string(),
-            jobs,
-            config_json: eval_job.config_json.clone(),
-        };
-        gh_sender.send(gh_task).await?;
+        self.send_eval_jobset(&ci_info, eval_job, jobs).await?;
 
         // Complete the eval gate immediately — evaluation succeeded
         // and all per-package check runs were emitted.
@@ -206,6 +202,65 @@ impl EvalService {
         };
         gh_sender.send(complete_task).await?;
 
+        Ok(())
+    }
+
+    /// Fail the eval gate of a job whose eval had errors (and does not
+    /// allow failures).
+    ///
+    /// A failed head creates no jobset and queues no builds. A failed base
+    /// still records its jobset (base jobsets queue no builds) so its heads
+    /// are diffed against it instead of all being new.
+    async fn fail_eval_gate(
+        &self,
+        ci_info: &std::sync::Arc<CICheckInfo>,
+        eval_job: &EvalJob,
+        jobs: Vec<NixEvalDrv>,
+        errors: Vec<NixEvalError>,
+    ) -> Result<()> {
+        debug!(
+            "Eval job {} has {} errors and allow_failures is false, failing eval gate",
+            eval_job.name,
+            errors.len()
+        );
+        let gh_sender = self
+            .github_sender
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("github sender missing"))?;
+        let fail_task = GitHubTask::FailCIEvalJob {
+            ci_check_info: std::sync::Arc::clone(ci_info),
+            job_name: eval_job.name.clone(),
+            errors,
+        };
+        gh_sender.send(fail_task).await?;
+        if ci_info.base_commit.is_none() {
+            self.send_base_jobset(ci_info, eval_job, jobs).await?;
+        }
+        Ok(())
+    }
+
+    /// Send the jobset of a PR head, or of a base/branch commit (which is
+    /// also remembered so later heads do not re-evaluate it).
+    async fn send_eval_jobset(
+        &self,
+        ci_info: &std::sync::Arc<CICheckInfo>,
+        eval_job: &EvalJob,
+        jobs: Vec<NixEvalDrv>,
+    ) -> Result<()> {
+        if ci_info.base_commit.is_none() {
+            return self.send_base_jobset(ci_info, eval_job, jobs).await;
+        }
+        let gh_sender = self
+            .github_sender
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("github sender missing"))?;
+        let gh_task = GitHubTask::CreateJobSet {
+            ci_check_info: std::sync::Arc::clone(ci_info),
+            name: eval_job.name.to_string(),
+            jobs,
+            config_json: eval_job.config_json.clone(),
+        };
+        gh_sender.send(gh_task).await?;
         Ok(())
     }
 

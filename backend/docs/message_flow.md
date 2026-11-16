@@ -108,10 +108,12 @@ TransitiveFailure → Queued (dependency fixed)
 ┌─────────────────────────────────────────────────────────────┐
 │ GitService (backend/server/src/git/mod.rs)                  │
 │ - Clone/fetch repository                                    │
-│ - Create worktree for PR head SHA                           │
+│ - Create worktrees for PR base and head SHAs                │
+│ - Send the base's ReadGitHub first, then the head's         │
 └──────┬──────────────────────────────────────────────────────┘
        │
-       │ RepoTask::ReadGitHub { repo_path, ci_info }
+       │ RepoTask::ReadGitHub { repo_path, ci_info, base }
+       │ (head carries `base: BaseCheckout`; base/branch: None)
        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ RepoReader (backend/server/src/ci/mod.rs)                   │
@@ -161,6 +163,9 @@ EvalTask::GithubJobPR(eval_job, ci_info)
        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ EvalService (backend/server/src/nix/mod.rs)                 │
+│ - PR head only (nix/base_eval.rs): if the base jobset is    │
+│   neither in the DB nor already sent, evaluate eval_job.base │
+│   and send its CreateJobSet before evaluating the head      │
 │ - Run: iets eval-jobs --show-input-drvs --meta {file}       │
 │ - Parse NDJSON output stream                                │
 │ - Extract derivations: { drvPath, outputs, system, ... }    │
@@ -182,6 +187,23 @@ each drv:                 Track build states in memory        │
                           ▼────────────────────────────────────┘
                      See "Build Execution Flow" below
 ```
+
+**Base before head.** A head jobset is diffed against its base jobset
+(`sha = base_commit`, same job name) when it is inserted; with no base
+jobset every head job is classified `New` and the whole job set is built.
+The EvalService and GitHubService both process tasks one at a time in
+order, so a base `CreateJobSet` sent before the head's is always inserted
+first. The base's `GithubJobPR` normally runs before the head's; the head
+re-checks and evaluates the base itself when the base was never sent (e.g.
+a head task replayed from the journal). If the base cannot be evaluated the
+head task fails rather than running against a missing base. A base whose
+eval has errors still gets a jobset, which queues no builds.
+
+**Stale head jobsets.** A commit's job is normally evaluated once
+(`RepoReader::needs_eval`). A PR head jobset records the base it was diffed
+against (`base_sha`); when a later event for the PR carries another base
+(the base branch moved or the PR was retargeted), the stale head jobset is
+deleted and the head is evaluated and diffed again.
 
 ### 3. Build Execution Flow
 

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### PR evaluation
+
+- A PR head is no longer evaluated before its base: when no jobset for the
+  base commit exists or has been sent, the head eval first evaluates the
+  base itself. Previously a missing base (e.g. a head task replayed from
+  the journal after a restart, carrying an outdated base) classified every
+  job as `New` and built the whole job set
+- A PR base whose eval has errors still records its jobset, so its heads
+  are diffed against it instead of all being new
+- A PR head jobset diffed against another base than the PR's current one
+  (base branch moved, PR retargeted) is deleted and the head re-evaluated,
+  instead of keeping the stale New/Changed classification
+
 ### Derivation outputs
 
 - Fix output paths from `nix derivation show` in the versioned JSON format

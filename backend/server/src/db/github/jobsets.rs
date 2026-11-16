@@ -27,6 +27,42 @@ pub async fn has_jobset(
     Ok(result.is_some())
 }
 
+/// A pull-request head jobset that was diffed against a base other than
+/// `base_sha` (or before base SHAs were recorded).
+///
+/// Returns the stale jobset's id; `None` if there is no jobset or it was
+/// diffed against `base_sha`.
+pub async fn stale_head_jobset(
+    sha: &str,
+    name: &str,
+    owner: &str,
+    repo_name: &str,
+    base_sha: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Option<i64>> {
+    let id: Option<i64> = sqlx::query_scalar(
+        "SELECT ROWID FROM GitHubJobSets WHERE sha = ? AND job = ? AND owner = ? AND repo_name = \
+         ? AND base_sha IS NOT ?",
+    )
+    .bind(sha)
+    .bind(name)
+    .bind(owner)
+    .bind(repo_name)
+    .bind(base_sha)
+    .fetch_optional(pool)
+    .await?;
+    Ok(id)
+}
+
+/// Delete a jobset; its `Job` rows are removed by `ON DELETE CASCADE`.
+pub async fn delete_jobset(jobset_id: i64, pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query("DELETE FROM GitHubJobSets WHERE ROWID = ?")
+        .bind(jobset_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn create_jobset(
     sha: &str,
     name: &str,
@@ -409,4 +445,52 @@ pub async fn get_reconstitution_context_transitive(
     .await?;
 
     Ok(info)
+}
+
+#[cfg(test)]
+mod stale_head_tests {
+    use sqlx::SqlitePool;
+
+    use super::*;
+
+    async fn head_jobset(pool: &SqlitePool, base: Option<&str>) -> Result<i64> {
+        let id = create_jobset("head", "job", "o", "r", None, pool).await?;
+        if let Some(base) = base {
+            set_jobset_base_sha(id, base, pool).await?;
+        }
+        Ok(id)
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn same_base_is_not_stale(pool: SqlitePool) -> Result<()> {
+        head_jobset(&pool, Some("base-a")).await?;
+        let stale = stale_head_jobset("head", "job", "o", "r", "base-a", &pool).await?;
+        assert_eq!(stale, None);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn other_or_unrecorded_base_is_stale(pool: SqlitePool) -> Result<()> {
+        let id = head_jobset(&pool, Some("base-a")).await?;
+        let stale = stale_head_jobset("head", "job", "o", "r", "base-b", &pool).await?;
+        assert_eq!(stale, Some(id));
+
+        delete_jobset(id, &pool).await?;
+        let id = head_jobset(&pool, None).await?;
+        let stale = stale_head_jobset("head", "job", "o", "r", "base-b", &pool).await?;
+        assert_eq!(stale, Some(id));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./sql/migrations")]
+    async fn delete_allows_recreating_the_jobset(pool: SqlitePool) -> Result<()> {
+        let old = head_jobset(&pool, Some("base-a")).await?;
+        delete_jobset(old, &pool).await?;
+        assert!(!has_jobset("head", "job", "o", "r", &pool).await?);
+
+        head_jobset(&pool, Some("base-b")).await?;
+        let stale = stale_head_jobset("head", "job", "o", "r", "base-b", &pool).await?;
+        assert_eq!(stale, None);
+        Ok(())
+    }
 }
