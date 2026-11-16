@@ -22,6 +22,14 @@
   so the deployed bundle 404'd on them and Elm never started. Both files are
   now tracked, and only the generated `static/main.js` is ignored
 
+### GitHub webhooks
+
+- Fix every GitHub webhook being rejected with 400 ("invalid value: map,
+  expected map with a single key"): the body was deserialized straight into
+  octocrab's externally-tagged `WebhookEventPayload`. The event type is now
+  taken from the `X-GitHub-Event` header and the payload is parsed for that
+  type; a delivery without the header is rejected with 400
+
 ### Sandbox for evaluation and checks
 
 - New `sandbox` workspace crate (bubblewrap + landlock via

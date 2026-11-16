@@ -14,8 +14,6 @@ pub(super) async fn handle_github_webhook(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
-    use octocrab::models::webhook_events::{EventInstallation, WebhookEventPayload as WEP};
-
     // H1: signature verification is the primary gate. Three modes:
     //
     //   (a) secret configured            → require a valid signature
@@ -102,44 +100,11 @@ pub(super) async fn handle_github_webhook(
         },
     }
 
-    // M3: deserialize the body exactly once. The previous shape
-    // parsed `&body` twice (once as `Value`, once as `WEP`), doubling
-    // the CPU and allocation cost per request. Now we parse into a
-    // `Value` and drive both extractions from it: the typed `WEP`
-    // round-trips via `from_value` (consumes the tree once) and the
-    // top-level repository / installation fields are read by
-    // reference from the same `Value`.
-    let webhook_json: Value = match serde_json::from_slice(&body) {
-        Ok(json) => json,
-        Err(e) => {
-            warn!("Failed to parse webhook JSON: {:?}", e);
-            return (StatusCode::BAD_REQUEST, "Invalid JSON payload").into_response();
-        },
-    };
-
-    // Extract repository info from top level.
-    let repository_info = webhook_json.get("repository").and_then(|repo| {
-        let owner = repo.get("owner")?.get("login")?.as_str()?;
-        let name = repo.get("name")?.as_str()?;
-        Some((owner.to_string(), name.to_string()))
-    });
-
-    // Extract installation from top level if present. We clone the
-    // sub-tree rather than consuming it because `from_value` below
-    // still needs the full document. The clone is small (just the
-    // `installation` object, typically <100 bytes).
-    let installation: Option<EventInstallation> = webhook_json
-        .get("installation")
-        .and_then(|inst| serde_json::from_value(inst.clone()).ok());
-
-    // Consume the `Value` into the strongly-typed payload.
-    let webhook_payload: WEP = match serde_json::from_value(webhook_json) {
-        Ok(payload) => payload,
-        Err(e) => {
-            warn!("Failed to deserialize webhook payload: {:?}", e);
-            return (StatusCode::BAD_REQUEST, "Invalid webhook event payload").into_response();
-        },
-    };
+    let (webhook_payload, repository_info, installation) =
+        match parse_github_payload(&headers, &body) {
+            Ok(parsed) => parsed,
+            Err(rejection) => return rejection.into_response(),
+        };
 
     crate::github::handle_webhook_payload(
         webhook_payload,
@@ -159,6 +124,71 @@ pub(super) async fn handle_github_webhook(
     .await;
 
     StatusCode::NO_CONTENT.into_response()
+}
+
+type ParsedGithubPayload = (
+    octocrab::models::webhook_events::WebhookEventPayload,
+    Option<(String, String)>,
+    Option<octocrab::models::webhook_events::EventInstallation>,
+);
+
+/// Parse a GitHub webhook body into a typed payload.
+///
+/// `WebhookEventPayload` is an externally-tagged enum, so the raw body
+/// cannot be deserialized into it directly: the variant is selected by
+/// the `X-GitHub-Event` header. The body is parsed into a `Value` once;
+/// the top-level `repository` / `installation` fields are read from it
+/// by reference and the `Value` is then consumed by the event-specific
+/// payload parser.
+fn parse_github_payload(
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+) -> Result<ParsedGithubPayload, (StatusCode, &'static str)> {
+    use octocrab::models::webhook_events::{EventInstallation, WebhookEventType};
+
+    let Some(event_header) = headers.get("x-github-event").and_then(|h| h.to_str().ok()) else {
+        warn!("Missing or invalid X-GitHub-Event header");
+        return Err((StatusCode::BAD_REQUEST, "Missing X-GitHub-Event header"));
+    };
+
+    let event_type: WebhookEventType =
+        match serde_json::from_value(Value::String(event_header.to_string())) {
+            Ok(kind) => kind,
+            Err(e) => {
+                warn!(
+                    "Unrecognised X-GitHub-Event header {:?}: {:?}",
+                    event_header, e
+                );
+                return Err((StatusCode::BAD_REQUEST, "Invalid X-GitHub-Event header"));
+            },
+        };
+
+    let webhook_json: Value = serde_json::from_slice(body).map_err(|e| {
+        warn!("Failed to parse webhook JSON: {:?}", e);
+        (StatusCode::BAD_REQUEST, "Invalid JSON payload")
+    })?;
+
+    let repository_info = webhook_json.get("repository").and_then(|repo| {
+        let owner = repo.get("owner")?.get("login")?.as_str()?;
+        let name = repo.get("name")?.as_str()?;
+        Some((owner.to_string(), name.to_string()))
+    });
+
+    let installation: Option<EventInstallation> = webhook_json
+        .get("installation")
+        .and_then(|inst| serde_json::from_value(inst.clone()).ok());
+
+    let payload = event_type
+        .parse_specific_payload(webhook_json)
+        .map_err(|e| {
+            warn!(
+                event = event_header,
+                "Failed to deserialize webhook payload: {:?}", e
+            );
+            (StatusCode::BAD_REQUEST, "Invalid webhook event payload")
+        })?;
+
+    Ok((payload, repository_info, installation))
 }
 
 pub(super) async fn handle_gitlab_webhook(

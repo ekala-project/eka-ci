@@ -820,8 +820,8 @@ async fn test_webhook_accepts_valid_signature() {
         .await
         .expect("failed to send valid-signature webhook");
 
-    // Signature verification passed. The empty `{}` body will not
-    // deserialize into a `WebhookEventPayload`, so we expect the
+    // Signature verification passed. The request has no
+    // `X-GitHub-Event` header and an empty `{}` body, so we expect the
     // handler to return 400 after the gate opens. What matters for
     // H1 is that we are NOT seeing 401/503.
     let status = resp.status();
@@ -832,6 +832,48 @@ async fn test_webhook_accepts_valid_signature() {
 
     cancellation_token.cancel();
     println!("✓ webhook accepts valid X-Hub-Signature-256");
+}
+
+/// Regression: a real GitHub `pull_request` delivery must deserialize.
+/// `WebhookEventPayload` is externally tagged, so the variant has to be
+/// selected from the `X-GitHub-Event` header; deserializing the raw body
+/// into it fails with "expected map with a single key".
+#[tokio::test]
+async fn test_webhook_parses_real_pull_request_event() {
+    let ctx = TestContext::new().await.unwrap();
+    let secret = "test-webhook-secret";
+    let (web_service, _scheduler, _ingress) =
+        create_test_server_with_webhook(&ctx, Some(secret.to_string()), false).await;
+    let base_url = format!("http://{}", web_service.bind_addr());
+
+    let cancellation_token = CancellationToken::new();
+    let server_token = cancellation_token.clone();
+    tokio::spawn(async move {
+        web_service.run(server_token).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let body = include_str!("fixtures/github_pull_request_opened.json");
+    let signature = github_signature_header(secret, body.as_bytes());
+    let client = reqwest::Client::new();
+    let send = |event: &'static str| {
+        client
+            .post(format!("{}/github/webhook", base_url))
+            .header("content-type", "application/json")
+            .header("x-hub-signature-256", signature.clone())
+            .header("x-github-event", event)
+            .body(body)
+            .send()
+    };
+
+    let resp = send("pull_request").await.expect("send pull_request");
+    assert_eq!(resp.status(), 204, "pull_request event must be accepted");
+
+    // Mismatched header/body must still be rejected rather than misrouted.
+    let resp = send("issue_comment").await.expect("send issue_comment");
+    assert_eq!(resp.status(), 400, "mismatched event type must be 400");
+
+    cancellation_token.cancel();
 }
 
 #[tokio::test]
