@@ -22,6 +22,11 @@
   output references and post-build hooks received `<hash>-<name>` instead
   of `/nix/store/<hash>-<name>`, failing every size check
 
+### NixOS module
+
+- Raise the service's `LimitNOFILE` to 65536 (was the 1024 default soft
+  limit), which the server exhausted with concurrent `nix` subprocesses
+
 ### Eval traversal
 
 - Read evaluated drv closures with batched `nix derivation show` calls (100
