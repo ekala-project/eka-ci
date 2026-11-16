@@ -356,9 +356,23 @@ fn check_exit(
     Ok(())
 }
 
+const STDERR_TAIL_LINES: usize = 10;
+
+/// Summarise iets' stderr for an error message: the last few lines, preceded
+/// by the first `error:` line when it falls outside them. A Nix-style error
+/// puts its message first and its `… while ...` trace after it, so the tail
+/// alone is usually trace frames with no message.
 fn stderr_tail(stderr: &str) -> String {
     let lines: Vec<&str> = stderr.trim().lines().collect();
-    lines[lines.len().saturating_sub(10)..].join("\n")
+    let tail_start = lines.len().saturating_sub(STDERR_TAIL_LINES);
+    let tail = lines[tail_start..].join("\n");
+    let headline = lines[..tail_start]
+        .iter()
+        .find(|line| line.trim_start().starts_with("error:"));
+    match headline {
+        Some(headline) => format!("{headline}\n       …\n{tail}"),
+        None => tail,
+    }
 }
 
 #[cfg(test)]
