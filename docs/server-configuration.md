@@ -45,7 +45,7 @@ audit_hooks              = true
 # Evaluation sandbox
 [eval]
 timeout_secs    = 1800    # kill iets eval-jobs after 30 minutes
-memory_limit_mb = 8192    # RLIMIT_AS per sandboxed process
+memory_limit_mb = 8192    # recycle iets workers above this RSS
 provenance      = false   # add source position to eval output
 
 # Network policy for every sandbox with network access
@@ -144,7 +144,7 @@ limits; it is slated for removal in a later change.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `timeout_secs` | `1800` | Wall-clock limit per evaluation (10–86400). On expiry the whole sandbox is killed and the evaluation fails with a timeout error. |
-| `memory_limit_mb` | `8192` | `RLIMIT_AS` for each process in the sandbox (≥ 1024). `iets eval-jobs` workers are recycled at half this value. |
+| `memory_limit_mb` | `8192` | Memory threshold for `iets eval-jobs` workers (≥ 1024), passed as `--max-memory-size`: a worker whose resident memory exceeds it is replaced after its current job. Not a hard cap and not enforced with `RLIMIT_AS`, because each iets process reserves ~36 GiB of address space up front; use a cgroup limit such as systemd `MemoryMax` for a hard cap. |
 | `provenance` | `false` | Pass `--provenance` to `iets eval-jobs`, adding source position (`file:line:col`) to each job output. |
 
 `allowed_uris` was removed with the switch to `iets`, which evaluates in pure mode, with

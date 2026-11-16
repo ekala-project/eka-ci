@@ -354,9 +354,10 @@ let
         type = types.ints.between 1024 1048576;
         default = 8192;
         description = ''
-          Address-space limit (`RLIMIT_AS`), in MiB, for every process inside
-          the evaluation sandbox. `iets eval-jobs` workers are recycled at half
-          of this value.
+          Memory threshold, in MiB, for `iets eval-jobs` workers
+          (`--max-memory-size`): a worker whose resident memory exceeds it is
+          replaced after its current job. This is not a hard cap; set
+          `MemoryMax` on the service for one.
         '';
       };
       provenance = mkOption {
