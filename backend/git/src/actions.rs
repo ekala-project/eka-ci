@@ -25,6 +25,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let mut cmd = Command::new("git");
+    cmd.kill_on_drop(true);
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }

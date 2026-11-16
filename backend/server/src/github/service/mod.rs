@@ -303,8 +303,7 @@ impl AsyncService<GitHubTask> for GitHubService {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let mut receiver = self.take_receiver().expect("receiver was already taken");
-            self.replay_journal().await;
+            let receiver = self.take_receiver().expect("receiver was already taken");
 
             // Spawn the batcher flush loop
             let batcher = self.batcher.clone();
@@ -334,26 +333,7 @@ impl AsyncService<GitHubTask> for GitHubService {
                 }
             });
 
-            // Task processing loop (same as default AsyncService::run)
-            loop {
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        self.handle_closure().await;
-                        break;
-                    },
-                    maybe_task = receiver.recv() => {
-                        match maybe_task {
-                            Some(task) => {
-                                self.dispatch_with_journal(task).await;
-                            }
-                            None => {
-                                warn!("GitHub receiver was closed");
-                                break;
-                            }
-                        }
-                    },
-                }
-            }
+            self.serve(receiver, cancel_token).await;
         })
     }
 

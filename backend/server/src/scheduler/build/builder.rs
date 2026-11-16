@@ -107,6 +107,7 @@ impl Builder {
         tokio::time::timeout(
             NIX_QUICK_TIMEOUT,
             Command::new("nix")
+                .kill_on_drop(true)
                 .args(["store", "ping", "--store", remote_uri])
                 .output(),
         )
@@ -284,7 +285,10 @@ impl Builder {
 async fn local_platforms() -> Result<Vec<String>> {
     let config_output = tokio::time::timeout(
         NIX_QUICK_TIMEOUT,
-        Command::new("nix").args(["config", "show"]).output(),
+        Command::new("nix")
+            .kill_on_drop(true)
+            .args(["config", "show"])
+            .output(),
     )
     .await
     .context("nix config show timed out")?
@@ -313,7 +317,10 @@ async fn local_platforms() -> Result<Vec<String>> {
 async fn local_system_features() -> Result<Vec<String>> {
     let config_output = tokio::time::timeout(
         NIX_QUICK_TIMEOUT,
-        Command::new("nix").args(["config", "show"]).output(),
+        Command::new("nix")
+            .kill_on_drop(true)
+            .args(["config", "show"])
+            .output(),
     )
     .await
     .context("nix config show timed out")?
