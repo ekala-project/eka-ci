@@ -10,6 +10,7 @@ let
     mkPackageOption
     mkOption
     mkIf
+    mkDefault
     mkMerge
     types
     optional
@@ -892,6 +893,11 @@ in
 
             Restart = "on-failure";
             RestartSec = 5;
+
+            # The server runs hundreds of concurrent nix/nix-store children
+            # plus SQLite and HTTP connections; the default soft limit of
+            # 1024 open files is exhausted ("Too many open files").
+            LimitNOFILE = mkDefault 65536;
 
             WorkingDirectory = "%S/%p";
             StateDirectory = "%p";
