@@ -189,7 +189,7 @@ impl GraphService {
                     self.db.as_ref(),
                 )
                 .await?;
-                if response.send(()).is_err() {
+                if response.is_some_and(|response| response.send(()).is_err()) {
                     warn!(
                         "UpdateState caller dropped the response oneshot for {:?}",
                         drv_id
