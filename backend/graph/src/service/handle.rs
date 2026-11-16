@@ -162,7 +162,7 @@ impl GraphServiceHandle {
             .send(GraphCommand::UpdateState {
                 drv_id: drv_id.clone(),
                 new_state,
-                response: tx,
+                response: Some(tx),
             })
             .await?;
         rx.await?;

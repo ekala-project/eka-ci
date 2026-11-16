@@ -13,11 +13,15 @@ use tokio::sync::oneshot;
 /// an `anyhow::Error` via `rx.await?`. See `handle_command` for details.
 #[derive(Debug)]
 pub enum GraphCommand {
-    /// Update the build state of a drv
+    /// Update the build state of a drv.
+    ///
+    /// `response` is `None` for fire-and-forget callers (the recorder and
+    /// builder threads), which update `shared_view` directly and send this
+    /// only to sync the graph's internal indices.
     UpdateState {
         drv_id: DrvId,
         new_state: DrvBuildState,
-        response: oneshot::Sender<()>,
+        response: Option<oneshot::Sender<()>>,
     },
     /// Insert new drvs and their dependencies
     InsertDrvs {

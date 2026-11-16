@@ -139,11 +139,10 @@ impl BuilderThread {
                                     entry.build_state = shared_building.clone();
                                 }
                                 // Best-effort graph + DB update via command channel.
-                                let (tx, _rx) = tokio::sync::oneshot::channel();
                                 let cmd = crate::graph::GraphCommand::UpdateState {
                                     drv_id: shared_id,
                                     new_state: shared_building,
-                                    response: tx,
+                                    response: None,
                                 };
                                 if let Err(e) = self.graph_handle.command_sender().try_send(cmd) {
                                     warn!(

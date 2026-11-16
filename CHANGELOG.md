@@ -15,6 +15,9 @@
   retry, removing a possible recorder ↔ ingress deadlock
 - On startup, Queued drvs whose dependencies have all succeeded are
   re-checked right away, not only Buildable ones
+- The graph service no longer logs `UpdateState caller dropped the response
+  oneshot` for every state change sent by the recorder and builder threads;
+  those updates never wait for a reply, and the warning was spurious
 
 ### PR evaluation
 
