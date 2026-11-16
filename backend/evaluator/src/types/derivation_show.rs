@@ -126,6 +126,23 @@ pub struct DrvOutputInfo {
     pub path: Option<String>,
 }
 
+impl DrvOutputInfo {
+    /// The output's full store path.
+    ///
+    /// The versioned format (v4) prints store paths without the store
+    /// directory (`<hash>-<name>`); legacy output prints full paths. Both
+    /// are normalized to `/nix/store/<hash>-<name>`.
+    pub fn into_store_path(self) -> Option<String> {
+        self.path.map(|p| {
+            if p.starts_with('/') {
+                p
+            } else {
+                format!("/nix/store/{p}")
+            }
+        })
+    }
+}
+
 impl RawDrvInfo {
     pub fn into_drv_info(self) -> Result<DrvInfo> {
         let input_drvs: Vec<String> = match (self.inputs, self.input_drvs) {
@@ -260,4 +277,35 @@ pub async fn drv_outputs(drv_paths: &[String]) -> anyhow::Result<Vec<(String, Dr
             Ok((key, info))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod output_path_tests {
+    use super::DrvOutputInfo;
+
+    fn info(path: Option<&str>) -> DrvOutputInfo {
+        DrvOutputInfo {
+            path: path.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn versioned_basename_gets_store_dir() {
+        let p = info(Some("rkf4v2yzq5nvvb68bfcx1jpr5lzxr3zy-builder.pl")).into_store_path();
+        assert_eq!(
+            p.as_deref(),
+            Some("/nix/store/rkf4v2yzq5nvvb68bfcx1jpr5lzxr3zy-builder.pl")
+        );
+    }
+
+    #[test]
+    fn legacy_full_path_is_unchanged() {
+        let full = "/nix/store/rkf4v2yzq5nvvb68bfcx1jpr5lzxr3zy-builder.pl";
+        assert_eq!(info(Some(full)).into_store_path().as_deref(), Some(full));
+    }
+
+    #[test]
+    fn missing_path_stays_missing() {
+        assert_eq!(info(None).into_store_path(), None);
+    }
 }
