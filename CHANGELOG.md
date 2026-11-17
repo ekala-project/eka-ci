@@ -46,6 +46,14 @@
   down, or whose queued tasks were lost to a restart or a stuck service,
   was never evaluated until it was pushed or re-queued. Merge groups are
   discovered through their `gh-readonly-queue/...` branches
+- Release-channel promotion is reconciled on the same 5-minute pass. The
+  tracking branch's current commit is read from GitHub and evaluated if it
+  never was (a push missed while the server was down), the in-flight
+  commit is re-evaluated if its eval was lost, and the ChannelService
+  re-checks the in-flight promotion (new `ChannelTask::Reconcile`).
+  Previously a lost `JobsetComplete` left a promotion `Evaluating` forever,
+  blocking the channel, and the pending SHA queued behind an in-flight
+  promotion was lost on restart
 - Fix merge-queue evaluation, which never ran: the synthetic pull request
   built from a `merge_group` webhook lacked fields octocrab requires, so
   every `checks_requested` event was dropped with `Failed to create

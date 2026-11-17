@@ -48,6 +48,18 @@ pub enum ChannelTask {
         repo: String,
         sha: String,
     },
+
+    /// Periodic reconciliation from `EvalReconciler`. `tracking_head` is
+    /// the tracking branch's current commit on the forge.
+    ///
+    /// Re-evaluates the channel's in-flight row (its `JobsetComplete`
+    /// may have been lost), then handles `tracking_head` exactly like
+    /// `EvaluatePush`, which recovers pushes missed while the server was
+    /// down and the in-memory pending SHA lost on restart.
+    Reconcile {
+        channel: ChannelConfig,
+        tracking_head: String,
+    },
 }
 
 /// Numeric status as written to the `ChannelPromotion.status` column.

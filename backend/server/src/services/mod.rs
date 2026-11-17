@@ -349,6 +349,10 @@ pub async fn start_services(config: Config) -> Result<()> {
                 merge_queue: config.merge_queue_require_approval,
             },
             github_app_configs.clone(),
+            crate::github::Channels {
+                configs: channels_registry.clone(),
+                sender: Some(channel_sender.clone()),
+            },
         )
     });
 

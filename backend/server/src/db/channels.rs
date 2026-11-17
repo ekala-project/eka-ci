@@ -156,6 +156,20 @@ pub async fn finalise_evaluation(
     Ok(res.rows_affected())
 }
 
+impl ChannelPromotionRow {
+    /// Whether this row is a final decision for its SHA (promoted,
+    /// blocked, or push failed). `Evaluating` and `Skipped` are not.
+    pub fn is_terminal_decision(&self) -> bool {
+        [
+            PromotionStatus::Promoted,
+            PromotionStatus::Blocked,
+            PromotionStatus::PushFailed,
+        ]
+        .iter()
+        .any(|status| status.as_i64() == self.status)
+    }
+}
+
 /// Return the current in-flight (`Evaluating`) row for `channel_id`,
 /// or `None` if no evaluation is currently running.
 ///

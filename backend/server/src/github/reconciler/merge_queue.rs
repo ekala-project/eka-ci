@@ -8,28 +8,15 @@
 
 use anyhow::{Context, Result};
 use octocrab::Octocrab;
-use serde::Deserialize;
 use tracing::warn;
 
-use super::{Decision, EvalReconciler, log_enqueue};
+use super::{Decision, EvalReconciler, GitRef, log_enqueue};
 use crate::db::github::{HeadCommit, RepositoryInfo};
 use crate::github::webhook::merge_queue::{
     MergeGroup, merge_group_author_approved, merge_group_permitted, queue_merge_group_evaluation,
 };
 
 const QUEUE_REF_PREFIX: &str = "refs/heads/gh-readonly-queue/";
-
-#[derive(Debug, Deserialize)]
-struct GitRef {
-    #[serde(rename = "ref")]
-    name: String,
-    object: GitObject,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitObject {
-    sha: String,
-}
 
 /// A merge-queue ref, parsed from its name.
 #[derive(Debug, PartialEq, Eq)]

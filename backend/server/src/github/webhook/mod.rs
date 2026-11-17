@@ -20,7 +20,7 @@ mod comments;
 mod installations;
 pub(super) mod merge_queue;
 pub(super) mod pull_requests;
-mod push;
+pub(super) mod push;
 mod reviews;
 mod workflows;
 
@@ -151,6 +151,7 @@ pub async fn handle_webhook_payload(
                 channels,
                 channel_sender,
                 search_index_sender,
+                db_service,
             )
             .await
         },

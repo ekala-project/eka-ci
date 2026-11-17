@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use anyhow::Context;
 use octocrab::models::webhook_events::payload::PushWebhookEventPayload;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -23,6 +24,7 @@ use tracing::{debug, info, warn};
 use crate::channels::types::ChannelTask;
 use crate::channels::{match_push_channels, match_target_branch_channels};
 use crate::config::{ChannelConfig, ChannelForge};
+use crate::db::DbService;
 use crate::git::{GitProtocol, GitRepo, GitTask, GitWorkspace};
 use crate::search_index::types::SearchIndexTask;
 
@@ -45,6 +47,7 @@ pub(super) async fn handle_github_push(
     channels: Arc<HashMap<String, ChannelConfig>>,
     channel_sender: Option<mpsc::Sender<ChannelTask>>,
     search_index_sender: Option<mpsc::Sender<SearchIndexTask>>,
+    db_service: DbService,
 ) {
     // Branch-delete pushes (e.g. closing a PR) arrive with `deleted: true`
     // and `after = "0000…"`. There's nothing to evaluate; ignore.
@@ -87,6 +90,7 @@ pub(super) async fn handle_github_push(
         &after_sha,
         &git_sender,
         &channel_sender,
+        &db_service,
     )
     .await;
 
@@ -102,6 +106,53 @@ pub(super) async fn handle_github_push(
     .await;
 }
 
+/// Queue the checkout + evaluation of a tracking-branch commit and
+/// record the request for the reconciler.
+///
+/// ChannelCheckout (not plain Checkout) ensures the downstream pipeline
+/// uses RepoTask::ReadGitHub, which creates jobsets in the database.
+/// Without jobsets, the recorder cannot emit JobsetComplete and channel
+/// promotion stalls.
+pub(crate) async fn queue_channel_checkout(
+    owner: &str,
+    repo_name: &str,
+    branch: &str,
+    sha: &str,
+    from_reconciler: bool,
+    git_sender: &mpsc::Sender<GitTask>,
+    db_service: &DbService,
+) -> anyhow::Result<()> {
+    let repo = GitRepo {
+        protocol: GitProtocol::Https,
+        domain: "github.com".to_string(),
+        owner: owner.to_string(),
+        repo: repo_name.to_string(),
+    };
+    let task = GitTask::ChannelCheckout {
+        workspace: GitWorkspace::from_git_repo(repo, sha),
+        owner: owner.to_string(),
+        repo_name: repo_name.to_string(),
+        sha: sha.to_string(),
+        branch: Some(branch.to_string()),
+    };
+    git_sender
+        .send(task)
+        .await
+        .context("failed to send channel checkout task")?;
+    crate::db::github::record_eval_request(
+        crate::db::github::HeadCommit {
+            owner,
+            repo_name,
+            sha,
+        },
+        0,
+        from_reconciler,
+        &db_service.pool,
+    )
+    .await
+    .context("failed to record channel eval request")
+}
+
 /// If the pushed branch matches a channel's `tracking_branch`, schedule
 /// a git checkout to kick off the eval → build → promotion pipeline,
 /// and dispatch `EvaluatePush` to the ChannelService so an in-flight
@@ -114,6 +165,7 @@ async fn handle_tracking_branch(
     sha: &str,
     git_sender: &mpsc::Sender<GitTask>,
     channel_sender: &Option<mpsc::Sender<ChannelTask>>,
+    db_service: &DbService,
 ) {
     let matches = match_push_channels(channels, &ChannelForge::GitHub, owner, repo_name, branch);
     if matches.is_empty() {
@@ -141,30 +193,12 @@ async fn handle_tracking_branch(
     // same `(owner, repo, branch)`, but they evaluate the SAME commit.
     // One ChannelCheckout suffices; the per-channel decision is made
     // later by the ChannelService once the build completes.
-    //
-    // ChannelCheckout (not plain Checkout) ensures the downstream
-    // pipeline uses RepoTask::ReadGitHub, which creates jobsets in the
-    // database. Without jobsets, the recorder cannot emit
-    // JobsetComplete and channel promotion stalls.
-    let repo = GitRepo {
-        protocol: GitProtocol::Https,
-        domain: "github.com".to_string(),
-        owner: owner.to_string(),
-        repo: repo_name.to_string(),
-    };
-    let workspace = GitWorkspace::from_git_repo(repo, sha);
-
-    let task = GitTask::ChannelCheckout {
-        workspace,
-        owner: owner.to_string(),
-        repo_name: repo_name.to_string(),
-        sha: sha.to_string(),
-        branch: Some(branch.to_string()),
-    };
-    if let Err(e) = git_sender.send(task).await {
+    if let Err(e) =
+        queue_channel_checkout(owner, repo_name, branch, sha, false, git_sender, db_service).await
+    {
         warn!(
             event = "github_push_checkout_send_failed",
-            error = %e,
+            error = ?e,
             owner = %owner,
             repo = %repo_name,
             branch = %branch,

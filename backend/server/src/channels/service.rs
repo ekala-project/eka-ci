@@ -314,15 +314,7 @@ impl ChannelService {
     /// fair evaluation.
     async fn already_decided(&self, channel_id: &str, sha: &str) -> Result<bool> {
         let row = crate::db::channels::get_latest_for_sha(channel_id, sha, &self.db.pool).await?;
-        Ok(match row {
-            Some(r) => {
-                let status = r.status;
-                status == PromotionStatus::Promoted.as_i64()
-                    || status == PromotionStatus::Blocked.as_i64()
-                    || status == PromotionStatus::PushFailed.as_i64()
-            },
-            None => false,
-        })
+        Ok(row.is_some_and(|r| r.is_terminal_decision()))
     }
 
     #[instrument(
@@ -585,128 +577,154 @@ impl ChannelService {
         }
 
         for channel in matches {
-            let channel_id = channel.channel_id();
-            let in_flight = crate::db::channels::get_in_flight(&channel_id, &self.db.pool).await?;
-            let in_flight_row = match in_flight {
-                Some(r) => r,
-                None => {
-                    debug!(
-                        event = "channel_jobset_complete_no_in_flight",
-                        channel_id = %channel_id,
-                        sha = %sha,
-                        "jobset completed but channel has no in-flight evaluation"
-                    );
-                    continue;
-                },
-            };
-
-            if in_flight_row.tracking_sha != sha {
-                debug!(
-                    event = "channel_jobset_complete_sha_mismatch",
-                    channel_id = %channel_id,
-                    jobset_sha = %sha,
-                    in_flight_sha = %in_flight_row.tracking_sha,
-                    "jobset SHA differs from in-flight evaluation; ignoring"
-                );
-                continue;
-            }
-
-            // Re-snapshot job states and re-evaluate. The Evaluating
-            // row is already open; finalise_evaluation flips it to a
-            // terminal status if the decision is Ready or Blocked,
-            // and otherwise we stay Waiting for the next conclusion.
-            let job_states = self.snapshot_job_states(&channel, &sha).await?;
-            let decision = evaluate_promotion(&channel, &job_states);
-
-            match decision {
-                PromotionDecision::Ready { required_results } => {
-                    let previous_target_sha = self.perform_promotion(&channel, &sha).await?;
-                    let required_json = serde_json::to_string(&required_results)
-                        .unwrap_or_else(|_| "{}".to_string());
-                    crate::db::channels::finalise_evaluation(
-                        &channel_id,
-                        &sha,
-                        PromotionStatus::Promoted,
-                        None,
-                        Some(&required_json),
-                        previous_target_sha.as_deref(),
-                        &self.db.pool,
-                    )
-                    .await?;
-
-                    // Update GitHub check run to success
-                    self.fire_github_check_run(&channel, &sha, PromotionStatus::Promoted, None);
-
-                    // Trigger search-index generation for the promoted SHA.
-                    self.dispatch_search_index(&channel, &sha);
-
-                    info!(
-                        event = "channel_promoted",
-                        channel_id = %channel_id,
-                        sha = %sha,
-                        trigger = "jobset_complete",
-                        "channel evaluation reached Promoted (PR3 stub: no actual push)"
-                    );
-                    // After a terminal decision, promote the pending
-                    // SHA (if any) to a fresh evaluation.
-                    self.drain_pending(&channel).await?;
-                },
-                PromotionDecision::Blocked {
-                    failed_required,
-                    required_results,
-                } => {
-                    let blocked_json = serde_json::json!({
-                        "failed_required": failed_required,
-                    });
-                    let required_json = serde_json::to_string(&required_results)
-                        .unwrap_or_else(|_| "{}".to_string());
-                    crate::db::channels::finalise_evaluation(
-                        &channel_id,
-                        &sha,
-                        PromotionStatus::Blocked,
-                        Some(&blocked_json.to_string()),
-                        Some(&required_json),
-                        None,
-                        &self.db.pool,
-                    )
-                    .await?;
-
-                    // Update GitHub check run to failure with blocked reason
-                    self.fire_github_check_run(
-                        &channel,
-                        &sha,
-                        PromotionStatus::Blocked,
-                        Some(&blocked_json.to_string()),
-                    );
-
-                    warn!(
-                        event = "channel_blocked",
-                        channel_id = %channel_id,
-                        sha = %sha,
-                        failed = ?failed_required,
-                        trigger = "jobset_complete",
-                        "channel evaluation blocked by failed required jobs"
-                    );
-                    self.drain_pending(&channel).await?;
-                },
-                PromotionDecision::Waiting {
-                    pending_required,
-                    pending_packages,
-                } => {
-                    debug!(
-                        event = "channel_evaluation_waiting",
-                        channel_id = %channel_id,
-                        sha = %sha,
-                        pending_required = ?pending_required,
-                        pending_packages = ?pending_packages,
-                        trigger = "jobset_complete",
-                        "channel still waiting on additional job states"
-                    );
-                },
-            }
+            self.reevaluate_in_flight(&channel, Some(&sha), "jobset_complete")
+                .await?;
         }
 
         Ok(())
+    }
+
+    /// Re-snapshot the job states of the channel's in-flight evaluation
+    /// and act on the decision (promote, block, or keep waiting).
+    ///
+    /// With `expected_sha`, only an in-flight row for that SHA is
+    /// re-evaluated (a jobset for another SHA is irrelevant to it).
+    async fn reevaluate_in_flight(
+        &self,
+        channel: &ChannelConfig,
+        expected_sha: Option<&str>,
+        trigger: &str,
+    ) -> Result<()> {
+        let channel_id = channel.channel_id();
+        let in_flight = crate::db::channels::get_in_flight(&channel_id, &self.db.pool).await?;
+        let Some(in_flight_row) = in_flight else {
+            debug!(
+                event = "channel_reevaluate_no_in_flight",
+                channel_id = %channel_id,
+                trigger = %trigger,
+                "channel has no in-flight evaluation"
+            );
+            return Ok(());
+        };
+        if expected_sha.is_some_and(|expected| expected != in_flight_row.tracking_sha) {
+            debug!(
+                event = "channel_jobset_complete_sha_mismatch",
+                channel_id = %channel_id,
+                jobset_sha = ?expected_sha,
+                in_flight_sha = %in_flight_row.tracking_sha,
+                "jobset SHA differs from in-flight evaluation; ignoring"
+            );
+            return Ok(());
+        }
+        let sha = in_flight_row.tracking_sha;
+
+        // Re-snapshot job states and re-evaluate. The Evaluating
+        // row is already open; finalise_evaluation flips it to a
+        // terminal status if the decision is Ready or Blocked,
+        // and otherwise we stay Waiting for the next conclusion.
+        let job_states = self.snapshot_job_states(&channel, &sha).await?;
+        let decision = evaluate_promotion(&channel, &job_states);
+
+        match decision {
+            PromotionDecision::Ready { required_results } => {
+                let previous_target_sha = self.perform_promotion(&channel, &sha).await?;
+                let required_json =
+                    serde_json::to_string(&required_results).unwrap_or_else(|_| "{}".to_string());
+                crate::db::channels::finalise_evaluation(
+                    &channel_id,
+                    &sha,
+                    PromotionStatus::Promoted,
+                    None,
+                    Some(&required_json),
+                    previous_target_sha.as_deref(),
+                    &self.db.pool,
+                )
+                .await?;
+
+                // Update GitHub check run to success
+                self.fire_github_check_run(&channel, &sha, PromotionStatus::Promoted, None);
+
+                // Trigger search-index generation for the promoted SHA.
+                self.dispatch_search_index(&channel, &sha);
+
+                info!(
+                    event = "channel_promoted",
+                    channel_id = %channel_id,
+                    sha = %sha,
+                    trigger = %trigger,
+                    "channel evaluation reached Promoted (PR3 stub: no actual push)"
+                );
+                // After a terminal decision, promote the pending
+                // SHA (if any) to a fresh evaluation.
+                self.drain_pending(&channel).await?;
+            },
+            PromotionDecision::Blocked {
+                failed_required,
+                required_results,
+            } => {
+                let blocked_json = serde_json::json!({
+                    "failed_required": failed_required,
+                });
+                let required_json =
+                    serde_json::to_string(&required_results).unwrap_or_else(|_| "{}".to_string());
+                crate::db::channels::finalise_evaluation(
+                    &channel_id,
+                    &sha,
+                    PromotionStatus::Blocked,
+                    Some(&blocked_json.to_string()),
+                    Some(&required_json),
+                    None,
+                    &self.db.pool,
+                )
+                .await?;
+
+                // Update GitHub check run to failure with blocked reason
+                self.fire_github_check_run(
+                    &channel,
+                    &sha,
+                    PromotionStatus::Blocked,
+                    Some(&blocked_json.to_string()),
+                );
+
+                warn!(
+                    event = "channel_blocked",
+                    channel_id = %channel_id,
+                    sha = %sha,
+                    failed = ?failed_required,
+                    trigger = %trigger,
+                    "channel evaluation blocked by failed required jobs"
+                );
+                self.drain_pending(&channel).await?;
+            },
+            PromotionDecision::Waiting {
+                pending_required,
+                pending_packages,
+            } => {
+                debug!(
+                    event = "channel_evaluation_waiting",
+                    channel_id = %channel_id,
+                    sha = %sha,
+                    pending_required = ?pending_required,
+                    pending_packages = ?pending_packages,
+                    trigger = %trigger,
+                    "channel still waiting on additional job states"
+                );
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Periodic reconciliation: re-check the in-flight evaluation (its
+    /// `JobsetComplete` may have been lost), then evaluate the tracking
+    /// branch's current head through the normal coalescer path. That
+    /// covers pushes missed while the server was down and pending SHAs,
+    /// which live only in memory, lost on restart. Both steps are
+    /// idempotent.
+    async fn handle_reconcile(&self, channel: ChannelConfig, tracking_head: String) -> Result<()> {
+        self.reevaluate_in_flight(&channel, None, "reconcile")
+            .await?;
+        self.handle_evaluate_push(channel, tracking_head).await
     }
 
     /// After a terminal decision, kick off evaluation of any queued
@@ -776,6 +794,10 @@ impl AsyncService<ChannelTask> for ChannelService {
                 repo,
                 sha,
             } => self.handle_jobset_complete(forge, owner, repo, sha).await,
+            ChannelTask::Reconcile {
+                channel,
+                tracking_head,
+            } => self.handle_reconcile(channel, tracking_head).await,
         }
     }
 
@@ -794,6 +816,10 @@ impl AsyncService<ChannelTask> for ChannelService {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "service_reconcile_tests.rs"]
+mod reconcile_tests;
 
 #[cfg(test)]
 mod tests {
