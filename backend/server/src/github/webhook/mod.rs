@@ -19,7 +19,7 @@ pub(crate) mod comment_command;
 mod comments;
 mod installations;
 mod merge_queue;
-mod pull_requests;
+pub(super) mod pull_requests;
 mod push;
 mod reviews;
 mod workflows;

@@ -193,7 +193,6 @@ pub struct PullRequest {
     pub state: String,
     pub created_at: String,
     pub updated_at: String,
-    pub jobset_id: Option<i64>,
     pub is_merge_queue: bool,
     pub merge_group_head_sha: Option<String>,
     pub auto_merge_enabled: bool,

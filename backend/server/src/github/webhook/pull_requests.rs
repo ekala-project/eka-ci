@@ -15,7 +15,7 @@ use crate::git::GitTask;
 use crate::github::{CICheckInfo, GitHubTask};
 use crate::github_permissions::{PermissionContext, check_github_app_permission};
 
-pub(super) async fn is_valid_user(pr: &PullRequest, db_service: &DbService) -> anyhow::Result<()> {
+pub(crate) async fn is_valid_user(pr: &PullRequest, db_service: &DbService) -> anyhow::Result<()> {
     let pr_author = &pr.user.as_ref().context("Missing github user for PR")?;
     let username = &pr_author.login;
     let user_id = pr_author.id.0 as i64;
@@ -28,7 +28,7 @@ pub(super) async fn is_valid_user(pr: &PullRequest, db_service: &DbService) -> a
 }
 
 /// Store PR metadata in the database
-pub(super) async fn store_pr_metadata(pr: &PullRequest, state: &str, db_service: &DbService) {
+pub(crate) async fn store_pr_metadata(pr: &PullRequest, state: &str, db_service: &DbService) {
     let pr_author = match &pr.user {
         Some(user) => &user.login,
         None => {
@@ -94,6 +94,66 @@ pub(super) async fn store_pr_metadata(pr: &PullRequest, state: &str, db_service:
     } else {
         debug!("Stored metadata for PR #{}", pr_number);
     }
+}
+
+/// Whether any configured GitHub App may act on the PR's base repo/branch.
+pub(crate) fn pr_has_app_permission(
+    pr: &PullRequest,
+    github_app_configs: &HashMap<String, GitHubAppConfig>,
+) -> bool {
+    let Some(base_repo) = &pr.base.repo else {
+        return true;
+    };
+    let owner = base_repo
+        .owner
+        .as_ref()
+        .map(|o| o.login.clone())
+        .unwrap_or_default();
+    let branch = &pr.base.ref_field;
+    let permission_context = PermissionContext {
+        repo_owner: owner.clone(),
+        repo_name: base_repo.name.clone(),
+        branch: Some(branch.clone()),
+    };
+    let has_permission = github_app_configs
+        .values()
+        .any(|config| check_github_app_permission(config, &permission_context).is_ok());
+    if !has_permission {
+        warn!(
+            "No GitHub App has permission for repository {}/{} branch {}. Skipping PR #{}",
+            owner, base_repo.name, branch, pr.number
+        );
+    }
+    has_permission
+}
+
+/// Queue the checkout + evaluation of the PR's head commit, and record
+/// the request so the PR reconciler knows it is in flight.
+pub(crate) async fn queue_pr_evaluation(
+    pr: &PullRequest,
+    from_reconciler: bool,
+    git_sender: &mpsc::Sender<GitTask>,
+    db_service: &DbService,
+) -> anyhow::Result<()> {
+    let head = CICheckInfo::from_gh_pr_head(pr)?;
+    git_sender
+        .send(GitTask::GitHubCheckout(Box::new(pr.clone())))
+        .await
+        .context("failed to send PR checkout task")?;
+    crate::db::github::record_eval_request(
+        crate::db::github::HeadCommit {
+            owner: &head.owner,
+            repo_name: &head.repo_name,
+            sha: &head.commit,
+        },
+        pr.number as i64,
+        from_reconciler,
+        &db_service.pool,
+    )
+    .await
+    .context("failed to record PR eval request")?;
+    debug!("Queued PR checkout task for PR #{}", pr.number);
+    Ok(())
 }
 
 /// On `Synchronize`, cancel any pending `@eka-ci merge` whose pinned SHA
@@ -220,35 +280,8 @@ pub(super) async fn handle_github_pr(
         PRWEA::Opened | PRWEA::Synchronize | PRWEA::Reopened => {
             debug!("Received event for PR #{}", &pr.pull_request.number);
 
-            // Check GitHub App permissions before processing
-            if let Some(base_repo) = &pr.pull_request.base.repo {
-                let owner = &base_repo
-                    .owner
-                    .as_ref()
-                    .map(|o| o.login.clone())
-                    .unwrap_or_default();
-                let repo_name = &base_repo.name;
-                let branch = &pr.pull_request.base.ref_field;
-
-                let permission_context = PermissionContext {
-                    repo_owner: owner.clone(),
-                    repo_name: repo_name.clone(),
-                    branch: Some(branch.clone()),
-                };
-
-                // Check if any configured GitHub App has permission for this repo/branch
-                let has_permission = github_app_configs
-                    .values()
-                    .any(|config| check_github_app_permission(config, &permission_context).is_ok());
-
-                if !has_permission {
-                    warn!(
-                        "No GitHub App has permission for repository {}/{} branch {}. Skipping PR \
-                         #{}",
-                        owner, repo_name, branch, pr.pull_request.number
-                    );
-                    return;
-                }
+            if !pr_has_app_permission(&pr.pull_request, &github_app_configs) {
+                return;
             }
 
             // Store PR metadata in database
@@ -303,14 +336,12 @@ pub(super) async fn handle_github_pr(
                 return;
             }
 
-            let git_task = GitTask::GitHubCheckout(Box::new(pr.pull_request.clone()));
-
-            if let Err(e) = git_sender.send(git_task).await {
-                warn!("Failed to send PR checkout task: {:?}", e);
-            } else {
-                debug!(
-                    "Successfully queued PR checkout task for PR #{}",
-                    pr.pull_request.number
+            if let Err(e) =
+                queue_pr_evaluation(&pr.pull_request, false, &git_sender, &db_service).await
+            {
+                warn!(
+                    "Failed to queue evaluation of PR #{}: {:?}",
+                    pr.pull_request.number, e
                 );
             }
         },

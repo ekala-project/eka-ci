@@ -235,6 +235,10 @@ impl EvalService {
         gh_sender.send(fail_task).await?;
         if ci_info.base_commit.is_none() {
             self.send_base_jobset(ci_info, eval_job, jobs).await?;
+        } else {
+            // A failed head produces no jobset; record that it was
+            // evaluated so the PR reconciler doesn't re-queue it.
+            crate::github::mark_head_evaluated(ci_info, &self.db_service).await;
         }
         Ok(())
     }

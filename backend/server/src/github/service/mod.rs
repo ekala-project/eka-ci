@@ -64,6 +64,10 @@ pub struct GitHubService {
     journal: TaskJournal<GitHubTask>,
 }
 
+/// Upper bound on a single GitHub task. Generous: some tasks (jobset
+/// creation, check-run resyncs) issue many rate-limited API calls.
+const GITHUB_TASK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
 /// Rate limiter that enforces a minimum interval between API calls
 /// and provides retry-with-backoff for 429 responses.
 pub(crate) struct ApiRateLimiter {
@@ -338,15 +342,12 @@ impl AsyncService<GitHubTask> for GitHubService {
     }
 
     async fn handle_task(&self, task: GitHubTask) -> Result<()> {
-        match self.handle_github_task(&task).await {
-            Ok(()) => Ok(()),
-            Err(e) if is_rate_limited(&e) => {
-                self.rate_limiter.backoff_429().await;
-                // Retry once after backoff
-                self.handle_github_task(&task).await
-            },
-            Err(e) => Err(e),
-        }
+        // The service is serial, so one hung task would stall every PR.
+        // Bound it; a timed-out task stays journaled and is replayed (a
+        // bounded number of times) on the next start.
+        tokio::time::timeout(GITHUB_TASK_TIMEOUT, self.handle_task_with_retry(&task))
+            .await
+            .with_context(|| format!("GitHub task timed out after {GITHUB_TASK_TIMEOUT:?}"))?
     }
 
     async fn handle_failure(&mut self, error: anyhow::Error) {
@@ -355,5 +356,19 @@ impl AsyncService<GitHubTask> for GitHubService {
 
     async fn handle_closure(&mut self) {
         info!("GitHubService shutting down");
+    }
+}
+
+impl GitHubService {
+    async fn handle_task_with_retry(&self, task: &GitHubTask) -> Result<()> {
+        match self.handle_github_task(task).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_rate_limited(&e) => {
+                self.rate_limiter.backoff_429().await;
+                // Retry once after backoff
+                self.handle_github_task(task).await
+            },
+            Err(e) => Err(e),
+        }
     }
 }

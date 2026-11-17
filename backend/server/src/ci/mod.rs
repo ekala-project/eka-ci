@@ -467,6 +467,9 @@ impl AsyncService<RepoTask> for RepoReader {
                 let summary = self
                     .process_github_repo_config(repo_path, &ci_info, base.as_deref())
                     .await?;
+                if summary.job_names.is_empty() {
+                    crate::github::mark_head_evaluated(&ci_info, &self.db_service).await;
+                }
 
                 let finish_configure_task = GitHubTask::CompleteCIConfigureGate {
                     ci_check_info: ci_info,

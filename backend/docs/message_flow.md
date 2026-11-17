@@ -169,6 +169,32 @@ TransitiveFailure → Queued (dependency fixed)
        └───────────────────────────────────────────────────────────┘
 ```
 
+#### PR reconciliation (missed webhooks, lost messages)
+
+The webhook path above is edge-triggered: if the server is down when the
+webhook arrives, or the queued tasks are lost (they wait in in-memory
+channels, and a task is only journaled once its service picks it up), the
+head is never evaluated. `PrReconciler`
+(`backend/server/src/github/reconciler.rs`) is the level-triggered
+backstop, keyed by the head commit SHA:
+
+```
+every 5 min (first pass 60s after startup):
+  for each installed repo → list open PRs on GitHub
+    skip drafts, unpermitted repos, unapproved authors (as the webhook does)
+    head SHA has a GitHubJobSets row            → done
+    GitHubPrEvalRequests.completed_at is set    → done (no jobs / eval failed)
+    requested by this process < 2h ago          → in flight
+    reconciler attempts ≥ 3                     → give up
+    otherwise → GitTask::GitHubCheckout + record request (attempts + 1)
+```
+
+Both the webhook and the reconciler record the request in
+`GitHubPrEvalRequests` when they queue a checkout. RepoReader (head with no
+jobs configured) and EvalService (head eval failed) set `completed_at`.
+Requests from before the current process started are never treated as in
+flight, so anything lost on restart is re-queued on the first pass.
+
 ### 2. Nix Evaluation Flow
 
 ```
@@ -550,6 +576,8 @@ RecorderTask
 4. **Race Conditions** - `RecorderService` and `IngressService` run concurrently. Possible race if build completes while new eval adds same drv. GraphService sequential processing helps mitigate this.
 
 5. **No Idempotency Tokens** - Duplicate webhook deliveries could trigger duplicate work. Consider adding idempotency keys to prevent reprocessing.
+
+6. **Journal covers only in-flight tasks** - A task is journaled when its service dequeues it, so tasks waiting in a channel are lost on restart. PR evaluation is recovered by `PrReconciler`; other pipelines (merge queue, channel promotion) are not. Journal entries are dropped after 3 replays (`MAX_REPLAY_ATTEMPTS`) so a task that hangs or always fails cannot block its service on every start.
 
 ### Potential Enhancements
 
