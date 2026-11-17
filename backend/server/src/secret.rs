@@ -10,8 +10,7 @@
 //! - `Redacted<T>` has no `Deref` impl: reads must go through [`Redacted::expose`] or
 //!   [`Redacted::into_inner`] so that every access point is visible in review.
 //! - Serialisation is `#[serde(transparent)]`: a `Redacted<String>` round-trips to/from JSON/TOML
-//!   as the bare string, so types that legitimately ship a token to the client (e.g.
-//!   `LoginResponse`) keep working while still redacting in logs.
+//!   as the bare string, so types that legitimately ship a secret over the wire keep working while still redacting in logs.
 //! - `PartialEq` / `Eq` forward to `T`, so tests can assert secret values when constructed
 //!   explicitly.
 //!

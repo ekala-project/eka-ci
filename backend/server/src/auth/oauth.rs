@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::header::SET_COOKIE;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use oauth2::basic::BasicClient;
 use oauth2::{
@@ -16,7 +17,8 @@ use sqlx::SqlitePool;
 
 use super::jwt::JwtService;
 use super::middleware::AuthUser;
-use super::types::{AuthenticatedUser, GitHubUserInfo, LoginResponse, UserInfo};
+use super::oauth_state;
+use super::types::{AuthenticatedUser, GitHubUserInfo, UserInfo};
 use crate::secret::Redacted;
 
 /// OAuth configuration
@@ -32,6 +34,11 @@ pub struct OAuthConfig {
 }
 
 impl OAuthConfig {
+    /// Whether auth cookies should carry `Secure` (redirect URL is HTTPS).
+    fn secure(&self) -> bool {
+        self.redirect_url.starts_with("https://")
+    }
+
     /// Create OAuth client
     fn create_client(&self) -> Result<BasicClient, String> {
         let client = BasicClient::new(
@@ -61,105 +68,118 @@ pub struct AppState {
     pub oauth_config: OAuthConfig,
 }
 
-/// Query parameters from GitHub OAuth callback
+/// Query parameters from GitHub OAuth callback.
+///
+/// GitHub sends `code` + `state` on success, or `error` (+ description)
+/// when the user denies access.
 #[derive(Deserialize)]
 pub struct CallbackParams {
-    pub code: String,
-    #[allow(dead_code)]
+    pub code: Option<String>,
     pub state: Option<String>,
+    pub error: Option<String>,
+    pub error_description: Option<String>,
 }
 
-/// Handle /auth/github/login - redirect to GitHub
-pub async fn handle_login(State(state): State<AppState>) -> Result<Redirect, Response> {
-    let client = state.oauth_config.create_client().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e })),
-        )
-            .into_response()
-    })?;
+/// Handle /github/auth/login - redirect to GitHub.
+///
+/// The `state` sent to GitHub is also stored in a short-lived cookie so the
+/// callback can verify that it completes a login this browser started.
+pub async fn handle_login(State(state): State<AppState>) -> Response {
+    let client = match state.oauth_config.create_client() {
+        Ok(client) => client,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e })),
+            )
+                .into_response();
+        },
+    };
 
-    let (auth_url, _csrf_token) = client
+    let (auth_url, csrf_token) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new("read:user".to_string()))
         .url();
 
-    Ok(Redirect::temporary(auth_url.as_str()))
+    let cookie = oauth_state::set_state_cookie(csrf_token.secret(), state.oauth_config.secure());
+    let mut response = Redirect::to(auth_url.as_str()).into_response();
+    match HeaderValue::from_str(&cookie) {
+        Ok(value) => {
+            response.headers_mut().insert(SET_COOKIE, value);
+        },
+        Err(e) => {
+            tracing::error!("OAuth state cookie is not a valid header: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        },
+    }
+    response
 }
 
-/// Handle /auth/github/callback - exchange code for token
+/// Handle /github/auth/callback - verify state, exchange code, sign in.
+///
+/// Always redirects the browser to the frontend's `/auth/complete` page,
+/// with either `#token=<jwt>` or `#error=<message>`.
 pub async fn handle_callback(
+    headers: HeaderMap,
     Query(params): Query<CallbackParams>,
     State(state): State<AppState>,
-) -> Result<Json<LoginResponse>, Response> {
-    // Create OAuth client
-    let client = state.oauth_config.create_client().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e })),
-        )
-            .into_response()
-    })?;
+) -> Response {
+    let secure = state.oauth_config.secure();
+    let fragment = match complete_login(&headers, params, &state).await {
+        Ok(token) => oauth_state::token_fragment(&token),
+        Err(message) => {
+            tracing::warn!("GitHub login failed: {}", message);
+            oauth_state::error_fragment(&message)
+        },
+    };
+    oauth_state::complete_redirect(&fragment, secure)
+}
 
-    // Exchange authorization code for access token
-    let token_result = client
-        .exchange_code(AuthorizationCode::new(params.code))
-        .request_async(oauth2::reqwest::async_http_client)
+/// Validate the callback and return a JWT for the signed-in user.
+async fn complete_login(
+    headers: &HeaderMap,
+    params: CallbackParams,
+    state: &AppState,
+) -> Result<String, String> {
+    if let Some(error) = params.error {
+        return Err(params.error_description.unwrap_or(error));
+    }
+    let expected = oauth_state::read_state_cookie(headers);
+    if !oauth_state::state_matches(expected.as_deref(), params.state.as_deref()) {
+        return Err("Login session expired or did not match. Please try again.".to_string());
+    }
+    let code = params
+        .code
+        .ok_or_else(|| "GitHub did not return an authorization code.".to_string())?;
+
+    let access_token = exchange_code(&state.oauth_config, code).await?;
+    let github_user = fetch_github_user(&access_token)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("Failed to exchange code: {}", e) })),
-            )
-                .into_response()
-        })?;
+        .map_err(|e| format!("Failed to fetch user info: {}", e))?;
 
-    let access_token = token_result.access_token().secret();
-
-    // Fetch user info from GitHub
-    let github_user = fetch_github_user(access_token).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch user info: {}", e) })),
-        )
-            .into_response()
-    })?;
-
-    // Upsert user in database
     let config_admin = state
         .oauth_config
         .admin_github_ids
         .contains(&github_user.id);
-    let user = upsert_user(&state.db, &github_user, access_token, config_admin)
+    let user = upsert_user(&state.db, &github_user, &access_token, config_admin)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to save user: {}", e) })),
-            )
-                .into_response()
-        })?;
+        .map_err(|e| format!("Failed to save user: {}", e))?;
 
-    // Create JWT
-    let token = state.jwt_service.create_token(&user).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to create token: {}", e) })),
-        )
-            .into_response()
-    })?;
+    state
+        .jwt_service
+        .create_token(&user)
+        .map_err(|e| format!("Failed to create token: {}", e))
+}
 
-    Ok(Json(LoginResponse {
-        // M2: wrap the JWT so it cannot be leaked through any future
-        // `Debug` impl on `LoginResponse`. Serialisation is transparent.
-        token: Redacted::new(token),
-        user: UserInfo {
-            github_id: user.github_id,
-            username: user.github_username,
-            avatar_url: user.github_avatar_url,
-            is_admin: user.is_admin,
-        },
-    }))
+/// Exchange an authorization code for a GitHub access token.
+async fn exchange_code(config: &OAuthConfig, code: String) -> Result<String, String> {
+    let client = config.create_client()?;
+    let token_result = client
+        .exchange_code(AuthorizationCode::new(code))
+        .request_async(oauth2::reqwest::async_http_client)
+        .await
+        .map_err(|e| format!("Failed to exchange code: {}", e))?;
+    Ok(token_result.access_token().secret().clone())
 }
 
 /// Handle /auth/me - get current user info

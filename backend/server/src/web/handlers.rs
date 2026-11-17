@@ -15,10 +15,11 @@ pub(super) async fn auth_login_handler(State(state): State<AppState>) -> impl In
 }
 
 pub(super) async fn auth_callback_handler(
+    headers: axum::http::HeaderMap,
     query: axum::extract::Query<crate::auth::oauth::CallbackParams>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    crate::auth::handle_callback(query, State(state.oauth_state())).await
+    crate::auth::handle_callback(headers, query, State(state.oauth_state())).await
 }
 
 pub(super) async fn auth_me_handler(

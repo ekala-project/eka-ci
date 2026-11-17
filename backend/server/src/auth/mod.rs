@@ -3,6 +3,7 @@ pub mod github_api;
 mod jwt;
 mod middleware;
 pub mod oauth;
+mod oauth_state;
 pub mod profile;
 pub mod requests;
 pub mod types;

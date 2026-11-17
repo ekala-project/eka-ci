@@ -208,7 +208,7 @@ initPage apiBaseUrl url route authState =
         Route.AuthCallback ->
             let
                 ( model, cmd ) =
-                    AuthCallback.init apiBaseUrl url
+                    AuthCallback.init url
             in
             ( AuthCallbackPage model, Cmd.map AuthCallbackMsg cmd )
 

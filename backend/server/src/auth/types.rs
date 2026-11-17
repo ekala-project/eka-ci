@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::secret::Redacted;
-
 /// User stored in the database after OAuth authentication.
 ///
 /// M2: `github_access_token` remains a `String` (not
@@ -39,18 +37,6 @@ impl std::fmt::Debug for AuthenticatedUser {
             .field("last_login", &self.last_login)
             .finish()
     }
-}
-
-/// Response sent to frontend after successful login.
-///
-/// M2: `token` is wrapped in [`Redacted<String>`] so that the JWT is
-/// never printed in debug output. Because `Redacted` serialises
-/// transparently, the on-wire JSON is identical to the unwrapped form
-/// (`{"token": "<jwt>", "user": {...}}`).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LoginResponse {
-    pub token: Redacted<String>,
-    pub user: UserInfo,
 }
 
 /// User information sent to frontend (without sensitive data)
