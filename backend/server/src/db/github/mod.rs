@@ -2,6 +2,7 @@
 
 pub mod auto_merge;
 pub mod check_runs;
+pub mod eval_requests;
 pub mod jobsets;
 pub mod pull_requests;
 pub mod repositories;
@@ -10,6 +11,7 @@ pub mod types;
 // Re-export all public types
 pub use auto_merge::*;
 pub use check_runs::*;
+pub use eval_requests::*;
 pub use jobsets::*;
 pub use pull_requests::*;
 pub use repositories::*;

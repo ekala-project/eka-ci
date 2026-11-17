@@ -9,7 +9,10 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+
+/// How many times a journaled task is replayed before it is dropped.
+pub const MAX_REPLAY_ATTEMPTS: i64 = 3;
 
 /// Opaque identifier for a journaled task row.
 #[derive(Debug, Clone, Copy)]
@@ -78,7 +81,19 @@ where
 
     /// Recover all un-acknowledged tasks for this service. Called once
     /// at startup to replay any in-flight work that was interrupted.
+    ///
+    /// Each call counts as a replay attempt: entries already replayed
+    /// [`MAX_REPLAY_ATTEMPTS`] times are dropped (and logged) rather than
+    /// replayed again, so a task that hangs or always fails cannot block
+    /// its service on every start.
     pub async fn recover(&self) -> Result<Vec<(JournalId, T)>> {
+        self.drop_exhausted_entries().await?;
+        sqlx::query("UPDATE TaskJournal SET attempts = attempts + 1 WHERE service = ?")
+            .bind(&self.service_name)
+            .execute(&self.pool)
+            .await
+            .context("failed to bump journal replay attempts")?;
+
         let rows = sqlx::query_as::<_, (i64, String)>(
             "SELECT id, payload FROM TaskJournal WHERE service = ? ORDER BY id ASC",
         )
@@ -119,6 +134,29 @@ where
         }
 
         Ok(recovered)
+    }
+
+    /// Delete entries that have used up their replay attempts.
+    async fn drop_exhausted_entries(&self) -> Result<()> {
+        let exhausted = sqlx::query_as::<_, (i64, String)>(
+            "DELETE FROM TaskJournal WHERE service = ? AND attempts >= ? RETURNING id, payload",
+        )
+        .bind(&self.service_name)
+        .bind(MAX_REPLAY_ATTEMPTS)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to drop exhausted journal entries")?;
+
+        for (id, payload) in exhausted {
+            error!(
+                service = %self.service_name,
+                journal_id = id,
+                attempts = MAX_REPLAY_ATTEMPTS,
+                "dropping journal entry that never completed: {}",
+                payload
+            );
+        }
+        Ok(())
     }
 }
 
@@ -201,6 +239,30 @@ mod tests {
         assert_eq!(r2.len(), 1);
         assert_eq!(r1[0].1.name, "a");
         assert_eq!(r2[0].1.name, "b");
+    }
+
+    #[tokio::test]
+    async fn entries_are_dropped_after_max_replays() {
+        let db = DbService::new_in_memory().await.unwrap();
+        let journal: TaskJournal<TestTask> = TaskJournal::new(db.pool.clone(), "test-svc");
+        journal
+            .persist(&TestTask {
+                name: "stuck".into(),
+                value: 7,
+            })
+            .await
+            .unwrap();
+
+        for attempt in 0..MAX_REPLAY_ATTEMPTS {
+            let recovered = journal.recover().await.unwrap();
+            assert_eq!(
+                recovered.len(),
+                1,
+                "replay {attempt} should return the task"
+            );
+        }
+        let recovered = journal.recover().await.unwrap();
+        assert!(recovered.is_empty(), "exhausted entry must be dropped");
     }
 
     #[tokio::test]

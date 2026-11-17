@@ -388,3 +388,27 @@ pub async fn get_pull_request_row(
     .await?;
     Ok(pr)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::DbService;
+
+    /// The `PullRequest` row struct must match the table: `SELECT *`
+    /// fails to decode on any mismatch (it once had a `jobset_id` field
+    /// the table never had, breaking SHA-drift checks and auto-merge).
+    #[tokio::test]
+    async fn pull_request_row_decodes() {
+        let db = DbService::new_in_memory().await.unwrap();
+        upsert_pull_request(
+            7, "o", "r", "head", "base", "t", "a", "open", "c", "u", &db.pool,
+        )
+        .await
+        .unwrap();
+        let row = get_pull_request_row("o", "r", 7, &db.pool)
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(row.head_sha, "head");
+    }
+}

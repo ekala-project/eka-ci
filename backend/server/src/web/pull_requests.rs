@@ -322,6 +322,58 @@ pub(super) async fn manual_merge_pr_handler(
     }
 }
 
+/// True when every jobset evaluated for the PR's head commit has
+/// concluded without new or changed failures. A head with no jobsets
+/// (not evaluated yet) has not passed.
+async fn head_gates_passed(
+    db_service: &crate::db::DbService,
+    pr: &crate::db::github::PullRequest,
+) -> bool {
+    let jobset_ids = match crate::db::github::head_jobset_ids(
+        &pr.owner,
+        &pr.repo_name,
+        &pr.head_sha,
+        &db_service.pool,
+    )
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("Failed to look up head jobsets: {}", e);
+            return false;
+        },
+    };
+    if jobset_ids.is_empty() {
+        return false;
+    }
+    for jobset_id in jobset_ids {
+        if !jobset_gate_passed(db_service, jobset_id).await {
+            return false;
+        }
+    }
+    true
+}
+
+async fn jobset_gate_passed(db_service: &crate::db::DbService, jobset_id: i64) -> bool {
+    match db_service.all_jobs_concluded(jobset_id).await {
+        Ok(true) => match db_service
+            .jobset_has_new_or_changed_failures(jobset_id)
+            .await
+        {
+            Ok(has_failures) => !has_failures,
+            Err(e) => {
+                error!("Failed to check for failures: {}", e);
+                false
+            },
+        },
+        Ok(false) => false,
+        Err(e) => {
+            error!("Failed to check if jobs concluded: {}", e);
+            false
+        },
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct MergeEligibility {
     eligible: bool,
@@ -373,30 +425,7 @@ pub(super) async fn check_merge_eligibility_handler(
         },
     };
 
-    let gates_passed = if let Some(jobset_id) = pr.jobset_id {
-        match state.db_service.all_jobs_concluded(jobset_id).await {
-            Ok(true) => {
-                match state
-                    .db_service
-                    .jobset_has_new_or_changed_failures(jobset_id)
-                    .await
-                {
-                    Ok(has_failures) => !has_failures,
-                    Err(e) => {
-                        error!("Failed to check for failures: {}", e);
-                        false
-                    },
-                }
-            },
-            Ok(false) => false,
-            Err(e) => {
-                error!("Failed to check if jobs concluded: {}", e);
-                false
-            },
-        }
-    } else {
-        false
-    };
+    let gates_passed = head_gates_passed(&state.db_service, &pr).await;
 
     let (has_maintainer_approvals, missing_approvals) =
         match crate::github::service::actions::check_pr_maintainer_approvals(

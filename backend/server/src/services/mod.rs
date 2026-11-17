@@ -339,6 +339,15 @@ pub async fn start_services(config: Config) -> Result<()> {
     let repo_sender = repo_service.get_sender();
 
     let git_service = GitService::new(repo_sender.clone(), db_service.pool.clone())?;
+    let pr_reconciler = maybe_octocrab.clone().map(|octocrab| {
+        crate::github::PrReconciler::new(
+            octocrab,
+            db_service.clone(),
+            git_service.get_sender(),
+            config.require_approval,
+            github_app_configs.clone(),
+        )
+    });
 
     // Create JWT service and OAuth config for authentication.
     // M2: the JWT secret is stored as `Redacted<String>` so that it
@@ -444,6 +453,7 @@ pub async fn start_services(config: Config) -> Result<()> {
         "GitHubService",
         maybe_github_service.map(|s| s.run(token.clone())),
     );
+    handles.push_opt("PrReconciler", pr_reconciler.map(|r| r.run(token.clone())));
     handles.push("GitLabService", gitlab_service.run(token.clone()));
     handles.push("GiteaService", gitea_service.run(token.clone()));
     handles.push("ChannelService", channel_service.run(token.clone()));

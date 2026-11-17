@@ -54,6 +54,25 @@ pub async fn stale_head_jobset(
     Ok(id)
 }
 
+/// ROWIDs of every jobset evaluated for `sha` in `owner/repo_name`
+/// (one per configured job).
+pub async fn head_jobset_ids(
+    owner: &str,
+    repo_name: &str,
+    sha: &str,
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<i64>> {
+    let ids = sqlx::query_scalar(
+        "SELECT ROWID FROM GitHubJobSets WHERE owner = ? AND repo_name = ? AND sha = ?",
+    )
+    .bind(owner)
+    .bind(repo_name)
+    .bind(sha)
+    .fetch_all(pool)
+    .await?;
+    Ok(ids)
+}
+
 /// Delete a jobset; its `Job` rows are removed by `ON DELETE CASCADE`.
 pub async fn delete_jobset(jobset_id: i64, pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("DELETE FROM GitHubJobSets WHERE ROWID = ?")

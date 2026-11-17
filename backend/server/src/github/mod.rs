@@ -5,11 +5,18 @@ use tracing::{info, warn};
 
 use crate::config::GitHubAppConfig;
 
+mod reconciler;
 pub mod service;
 mod webhook;
 
+pub use reconciler::{PrReconciler, mark_head_evaluated};
 pub use service::{CICheckInfo, GitHubService, GitHubTask, JobDifference};
 pub use webhook::handle_webhook_payload;
+
+/// TCP connect timeout for GitHub API requests.
+const GITHUB_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Read/write timeout for GitHub API requests.
+const GITHUB_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Error, Debug)]
 pub enum AppRegistrationError {
@@ -78,7 +85,14 @@ pub async fn register_app_from_config(
     };
 
     let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key.as_bytes())?;
-    let octocrab = Octocrab::builder().app(app_id, key).build()?;
+    // octocrab defaults to no timeouts at all: a response that never
+    // arrives would block the (serial) GitHubService forever.
+    let octocrab = Octocrab::builder()
+        .app(app_id, key)
+        .set_connect_timeout(Some(GITHUB_CONNECT_TIMEOUT))
+        .set_read_timeout(Some(GITHUB_IO_TIMEOUT))
+        .set_write_timeout(Some(GITHUB_IO_TIMEOUT))
+        .build()?;
 
     info!("Successfully registered as GitHub app");
 

@@ -39,6 +39,22 @@
 - A PR head jobset diffed against another base than the PR's current one
   (base branch moved, PR retargeted) is deleted and the head re-evaluated,
   instead of keeping the stale New/Changed classification
+- Open PRs are now reconciled every 5 minutes (and shortly after startup):
+  any open PR whose head commit has no jobset and no evaluation in flight
+  is queued for evaluation, at most 3 times per head commit. Previously a
+  PR pushed while the server was down, or whose queued tasks were lost to
+  a restart or a stuck service, was never evaluated until it was pushed
+  again
+- GitHub API requests now time out (10s connect, 60s read/write) and each
+  GitHub task is bounded to 30 minutes. octocrab has no timeouts by
+  default, so a single response that never arrived blocked the serial
+  GitHubService, and with it every PR, indefinitely
+- Journaled tasks are dropped (with an error log) after 3 replays, so a
+  task that hangs or always fails no longer blocks its service on every
+  startup
+- Fix `get_pull_request_row` failing with `no column found for name:
+  jobset_id`, which broke SHA-drift cancellation of `@eka-ci merge` and
+  auto-merge. Merge eligibility now uses the head commit's jobsets
 
 ### Derivation outputs
 
