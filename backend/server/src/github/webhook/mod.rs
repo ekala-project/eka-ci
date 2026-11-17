@@ -18,7 +18,7 @@ use crate::search_index::types::SearchIndexTask;
 pub(crate) mod comment_command;
 mod comments;
 mod installations;
-mod merge_queue;
+pub(super) mod merge_queue;
 pub(super) mod pull_requests;
 mod push;
 mod reviews;

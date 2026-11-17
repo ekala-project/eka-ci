@@ -339,12 +339,15 @@ pub async fn start_services(config: Config) -> Result<()> {
     let repo_sender = repo_service.get_sender();
 
     let git_service = GitService::new(repo_sender.clone(), db_service.pool.clone())?;
-    let pr_reconciler = maybe_octocrab.clone().map(|octocrab| {
-        crate::github::PrReconciler::new(
+    let eval_reconciler = maybe_octocrab.clone().map(|octocrab| {
+        crate::github::EvalReconciler::new(
             octocrab,
             db_service.clone(),
             git_service.get_sender(),
-            config.require_approval,
+            crate::github::ApprovalPolicy {
+                pull_requests: config.require_approval,
+                merge_queue: config.merge_queue_require_approval,
+            },
             github_app_configs.clone(),
         )
     });
@@ -453,7 +456,10 @@ pub async fn start_services(config: Config) -> Result<()> {
         "GitHubService",
         maybe_github_service.map(|s| s.run(token.clone())),
     );
-    handles.push_opt("PrReconciler", pr_reconciler.map(|r| r.run(token.clone())));
+    handles.push_opt(
+        "EvalReconciler",
+        eval_reconciler.map(|r| r.run(token.clone())),
+    );
     handles.push("GitLabService", gitlab_service.run(token.clone()));
     handles.push("GiteaService", gitea_service.run(token.clone()));
     handles.push("ChannelService", channel_service.run(token.clone()));

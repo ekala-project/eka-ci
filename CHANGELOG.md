@@ -39,12 +39,17 @@
 - A PR head jobset diffed against another base than the PR's current one
   (base branch moved, PR retargeted) is deleted and the head re-evaluated,
   instead of keeping the stale New/Changed classification
-- Open PRs are now reconciled every 5 minutes (and shortly after startup):
-  any open PR whose head commit has no jobset and no evaluation in flight
-  is queued for evaluation, at most 3 times per head commit. Previously a
-  PR pushed while the server was down, or whose queued tasks were lost to
-  a restart or a stuck service, was never evaluated until it was pushed
-  again
+- Open PRs and live merge-queue groups are now reconciled every 5 minutes
+  (and shortly after startup): any head commit with no jobset and no
+  evaluation in flight is queued for evaluation, at most 3 times per head
+  commit. Previously a PR pushed or a group queued while the server was
+  down, or whose queued tasks were lost to a restart or a stuck service,
+  was never evaluated until it was pushed or re-queued. Merge groups are
+  discovered through their `gh-readonly-queue/...` branches
+- Fix merge-queue evaluation, which never ran: the synthetic pull request
+  built from a `merge_group` webhook lacked fields octocrab requires, so
+  every `checks_requested` event was dropped with `Failed to create
+  repository object`
 - GitHub API requests now time out (10s connect, 60s read/write) and each
   GitHub task is bounded to 30 minutes. octocrab has no timeouts by
   default, so a single response that never arrived blocked the serial

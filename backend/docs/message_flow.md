@@ -169,27 +169,34 @@ TransitiveFailure → Queued (dependency fixed)
        └───────────────────────────────────────────────────────────┘
 ```
 
-#### PR reconciliation (missed webhooks, lost messages)
+#### Eval reconciliation (missed webhooks, lost messages)
 
-The webhook path above is edge-triggered: if the server is down when the
-webhook arrives, or the queued tasks are lost (they wait in in-memory
-channels, and a task is only journaled once its service picks it up), the
-head is never evaluated. `PrReconciler`
-(`backend/server/src/github/reconciler.rs`) is the level-triggered
-backstop, keyed by the head commit SHA:
+The webhook paths (PRs above, merge groups) are edge-triggered: if the
+server is down when the webhook arrives, or the queued tasks are lost
+(they wait in in-memory channels, and a task is only journaled once its
+service picks it up), the head is never evaluated. `EvalReconciler`
+(`backend/server/src/github/reconciler/`) is the level-triggered backstop,
+keyed by head commit SHA:
 
 ```
-every 5 min (first pass 60s after startup):
-  for each installed repo → list open PRs on GitHub
-    skip drafts, unpermitted repos, unapproved authors (as the webhook does)
-    head SHA has a GitHubJobSets row            → done
-    GitHubPrEvalRequests.completed_at is set    → done (no jobs / eval failed)
-    requested by this process < 2h ago          → in flight
-    reconciler attempts ≥ 3                     → give up
-    otherwise → GitTask::GitHubCheckout + record request (attempts + 1)
+every 5 min (first pass 60s after startup), for each installed repo:
+  heads = open PRs                              (pulls API)
+        + live merge groups                     (refs gh-readonly-queue/<base>/pr-<n>-<sha>)
+  skip what the webhook would skip: drafts, unpermitted branches,
+    unapproved authors (require_approval / merge_queue_require_approval)
+  head SHA has a GitHubJobSets row            → done
+  GitHubPrEvalRequests.completed_at is set    → done (no jobs / eval failed)
+  requested by this process < 2h ago          → in flight
+  reconciler attempts ≥ 3                     → give up
+  otherwise → GitTask::GitHubCheckout + record request (attempts + 1)
 ```
 
-Both the webhook and the reconciler record the request in
+GitHub's REST API cannot list merge groups, but each live group is backed
+by a `gh-readonly-queue/...` branch until it merges or is invalidated; the
+ref name gives the base branch and PR number, the head commit gives the
+parent (base) commit and author.
+
+Both webhooks and the reconciler record the request in
 `GitHubPrEvalRequests` when they queue a checkout. RepoReader (head with no
 jobs configured) and EvalService (head eval failed) set `completed_at`.
 Requests from before the current process started are never treated as in
@@ -577,7 +584,7 @@ RecorderTask
 
 5. **No Idempotency Tokens** - Duplicate webhook deliveries could trigger duplicate work. Consider adding idempotency keys to prevent reprocessing.
 
-6. **Journal covers only in-flight tasks** - A task is journaled when its service dequeues it, so tasks waiting in a channel are lost on restart. PR evaluation is recovered by `PrReconciler`; other pipelines (merge queue, channel promotion) are not. Journal entries are dropped after 3 replays (`MAX_REPLAY_ATTEMPTS`) so a task that hangs or always fails cannot block its service on every start.
+6. **Journal covers only in-flight tasks** - A task is journaled when its service dequeues it, so tasks waiting in a channel are lost on restart. PR and merge-queue evaluation is recovered by `EvalReconciler`; other pipelines (channel promotion) are not. Journal entries are dropped after 3 replays (`MAX_REPLAY_ATTEMPTS`) so a task that hangs or always fails cannot block its service on every start.
 
 ### Potential Enhancements
 

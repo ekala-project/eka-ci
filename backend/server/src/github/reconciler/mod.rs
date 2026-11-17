@@ -1,40 +1,41 @@
-//! Periodic reconciliation of open pull requests against evaluations.
+//! Periodic reconciliation of open PRs and merge-queue groups against
+//! evaluations.
 //!
 //! Webhooks and in-memory message passing are not enough to guarantee a
-//! PR head gets evaluated: a webhook can arrive while the server is down,
+//! commit gets evaluated: a webhook can arrive while the server is down,
 //! and tasks waiting in a service's channel are lost on restart or behind
 //! a stuck service. The reconciler is the level-triggered backstop: every
-//! [`RECONCILE_INTERVAL`] it lists the open PRs of each installed
-//! repository and queues an evaluation for any head commit that has no
-//! jobset and no evaluation in flight.
+//! [`RECONCILE_INTERVAL`], for each installed repository, it lists the
+//! open PRs ([`pull_requests`]) and live merge-queue groups
+//! ([`merge_queue`]) on GitHub, and queues an evaluation for any head
+//! commit that has no jobset and no evaluation in flight.
 //!
-//! A PR is identified by its head commit SHA: a new head (push, rebase)
-//! is a new commit to evaluate, and a head that was already evaluated is
-//! left alone (the pipeline's `needs_eval` skips existing jobsets anyway).
+//! Work is identified by head commit SHA: a new head (push, rebase, new
+//! queue group) is a new commit to evaluate, and a head that was already
+//! evaluated is left alone (the pipeline's `needs_eval` skips existing
+//! jobsets anyway).
+
+mod merge_queue;
+mod pull_requests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::InstallationId;
-use octocrab::models::pulls::PullRequest;
-use octocrab::params;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::webhook::pull_requests::{
-    is_valid_user, pr_has_app_permission, queue_pr_evaluation, store_pr_metadata,
-};
 use crate::config::GitHubAppConfig;
 use crate::db::DbService;
-use crate::db::github::{EvalRequest, HeadCommit, RepositoryInfo};
+use crate::db::github::{EvalRequest, HeadCommit};
 use crate::git::GitTask;
 
-/// How often open PRs are reconciled.
+/// How often open PRs and merge groups are reconciled.
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Delay before the first pass, letting journal replay finish first.
 const STARTUP_DELAY: Duration = Duration::from_secs(60);
@@ -44,7 +45,7 @@ const STALE_AFTER_SECS: i64 = 2 * 60 * 60;
 /// Evaluations the reconciler queues for one head commit before giving up.
 const MAX_RECONCILE_ATTEMPTS: i64 = 3;
 
-/// What to do with an open PR's head commit.
+/// What to do with a head commit.
 #[derive(Debug, PartialEq, Eq)]
 enum Decision {
     /// Evaluated (jobset exists, or finished without one).
@@ -93,10 +94,10 @@ fn unix_now() -> i64 {
         .unwrap_or_default()
 }
 
-/// Record that a PR head finished evaluating without producing a jobset
-/// (no jobs configured, or its eval failed), so the reconciler doesn't
-/// re-queue it. No-op for non-PR commits. Failures are only logged: the
-/// worst case is one redundant re-evaluation.
+/// Record that a PR or merge-group head finished evaluating without
+/// producing a jobset (no jobs configured, or its eval failed), so the
+/// reconciler doesn't re-queue it. No-op for branch commits. Failures are
+/// only logged: the worst case is one redundant re-evaluation.
 pub async fn mark_head_evaluated(ci_info: &super::CICheckInfo, db_service: &DbService) {
     if ci_info.base_commit.is_none() {
         return;
@@ -114,28 +115,37 @@ pub async fn mark_head_evaluated(ci_info: &super::CICheckInfo, db_service: &DbSe
     }
 }
 
-pub struct PrReconciler {
+/// Approval requirements, mirroring the webhook handlers.
+#[derive(Debug, Clone, Copy)]
+pub struct ApprovalPolicy {
+    /// `require_approval`: PR authors must be approved.
+    pub pull_requests: bool,
+    /// `merge_queue_require_approval`: merge-group authors must be approved.
+    pub merge_queue: bool,
+}
+
+pub struct EvalReconciler {
     octocrab: Octocrab,
     db_service: DbService,
     git_sender: mpsc::Sender<GitTask>,
-    require_approval: bool,
+    approval: ApprovalPolicy,
     github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
     process_start: i64,
 }
 
-impl PrReconciler {
+impl EvalReconciler {
     pub fn new(
         octocrab: Octocrab,
         db_service: DbService,
         git_sender: mpsc::Sender<GitTask>,
-        require_approval: bool,
+        approval: ApprovalPolicy,
         github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
     ) -> Self {
         Self {
             octocrab,
             db_service,
             git_sender,
-            require_approval,
+            approval,
             github_app_configs,
             process_start: unix_now(),
         }
@@ -151,21 +161,40 @@ impl PrReconciler {
                     _ = cancel_token.cancelled() => break,
                     _ = interval.tick() => {
                         if let Err(e) = self.reconcile_all().await {
-                            warn!("PR reconciliation failed: {:?}", e);
+                            warn!("Eval reconciliation failed: {:?}", e);
                         }
                     }
                 }
             }
-            debug!("PR reconciler shutting down");
+            debug!("Eval reconciler shutting down");
         })
     }
 
     async fn reconcile_all(&self) -> Result<()> {
         let repos = crate::db::github::list_repositories(&self.db_service.pool).await?;
         for repo in repos {
-            if let Err(e) = self.reconcile_repo(&repo).await {
+            let octocrab = match self
+                .octocrab
+                .installation(InstallationId(repo.installation_id as u64))
+            {
+                Ok(octocrab) => octocrab,
+                Err(e) => {
+                    warn!(
+                        "No installation client for {}/{}: {:?}",
+                        repo.owner, repo.repo_name, e
+                    );
+                    continue;
+                },
+            };
+            if let Err(e) = self.reconcile_open_prs(&octocrab, &repo).await {
                 warn!(
                     "Failed to reconcile PRs of {}/{}: {:?}",
+                    repo.owner, repo.repo_name, e
+                );
+            }
+            if let Err(e) = self.reconcile_merge_groups(&octocrab, &repo).await {
+                warn!(
+                    "Failed to reconcile merge queue of {}/{}: {:?}",
                     repo.owner, repo.repo_name, e
                 );
             }
@@ -173,90 +202,39 @@ impl PrReconciler {
         Ok(())
     }
 
-    async fn reconcile_repo(&self, repo: &RepositoryInfo) -> Result<()> {
-        let octocrab = self
-            .octocrab
-            .installation(InstallationId(repo.installation_id as u64))?;
-        let first_page = octocrab
-            .pulls(&repo.owner, &repo.repo_name)
-            .list()
-            .state(params::State::Open)
-            .per_page(100)
-            .send()
-            .await
-            .context("failed to list open PRs")?;
-        let prs = octocrab.all_pages(first_page).await?;
-        for pr in prs {
-            if let Err(e) = self.reconcile_pr(&pr).await {
-                warn!(
-                    "Failed to reconcile {}/{}#{}: {:?}",
-                    repo.owner, repo.repo_name, pr.number, e
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// Whether the PR is one the webhook path would have evaluated.
-    async fn is_eligible(&self, pr: &PullRequest) -> bool {
-        if pr.draft == Some(true) || !pr_has_app_permission(pr, &self.github_app_configs) {
-            return false;
-        }
-        !self.require_approval || is_valid_user(pr, &self.db_service).await.is_ok()
-    }
-
-    async fn reconcile_pr(&self, pr: &PullRequest) -> Result<()> {
-        if !self.is_eligible(pr).await {
-            return Ok(());
-        }
-        let head_info = super::CICheckInfo::from_gh_pr_head(pr)?;
-        let head = HeadCommit {
-            owner: &head_info.owner,
-            repo_name: &head_info.repo_name,
-            sha: &head_info.commit,
-        };
+    /// Decide what to do with `head`; also returns its request row.
+    async fn head_decision(&self, head: HeadCommit<'_>) -> Result<(Decision, Option<EvalRequest>)> {
         let pool = &self.db_service.pool;
         let has_jobset =
             !crate::db::github::head_jobset_ids(head.owner, head.repo_name, head.sha, pool)
                 .await?
                 .is_empty();
         let request = crate::db::github::get_eval_request(head, pool).await?;
-
-        match decide(has_jobset, request.as_ref(), unix_now(), self.process_start) {
-            Decision::Done | Decision::InFlight => Ok(()),
-            Decision::Exhausted => {
-                debug!(
-                    "Not re-queuing {}/{}#{} head {}: reconcile attempts exhausted",
-                    head.owner, head.repo_name, pr.number, head.sha
-                );
-                Ok(())
-            },
-            Decision::Enqueue => self.enqueue(pr, head, request.as_ref()).await,
+        let decision = decide(has_jobset, request.as_ref(), unix_now(), self.process_start);
+        if decision == Decision::Exhausted {
+            debug!(
+                "Not re-queuing {}/{} head {}: reconcile attempts exhausted",
+                head.owner, head.repo_name, head.sha
+            );
         }
+        Ok((decision, request))
     }
+}
 
-    async fn enqueue(
-        &self,
-        pr: &PullRequest,
-        head: HeadCommit<'_>,
-        request: Option<&EvalRequest>,
-    ) -> Result<()> {
-        let attempt = request.map_or(0, |r| r.attempts) + 1;
-        info!(
-            event = "pr_reconcile_enqueue",
-            "Head {} of {}/{}#{} was never evaluated; queuing evaluation (reconcile attempt \
-             {}/{})",
-            head.sha,
-            head.owner,
-            head.repo_name,
-            pr.number,
-            attempt,
-            MAX_RECONCILE_ATTEMPTS
-        );
-        // Webhooks may have been missed entirely; refresh the stored PR.
-        store_pr_metadata(pr, "open", &self.db_service).await;
-        queue_pr_evaluation(pr, true, &self.git_sender, &self.db_service).await
-    }
+/// Log a reconciler-initiated evaluation of `head` (`what` names it,
+/// e.g. `#7` or `merge group for main`).
+fn log_enqueue(head: HeadCommit<'_>, what: &str, request: Option<&EvalRequest>) {
+    let attempt = request.map_or(0, |r| r.attempts) + 1;
+    info!(
+        event = "eval_reconcile_enqueue",
+        "Head {} of {}/{} ({}) was never evaluated; queuing evaluation (reconcile attempt {}/{})",
+        head.sha,
+        head.owner,
+        head.repo_name,
+        what,
+        attempt,
+        MAX_RECONCILE_ATTEMPTS
+    );
 }
 
 #[cfg(test)]
