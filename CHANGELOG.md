@@ -54,6 +54,13 @@
   Previously a lost `JobsetComplete` left a promotion `Evaluating` forever,
   blocking the channel, and the pending SHA queued behind an in-flight
   promotion was lost on restart
+- The aggregated change-summary check is now computed in a background task
+  (one at a time, bounded to 10 minutes) instead of on the serial
+  GitHubService loop. A change summary whose rebuild-impact computation
+  hung (replayed from the journal on every restart) blocked every other
+  GitHub task: evals could not post their jobsets or check runs, so no PR
+  got evaluated until the 30-minute GitHub task timeout fired. A summary
+  interrupted by a restart is now dropped rather than replayed
 - Fix merge-queue evaluation, which never ran: the synthetic pull request
   built from a `merge_group` webhook lacked fields octocrab requires, so
   every `checks_requested` event was dropped with `Failed to create
