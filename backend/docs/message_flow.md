@@ -202,6 +202,30 @@ jobs configured) and EvalService (head eval failed) set `completed_at`.
 Requests from before the current process started are never treated as in
 flight, so anything lost on restart is re-queued on the first pass.
 
+#### Channel promotion reconciliation
+
+Channel promotion depends on events that can each be lost: the push to
+the tracking branch, the `ChannelCheckout` it queues, the recorder's
+`ChannelTask::JobsetComplete`, and the coalescer's pending SHA (held only
+in memory). On each pass `EvalReconciler` also handles every GitHub channel
+of the repo:
+
+```
+head      = tracking branch's current commit (GitHub git/ref API)
+in_flight = channel's Evaluating ChannelPromotion row, if any
+evaluate  = in_flight sha + head (unless head already has a terminal decision)
+for each: no jobset and no eval in flight → GitTask::ChannelCheckout (same
+          GitHubPrEvalRequests bookkeeping and 3-attempt limit as PRs)
+if anything to do → ChannelTask::Reconcile { channel, tracking_head: head }
+```
+
+ChannelService handles `Reconcile` by re-evaluating the in-flight row
+(promote / block / keep waiting, as on `JobsetComplete`) and then treating
+`tracking_head` as an `EvaluatePush`. Both are idempotent: a decided head
+is ignored, and a head behind an in-flight row becomes the pending SHA
+again. An in-flight commit whose eval exhausted its attempts is logged as a
+stuck channel; it needs manual intervention.
+
 ### 2. Nix Evaluation Flow
 
 ```
@@ -584,7 +608,7 @@ RecorderTask
 
 5. **No Idempotency Tokens** - Duplicate webhook deliveries could trigger duplicate work. Consider adding idempotency keys to prevent reprocessing.
 
-6. **Journal covers only in-flight tasks** - A task is journaled when its service dequeues it, so tasks waiting in a channel are lost on restart. PR and merge-queue evaluation is recovered by `EvalReconciler`; other pipelines (channel promotion) are not. Journal entries are dropped after 3 replays (`MAX_REPLAY_ATTEMPTS`) so a task that hangs or always fails cannot block its service on every start.
+6. **Journal covers only in-flight tasks** - A task is journaled when its service dequeues it, so tasks waiting in a channel are lost on restart. PR, merge-queue and channel-promotion evaluation is recovered by `EvalReconciler`. Journal entries are dropped after 3 replays (`MAX_REPLAY_ATTEMPTS`) so a task that hangs or always fails cannot block its service on every start.
 
 ### Potential Enhancements
 

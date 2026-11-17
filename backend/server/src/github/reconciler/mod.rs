@@ -15,6 +15,7 @@
 //! evaluated is left alone (the pipeline's `needs_eval` skips existing
 //! jobsets anyway).
 
+mod channels;
 mod merge_queue;
 mod pull_requests;
 
@@ -25,12 +26,14 @@ use std::time::Duration;
 use anyhow::Result;
 use octocrab::Octocrab;
 use octocrab::models::InstallationId;
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::config::GitHubAppConfig;
+use crate::channels::types::ChannelTask;
+use crate::config::{ChannelConfig, GitHubAppConfig};
 use crate::db::DbService;
 use crate::db::github::{EvalRequest, HeadCommit};
 use crate::git::GitTask;
@@ -56,6 +59,19 @@ enum Decision {
     Exhausted,
     /// Needs (re-)queuing.
     Enqueue,
+}
+
+/// A git ref as returned by the REST `git/ref(s)` endpoints.
+#[derive(Debug, Deserialize)]
+struct GitRef {
+    #[serde(rename = "ref")]
+    name: String,
+    object: GitObject,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitObject {
+    sha: String,
 }
 
 /// Decide whether a head commit needs an evaluation queued.
@@ -94,14 +110,11 @@ fn unix_now() -> i64 {
         .unwrap_or_default()
 }
 
-/// Record that a PR or merge-group head finished evaluating without
-/// producing a jobset (no jobs configured, or its eval failed), so the
-/// reconciler doesn't re-queue it. No-op for branch commits. Failures are
-/// only logged: the worst case is one redundant re-evaluation.
+/// Record that a commit finished evaluating without producing a jobset
+/// (no jobs configured, or its eval failed), so the reconciler doesn't
+/// re-queue it. No-op for commits nothing requested. Failures are only
+/// logged: the worst case is one redundant re-evaluation.
 pub async fn mark_head_evaluated(ci_info: &super::CICheckInfo, db_service: &DbService) {
-    if ci_info.base_commit.is_none() {
-        return;
-    }
     let head = HeadCommit {
         owner: &ci_info.owner,
         repo_name: &ci_info.repo_name,
@@ -130,7 +143,14 @@ pub struct EvalReconciler {
     git_sender: mpsc::Sender<GitTask>,
     approval: ApprovalPolicy,
     github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
+    channels: Channels,
     process_start: i64,
+}
+
+/// Release channels and the ChannelService that promotes them.
+pub struct Channels {
+    pub configs: Arc<HashMap<String, ChannelConfig>>,
+    pub sender: Option<mpsc::Sender<ChannelTask>>,
 }
 
 impl EvalReconciler {
@@ -140,6 +160,7 @@ impl EvalReconciler {
         git_sender: mpsc::Sender<GitTask>,
         approval: ApprovalPolicy,
         github_app_configs: Arc<HashMap<String, GitHubAppConfig>>,
+        channels: Channels,
     ) -> Self {
         Self {
             octocrab,
@@ -147,6 +168,7 @@ impl EvalReconciler {
             git_sender,
             approval,
             github_app_configs,
+            channels,
             process_start: unix_now(),
         }
     }
@@ -189,6 +211,12 @@ impl EvalReconciler {
             if let Err(e) = self.reconcile_open_prs(&octocrab, &repo).await {
                 warn!(
                     "Failed to reconcile PRs of {}/{}: {:?}",
+                    repo.owner, repo.repo_name, e
+                );
+            }
+            if let Err(e) = self.reconcile_channels(&octocrab, &repo).await {
+                warn!(
+                    "Failed to reconcile channels of {}/{}: {:?}",
                     repo.owner, repo.repo_name, e
                 );
             }
