@@ -45,14 +45,12 @@ pub struct GitHubService {
     github_sender: mpsc::Sender<GitHubTask>,
     github_configure_checks: Mutex<HashMap<Commit, CheckRunId>>,
     github_eval_checks: Mutex<HashMap<(Commit, String), CheckRunId>>,
-    /// Tracks the change-summary check id per head SHA for idempotent updates.
-    change_summary_checks: Mutex<HashMap<Commit, CheckRunId>>,
     /// Dedup guard so a single debounce timer fires per head SHA.
     change_summary_pending: Mutex<HashSet<Commit>>,
     /// Graph handle used to compute rebuild-impact for change summaries.
     graph_handle: GraphServiceHandle,
-    /// Optional metrics for change-summary pipeline observability.
-    change_summary_metrics: Option<Arc<ChangeSummaryMetrics>>,
+    /// Computes and posts change-summary checks in the background.
+    change_summary: change_summary::ChangeSummaryRunner,
     /// Ingress sender for dispatching build requests after jobset diff.
     ingress_sender: Option<mpsc::Sender<IngressTask>>,
     /// Eval sender for dispatching passthru.tests evaluations.
@@ -236,6 +234,11 @@ impl GitHubService {
         }
 
         let pool = db_service.pool.clone();
+        let change_summary = change_summary::ChangeSummaryRunner::new(
+            db_service.clone(),
+            graph_handle.clone(),
+            change_summary_metrics,
+        );
         let (github_sender, github_receiver) = mpsc::channel(1_000);
         Ok(Self {
             db_service,
@@ -245,10 +248,9 @@ impl GitHubService {
             github_sender,
             github_configure_checks: Mutex::new(HashMap::new()),
             github_eval_checks: Mutex::new(HashMap::new()),
-            change_summary_checks: Mutex::new(HashMap::new()),
             change_summary_pending: Mutex::new(HashSet::new()),
+            change_summary,
             graph_handle,
-            change_summary_metrics,
             ingress_sender,
             eval_sender,
             // ~10 req/sec keeps well under GitHub's 5000/hr app limit
@@ -347,7 +349,12 @@ impl AsyncService<GitHubTask> for GitHubService {
         // bounded number of times) on the next start.
         tokio::time::timeout(GITHUB_TASK_TIMEOUT, self.handle_task_with_retry(&task))
             .await
-            .with_context(|| format!("GitHub task timed out after {GITHUB_TASK_TIMEOUT:?}"))?
+            .with_context(|| {
+                format!(
+                    "GitHub task {} timed out after {GITHUB_TASK_TIMEOUT:?}",
+                    task_variant_name(&task)
+                )
+            })?
     }
 
     async fn handle_failure(&mut self, error: anyhow::Error) {
@@ -370,5 +377,36 @@ impl GitHubService {
             },
             Err(e) => Err(e),
         }
+    }
+}
+
+/// The enum variant of `task` (e.g. `CreateJobSet`), for log messages
+/// where the full `Debug` output would be too large.
+fn task_variant_name(task: &GitHubTask) -> String {
+    let debug = format!("{task:?}");
+    debug
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_variant_name_strips_fields() {
+        let task = GitHubTask::CreateChangeSummaryCheck {
+            ci_check_info: Arc::new(CICheckInfo {
+                commit: "abc".into(),
+                base_commit: None,
+                owner: "o".into(),
+                repo_name: "r".into(),
+                branch: None,
+            }),
+            job: "core-pkgs".into(),
+        };
+        assert_eq!(task_variant_name(&task), "CreateChangeSummaryCheck");
     }
 }
