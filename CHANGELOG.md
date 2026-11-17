@@ -150,6 +150,16 @@
   `frontend/.gitignore` ignored everything in `static/` except `index.html`,
   so the deployed bundle 404'd on them and Elm never started. Both files are
   now tracked, and only the generated `static/main.js` is ignored
+- Fix "Sign in with GitHub": the OAuth callback answered GitHub's browser
+  redirect with raw JSON, so users landed on a JSON page instead of being
+  signed in. The callback now redirects to the new `/auth/complete` page,
+  passing the JWT (or an error message) in the URL fragment so it stays out
+  of server and proxy logs. The GitHub-registered callback URL is unchanged
+- Fix login CSRF: the OAuth `state` was generated but never checked. Login
+  now stores it in a short-lived HttpOnly cookie, and the callback rejects
+  any `state` that doesn't match
+- The "Log in to request access" button on job pages now starts the GitHub
+  login instead of opening the callback page with no code
 
 ### GitHub webhooks
 

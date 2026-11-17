@@ -6,29 +6,28 @@ module Pages.AuthCallback exposing
     , view
     )
 
-{-| GitHub OAuth callback handler page.
+{-| GitHub OAuth completion page.
 
-This page handles the redirect from GitHub after OAuth authorization.
-It extracts the authorization code from the URL query parameters,
-exchanges it with the backend for a JWT token, and redirects to home.
+The backend's `/github/auth/callback` verifies the OAuth state, exchanges
+the code, and redirects here with the result in the URL fragment:
+`/auth/complete#token=<jwt>` or `/auth/complete#error=<message>`.
+This page reads the token, fetches the user's profile, and hands both to
+Main.elm, which stores the token and redirects home.
 
 -}
 
 import Auth
-import Components.ErrorView as ErrorView
 import Components.Loader as Loader
 import Html exposing (Html, div, h1, p, text)
 import Html.Attributes exposing (class)
 import Http
 import Url exposing (Url)
-import Url.Parser as UP
-import Url.Parser.Query as Query
 
 
 {-| Page model.
 -}
 type Model
-    = Processing String
+    = Processing
     | Success String Auth.User -- token, user
     | Failed String
 
@@ -36,32 +35,22 @@ type Model
 {-| Page messages.
 -}
 type Msg
-    = GotLoginResponse (Result Http.Error { token : String, user : Auth.User })
+    = GotUser String (Result Http.Error Auth.User)
 
 
-{-| Initialize the page and start the OAuth exchange.
-
-Extracts the code and state from the URL query parameters and
-makes a request to the backend callback endpoint.
-
+{-| Initialize the page from the URL fragment.
 -}
-init : String -> Url -> ( Model, Cmd Msg )
-init apiBaseUrl url =
-    case extractCode url of
-        Just code ->
-            let
-                callbackUrl =
-                    buildCallbackUrl apiBaseUrl code (extractState url)
-            in
-            ( Processing callbackUrl
-            , Http.get
-                { url = callbackUrl
-                , expect = Http.expectJson GotLoginResponse Auth.decodeLoginResponse
-                }
-            )
+init : Url -> ( Model, Cmd Msg )
+init url =
+    case parseFragment url of
+        Just ( "token", token ) ->
+            ( Processing, fetchUser token )
 
-        Nothing ->
-            ( Failed "No authorization code found in URL. The OAuth flow may have been cancelled or failed."
+        Just ( "error", message ) ->
+            ( Failed message, Cmd.none )
+
+        _ ->
+            ( Failed "No login result found in URL. The OAuth flow may have been cancelled or failed."
             , Cmd.none
             )
 
@@ -71,9 +60,9 @@ init apiBaseUrl url =
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        GotLoginResponse result ->
+        GotUser token result ->
             case result of
-                Ok { token, user } ->
+                Ok user ->
                     -- Success will be handled by Main.elm
                     -- which will store the token and redirect
                     ( Success token user, Cmd.none )
@@ -92,7 +81,7 @@ view model =
         [ h1 [ class "f2 fw6 mb4" ]
             [ text "Authenticating..." ]
         , case model of
-            Processing _ ->
+            Processing ->
                 viewProcessing
 
             Success _ user ->
@@ -147,45 +136,41 @@ viewError error =
 {- HELPER FUNCTIONS -}
 
 
-{-| Extract the authorization code from URL query parameters.
+{-| Parse a single `key=value` pair from the URL fragment.
+
+Values are form-encoded by the backend, so `+` means a space.
+
 -}
-extractCode : Url -> Maybe String
-extractCode url =
-    { url | path = "" }
-        |> UP.parse (UP.query (Query.string "code"))
-        |> Maybe.withDefault Nothing
+parseFragment : Url -> Maybe ( String, String )
+parseFragment url =
+    url.fragment
+        |> Maybe.andThen
+            (\fragment ->
+                case String.split "=" fragment of
+                    key :: rest ->
+                        String.join "=" rest
+                            |> String.replace "+" " "
+                            |> Url.percentDecode
+                            |> Maybe.map (Tuple.pair key)
+
+                    [] ->
+                        Nothing
+            )
 
 
-{-| Extract the state parameter from URL query parameters.
+{-| Fetch the signed-in user's profile with the new token.
 -}
-extractState : Url -> Maybe String
-extractState url =
-    { url | path = "" }
-        |> UP.parse (UP.query (Query.string "state"))
-        |> Maybe.withDefault Nothing
-
-
-{-| Build the callback URL with code and optional state.
--}
-buildCallbackUrl : String -> String -> Maybe String -> String
-buildCallbackUrl apiBaseUrl code maybeState =
-    let
-        -- apiBaseUrl is like "http://127.0.0.1:3030/v1"
-        -- We need "/github/auth/callback" which is at the root level
-        -- So we strip "/v1" and add "/github/auth/callback"
-        baseUrl =
-            if String.endsWith "/v1" apiBaseUrl then
-                String.dropRight 3 apiBaseUrl ++ "/github/auth/callback?code=" ++ code
-
-            else
-                apiBaseUrl ++ "/../github/auth/callback?code=" ++ code
-    in
-    case maybeState of
-        Just state ->
-            baseUrl ++ "&state=" ++ state
-
-        Nothing ->
-            baseUrl
+fetchUser : String -> Cmd Msg
+fetchUser token =
+    Http.request
+        { method = "GET"
+        , headers = [ Http.header "Authorization" ("Bearer " ++ token) ]
+        , url = Auth.getUserInfo
+        , body = Http.emptyBody
+        , expect = Http.expectJson (GotUser token) Auth.decodeUser
+        , timeout = Nothing
+        , tracker = Nothing
+        }
 
 
 {-| Convert HTTP error to user-friendly string.

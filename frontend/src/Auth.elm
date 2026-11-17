@@ -2,7 +2,6 @@ module Auth exposing
     ( AuthState
     , AuthToken
     , User
-    , decodeLoginResponse
     , decodeUser
     , getToken
     , getUserInfo
@@ -136,15 +135,3 @@ decodeUser =
         (D.field "username" D.string)
         (D.field "avatar_url" D.string)
         (D.field "is_admin" D.bool)
-
-
-{-| Decode login response from OAuth callback.
-
-The backend returns: { "token": "jwt...", "user": {...} }
-
--}
-decodeLoginResponse : Decoder { token : String, user : User }
-decodeLoginResponse =
-    D.map2 (\token user -> { token = token, user = user })
-        (D.field "token" D.string)
-        (D.field "user" decodeUser)

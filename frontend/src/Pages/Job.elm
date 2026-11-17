@@ -538,7 +538,7 @@ viewRequestButton data =
     in
     if not isAuthenticated then
         a
-            [ href (Route.toHref Route.AuthCallback)
+            [ href Auth.login
             , class "btn-secondary btn-sm"
             ]
             [ text "Log in to request access" ]

@@ -31,7 +31,7 @@ type Route
     | Admin
     | Profile -- User profile
     | AttrPathSearch -- Attr path search page
-    | AuthCallback -- GitHub OAuth callback
+    | AuthCallback -- GitHub OAuth completion (after backend callback)
     | NotFound
 
 
@@ -59,7 +59,7 @@ routeParser =
         , P.map Admin (P.s "admin")
         , P.map Profile (P.s "profile")
         , P.map AttrPathSearch (P.s "attr-paths")
-        , P.map AuthCallback (P.s "github" </> P.s "auth" </> P.s "callback")
+        , P.map AuthCallback (P.s "auth" </> P.s "complete")
         ]
 
 
@@ -102,7 +102,7 @@ toHref route =
             "/attr-paths"
 
         AuthCallback ->
-            "/github/auth/callback"
+            "/auth/complete"
 
         NotFound ->
             "/"
