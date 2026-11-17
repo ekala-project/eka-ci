@@ -9,7 +9,7 @@ mod reconciler;
 pub mod service;
 mod webhook;
 
-pub use reconciler::{PrReconciler, mark_head_evaluated};
+pub use reconciler::{ApprovalPolicy, EvalReconciler, mark_head_evaluated};
 pub use service::{CICheckInfo, GitHubService, GitHubTask, JobDifference};
 pub use webhook::handle_webhook_payload;
 
