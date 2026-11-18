@@ -216,8 +216,11 @@ viewPRTable prs =
 viewPRRow : PullRequest -> Html Msg
 viewPRRow pr =
     let
+        -- The forge's own URL (github.com, GHE, ...); unknown until the
+        -- server next sees the PR, so fall back to our PR page.
         prUrl =
-            Route.toHref (Route.PullRequest pr.owner pr.repoName pr.prNumber)
+            pr.htmlUrl
+                |> Maybe.withDefault (Route.toHref (Route.PullRequest pr.owner pr.repoName pr.prNumber))
 
         ciPassed =
             pr.completedFailureDrvs == 0 && pr.failedRetryDrvs == 0 && pr.totalDrvs > 0

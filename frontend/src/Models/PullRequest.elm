@@ -40,6 +40,7 @@ type alias PullRequest =
     , state : String
     , createdAt : String
     , updatedAt : String
+    , htmlUrl : Maybe String
     , jobsetId : Maybe Int
     , totalDrvs : Int
     , completedSuccessDrvs : Int
