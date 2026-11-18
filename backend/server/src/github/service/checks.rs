@@ -334,6 +334,7 @@ impl GitHubService {
             summary: &'a str,
         }
 
+        let summary = crate::github::output_limit::cap_output(summary);
         let request = CreateCheckRunRequest {
             name: &check_name,
             head_sha: sha,

@@ -285,7 +285,7 @@ impl CICheckInfo {
         if let Some(summary_text) = summary {
             let output = octocrab::params::checks::CheckRunOutput {
                 title: title.to_string(),
-                summary: summary_text.to_string(),
+                summary: crate::github::output_limit::cap_output_str(summary_text),
                 text: None,
                 annotations: vec![],
                 images: vec![],

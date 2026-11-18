@@ -207,6 +207,17 @@
   ingress routing choice is now an explicit parameter, which fixes the spec's
   tests failing on samples that took the deferred branch
 
+### GitHub check runs
+
+- Check-run output over GitHub's 65,535-character limit is now truncated
+  instead of rejected with 422 ("Only 65535 characters are allowed").
+  Coalesced gates for large groups (e.g. `texlivePackages`, ~180k chars of
+  variant table) failed on every journal replay. Oversized output keeps the
+  first and last 100 lines with an omission marker (or the first and last
+  ~32 KB if those lines are themselves too long). This applies to every
+  summary/text sent over REST and the GraphQL batcher, replacing the cap
+  that only covered the change-summary check
+
 ### Sandbox for evaluation and checks
 
 - New `sandbox` workspace crate (bubblewrap + landlock via

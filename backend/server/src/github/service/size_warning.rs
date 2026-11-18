@@ -205,7 +205,7 @@ async fn update_check_run_with_size_warning(
 
     let output = CheckRunOutput {
         title,
-        summary,
+        summary: crate::github::output_limit::cap_output(summary),
         text: None,
         annotations: vec![],
         images: vec![],
