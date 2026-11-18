@@ -169,8 +169,12 @@ pub async fn process_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
                 );
                 continue;
             },
-            Ok(NixEvalItem::Drv(drv)) => jobs.push(drv),
-            Ok(NixEvalItem::Error(err)) => {
+            Ok(NixEvalItem::Drv(mut drv)) => {
+                drv.attr = join_attr_path(&drv.attr_path, drv.attr);
+                jobs.push(drv);
+            },
+            Ok(NixEvalItem::Error(mut err)) => {
+                err.attr = join_attr_path(&err.attr_path, err.attr);
                 debug!("Collected evaluation error: {:?}", err);
                 errors.push(err);
             },
@@ -191,6 +195,23 @@ pub async fn process_eval_output<R: tokio::io::AsyncBufRead + Unpin>(
         errors,
         bytes_read,
         truncation: Truncation::None,
+    }
+}
+
+/// Render an attr path as a plain dotted name, e.g. `["linux.v7_3"]` ->
+/// `linux.v7_3`.
+///
+/// iets quotes path components that are not bare identifiers in its `attr`
+/// field (a top-level key `"linux.v7_3"` is emitted as `"\"linux.v7_3\""`).
+/// That quoting is Nix syntax, not part of the name: kept verbatim it leaks
+/// into job names, and the dotted-group gate coalescing splits it into a
+/// `"linux` group with `v7_3"` variants. Falls back to `attr` if iets
+/// reports an empty path.
+fn join_attr_path(attr_path: &[String], attr: String) -> String {
+    if attr_path.is_empty() {
+        attr
+    } else {
+        attr_path.join(".")
     }
 }
 

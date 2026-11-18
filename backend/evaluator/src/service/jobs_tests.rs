@@ -254,3 +254,20 @@ fn failure_after_output_and_success_are_ok() {
     assert!(check_exit(exited(1), &outcome(1), "").is_ok());
     assert!(check_exit(exited(0), &outcome(0), "").is_ok());
 }
+
+#[test]
+fn quoted_attr_names_are_unquoted() {
+    // A top-level key containing a dot: iets quotes it in `attr`.
+    let drv = r#"{"attr":"\"linux.v7_3\"","attrPath":["linux.v7_3"],"drvPath":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0-linux.drv","inputDrvs":{},"name":"linux","outputs":{"out":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0-linux"},"system":"x86_64-linux"}"#;
+    let err = r#"{"attr":"\"deno.v2_6\"","attrPath":["deno.v2_6"],"error":"boom"}"#;
+    let outcome = outcome_from(format!("{drv}\n{err}\n"));
+    assert_eq!(outcome.jobs[0].attr, "linux.v7_3");
+    assert_eq!(outcome.errors[0].attr, "deno.v2_6");
+}
+
+#[test]
+fn join_attr_path_falls_back_to_attr_when_path_empty() {
+    assert_eq!(join_attr_path(&[], "x".to_string()), "x");
+    let path = vec!["python3".to_string(), "pkgs".to_string()];
+    assert_eq!(join_attr_path(&path, "ignored".to_string()), "python3.pkgs");
+}

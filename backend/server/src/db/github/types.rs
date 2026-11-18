@@ -63,6 +63,8 @@ pub struct NewOrChangedJob {
     pub difference: JobDifference,
     pub drv_path: DrvId,
     pub build_state: DrvBuildState,
+    /// `Drv.pname`, used to tell variant groups from package sets.
+    pub pname: Option<String>,
 }
 
 /// Get the jobset name and commit for a jobset ID

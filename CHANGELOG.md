@@ -263,6 +263,22 @@
   ~32 KB if those lines are themselves too long). This applies to every
   summary/text sent over REST and the GraphQL batcher, replacing the cap
   that only covered the change-summary check
+- Gate names no longer start with a stray `"`. A jobset key containing a
+  dot (core-pkgs' `buildable` set uses `"linux.v7_3"`) was stored with the
+  quotes iets puts in its `attr` field, so coalescing split it into a
+  `"linux` gate with `v7_3"` variants, next to the real `linux` gate. Job
+  names are now the `attrPath` joined with `.` (`linux.v7_3`), so these
+  variants join the `linux` gate. The first PR evaluated after upgrading
+  may report these jobs as new, since the base jobset still has the
+  quoted names
+- Coalesced gates now say what they group: `ruby variants / Changed
+  (core-pkgs)` for variants of one package, `python313Packages pkgs /
+  Changed (core-pkgs)` for a package set. A group is variants when all
+  its members share one `pname` (for a single changed member, when that
+  pname is the group name); otherwise it is a package set. A variant
+  package whose variants have differing pnames shows as `pkgs`.
+  Branch protection rules that require a coalesced gate by name need
+  updating
 
 ### Sandbox for evaluation and checks
 

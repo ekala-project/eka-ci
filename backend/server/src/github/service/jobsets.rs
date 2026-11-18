@@ -456,6 +456,7 @@ impl GitHubService {
                     &octocrab,
                     job_name,
                     &group.group_name,
+                    super::gate_kind::GateKind::of(&group.group_name, &group.variants),
                     group.worst_build_state.clone(),
                     &group.worst_difference,
                     &summary,
@@ -714,6 +715,7 @@ mod tests {
             difference,
             drv_path: DrvId::dummy(),
             build_state: state,
+            pname: None,
         }
     }
 

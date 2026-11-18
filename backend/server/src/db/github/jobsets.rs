@@ -456,7 +456,7 @@ pub async fn get_new_or_changed_jobs(
 ) -> anyhow::Result<Vec<NewOrChangedJob>> {
     let jobs = sqlx::query_as(
         r#"
-        SELECT j.name, j.difference, d.drv_path, d.build_state
+        SELECT j.name, j.difference, d.drv_path, d.build_state, d.pname
         FROM Job j
         JOIN Drv d ON j.drv_id = d.ROWID
         WHERE j.jobset = ? AND j.skipped = 0 AND j.difference IN (?, ?)

@@ -26,6 +26,7 @@ pub mod build_report;
 mod change_summary;
 mod checks;
 mod concluded;
+mod gate_kind;
 pub mod graphql_batch;
 mod jobsets;
 mod passthru_filter;

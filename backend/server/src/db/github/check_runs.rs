@@ -183,7 +183,7 @@ pub async fn get_group_jobs_in_jobset(
     let pattern = format!("{}.%", group_prefix);
     let jobs = sqlx::query_as(
         r#"
-        SELECT j.name, j.difference, d.drv_path, d.build_state
+        SELECT j.name, j.difference, d.drv_path, d.build_state, d.pname
         FROM Job j
         JOIN Drv d ON j.drv_id = d.ROWID
         WHERE j.jobset = ? AND j.skipped = 0 AND j.name LIKE ?
