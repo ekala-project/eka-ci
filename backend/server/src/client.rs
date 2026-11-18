@@ -439,8 +439,15 @@ async fn handle_request(request: ClientRequest, dispatch: DispatchChannels) -> C
                             job_name: jobset_info.job.clone(),
                             conclusion: octocrab::params::checks::CheckRunConclusion::Success
                                 .into(),
+                            summary: None,
                         };
-                        let _ = gh_sender.send(complete_task).await;
+                        if let Err(e) = gh_sender.send(complete_task).await {
+                            warn!(
+                                "Failed to send CompleteCIEvalJob for jobset {}: {}",
+                                jobset_id, e
+                            );
+                            continue;
+                        }
                         info!("Sent CompleteCIEvalJob (success) for jobset {}", jobset_id,);
                     }
                 }

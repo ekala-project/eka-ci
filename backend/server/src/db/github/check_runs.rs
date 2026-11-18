@@ -185,7 +185,7 @@ pub async fn get_group_jobs_in_jobset(
         SELECT j.name, j.difference, d.drv_path, d.build_state
         FROM Job j
         JOIN Drv d ON j.drv_id = d.ROWID
-        WHERE j.jobset = ? AND j.name LIKE ?
+        WHERE j.jobset = ? AND j.skipped = 0 AND j.name LIKE ?
         "#,
     )
     .bind(jobset_id)

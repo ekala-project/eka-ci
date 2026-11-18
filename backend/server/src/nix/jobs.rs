@@ -47,7 +47,8 @@ impl super::EvalService {
         // Base-commit evals skip this since they only need attr/drv
         // data for jobset diff computation, not dependency graphs.
         if traverse {
-            self.batch_traverse(&jobs).await?;
+            let all: Vec<&NixEvalDrv> = jobs.iter().collect();
+            self.batch_traverse(&all).await?;
         }
 
         Ok((jobs, errors))

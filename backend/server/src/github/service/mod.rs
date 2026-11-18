@@ -24,6 +24,7 @@ pub mod actions;
 mod auto_merge;
 mod change_summary;
 mod checks;
+mod concluded;
 pub mod graphql_batch;
 mod jobsets;
 mod passthru_filter;
@@ -31,6 +32,7 @@ mod size_warning;
 mod task_handler;
 mod types;
 
+pub(crate) use concluded::request_auto_merge_check;
 pub use types::{CICheckInfo, Commit, GitHubTask, JobDifference, Owner};
 
 /// This service will be response for pushing/posting events to GitHub

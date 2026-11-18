@@ -1,6 +1,6 @@
 // Jobset and build management
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -8,6 +8,7 @@ use tracing::{debug, info, warn};
 
 use super::GitHubService;
 use crate::ci::config as ci_config;
+use crate::db::NewGitHubJobset;
 use crate::db::github::NewOrChangedJob;
 use crate::db::model::build_event::{DrvBuildInterruptionKind, DrvBuildResult, DrvBuildState};
 use crate::github::service::types::JobDifference;
@@ -29,22 +30,22 @@ impl GitHubService {
         name: &str,
         jobs: &[NixEvalDrv],
         config_json: Option<&str>,
+        selected_jobs: Option<&HashSet<String>>,
     ) -> Result<()> {
         // Pass base commit SHA for incremental eval optimization
         // This allows job differences to be computed during insertion
-        let base_sha = ci_check_info.base_commit.as_deref();
-
         let jobset_id = self
             .db_service
-            .create_github_jobset_with_jobs(
-                &ci_check_info.commit,
+            .create_github_jobset(&NewGitHubJobset {
+                sha: &ci_check_info.commit,
                 name,
-                &ci_check_info.owner,
-                &ci_check_info.repo_name,
+                owner: &ci_check_info.owner,
+                repo_name: &ci_check_info.repo_name,
                 jobs,
                 config_json,
-                base_sha,
-            )
+                base_sha: ci_check_info.base_commit.as_deref(),
+                selected: selected_jobs,
+            })
             .await?;
 
         if let Some(branch) = ci_check_info.branch.as_deref() {
@@ -100,6 +101,10 @@ impl GitHubService {
                 )
                 .await?;
             }
+
+            // A jobset with nothing left to build never gets a build event
+            // to conclude it, so signal it now.
+            self.signal_if_concluded(jobset_id).await?;
         }
         Ok(())
     }
@@ -198,7 +203,7 @@ impl GitHubService {
             &changed_jobs,
             base_commit,
             &ci_check_info.commit,
-            &repo_dir.to_string_lossy(),
+            &repo_dir,
             &self.db_service.pool,
         )
         .await?;
@@ -314,11 +319,14 @@ impl GitHubService {
                     for dep in node.dependencies.iter() {
                         if dispatched_deps.insert(dep.clone()) {
                             if let Ok(server_dep) = crate::graph_compat::to_server_drv_id(dep) {
-                                let _ = ingress_sender
+                                if let Err(e) = ingress_sender
                                     .send(crate::scheduler::IngressTask::EvalRequest(
                                         std::sync::Arc::new(server_dep),
                                     ))
-                                    .await;
+                                    .await
+                                {
+                                    warn!("Failed to send dep IngressTask: {:?}", e);
+                                }
                             }
                         }
                     }

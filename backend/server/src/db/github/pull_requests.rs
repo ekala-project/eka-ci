@@ -115,7 +115,7 @@ pub async fn list_open_pull_requests(pool: &Pool<Sqlite>) -> Result<Vec<PullRequ
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
         FROM GitHubPullRequests pr
         LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
-        LEFT JOIN Job j ON g.ROWID = j.jobset
+        LEFT JOIN Job j ON g.ROWID = j.jobset AND j.skipped = 0
         LEFT JOIN Drv d ON j.drv_id = d.ROWID
         WHERE pr.state = 'open'
         GROUP BY pr.pr_number, pr.owner, pr.repo_name
@@ -182,7 +182,7 @@ pub async fn get_pull_request(
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
         FROM GitHubPullRequests pr
         LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
-        LEFT JOIN Job j ON g.ROWID = j.jobset
+        LEFT JOIN Job j ON g.ROWID = j.jobset AND j.skipped = 0
         LEFT JOIN Drv d ON j.drv_id = d.ROWID
         WHERE pr.owner = ? AND pr.repo_name = ? AND pr.pr_number = ?
         GROUP BY pr.pr_number, pr.owner, pr.repo_name
@@ -245,7 +245,7 @@ pub async fn list_merge_queue_builds(
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
         FROM GitHubPullRequests pr
         LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
-        LEFT JOIN Job j ON g.ROWID = j.jobset
+        LEFT JOIN Job j ON g.ROWID = j.jobset AND j.skipped = 0
         LEFT JOIN Drv d ON j.drv_id = d.ROWID
         WHERE pr.owner = ? AND pr.repo_name = ? AND pr.is_merge_queue = TRUE
         GROUP BY pr.pr_number, pr.owner, pr.repo_name
@@ -314,7 +314,7 @@ pub async fn get_merge_queue_build_by_sha(
             COALESCE(SUM(CASE WHEN j.difference = 0 THEN 1 ELSE 0 END), 0) as new_drvs
         FROM GitHubPullRequests pr
         LEFT JOIN GitHubJobSets g ON pr.head_sha = g.sha
-        LEFT JOIN Job j ON g.ROWID = j.jobset
+        LEFT JOIN Job j ON g.ROWID = j.jobset AND j.skipped = 0
         LEFT JOIN Drv d ON j.drv_id = d.ROWID
         WHERE pr.owner = ? AND pr.repo_name = ? AND pr.is_merge_queue = TRUE AND pr.head_sha = ?
         GROUP BY pr.pr_number, pr.owner, pr.repo_name

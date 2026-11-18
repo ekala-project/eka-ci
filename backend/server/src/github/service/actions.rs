@@ -142,19 +142,33 @@ pub async fn update_ci_eval_job(
     check_run_id: CheckRunId,
     status: octocrab::params::checks::CheckRunStatus,
     conclusion: CheckRunConclusion,
+    summary: Option<&str>,
 ) -> Result<()> {
     debug!(
         "Updating CI eval job check run {} with status {:?}",
         check_run_id, status
     );
 
-    octocrab
-        .checks(&ci_check_info.owner, &ci_check_info.repo_name)
+    let checks = octocrab.checks(&ci_check_info.owner, &ci_check_info.repo_name);
+    let update = checks
         .update_check_run(check_run_id)
         .status(status)
-        .conclusion(conclusion)
-        .send()
-        .await?;
+        .conclusion(conclusion);
+    match summary {
+        Some(summary) => {
+            let output = octocrab::params::checks::CheckRunOutput {
+                title: "Evaluation".to_string(),
+                summary: summary.to_string(),
+                text: None,
+                annotations: vec![],
+                images: vec![],
+            };
+            update.output(output).send().await?;
+        },
+        None => {
+            update.send().await?;
+        },
+    }
 
     debug!(
         "Successfully updated CI eval job check run {}",

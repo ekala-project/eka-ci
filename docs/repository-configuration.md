@@ -13,6 +13,7 @@ never inject credentials, host paths, or arbitrary commands beyond what the serv
       "file": "path/to/file.nix",
       "attr_path": "optional.attr.path",
       "allow_eval_failures": false,
+      "rebuild_strategy": "all",
       "caches": ["cache-id-from-server-config"],
       "size_check": {
         "max_increase_percent": 10.0,
@@ -39,6 +40,7 @@ A *job* describes a Nix expression to evaluate and the derivations to build from
 | `file` | yes | Path to a `.nix` file relative to the repository root. |
 | `attr_path` | no | Optional sub-attribute path inside the file. |
 | `allow_eval_failures` | no | If `true`, evaluation errors do not fail the check. |
+| `rebuild_strategy` | no | Which rebuilt packages a pull request builds: `all` (default) or `direct-referrers`. See [Rebuild strategy](#rebuild-strategy). |
 | `caches` | no | List of cache IDs (defined server-side) to push successful builds to. |
 | `size_check` | no | Configures output- and closure-size monitoring. |
 
@@ -78,6 +80,36 @@ When `size_check` is set, Eka CI:
 5. When an increase exceeds its threshold, completes the build's check run with a
    *neutral* conclusion and a size comparison for every size that grew too much. The
    warning is not part of the change summary, which is posted before builds finish.
+
+### Rebuild strategy
+
+By default (`"rebuild_strategy": "all"`) a pull request builds every package whose
+derivation changed. For a change deep in the dependency graph, such as an `openssl`
+update, that is most of the package set.
+
+With `"rebuild_strategy": "direct-referrers"`, Eka CI builds only:
+
+- the packages the pull request changes (*seeds*), and
+- every rebuilt package that lists a seed among its direct build inputs (`inputDrvs`).
+
+A rebuilt package is a *seed* when it is new, when the file holding its
+`meta.position` is part of the pull request's diff, when its version changed, or when
+none of its direct inputs were rebuilt (the change originates in it, for example from a
+shared builder). For an `openssl` bump that means `openssl` plus the few hundred
+packages that build against it directly, instead of every transitive dependent.
+
+The other rebuilt packages are marked *skipped*: they get no check runs, are not
+scheduled, and do not hold back the jobset's completion, auto-merge, or the progress
+shown in the web UI. Dependencies of the selected packages are still built when they
+are not cached, because Nix needs them. The eval check run lists how many packages
+were selected and skipped and why each seed was chosen.
+
+Packages are compared by their output paths, so a derivation that changed without
+changing its outputs (fixed-output derivation churn) is not rebuilt. When the strategy
+cannot be applied (the base commit has no complete evaluation, its evaluation predates
+output-path tracking, the evaluation reported no `inputDrvs`, or `git diff` failed),
+every rebuilt package is built and the eval check run says why. Only GitHub
+repositories support `direct-referrers`; other forges build everything.
 
 ## Checks
 

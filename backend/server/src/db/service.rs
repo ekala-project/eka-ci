@@ -11,7 +11,6 @@ use super::model::drv::Drv;
 use super::model::drv_id::DrvId;
 use super::model::{build_event, drv};
 use super::{approved_users, checks, github, hooks, installations, skills};
-use crate::nix::NixEvalDrv;
 
 #[derive(Clone)]
 pub struct DbService {
@@ -105,88 +104,6 @@ impl DbService {
 
     pub async fn get_drv_dependents(&self, drv_id: &DrvId) -> anyhow::Result<Vec<DrvId>> {
         drv::get_drv_dependents(drv_id, &self.pool).await
-    }
-
-    pub async fn create_github_jobset_with_jobs(
-        &self,
-        sha: &str,
-        name: &str,
-        owner: &str,
-        repo_name: &str,
-        jobs: &[NixEvalDrv],
-        config_json: Option<&str>,
-        base_sha: Option<&str>,
-    ) -> anyhow::Result<i64> {
-        use std::str::FromStr;
-
-        let jobset_id =
-            github::create_jobset(sha, name, owner, repo_name, config_json, &self.pool).await?;
-        if let Some(base) = base_sha {
-            github::set_jobset_base_sha(jobset_id, base, &self.pool).await?;
-        }
-
-        // If we have a base commit, query its jobset to compute differences during insertion
-        let base_jobset_jobs = if let Some(base) = base_sha {
-            github::get_jobset_jobs_by_sha(base, name, &self.pool)
-                .await
-                .ok()
-        } else {
-            None
-        };
-
-        // Ensure all evaluated drv paths exist in the Drv table before
-        // inserting Job rows (which reference Drv via a subquery).
-        // For head commits, deep_traverse already inserted these. For
-        // base-commit evals (traverse=false), the drvs may not yet
-        // exist, causing a NOT NULL constraint violation on Job.drv_id.
-        let eval_drvs: Vec<drv::Drv> = jobs
-            .iter()
-            .filter_map(|job| {
-                let drv_id = DrvId::from_str(&job.drv_path).ok()?;
-                Some(drv::Drv {
-                    drv_path: drv_id,
-                    system: job.system.clone(),
-                    prefer_local_build: false,
-                    required_system_features: None,
-                    is_fod: false,
-                    build_state: crate::db::model::build_event::DrvBuildState::Queued,
-                    output_size: None,
-                    closure_size: None,
-                    pname: job.pname_or_heuristic().into(),
-                    version: job.version_or_heuristic(),
-                    license_json: None,
-                    maintainers_json: None,
-                    meta_position: None,
-                    broken: None,
-                    insecure: None,
-                })
-            })
-            .collect();
-        drv::insert_drvs_and_references(&self.pool, &eval_drvs, &[]).await?;
-
-        github::create_jobs_for_jobset(jobset_id, jobs, base_jobset_jobs.as_deref(), &self.pool)
-            .await?;
-
-        // Persist package metadata derived from `iets eval-jobs --meta` onto
-        // the `Drv` rows that were created/ensured above. We tolerate per-drv DrvId parse failures
-        // by logging and dropping (consistent with the existing eval path).
-        let metadata_items: Vec<(DrvId, _)> = jobs
-            .iter()
-            .filter_map(|job| match DrvId::from_str(&job.drv_path) {
-                Ok(drv_id) => Some((drv_id, job.to_drv_metadata())),
-                Err(e) => {
-                    debug!(
-                        "Skipping metadata persist for un-parseable drv_path {}: {:?}",
-                        job.drv_path, e
-                    );
-                    None
-                },
-            })
-            .collect();
-
-        drv::update_drv_package_metadata(&self.pool, &metadata_items).await?;
-
-        Ok(jobset_id)
     }
 
     pub async fn get_job_config_for_drv(&self, drv_id: &DrvId) -> anyhow::Result<Option<String>> {

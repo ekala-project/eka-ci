@@ -19,10 +19,11 @@ mod jobs;
 mod traverse;
 
 pub mod reconstitute;
+pub mod strategy;
 
 pub use base_eval::BaseEvalJob;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -31,6 +32,8 @@ use lru::LruCache;
 use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 
+use self::strategy::RebuildPlan;
+use crate::ci::config::RebuildStrategy;
 use crate::db::DbService;
 use crate::db::model::drv::Drv;
 use crate::db::model::drv_id::DrvId;
@@ -160,49 +163,41 @@ impl EvalService {
     }
 
     async fn handle_github_job_pr(&self, eval_job: &EvalJob, ci_info: &CICheckInfo) -> Result<()> {
-        use anyhow::Context;
-
-        // Only traverse drvs for head commits (base_commit is
-        // Some). Base-commit evals only need the attr/drv list
-        // for jobset diff computation — no graph population or
-        // build scheduling required.
+        // Only head commits (base_commit is Some) are built. Base-commit
+        // evals only need the attr/drv list for jobset diff computation —
+        // no graph population or build scheduling required. The
+        // direct-referrers strategy traverses after selecting what to build.
         let is_head = ci_info.base_commit.is_some();
         if is_head {
             // The head is diffed against the base jobset when inserted, so
             // the base must be evaluated and sent first.
             self.ensure_base_jobset(eval_job, ci_info).await?;
         }
+        let strategy = RebuildStrategy::from_job_config_json(eval_job.config_json.as_deref());
+        let selective = is_head && strategy == RebuildStrategy::DirectReferrers;
         let (jobs, errors) = self
-            .run_eval_jobs(&eval_job.file_path, &[], is_head)
+            .run_eval_jobs(&eval_job.file_path, &[], is_head && !selective)
             .await?;
-        let gh_sender = self
-            .github_sender
-            .as_ref()
-            .context("github sender missing")?;
-        // Clone once into Arc so the 2–3 downstream sends share one refcount.
-        let ci_info = std::sync::Arc::new(ci_info.clone());
+        // Clone once into Arc so the downstream sends share one refcount.
+        let ci_info = Arc::new(ci_info.clone());
 
         if !eval_job.allow_failures && !errors.is_empty() {
             return self.fail_eval_gate(&ci_info, eval_job, jobs, errors).await;
         }
 
-        let create_task = GitHubTask::CreateCIEvalJob {
-            ci_check_info: std::sync::Arc::clone(&ci_info),
-            job_title: eval_job.name.clone(),
+        let plan = if selective {
+            self.plan_and_traverse(eval_job, &ci_info, &jobs).await?
+        } else {
+            RebuildPlan::All
         };
-        gh_sender.send(create_task).await?;
-        self.send_eval_jobset(&ci_info, eval_job, jobs).await?;
-
-        // Complete the eval gate immediately — evaluation succeeded
-        // and all per-package check runs were emitted.
-        let complete_task = GitHubTask::CompleteCIEvalJob {
-            ci_check_info: ci_info,
-            job_name: eval_job.name.clone(),
-            conclusion: octocrab::params::checks::CheckRunConclusion::Success.into(),
-        };
-        gh_sender.send(complete_task).await?;
-
-        Ok(())
+        self.open_eval_gate(&ci_info, &eval_job.name).await?;
+        let summary = plan.summary();
+        self.send_eval_jobset(&ci_info, eval_job, jobs, plan.into_selected())
+            .await?;
+        // Complete the eval gate immediately — evaluation succeeded and the
+        // jobset (with its per-package check runs) has been queued.
+        self.complete_eval_gate(&ci_info, &eval_job.name, summary)
+            .await
     }
 
     /// Fail the eval gate of a job whose eval had errors (and does not
@@ -245,11 +240,14 @@ impl EvalService {
 
     /// Send the jobset of a PR head, or of a base/branch commit (which is
     /// also remembered so later heads do not re-evaluate it).
+    ///
+    /// `selected_jobs` is the rebuild strategy's selection (heads only).
     async fn send_eval_jobset(
         &self,
         ci_info: &std::sync::Arc<CICheckInfo>,
         eval_job: &EvalJob,
         jobs: Vec<NixEvalDrv>,
+        selected_jobs: Option<HashSet<String>>,
     ) -> Result<()> {
         if ci_info.base_commit.is_none() {
             return self.send_base_jobset(ci_info, eval_job, jobs).await;
@@ -263,6 +261,7 @@ impl EvalService {
             name: eval_job.name.to_string(),
             jobs,
             config_json: eval_job.config_json.clone(),
+            selected_jobs,
         };
         gh_sender.send(gh_task).await?;
         Ok(())
@@ -334,36 +333,10 @@ impl EvalService {
         ci_info: &CICheckInfo,
         config_json: Option<&str>,
     ) -> Result<()> {
-        use anyhow::Context;
-
-        let gh_sender = self
-            .github_sender
-            .as_ref()
-            .context("github sender missing")?;
-        let ci_info = std::sync::Arc::new(ci_info.clone());
-
-        let create_task = GitHubTask::CreateCIEvalJob {
-            ci_check_info: std::sync::Arc::clone(&ci_info),
-            job_title: job_name.to_string(),
-        };
-        gh_sender.send(create_task).await?;
-
-        let gh_task = GitHubTask::CreateJobSet {
-            ci_check_info: std::sync::Arc::clone(&ci_info),
-            name: job_name.to_string(),
-            jobs,
-            config_json: config_json.map(str::to_string),
-        };
-        gh_sender.send(gh_task).await?;
-
-        let complete_task = GitHubTask::CompleteCIEvalJob {
-            ci_check_info: ci_info,
-            job_name: job_name.to_string(),
-            conclusion: octocrab::params::checks::CheckRunConclusion::Success.into(),
-        };
-        gh_sender.send(complete_task).await?;
-
-        Ok(())
+        let ci_info = Arc::new(ci_info.clone());
+        let config_json = config_json.map(str::to_string);
+        self.send_jobset(&ci_info, job_name, jobs, config_json, RebuildPlan::All)
+            .await
     }
 
     /// check the drv_map if it contains the drv_id, then check the database
@@ -377,8 +350,9 @@ impl EvalService {
             }
         } // Lock explicitly dropped here
 
-        // If not in cache, check the database (no lock held)
-        match self.db_service.get_drv(drv_id).await {
+        // If not in cache, check the database (no lock held). Eval-only
+        // rows (jobs recorded without traversal) do not count as visited.
+        match self.db_service.get_traversed_drv(drv_id).await {
             Ok(Some(drv)) => {
                 // Found in database, add to cache for future lookups
                 self.drv_map.lock().await.put(drv_id.clone(), drv);

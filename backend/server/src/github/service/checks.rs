@@ -57,6 +57,7 @@ impl GitHubService {
                     check_run_id,
                     CheckRunStatus::Completed,
                     CheckRunConclusion::Cancelled,
+                    None,
                 )
                 .await
                 {

@@ -276,6 +276,51 @@ against (`base_sha`); when a later event for the PR carries another base
 (the base branch moved or the PR was retargeted), the stale head jobset is
 deleted and the head is evaluated and diffed again.
 
+#### Rebuild strategies (`backend/server/src/nix/strategy/`)
+
+A job's `rebuild_strategy` (`.ekaci/config.json`) decides which of a PR's
+rebuilt jobs are traversed and built. With `all` (the default) the head eval
+traverses every job inside `run_eval_jobs`, as above. With `direct-referrers`
+the head eval skips that traversal and `EvalService::plan_and_traverse` runs
+after the eval-failure check:
+
+```
+EvalTask::GithubJobPR (head, rebuild_strategy = direct-referrers)
+       │
+       ▼
+run_eval_jobs(traverse = false)
+       │
+       ▼
+plan_and_traverse
+  1. base jobset rows from the DB (`get_base_job_outputs`). The base was
+     evaluated and its CreateJobSet sent first (see "Base before head"),
+     but the GitHub service inserts it asynchronously, so this waits up to
+     ~30s for the rows; falls back if still missing or if the base jobset
+     was itself a PR head (`GitHubJobSets.base_sha`)
+  2. `git diff --name-only base head` in the head worktree
+  3. select_direct_referrers (pure):
+       rebuilt  = jobs whose outputs hash differs from the base (or new)
+       seeds    = rebuilt jobs that are new, edited (meta.position in the
+                  diff), version-changed, or graph roots among rebuilt jobs
+       selected = seeds ∪ rebuilt jobs with a seed in their direct inputDrvs
+  4. batch_traverse(selected)   (every job on fallback)
+       │
+       ▼
+GitHubTask::CreateJobSet { selected_jobs: Some(attrs) | None, .. }
+       │   Job rows for unselected jobs get skipped = 1: excluded from
+       │   dispatch, check runs, completion/failure gating, recorder
+       │   lookups (`get_job_info_for_drv`) and the UI/MCP progress counts
+       ▼
+GitHubTask::CompleteCIEvalJob { summary: Some(markdown), .. }
+           eval gate output: counts, seeds and reasons, or the fallback reason
+```
+
+Every evaluated job drv also gets an eval-only `Drv` row (`traversed = 0`) so
+`Job` rows can reference it. Eval-only rows are skipped by `get_all_drvs`
+(graph load on restart) and treated as unvisited by `already_visited_drv` and
+the traversal's `fetch_drvs` (both use `get_traversed_drv`); a later traversal
+that reaches them upgrades them to `traversed = 1`.
+
 ### 3. Build Execution Flow
 
 ```
@@ -408,6 +453,15 @@ RecorderTask { derivation, result }
 └─────────────────────────────────────────────────────────────┘
 ```
 
+**Jobsets with nothing to build.** The recorder only sees jobsets that a
+build concludes. A PR jobset with nothing left to build (a docs-only PR,
+every rebuilt job skipped by `rebuild_strategy`, or every job already
+built) never gets such a build event, so `GitHubService::create_job_set`
+checks it right after dispatch (`signal_if_concluded`) and sends
+`GitHubTask::CheckAutoMerge` when it has already concluded without
+failures. A jobset concluded by a fast build may be signalled twice; the
+handler re-validates every gate, so that is harmless.
+
 The size check is spawned after `UpdateBuildStatus` was sent, so its
 neutral update is queued behind the success update in the same GitHub
 batch queue and is not overwritten by it.
@@ -480,7 +534,8 @@ EKA-CI Gate Transitions:
 1. CreateCIEvalJob → queued
 2. (EvalService runs iets eval-jobs)
 3. → in_progress (during evaluation)
-4. CompleteCIEvalJob → completed (success)
+4. CompleteCIEvalJob → completed (success); its optional `summary`
+   becomes the gate's output (the rebuild strategy's selection)
    OR FailCIEvalJob → completed (failure)
 
 1. CreateJobSet → creates multiple check runs (queued)

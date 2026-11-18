@@ -1,10 +1,12 @@
 // GitHub Jobset operations
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 use sqlx::{Pool, Sqlite};
 
 use super::super::model::DrvId;
-use super::types::{BaseJob, JobInfo, JobSetInfo, NewOrChangedJob};
+use super::types::{BaseJob, BaseJobOutputs, JobInfo, JobSetInfo, NewOrChangedJob};
 use crate::github::JobDifference;
 use crate::nix::NixEvalDrv;
 
@@ -195,80 +197,144 @@ pub async fn create_jobs_for_jobset(
     base_jobs: Option<&[BaseJob]>,
     pool: &Pool<Sqlite>,
 ) -> anyhow::Result<()> {
-    use std::str::FromStr;
+    create_jobs_for_jobset_with_selection(jobset_id, jobs, base_jobs, None, pool).await
+}
 
-    use crate::db::model::DrvId;
+/// One `Job` row to insert.
+struct JobRow<'a> {
+    drv_id: DrvId,
+    attr: &'a str,
+    difference: i64,
+    outputs_hash: String,
+    skipped: bool,
+}
 
-    if jobs.is_empty() {
+/// Insert `Job` rows for the new and changed jobs of a jobset.
+///
+/// `selected` holds the attrs a rebuild strategy chose to build; every other
+/// row is marked `skipped`. `None` builds every job.
+pub async fn create_jobs_for_jobset_with_selection(
+    jobset_id: i64,
+    jobs: &[NixEvalDrv],
+    base_jobs: Option<&[BaseJob]>,
+    selected: Option<&HashSet<String>>,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<()> {
+    let rows = job_rows(jobs, base_jobs, selected);
+    if rows.is_empty() {
         return Ok(());
     }
 
-    // Build a lookup map from base jobs for O(1) difference computation
-    let base_map: std::collections::HashMap<&str, &str> = base_jobs
-        .unwrap_or(&[])
-        .iter()
-        .map(|bj| (bj.name.as_str(), bj.drv_path.as_str()))
-        .collect();
+    // Each row uses 6 bind variables. SQLite's historical default
+    // SQLITE_MAX_VARIABLE_NUMBER is 999, so chunk at 150 rows per INSERT.
+    const CHUNK_SIZE: usize = 150;
+
     // Using a transaction should allow for the pool to batch statements
     // better than individual insertions + pool flush
     let mut tx = pool.begin().await?;
-
-    // Convert drv_paths to DrvIds and compute difference vs base.
-    // Unchanged packages (same attr AND same drv_path) are excluded
-    // entirely — only New and Changed packages get Job rows.
-    // Note: base_map drv_paths are DrvId format (hash-name.drv) while
-    // NixEvalDrv.drv_path is a full store path (/nix/store/...).
-    // We parse job.drv_path into a DrvId for consistent comparison.
-    let job_data: Vec<(DrvId, &str, i64)> = jobs
-        .iter()
-        .filter_map(|job| {
-            let drv_id = DrvId::from_str(&job.drv_path).ok()?;
-            let drv_id_str = drv_id.to_string();
-
-            let difference = match base_map.get(job.attr.as_str()) {
-                Some(base_drv_path) if *base_drv_path == drv_id_str => return None, // Unchanged
-                Some(_) => 1, // Changed (different drv for same attr)
-                None => 0,    // New (attr doesn't exist in base)
-            };
-
-            Some((drv_id, job.attr.as_str(), difference))
-        })
-        .collect();
-
-    // Each row uses 4 bind variables (jobset, drv_path, attr, difference).
-    // SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999, so we chunk at
-    // 200 rows per INSERT to stay safely under the limit.
-    const CHUNK_SIZE: usize = 200;
-
-    for chunk in job_data.chunks(CHUNK_SIZE) {
-        let mut query_builder =
-            sqlx::QueryBuilder::new("INSERT INTO Job (jobset, drv_id, name, difference) VALUES ");
-
-        for (i, (drv_id, attr, difference)) in chunk.iter().enumerate() {
-            if i > 0 {
-                query_builder.push(", ");
-            }
-            query_builder.push("(");
-            query_builder.push_bind(jobset_id);
-            query_builder.push(", (SELECT rowid FROM Drv WHERE drv_path = ");
-            query_builder.push_bind(drv_id);
-            query_builder.push(" LIMIT 1), ");
-            query_builder.push_bind(attr);
-            query_builder.push(", ");
-            query_builder.push_bind(difference);
-            query_builder.push(")");
-        }
-
+    for chunk in rows.chunks(CHUNK_SIZE) {
+        let mut query_builder = sqlx::QueryBuilder::new(
+            "INSERT INTO Job (jobset, drv_id, name, difference, outputs_hash, skipped) ",
+        );
+        query_builder.push_values(chunk, |mut row, job| {
+            row.push_bind(jobset_id)
+                .push("(SELECT rowid FROM Drv WHERE drv_path = ")
+                .push_bind_unseparated(&job.drv_id)
+                .push_unseparated(" LIMIT 1)")
+                .push_bind(job.attr)
+                .push_bind(job.difference)
+                .push_bind(&job.outputs_hash)
+                .push_bind(job.skipped);
+        });
         query_builder.build().execute(&mut *tx).await?;
     }
-
     tx.commit().await?;
 
     Ok(())
 }
 
+/// Compute the `Job` rows for a jobset, diffed against its base.
+///
+/// Unchanged packages (same attr AND same drv_path) are excluded entirely —
+/// only New and Changed packages get Job rows. Base drv_paths are in DrvId
+/// form (`hash-name.drv`) while `NixEvalDrv.drv_path` is a full store path,
+/// so the latter is parsed into a DrvId for comparison.
+fn job_rows<'a>(
+    jobs: &'a [NixEvalDrv],
+    base_jobs: Option<&[BaseJob]>,
+    selected: Option<&HashSet<String>>,
+) -> Vec<JobRow<'a>> {
+    use std::str::FromStr;
+
+    let base_map: std::collections::HashMap<&str, &str> = base_jobs
+        .unwrap_or(&[])
+        .iter()
+        .map(|bj| (bj.name.as_str(), bj.drv_path.as_str()))
+        .collect();
+
+    jobs.iter()
+        .filter_map(|job| {
+            let drv_id = DrvId::from_str(&job.drv_path).ok()?;
+            let difference = match base_map.get(job.attr.as_str()) {
+                Some(base_drv_path) if *base_drv_path == drv_id.to_string() => return None,
+                Some(_) => 1, // Changed (different drv for same attr)
+                None => 0,    // New (attr doesn't exist in base)
+            };
+            Some(JobRow {
+                drv_id,
+                attr: job.attr.as_str(),
+                difference,
+                outputs_hash: crate::nix::strategy::outputs_hash(&job.outputs),
+                skipped: selected.is_some_and(|attrs| !attrs.contains(&job.attr)),
+            })
+        })
+        .collect()
+}
+
+/// A base-commit jobset's jobs with their output hashes and versions, for
+/// rebuild strategies. Empty when the base jobset does not exist.
+pub async fn get_base_job_outputs(
+    sha: &str,
+    job_name: &str,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Vec<BaseJobOutputs>> {
+    let jobs = sqlx::query_as(
+        r#"
+        SELECT j.name, d.drv_path, j.outputs_hash, d.version
+        FROM Job j
+        INNER JOIN GitHubJobSets js ON j.jobset = js.ROWID
+        INNER JOIN Drv d ON j.drv_id = d.ROWID
+        WHERE js.sha = ? AND js.job = ?
+        "#,
+    )
+    .bind(sha)
+    .bind(job_name)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(jobs)
+}
+
+/// The commit a jobset was diffed against: `None` for full evaluations of a
+/// base commit and for jobsets that do not exist.
+pub async fn get_jobset_base_sha(
+    sha: &str,
+    job_name: &str,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<Option<String>> {
+    let base_sha: Option<Option<String>> =
+        sqlx::query_scalar("SELECT base_sha FROM GitHubJobSets WHERE sha = ? AND job = ?")
+            .bind(sha)
+            .bind(job_name)
+            .fetch_optional(pool)
+            .await?;
+    Ok(base_sha.flatten())
+}
+
 /// Get job information for a specific drv
-/// Returns all jobsets that contain this drv, along with the job name and difference type
+/// Returns all jobsets that contain this drv, along with the job name and difference type.
+/// Jobs skipped by a rebuild strategy are excluded: their drvs may still be
+/// built as dependencies, but they get no check runs, hooks or size checks.
 pub async fn get_job_info_for_drv(
     drv_id: &DrvId,
     pool: &Pool<Sqlite>,
@@ -278,6 +344,7 @@ pub async fn get_job_info_for_drv(
         SELECT j.jobset as jobset_id, j.name, j.difference
         FROM Job j
         WHERE j.drv_id = (SELECT ROWID FROM Drv WHERE drv_path = ?)
+          AND j.skipped = 0
         "#,
     )
     .bind(drv_id)
@@ -311,7 +378,8 @@ pub async fn get_job_config_for_drv(
 }
 
 /// Check if all jobs in a jobset have reached a terminal state
-/// Terminal states are: Completed (success or failure), TransitiveFailure, and Interrupted states
+/// Terminal states are: Completed (success or failure), TransitiveFailure, and Interrupted states.
+/// Jobs skipped by the jobset's rebuild strategy are never built and do not count.
 pub async fn all_jobs_concluded(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::Result<bool> {
     // Query for jobs that are NOT in terminal states
     // Non-terminal states: Queued (0), Buildable (1), FailedRetry (2), Building (7), Blocked (100)
@@ -320,7 +388,7 @@ pub async fn all_jobs_concluded(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::
         SELECT COUNT(*)
         FROM Job j
         JOIN Drv d ON j.drv_id = d.ROWID
-        WHERE j.jobset = ? AND d.build_state IN (0, 1, 2, 7, 100)
+        WHERE j.jobset = ? AND j.skipped = 0 AND d.build_state IN (0, 1, 2, 7, 100)
         "#,
     )
     .bind(jobset_id)
@@ -331,7 +399,8 @@ pub async fn all_jobs_concluded(jobset_id: i64, pool: &Pool<Sqlite>) -> anyhow::
 }
 
 /// Determine if any new or changed jobs in a jobset have failed
-/// Returns true if there are failures in new or changed jobs
+/// Returns true if there are failures in new or changed jobs that were not
+/// skipped by the jobset's rebuild strategy
 pub async fn jobset_has_new_or_changed_failures(
     jobset_id: i64,
     pool: &Pool<Sqlite>,
@@ -345,6 +414,7 @@ pub async fn jobset_has_new_or_changed_failures(
         FROM Job j
         JOIN Drv d ON j.drv_id = d.ROWID
         WHERE j.jobset = ?
+          AND j.skipped = 0
           AND j.difference IN (?, ?)
           AND d.build_state < 0
         "#,
@@ -377,7 +447,8 @@ pub async fn get_jobset_by_id(
     Ok(jobset)
 }
 
-/// Get new or changed jobs for a jobset (difference = New or Changed).
+/// Get new or changed jobs for a jobset (difference = New or Changed) that
+/// are to be built, i.e. not skipped by the jobset's rebuild strategy.
 /// Returns job info with the drv_id needed to create check_runs.
 pub async fn get_new_or_changed_jobs(
     jobset_id: i64,
@@ -388,7 +459,7 @@ pub async fn get_new_or_changed_jobs(
         SELECT j.name, j.difference, d.drv_path, d.build_state
         FROM Job j
         JOIN Drv d ON j.drv_id = d.ROWID
-        WHERE j.jobset = ? AND j.difference IN (?, ?)
+        WHERE j.jobset = ? AND j.skipped = 0 AND j.difference IN (?, ?)
         "#,
     )
     .bind(jobset_id)
