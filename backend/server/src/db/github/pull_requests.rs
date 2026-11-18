@@ -17,19 +17,21 @@ pub async fn upsert_pull_request(
     state: &str,
     created_at: &str,
     updated_at: &str,
+    html_url: Option<&str>,
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO GitHubPullRequests
-            (pr_number, owner, repo_name, head_sha, base_sha, title, author, state, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (pr_number, owner, repo_name, head_sha, base_sha, title, author, state, created_at, updated_at, html_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(owner, repo_name, pr_number) DO UPDATE SET
             head_sha = excluded.head_sha,
             base_sha = excluded.base_sha,
             title = excluded.title,
             state = excluded.state,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            html_url = COALESCE(excluded.html_url, html_url)
         "#,
     )
     .bind(pr_number)
@@ -42,6 +44,7 @@ pub async fn upsert_pull_request(
     .bind(state)
     .bind(created_at)
     .bind(updated_at)
+    .bind(html_url)
     .execute(pool)
     .await?;
 
@@ -106,6 +109,7 @@ pub async fn list_open_pull_requests(pool: &Pool<Sqlite>) -> Result<Vec<PullRequ
             pr.state,
             pr.created_at,
             pr.updated_at,
+            pr.html_url,
             g.ROWID as jobset_id,
             COALESCE(COUNT(d.ROWID), 0) as total_drvs,
             COALESCE(SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
@@ -139,6 +143,7 @@ pub async fn list_open_pull_requests(pool: &Pool<Sqlite>) -> Result<Vec<PullRequ
                 state: row.get("state"),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
+                html_url: row.get("html_url"),
             },
             jobset_id: row.get("jobset_id"),
             total_drvs: row.get("total_drvs"),
@@ -173,6 +178,7 @@ pub async fn get_pull_request(
             pr.state,
             pr.created_at,
             pr.updated_at,
+            pr.html_url,
             g.ROWID as jobset_id,
             COALESCE(COUNT(d.ROWID), 0) as total_drvs,
             COALESCE(SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
@@ -206,6 +212,7 @@ pub async fn get_pull_request(
             state: row.get("state"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
+            html_url: row.get("html_url"),
         },
         jobset_id: row.get("jobset_id"),
         total_drvs: row.get("total_drvs"),
@@ -236,6 +243,7 @@ pub async fn list_merge_queue_builds(
             pr.state,
             pr.created_at,
             pr.updated_at,
+            pr.html_url,
             g.ROWID as jobset_id,
             COALESCE(COUNT(d.ROWID), 0) as total_drvs,
             COALESCE(SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
@@ -271,6 +279,7 @@ pub async fn list_merge_queue_builds(
                 state: row.get("state"),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
+                html_url: row.get("html_url"),
             },
             jobset_id: row.get("jobset_id"),
             total_drvs: row.get("total_drvs"),
@@ -305,6 +314,7 @@ pub async fn get_merge_queue_build_by_sha(
             pr.state,
             pr.created_at,
             pr.updated_at,
+            pr.html_url,
             g.ROWID as jobset_id,
             COALESCE(COUNT(d.ROWID), 0) as total_drvs,
             COALESCE(SUM(CASE WHEN d.build_state = 42 THEN 1 ELSE 0 END), 0) as completed_success_drvs,
@@ -338,6 +348,7 @@ pub async fn get_merge_queue_build_by_sha(
             state: row.get("state"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
+            html_url: row.get("html_url"),
         },
         jobset_id: row.get("jobset_id"),
         total_drvs: row.get("total_drvs"),
@@ -401,7 +412,7 @@ mod tests {
     async fn pull_request_row_decodes() {
         let db = DbService::new_in_memory().await.unwrap();
         upsert_pull_request(
-            7, "o", "r", "head", "base", "t", "a", "open", "c", "u", &db.pool,
+            7, "o", "r", "head", "base", "t", "a", "open", "c", "u", None, &db.pool,
         )
         .await
         .unwrap();

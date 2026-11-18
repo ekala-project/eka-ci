@@ -145,6 +145,11 @@
 
 ### Web UI
 
+- PR links on the Reviews page now go to the PR on its forge instead of
+  ekaci's own `/prs/...` page. The URL is the `html_url` GitHub sends with
+  the PR, stored in a new `GitHubPullRequests.html_url` column, so GitHub
+  Enterprise hosts work too. PRs not updated since the upgrade have no URL
+  yet and still link to the internal page
 - Fix the web UI rendering a blank page: `ports.js` (WebSocket and
   token-storage ports) and `styles/custom.css` were never committed because
   `frontend/.gitignore` ignored everything in `static/` except `index.html`,

@@ -176,6 +176,8 @@ pub struct PullRequestInfo {
     pub state: String,
     pub created_at: String,
     pub updated_at: String,
+    /// The PR's page on its forge; `None` until the PR is next updated.
+    pub html_url: Option<String>,
 }
 
 /// Pull request with associated job statistics
@@ -221,6 +223,7 @@ pub struct PullRequest {
     pub comment_merge_requester_login: Option<String>,
     pub comment_merge_comment_id: Option<i64>,
     pub comment_merge_requested_at: Option<String>,
+    pub html_url: Option<String>,
 }
 
 /// Typed view of a pending `@eka-ci merge` on a PR (unresolved: not yet

@@ -442,10 +442,11 @@ impl DbService {
         state: &str,
         created_at: &str,
         updated_at: &str,
+        html_url: Option<&str>,
     ) -> anyhow::Result<()> {
         github::upsert_pull_request(
             pr_number, owner, repo_name, head_sha, base_sha, title, author, state, created_at,
-            updated_at, &self.pool,
+            updated_at, html_url, &self.pool,
         )
         .await
     }

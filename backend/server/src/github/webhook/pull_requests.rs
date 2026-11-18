@@ -87,6 +87,7 @@ pub(crate) async fn store_pr_metadata(pr: &PullRequest, state: &str, db_service:
             state,
             &created_at,
             &updated_at,
+            pr.html_url.as_ref().map(|u| u.as_str()),
         )
         .await
     {

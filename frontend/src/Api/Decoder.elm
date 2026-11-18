@@ -336,6 +336,7 @@ pullRequest =
         |> andMap (D.field "state" D.string)
         |> andMap (D.field "created_at" D.string)
         |> andMap (D.field "updated_at" D.string)
+        |> andMap (D.maybe (D.field "html_url" D.string))
         |> andMap (D.maybe (D.field "jobset_id" D.int))
         |> andMap (D.field "total_drvs" D.int)
         |> andMap (D.field "completed_success_drvs" D.int)
