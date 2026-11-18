@@ -169,6 +169,44 @@
   taken from the `X-GitHub-Event` header and the payload is parsed for that
   type; a delivery without the header is rejected with 400
 
+### Selective rebuilds (`rebuild_strategy`)
+
+- New per-job `rebuild_strategy` in `.ekaci/config.json`: `all` (default,
+  current behaviour) or `direct-referrers`, which builds only the packages a
+  PR changes and the rebuilt packages that consume them directly (strict
+  `inputDrvs`). Seeds are new attrs, packages whose `meta.position` file is in
+  the PR's `git diff`, version changes, and roots of the rebuilt subgraph. An
+  `openssl` bump builds `openssl` and its direct referrers instead of every
+  transitive dependent. GitHub only
+- Selection runs in the EvalService before graph traversal: only selected
+  jobs enter the dependency graph. Other rebuilt jobs get `Job.skipped = 1`
+  and are excluded from dispatch, check runs (eager and lazy), completion and
+  failure gating, recorder hooks/size checks, and web UI / MCP progress counts
+- Jobs are compared by a hash of their output paths (`Job.outputs_hash`), so
+  fixed-output derivation churn does not count as a rebuild
+- Falls back to building every rebuilt job, with the reason on the eval check
+  run, when the base jobset is missing, was a PR head
+  (`GitHubJobSets.base_sha`), predates output hashes, the eval reported no
+  `inputDrvs`, or `git diff` fails
+- The eval check run's output summarises the selection (built/skipped counts,
+  seeds and why each was chosen)
+- Fix: a PR with nothing to build (docs-only, every rebuilt job skipped, or
+  every job already built) never triggered auto-merge, because only a build
+  concluding a jobset did. The GitHub service now checks a PR jobset when it
+  is created and sends `CheckAutoMerge` if it has already concluded
+- Fix: drvs that were only evaluated, never traversed (base-commit jobs), were
+  loaded into the dependency graph on restart and scheduled. `Drv.traversed`
+  now marks traversed rows; eval-only rows are not loaded, and do not count as
+  visited when a later traversal reaches them (they previously kept
+  placeholder `is_fod` / `required_system_features` values)
+- Fix: passthru.tests never triggered for worktree evaluations, because
+  `meta.position` values (absolute worktree paths) were not made
+  repo-relative before matching the `git diff`
+- Spec: `eval_only` state, `eval_record` action and the
+  `inv_eval_only_not_scheduled` invariant in `spec/ekaci.qnt`; the
+  ingress routing choice is now an explicit parameter, which fixes the spec's
+  tests failing on samples that took the deferred branch
+
 ### Sandbox for evaluation and checks
 
 - New `sandbox` workspace crate (bubblewrap + landlock via

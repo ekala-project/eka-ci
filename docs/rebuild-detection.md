@@ -18,7 +18,29 @@ For each opened or updated pull request, the server:
    *blast radius* — the count of transitive dependents that must also rebuild.
 
 The resulting set of derivations is what gets enqueued for the platform-specific build
-queues.
+queues, unless the job's [rebuild strategy](#rebuild-strategies) narrows it.
+
+## Rebuild strategies
+
+A job's `rebuild_strategy` in `.ekaci/config.json` (see
+[Repository Configuration](./repository-configuration.md#rebuild-strategy)) selects
+which rebuilt derivations are built:
+
+- `all` (default): every added or rebuilt job.
+- `direct-referrers`: the jobs the pull request changes and the rebuilt jobs that
+  depend on them directly. Selection runs right after the head evaluation and before
+  any derivation is added to the dependency graph:
+  1. **Rebuilt** jobs are new attributes and jobs whose output paths differ from the
+     base jobset.
+  2. **Seeds** are rebuilt jobs that are new, whose `meta.position` file is in
+     `git diff --name-only base head`, whose version changed, or that have no rebuilt
+     job among their direct `inputDrvs`.
+  3. **Selected** jobs are the seeds plus every rebuilt job with a seed in its direct
+     `inputDrvs` (and any attribute sharing a derivation with one of them).
+
+  Only selected jobs are traversed into the dependency graph and get check runs; the
+  others are recorded as skipped. The change summary still reports the full set of
+  rebuilt packages and their blast radius.
 
 ## Configuration
 

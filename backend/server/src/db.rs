@@ -7,6 +7,7 @@ pub mod gitlab;
 pub mod graph_impl;
 pub mod hooks;
 pub mod installations;
+mod jobset_creation;
 pub mod maintainers;
 #[allow(dead_code, reason = "Only model definition for now, remove once used.")]
 pub mod model;
@@ -16,4 +17,5 @@ pub mod size;
 mod skills;
 
 pub use approved_users::ApprovedUser;
+pub use jobset_creation::NewGitHubJobset;
 pub use service::DbService;

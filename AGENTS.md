@@ -133,6 +133,17 @@ successful promotion, runs generators (`packages.rs` shells out to
 destination (S3 or local path). Configuration lives in the
 `[search_index]` section of `ekaci.toml`.
 
+**Rebuild strategies** (`server/src/nix/strategy/`):
+A job's `rebuild_strategy` (`all` | `direct-referrers`) decides which
+rebuilt jobs a PR builds. For `direct-referrers`, `EvalService`
+selects after the head eval (`select.rs` is pure; `eval.rs` gathers
+the base jobset and `git diff`) and traverses only the selection.
+Unselected jobs get `Job.skipped = 1`; any new query over `Job` that
+drives dispatch, check runs, gating or progress must filter
+`j.skipped = 0`. Eval-only `Drv` rows (`traversed = 0`) must never
+reach the graph: use `get_traversed_drv`, not `get_drv`, to ask
+"was this traversed?".
+
 ## Frontend Development (Elm)
 
 - Elm compilation must succeed with no errors

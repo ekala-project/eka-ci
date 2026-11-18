@@ -96,6 +96,7 @@ impl EvalService {
                 name: eval_job.name.clone(),
                 jobs,
                 config_json: eval_job.config_json.clone(),
+                selected_jobs: None,
             })
             .await?;
         self.dispatched_base_jobsets

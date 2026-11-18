@@ -26,6 +26,20 @@ pub struct BaseJob {
     pub drv_path: String,
 }
 
+/// A base-commit job with what rebuild strategies compare against.
+#[derive(Debug, Clone, FromRow)]
+pub struct BaseJobOutputs {
+    /// Attr path
+    pub name: String,
+    /// Drv path in `DrvId` form (`<hash>-<name>.drv`)
+    pub drv_path: String,
+    /// `crate::nix::strategy::outputs_hash` of the job's outputs; `None` for
+    /// rows recorded before output hashes existed
+    pub outputs_hash: Option<String>,
+    /// `Drv.version` of the base drv
+    pub version: Option<String>,
+}
+
 /// Build state of a single variant within a coalesced gate.
 /// Used to compute aggregate status and render the variant summary.
 #[derive(Debug, FromRow)]

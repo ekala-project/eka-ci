@@ -1,9 +1,9 @@
 use sqlx::{Pool, Sqlite, SqlitePool};
-use tracing::{debug, info};
+use tracing::debug;
 
 use super::Drv;
 use crate::db::model::build_event::DrvBuildState;
-use crate::db::model::{DrvId, Reference, Referrer, drv_id};
+use crate::db::model::{DrvId, drv_id};
 
 pub async fn get_drv(derivation: &DrvId, pool: &Pool<Sqlite>) -> anyhow::Result<Option<Drv>> {
     let event = sqlx::query_as(
@@ -29,94 +29,6 @@ pub async fn has_drv(pool: &Pool<Sqlite>, drv_path: &str) -> anyhow::Result<bool
         .fetch_one(pool)
         .await?;
     Ok(result)
-}
-
-/// This will insert a slice of drvs and <referrer, reference> into
-/// the database. The reference relationships assume that the drvs
-/// have been inserted previously, or passed in this call as well
-pub async fn insert_drvs_and_references(
-    pool: &Pool<Sqlite>,
-    drvs: &[Drv],
-    drv_refs: &[(Referrer, Reference)],
-) -> anyhow::Result<()> {
-    use sqlx::{QueryBuilder, Sqlite};
-
-    if !drvs.is_empty() {
-        // Ensure we do not exceed SQLite's 32k limit for query variables.
-        // We bind 14 columns per drv now (was 7); 32766 / 14 ~= 2340.
-        for drvs_chunk in drvs.chunks(2340) {
-            let mut tx = pool.begin().await?;
-            let mut query_builder = QueryBuilder::new(
-                "INSERT INTO Drv (drv_path, system, required_system_features, is_fod, \
-                 build_state, output_size, closure_size, pname, version, license_json, \
-                 maintainers_json, meta_position, broken, insecure) ",
-            );
-
-            query_builder.push_values(drvs_chunk, |mut row, drv| {
-                row.push_bind(&drv.drv_path)
-                    .push_bind(&drv.system)
-                    .push_bind(&drv.required_system_features)
-                    .push_bind(drv.is_fod)
-                    .push_bind(&drv.build_state)
-                    .push_bind(drv.output_size)
-                    .push_bind(drv.closure_size)
-                    .push_bind(&drv.pname)
-                    .push_bind(&drv.version)
-                    .push_bind(&drv.license_json)
-                    .push_bind(&drv.maintainers_json)
-                    .push_bind(&drv.meta_position)
-                    .push_bind(drv.broken)
-                    .push_bind(drv.insecure);
-            });
-
-            // Override the table-level `UNIQUE (drv_path) ON CONFLICT IGNORE`
-            // so that re-evaluations enrich existing rows with metadata
-            // without overwriting fields that were previously populated.
-            query_builder.push(
-                " ON CONFLICT(drv_path) DO UPDATE SET pname = COALESCE(excluded.pname, \
-                 Drv.pname), version = COALESCE(excluded.version, Drv.version), license_json = \
-                 COALESCE(excluded.license_json, Drv.license_json), maintainers_json = \
-                 COALESCE(excluded.maintainers_json, Drv.maintainers_json), meta_position = \
-                 COALESCE(excluded.meta_position, Drv.meta_position), broken = \
-                 COALESCE(excluded.broken, Drv.broken), insecure = COALESCE(excluded.insecure, \
-                 Drv.insecure)",
-            );
-
-            query_builder
-                .build()
-                // Avoid caching queries which are likely to vary greatly in length
-                .persistent(false)
-                .execute(&mut *tx)
-                .await?;
-            info!("Inserted {} new drvs", drvs.len());
-
-            tx.commit().await?;
-        }
-    }
-
-    if !drv_refs.is_empty() {
-        // Ensure we do not exceed SQLite's 32k limit for query variables
-        // 32766 / 2 ~= 16380
-        for refs_chunk in drv_refs.chunks(16380) {
-            let mut tx = pool.begin().await?;
-
-            let mut reference_builder: QueryBuilder<Sqlite> =
-                QueryBuilder::new("INSERT INTO DrvRefs (referrer, reference) ");
-            reference_builder.push_values(refs_chunk, |mut sep, (referrer, reference)| {
-                sep.push_bind(referrer).push_bind(reference);
-            });
-
-            reference_builder
-                .build()
-                // Avoid caching queries which are likely to vary greatly in length
-                .persistent(false)
-                .execute(&mut *tx)
-                .await?;
-            tx.commit().await?;
-        }
-    }
-
-    Ok(())
 }
 
 /// To avoid two round trips, or multiple subqueries, we assume that the referrer
@@ -523,7 +435,12 @@ pub async fn count_drv_dependencies(drv_id: &DrvId, pool: &Pool<Sqlite>) -> anyh
     Ok(count)
 }
 
-/// Get all drvs from the database (for graph initialization)
+/// Get all traversed drvs from the database (for graph initialization).
+///
+/// Eval-only rows (`traversed = 0`) are excluded: they were recorded for
+/// Job rows but never traversed, so loading them would schedule jobs that a
+/// rebuild strategy skipped and base-branch jobs that were never meant to be
+/// built.
 pub async fn get_all_drvs(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
     let drvs = sqlx::query_as(
         r#"
@@ -531,6 +448,7 @@ pub async fn get_all_drvs(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Drv>> {
                closure_size, pname, version, license_json, maintainers_json, meta_position,
                broken, insecure
         FROM Drv
+        WHERE traversed = 1
         "#,
     )
     .fetch_all(pool)

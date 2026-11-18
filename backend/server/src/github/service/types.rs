@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -336,6 +337,10 @@ pub enum GitHubTask {
         name: String,
         jobs: Vec<NixEvalDrv>,
         config_json: Option<String>, // Serialized job config for hooks
+        /// Attrs the job's rebuild strategy chose to build; the other new or
+        /// changed jobs are recorded as skipped. `None` builds every job.
+        #[serde(default)]
+        selected_jobs: Option<HashSet<String>>,
     },
     CreateCIConfigureGate {
         ci_check_info: Arc<CICheckInfo>,
@@ -353,6 +358,9 @@ pub enum GitHubTask {
         ci_check_info: Arc<CICheckInfo>,
         job_name: String,
         conclusion: SerdeCheckRunConclusion,
+        /// Markdown shown on the eval gate, e.g. rebuild-strategy statistics.
+        #[serde(default)]
+        summary: Option<String>,
     },
     CancelCheckRunsForCommit {
         ci_check_info: Arc<CICheckInfo>,

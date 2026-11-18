@@ -55,7 +55,7 @@ impl EvalService {
     /// of their closures, read every new drv, insert into DB and graph in
     /// one shot, then update the LRU cache. Drvs shared between jobs are
     /// read once. Failures are logged and skipped per drv.
-    pub(super) async fn batch_traverse(&self, jobs: &[NixEvalDrv]) -> Result<()> {
+    pub(super) async fn batch_traverse(&self, jobs: &[&NixEvalDrv]) -> Result<()> {
         let mut roots = Vec::new();
         for job in jobs {
             let Ok(drv_id) = DrvId::from_str(&job.drv_path) else {
@@ -192,8 +192,10 @@ async fn requisites_lenient(roots: &[DrvId]) -> Vec<DrvId> {
 }
 
 /// Read `drv_ids` with batched `nix derivation show` calls and turn the
-/// output into `Drv` rows and edges. A drv already in the DB keeps its
-/// row (and build state); only unseen drvs start out queued.
+/// output into `Drv` rows and edges. A drv already traversed keeps its
+/// row (and build state); unseen drvs start out queued. Eval-only rows are
+/// placeholders (no system features, not a FOD), so they are rebuilt from
+/// the shown info; the upsert keeps their build state.
 async fn fetch_drvs(drv_ids: &[DrvId], db: &DbService) -> FetchedDrvs {
     let shown: Vec<Vec<ShowResult>> = stream::iter(drv_ids.chunks(BATCH_SIZE))
         .map(show_batch)
@@ -210,7 +212,7 @@ async fn fetch_drvs(drv_ids: &[DrvId], db: &DbService) -> FetchedDrvs {
                 continue;
             },
         };
-        let drv = match db.get_drv(&drv_id).await {
+        let drv = match db.get_traversed_drv(&drv_id).await {
             Ok(Some(drv)) => drv,
             Ok(None) => Drv::from_info(drv_id.clone(), &info),
             Err(e) => {

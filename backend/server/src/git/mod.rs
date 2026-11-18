@@ -1,9 +1,13 @@
 // Re-export git crate types and functions
+use std::collections::HashSet;
+use std::path::Path;
+
 use anyhow::{Context, Result};
 pub use git::{GitProtocol, GitRepo, GitWorkspace, workspace_root};
 use octocrab::models::pulls::PullRequest;
+use tokio::process::Command;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::ci::{BaseCheckout, RepoTask};
 use crate::github::CICheckInfo;
@@ -173,4 +177,33 @@ impl AsyncService<GitTask> for GitService {
     async fn handle_closure(&mut self) {
         warn!("Closing git management service");
     }
+}
+
+/// Repo-relative paths changed between two commits (`git diff --name-only`),
+/// run in `repo_dir` (a clone or worktree that has both commits).
+pub async fn diff_changed_files(
+    repo_dir: &Path,
+    base_sha: &str,
+    head_sha: &str,
+) -> Result<HashSet<String>> {
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Command::new("git")
+            .current_dir(repo_dir)
+            .args(["diff", "--name-only", base_sha, head_sha])
+            .output(),
+    )
+    .await
+    .context("git diff --name-only timed out")?
+    .context("failed to execute git diff --name-only")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git diff --name-only failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let files: HashSet<String> = stdout.lines().map(|l| l.trim().to_string()).collect();
+    debug!("git diff: {} files changed", files.len());
+    Ok(files)
 }

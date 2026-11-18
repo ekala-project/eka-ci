@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod rebuild_strategy;
 mod unknown_keys;
+
+pub use rebuild_strategy::RebuildStrategy;
 
 fn default_true() -> bool {
     true
@@ -28,6 +31,9 @@ pub struct Job {
     /// Optional passthru.tests evaluation for directly-changed packages
     #[serde(default)]
     pub passthru_tests: Option<PassthruTestsConfig>,
+    /// Which rebuilt packages to build for a PR (default: all of them)
+    #[serde(default)]
+    pub rebuild_strategy: RebuildStrategy,
 }
 
 /// Configuration for evaluating passthru.tests on directly-changed packages.

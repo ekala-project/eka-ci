@@ -103,7 +103,7 @@ pub async fn get_jobset_details(jobset_id: i64, pool: &Pool<Sqlite>) -> Result<J
             SUM(CASE WHEN d.build_state = -2 THEN 1 ELSE 0 END) as transitive_failure_drvs,
             SUM(CASE WHEN d.build_state < -2 THEN 1 ELSE 0 END) as interrupted_drvs
         FROM GitHubJobSets g
-        JOIN Job j ON j.jobset = g.ROWID
+        JOIN Job j ON j.jobset = g.ROWID AND j.skipped = 0
         JOIN Drv d ON d.ROWID = j.drv_id
         WHERE g.ROWID = ?
         GROUP BY g.ROWID
@@ -135,7 +135,7 @@ pub async fn get_jobset_drvs(
                 j.difference
             FROM Job j
             JOIN Drv d ON d.ROWID = j.drv_id
-            WHERE j.jobset = ? AND d.build_state = ?
+            WHERE j.jobset = ? AND j.skipped = 0 AND d.build_state = ?
             ORDER BY j.name
             LIMIT ? OFFSET ?
             "#,
@@ -158,7 +158,7 @@ pub async fn get_jobset_drvs(
                 j.difference
             FROM Job j
             JOIN Drv d ON d.ROWID = j.drv_id
-            WHERE j.jobset = ?
+            WHERE j.jobset = ? AND j.skipped = 0
             ORDER BY j.name
             LIMIT ? OFFSET ?
             "#,
@@ -179,7 +179,7 @@ pub async fn count_jobset_drvs(jobset_id: i64, pool: &Pool<Sqlite>) -> Result<i6
         r#"
         SELECT COUNT(*)
         FROM Job j
-        WHERE j.jobset = ?
+        WHERE j.jobset = ? AND j.skipped = 0
         "#,
     )
     .bind(jobset_id)
@@ -218,7 +218,7 @@ pub async fn get_repository_jobsets(
             SUM(CASE WHEN j.difference = 1 THEN 1 ELSE 0 END) as changed_jobs,
             SUM(CASE WHEN j.difference = 2 THEN 1 ELSE 0 END) as removed_jobs
         FROM GitHubJobSets g
-        JOIN Job j ON j.jobset = g.ROWID
+        JOIN Job j ON j.jobset = g.ROWID AND j.skipped = 0
         JOIN Drv d ON d.ROWID = j.drv_id
         WHERE g.owner = ? AND g.repo_name = ?
         GROUP BY g.ROWID
@@ -259,7 +259,7 @@ pub async fn get_active_jobs(pool: &Pool<Sqlite>) -> Result<Vec<JobSetDetails>> 
             SUM(CASE WHEN d.build_state = -2 THEN 1 ELSE 0 END) as transitive_failure_drvs,
             SUM(CASE WHEN d.build_state < -2 THEN 1 ELSE 0 END) as interrupted_drvs
         FROM GitHubJobSets g
-        JOIN Job j ON j.jobset = g.ROWID
+        JOIN Job j ON j.jobset = g.ROWID AND j.skipped = 0
         JOIN Drv d ON d.ROWID = j.drv_id
         GROUP BY g.ROWID
         HAVING SUM(CASE WHEN d.build_state IN (0, 1, 7) THEN 1 ELSE 0 END) > 0
@@ -306,7 +306,7 @@ pub async fn get_commit_jobs(sha: &str, pool: &Pool<Sqlite>) -> Result<Vec<Commi
             SUM(CASE WHEN d.build_state = 42 OR d.build_state < 0 THEN 1 ELSE 0 END) as completed_drvs,
             SUM(CASE WHEN d.build_state < 0 THEN 1 ELSE 0 END) as failed_drvs
         FROM GitHubJobSets g
-        JOIN Job j ON j.jobset = g.ROWID
+        JOIN Job j ON j.jobset = g.ROWID AND j.skipped = 0
         JOIN Drv d ON d.ROWID = j.drv_id
         WHERE g.sha = ?
         GROUP BY g.ROWID

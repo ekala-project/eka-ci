@@ -12,6 +12,8 @@
 //   - Non-retryable interruptions (Cancelled, SchedulerDeath) propagate
 //     TransitiveFailure to dependents immediately
 //   - FailedRetry is preserved through crash recovery (retry budget not reset)
+//   - Eval-only drvs (jobs skipped by selective traversal) are never loaded
+//     into the graph or scheduled, including across crash recovery
 
 module ekaci {
 
@@ -63,6 +65,12 @@ module ekaci {
   var ingress_queue: Set[DrvId]
   var build_queue: Set[DrvId]
   var recorder_queue: Set[(DrvId, BuildState)]
+  // Drvs recorded by evaluation (job rows in the DB) that were never
+  // traversed into the dependency graph, e.g. jobs skipped by the
+  // "direct-referrers" rebuild strategy. They are persisted with
+  // traversed = 0 and must never be loaded into the graph or scheduled,
+  // including after a restart.
+  var eval_only: Set[DrvId]
 
   // ─── Pure Helpers ────────────────────────────────────────────────────
 
@@ -139,6 +147,7 @@ module ekaci {
     ingress_queue' = ingress_queue,
     build_queue' = build_queue,
     recorder_queue' = recorder_queue,
+    eval_only' = eval_only,
   }
 
   // ─── Initial State ──────────────────────────────────────────────────
@@ -152,6 +161,7 @@ module ekaci {
     ingress_queue' = Set(),
     build_queue' = Set(),
     recorder_queue' = Set(),
+    eval_only' = Set(),
   }
 
   // ─── Actions ─────────────────────────────────────────────────────────
@@ -185,14 +195,34 @@ module ekaci {
       transitive_failure_map' = transitive_failure_map,
       build_queue' = build_queue,
       recorder_queue' = recorder_queue,
+      // Traversal promotes a previously eval-only drv into the graph.
+      eval_only' = eval_only.exclude(Set(drv)),
     }
   }
 
   action eval_discover_leaf(drv: DrvId, system: str, is_fod: bool): bool =
     eval_discover(drv, system, is_fod, Set())
 
+  // Evaluation records a job drv without traversing it (selective
+  // traversal skipped it). Nothing enters the graph or any queue.
+  action eval_record(drv: DrvId): bool = all {
+    not(nodes.keys().contains(drv)),
+    eval_only' = eval_only.union(Set(drv)),
+    nodes' = nodes,
+    deps' = deps,
+    referrers' = referrers,
+    failed_drvs' = failed_drvs,
+    transitive_failure_map' = transitive_failure_map,
+    ingress_queue' = ingress_queue,
+    build_queue' = build_queue,
+    recorder_queue' = recorder_queue,
+  }
+
   // Ingress processes a drv: checks buildability and routes accordingly.
-  action ingress_process(drv: DrvId): bool = all {
+  // `send_ok` models the outcome of the builder-channel try_send: when it
+  // fails (channel full) the drv is Buildable but deferred, and the sweep
+  // catches it later. `step` explores both outcomes nondeterministically.
+  action ingress_route(drv: DrvId, send_ok: bool): bool = all {
     ingress_queue.contains(drv),
     nodes.keys().contains(drv),
     val node = nodes.get(drv)
@@ -205,36 +235,22 @@ module ekaci {
       transitive_failure_map' = transitive_failure_map,
       build_queue' = build_queue,
       recorder_queue' = recorder_queue,
+      eval_only' = eval_only,
     }
     else if (is_buildable(drv, deps, nodes)) {
       val new_state = if (node.state == FailedRetry) FailedRetry else Buildable
-      // The real system uses try_send to the builder channel, which may
-      // fail when the channel is full. Model this nondeterministically:
-      // the drv transitions to Buildable either way, but may or may not
-      // be added to the build_queue. The sweep catches deferred drvs.
-      any {
-        // try_send succeeds: drv enters build queue
-        all {
-          nodes' = nodes.put(drv, { ...node, state: new_state }),
-          build_queue' = build_queue.union(Set(drv)),
-          ingress_queue' = ingress_queue.exclude(Set(drv)),
-          deps' = deps,
-          referrers' = referrers,
-          failed_drvs' = failed_drvs,
-          transitive_failure_map' = transitive_failure_map,
-          recorder_queue' = recorder_queue,
-        },
-        // try_send fails (channel full): drv is Buildable but deferred
-        all {
-          nodes' = nodes.put(drv, { ...node, state: new_state }),
-          build_queue' = build_queue,
-          ingress_queue' = ingress_queue.exclude(Set(drv)),
-          deps' = deps,
-          referrers' = referrers,
-          failed_drvs' = failed_drvs,
-          transitive_failure_map' = transitive_failure_map,
-          recorder_queue' = recorder_queue,
-        },
+      // The drv transitions to Buildable either way, but only enters
+      // the build_queue when the try_send succeeds.
+      all {
+        nodes' = nodes.put(drv, { ...node, state: new_state }),
+        build_queue' = if (send_ok) build_queue.union(Set(drv)) else build_queue,
+        ingress_queue' = ingress_queue.exclude(Set(drv)),
+        deps' = deps,
+        referrers' = referrers,
+        failed_drvs' = failed_drvs,
+        transitive_failure_map' = transitive_failure_map,
+        recorder_queue' = recorder_queue,
+        eval_only' = eval_only,
       }
     }
     else {
@@ -248,9 +264,14 @@ module ekaci {
         transitive_failure_map' = transitive_failure_map,
         build_queue' = build_queue,
         recorder_queue' = recorder_queue,
+        eval_only' = eval_only,
       }
     }
   }
+
+  // Ingress processing where the builder-channel send succeeds. Tests use
+  // this deterministic form; `step` also explores the deferred outcome.
+  action ingress_process(drv: DrvId): bool = ingress_route(drv, true)
 
   // Periodic sweep: find Queued or Buildable drvs whose deps are all
   // Completed(Success) and re-enqueue them to ingress. Buildability
@@ -271,6 +292,7 @@ module ekaci {
     transitive_failure_map' = transitive_failure_map,
     build_queue' = build_queue,
     recorder_queue' = recorder_queue,
+    eval_only' = eval_only,
   }
 
   // Builder picks up a drv and starts building it.
@@ -289,6 +311,7 @@ module ekaci {
     transitive_failure_map' = transitive_failure_map,
     ingress_queue' = ingress_queue,
     recorder_queue' = recorder_queue,
+    eval_only' = eval_only,
   }
 
   // Stale build_queue entry: drv state changed since enqueue (e.g. cache hit
@@ -306,6 +329,7 @@ module ekaci {
     transitive_failure_map' = transitive_failure_map,
     ingress_queue' = ingress_queue,
     recorder_queue' = recorder_queue,
+    eval_only' = eval_only,
   }
 
   // Build completes: send result to recorder.
@@ -314,6 +338,7 @@ module ekaci {
     nodes.get(drv).state == Building,
     all {
       recorder_queue' = recorder_queue.union(Set((drv, Completed(result)))),
+      eval_only' = eval_only,
       nodes' = nodes,
       deps' = deps,
       referrers' = referrers,
@@ -330,6 +355,7 @@ module ekaci {
     nodes.get(drv).state == Building,
     all {
       recorder_queue' = recorder_queue.union(Set((drv, Interrupted(kind)))),
+      eval_only' = eval_only,
       nodes' = nodes,
       deps' = deps,
       referrers' = referrers,
@@ -385,6 +411,7 @@ module ekaci {
         else transitive_failure_map,
       ingress_queue' = ingress_queue.union(recheck_set),
       recorder_queue' = recorder_queue.exclude(Set((drv, Completed(Success)))),
+      eval_only' = eval_only,
       deps' = deps,
       referrers' = referrers,
       // Remove from build queue if present (cache hit before builder pickup)
@@ -406,6 +433,7 @@ module ekaci {
     }),
     ingress_queue' = ingress_queue.union(Set(drv)),
     recorder_queue' = recorder_queue.exclude(Set((drv, Completed(Failure)))),
+    eval_only' = eval_only,
     deps' = deps,
     referrers' = referrers,
     failed_drvs' = failed_drvs,
@@ -442,6 +470,7 @@ module ekaci {
       failed_drvs' = failed_drvs.union(Set(drv)),
       transitive_failure_map' = transitive_failure_map.put(drv, blocked),
       recorder_queue' = recorder_queue.exclude(Set((drv, Completed(Failure)))),
+      eval_only' = eval_only,
       deps' = deps,
       referrers' = referrers,
       ingress_queue' = ingress_queue,
@@ -475,6 +504,7 @@ module ekaci {
     }),
     ingress_queue' = ingress_queue.union(Set(drv)),
     recorder_queue' = recorder_queue.exclude(Set((drv, Interrupted(kind)))),
+    eval_only' = eval_only,
     deps' = deps,
     referrers' = referrers,
     failed_drvs' = failed_drvs,
@@ -511,6 +541,7 @@ module ekaci {
       failed_drvs' = failed_drvs.union(Set(drv)),
       transitive_failure_map' = transitive_failure_map.put(drv, blocked),
       recorder_queue' = recorder_queue.exclude(Set((drv, Interrupted(kind)))),
+      eval_only' = eval_only,
       deps' = deps,
       referrers' = referrers,
       ingress_queue' = ingress_queue,
@@ -546,6 +577,7 @@ module ekaci {
       failed_drvs' = failed_drvs.union(Set(drv)),
       transitive_failure_map' = transitive_failure_map.put(drv, blocked),
       recorder_queue' = recorder_queue.exclude(Set((drv, Interrupted(kind)))),
+      eval_only' = eval_only,
       deps' = deps,
       referrers' = referrers,
       ingress_queue' = ingress_queue,
@@ -562,6 +594,7 @@ module ekaci {
     not(build_queue.contains(drv)),
     nodes.get(drv).state != Building,
     recorder_queue' = recorder_queue.union(Set((drv, Completed(Success)))),
+    eval_only' = eval_only,
     ingress_queue' = ingress_queue.exclude(Set(drv)),
     nodes' = nodes,
     deps' = deps,
@@ -601,6 +634,7 @@ module ekaci {
         else transitive_failure_map,
       ingress_queue' = ingress_queue.union(Set(drv)).union(unblocked),
       recorder_queue' = recorder_queue,
+      eval_only' = eval_only,
       deps' = deps,
       referrers' = referrers,
       build_queue' = build_queue,
@@ -609,7 +643,8 @@ module ekaci {
 
   // Crash recovery: normalize transient states. FailedRetry is preserved
   // so the retry budget is not reset across restarts. Building and
-  // Buildable are transient and reset to Queued.
+  // Buildable are transient and reset to Queued. Only traversed drvs are
+  // reloaded into the graph, so eval-only drvs stay out of `nodes`.
   action crash_recovery: bool = {
     val building_drvs = nodes.keys().filter(d =>
       val s = nodes.get(d).state
@@ -635,6 +670,7 @@ module ekaci {
       ingress_queue' = ingress_queue.union(all_transient).union(startup_recheck),
       build_queue' = Set(),
       recorder_queue' = Set(),
+      eval_only' = eval_only,
       deps' = deps,
       referrers' = referrers,
       failed_drvs' = failed_drvs,
@@ -656,8 +692,12 @@ module ekaci {
     nondet fod = oneOf(Set(true, false))
     eval_discover(drv, sys, fod, Set(dep)),
 
+    nondet drv = oneOf(Set("d1", "d2", "d3", "d4", "d5", "d6"))
+    eval_record(drv),
+
     nondet drv = oneOf(ingress_queue)
-    ingress_process(drv),
+    nondet send_ok = oneOf(Set(true, false))
+    ingress_route(drv, send_ok),
 
     nondet drv = oneOf(build_queue)
     start_build(drv),
@@ -820,6 +860,16 @@ module ekaci {
         }
       else true
     )
+
+  // INV11: Eval-only (non-traversed) drvs are never part of the graph or
+  // any scheduler queue, so skipped jobs are never built.
+  val inv_eval_only_not_scheduled: bool =
+    eval_only.forall(d =>
+      not(nodes.keys().contains(d)) and
+      not(ingress_queue.contains(d)) and
+      not(build_queue.contains(d)) and
+      not(recorder_queue.exists(pair => pair._1 == d))
+    )
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────
@@ -975,6 +1025,43 @@ module ekaci_test {
     })
   }
 
+  // Test: Jobs skipped by selective traversal stay out of the graph,
+  // survive a restart without being scheduled, and can later be promoted
+  // by a traversal (e.g. a later eval selects them).
+  run eval_only_not_scheduled_test = {
+    init
+    .then(eval_record("skipped"))
+    .then(eval_record("selected"))
+    // Selective traversal promotes "selected" into the graph.
+    .then(eval_discover_leaf("selected", "x86_64-linux", false))
+    .then(all {
+      assert(eval_only == Set("skipped")),
+      assert(nodes.keys() == Set("selected")),
+      assert(not(ingress_queue.contains("skipped"))),
+      unchanged,
+    })
+    .then(ingress_process("selected"))
+    .then(start_build("selected"))
+    // Crash! Only traversed drvs are reloaded.
+    .then(crash_recovery)
+    .then(all {
+      assert(nodes.get("selected").state == Queued),
+      assert(not(nodes.keys().contains("skipped"))),
+      assert(not(ingress_queue.contains("skipped"))),
+      assert(eval_only == Set("skipped")),
+      assert(inv_eval_only_not_scheduled),
+      unchanged,
+    })
+    // A later eval selects the previously skipped job.
+    .then(eval_discover_leaf("skipped", "x86_64-linux", false))
+    .then(all {
+      assert(eval_only == Set()),
+      assert(nodes.get("skipped").state == Queued),
+      assert(ingress_queue.contains("skipped")),
+      unchanged,
+    })
+  }
+
   // Test: Multiple blocking failures
   run multiple_blockers_test = {
     init
@@ -1122,6 +1209,7 @@ module ekaci_test {
       transitive_failure_map' = transitive_failure_map,
       build_queue' = build_queue,
       recorder_queue' = recorder_queue,
+      eval_only' = eval_only,
     })
     .then(sweep_buildable("stuck"))
     .then(all {
@@ -1140,25 +1228,8 @@ module ekaci_test {
   run deferred_buildable_test = {
     init
     .then(eval_discover_leaf("ready", "x86_64-linux", false))
-    .then(ingress_process("ready"))
     // Ingress marks it Buildable but try_send fails (channel full).
-    // We need to pick the nondeterministic branch where build_queue
-    // is NOT updated. Since ingress_process uses `any`, we verify
-    // the Buildable state is set and then manually simulate the
-    // deferred case.
-    .then(all {
-      // After ingress_process, "ready" is Buildable.
-      // Simulate the try_send failure: remove from build_queue.
-      assert(nodes.get("ready").state == Buildable),
-      build_queue' = build_queue.exclude(Set("ready")),
-      ingress_queue' = ingress_queue,
-      nodes' = nodes,
-      deps' = deps,
-      referrers' = referrers,
-      failed_drvs' = failed_drvs,
-      transitive_failure_map' = transitive_failure_map,
-      recorder_queue' = recorder_queue,
-    })
+    .then(ingress_route("ready", false))
     .then(all {
       // Buildable but not in build_queue — deferred
       assert(nodes.get("ready").state == Buildable),
@@ -1175,7 +1246,7 @@ module ekaci_test {
     .then(ingress_process("ready"))
     .then(all {
       assert(nodes.get("ready").state == Buildable),
-      // This time try_send succeeds (nondeterministic, but we assert it)
+      // This time try_send succeeds
       assert(build_queue.contains("ready")),
       unchanged,
     })

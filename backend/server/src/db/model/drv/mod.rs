@@ -5,8 +5,12 @@ use sqlx::FromRow;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 
+mod insert;
 mod queries;
+mod traversal;
+pub use insert::*;
 pub use queries::*;
+pub use traversal::*;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct Drv {

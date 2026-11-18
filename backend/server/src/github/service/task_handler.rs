@@ -112,9 +112,16 @@ impl GitHubService {
                 name,
                 jobs,
                 config_json,
+                selected_jobs,
             } => {
-                self.create_job_set(ci_check_info, name, jobs, config_json.as_deref())
-                    .await?;
+                self.create_job_set(
+                    ci_check_info,
+                    name,
+                    jobs,
+                    config_json.as_deref(),
+                    selected_jobs.as_ref(),
+                )
+                .await?;
             },
             GitHubTask::CreateCIConfigureGate { ci_check_info } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
@@ -161,6 +168,7 @@ impl GitHubService {
                 ci_check_info,
                 job_name,
                 conclusion,
+                summary,
             } => {
                 let octocrab = self.octocrab_for_owner(&ci_check_info.owner)?;
                 // Try in-memory map first, then fall back to GitHub API lookup
@@ -208,6 +216,7 @@ impl GitHubService {
                     check_run_id,
                     CheckRunStatus::Completed,
                     (*conclusion).into(),
+                    summary.as_deref(),
                 )
                 .await?;
             },

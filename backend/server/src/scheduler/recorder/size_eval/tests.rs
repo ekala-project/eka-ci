@@ -3,7 +3,7 @@
 use std::str::FromStr;
 
 use super::*;
-use crate::db::DbService;
+use crate::db::{DbService, NewGitHubJobset};
 use crate::nix::NixEvalDrv;
 
 const BASE_DRV: &str = "/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv";
@@ -30,29 +30,31 @@ fn hello(drv_path: &str) -> NixEvalDrv {
 async fn base_and_head(db: &DbService) -> Result<(i64, i64)> {
     let jobs = [hello(BASE_DRV)];
     let base = db
-        .create_github_jobset_with_jobs(
-            "base-sha",
-            "packages",
-            "owner",
-            "repo",
-            &jobs,
-            Some(JOB_CONFIG),
-            None,
-        )
+        .create_github_jobset(&NewGitHubJobset {
+            sha: "base-sha",
+            name: "packages",
+            owner: "owner",
+            repo_name: "repo",
+            jobs: &jobs,
+            config_json: Some(JOB_CONFIG),
+            base_sha: None,
+            selected: None,
+        })
         .await?;
     size::set_jobset_branch(&db.pool, base, "master").await?;
 
     let jobs = [hello(HEAD_DRV)];
     let head = db
-        .create_github_jobset_with_jobs(
-            "head-sha",
-            "packages",
-            "owner",
-            "repo",
-            &jobs,
-            Some(JOB_CONFIG),
-            Some("base-sha"),
-        )
+        .create_github_jobset(&NewGitHubJobset {
+            sha: "head-sha",
+            name: "packages",
+            owner: "owner",
+            repo_name: "repo",
+            jobs: &jobs,
+            config_json: Some(JOB_CONFIG),
+            base_sha: Some("base-sha"),
+            selected: None,
+        })
         .await?;
     Ok((base, head))
 }

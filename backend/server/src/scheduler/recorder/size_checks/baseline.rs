@@ -114,8 +114,8 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::db::DbService;
     use crate::db::size::BaselineKey;
+    use crate::db::{DbService, NewGitHubJobset};
     use crate::nix::NixEvalDrv;
 
     const BASE_DRV: &str = "/nix/store/jd83l3jn2mkn530lgcg0y523jq5qji85-hello-2.12.1.drv";
@@ -137,15 +137,16 @@ mod tests {
     }
 
     async fn jobset(db: &DbService, sha: &str, drv: &str, base: Option<&str>) -> Result<i64> {
-        db.create_github_jobset_with_jobs(
+        db.create_github_jobset(&NewGitHubJobset {
             sha,
-            "packages",
-            "owner",
-            "repo",
-            &[hello(drv)],
-            Some(JOB_CONFIG),
-            base,
-        )
+            name: "packages",
+            owner: "owner",
+            repo_name: "repo",
+            jobs: &[hello(drv)],
+            config_json: Some(JOB_CONFIG),
+            base_sha: base,
+            selected: None,
+        })
         .await
     }
 

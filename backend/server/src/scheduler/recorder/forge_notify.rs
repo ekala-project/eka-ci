@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tracing::{debug, warn};
+use tracing::warn;
 
 use super::{RecorderTask, RecorderWorker};
 use crate::channels::types::ChannelTask;
@@ -159,51 +159,12 @@ impl RecorderWorker {
 
             // Check if this is a PR that should be auto-merged
             if !has_failures {
-                self.check_auto_merge(&jobset_info, github_sender).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Check if a PR associated with a jobset should be auto-merged.
-    async fn check_auto_merge(
-        &self,
-        jobset_info: &crate::db::github::JobSetInfo,
-        github_sender: &tokio::sync::mpsc::Sender<GitHubTask>,
-    ) -> anyhow::Result<()> {
-        if let Ok(Some(pr)) = crate::db::github::get_pr_by_head_sha(
-            &jobset_info.sha,
-            &jobset_info.owner,
-            &jobset_info.repo_name,
-            &self.db_service.pool,
-        )
-        .await
-        {
-            // Fire CheckAutoMerge if UI auto-merge is on or a
-            // comment-merge is pending. The handler re-validates all
-            // gates (SHA-drift included), so over-triggering is safe.
-            let has_pending_comment_merge = pr.comment_merge_sha.is_some();
-            let is_open = pr.state == "open";
-            if is_open && (pr.auto_merge_enabled || has_pending_comment_merge) {
-                debug!(
-                    "PR #{} eligible for auto-merge check (auto_merge={}, \
-                     comment_merge_pending={}), scheduling",
-                    pr.pr_number, pr.auto_merge_enabled, has_pending_comment_merge
-                );
-
-                let auto_merge_task = GitHubTask::CheckAutoMerge {
-                    owner: jobset_info.owner.clone(),
-                    repo_name: jobset_info.repo_name.clone(),
-                    pr_number: pr.pr_number,
-                };
-
-                if let Err(e) = github_sender.send(auto_merge_task).await {
-                    warn!(
-                        "Failed to send CheckAutoMerge for PR #{}: {:?}",
-                        pr.pr_number, e
-                    );
-                }
+                crate::github::service::request_auto_merge_check(
+                    &self.db_service,
+                    &jobset_info,
+                    github_sender,
+                )
+                .await;
             }
         }
 
