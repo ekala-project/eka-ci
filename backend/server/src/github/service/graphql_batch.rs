@@ -14,6 +14,8 @@ use octocrab::Octocrab;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use crate::github::output_limit::cap_output;
+
 /// Maximum number of mutations per GraphQL request.
 /// GitHub's GraphQL has complexity limits; 50 is safe.
 const MAX_BATCH_SIZE: usize = 50;
@@ -88,7 +90,7 @@ impl CheckRunBatcher {
             owner: owner.to_string(),
             status,
             conclusion,
-            log_tail,
+            log_tail: log_tail.map(cap_output),
             output_title: None,
         });
     }
@@ -111,7 +113,7 @@ impl CheckRunBatcher {
             owner: owner.to_string(),
             status,
             conclusion,
-            log_tail: Some(summary),
+            log_tail: Some(cap_output(summary)),
             output_title: Some(output_title),
         });
     }

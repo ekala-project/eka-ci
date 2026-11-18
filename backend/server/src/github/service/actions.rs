@@ -8,6 +8,7 @@ use tracing::debug;
 
 use crate::auth::types::GitHubPermission;
 use crate::github::CICheckInfo;
+use crate::github::output_limit::{cap_output, cap_output_str};
 use crate::nix::NixEvalError;
 
 /// This will send an initial ci gate which is used to determine what gates
@@ -76,7 +77,7 @@ pub async fn update_ci_configure_gate_with_summary(
     if !summary.is_empty() {
         let output = octocrab::params::checks::CheckRunOutput {
             title: "Configuration".to_string(),
-            summary: summary.to_string(),
+            summary: cap_output_str(summary),
             text: None,
             annotations: vec![],
             images: vec![],
@@ -272,7 +273,7 @@ pub async fn fail_ci_eval_job(
 
     let check_run_output = octocrab::params::checks::CheckRunOutput {
         title: "Evaluation errors".to_string(),
-        summary,
+        summary: cap_output(summary),
         text: None,
         annotations: vec![],
         images: vec![],
@@ -386,8 +387,12 @@ pub async fn update_check_run(
         } else {
             format!("Check failed (exit code {})", exit_code)
         },
-        summary,
-        text: if text.is_empty() { None } else { Some(text) },
+        summary: cap_output(summary),
+        text: if text.is_empty() {
+            None
+        } else {
+            Some(cap_output(text))
+        },
         annotations: vec![],
         images: vec![],
     };
@@ -693,7 +698,7 @@ pub async fn create_dependency_changes_gate(
                 total_packages_with_changes
             )
         },
-        summary,
+        summary: cap_output(summary),
         text: None,
         annotations: vec![],
         images: vec![],
@@ -719,23 +724,6 @@ pub async fn create_dependency_changes_gate(
 /// Title for the per-commit aggregated change-summary check run.
 pub(crate) const CHANGE_SUMMARY_CHECK_TITLE: &str = "EkaCI: Change Summary";
 
-/// Defense-in-depth byte ceiling against GitHub's 65,535 summary cap.
-const CHANGE_SUMMARY_HARD_CAP: usize = 65_500;
-
-/// UTF-8-safe truncate to `CHANGE_SUMMARY_HARD_CAP` with a footer marker.
-fn cap_summary_bytes(mut summary: String) -> String {
-    if summary.len() <= CHANGE_SUMMARY_HARD_CAP {
-        return summary;
-    }
-    let mut cut = CHANGE_SUMMARY_HARD_CAP;
-    while cut > 0 && !summary.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    summary.truncate(cut);
-    summary.push_str("\n\n_…truncated by sender safety net_\n");
-    summary
-}
-
 /// Create the informational change-summary check run for a head SHA.
 pub async fn create_change_summary_check(
     octocrab: &Octocrab,
@@ -749,7 +737,7 @@ pub async fn create_change_summary_check(
         &ci_check_info.commit
     );
 
-    let summary = cap_summary_bytes(markdown_summary);
+    let summary = cap_output(markdown_summary);
 
     let output = octocrab::params::checks::CheckRunOutput {
         title: CHANGE_SUMMARY_CHECK_TITLE.to_string(),
@@ -776,45 +764,6 @@ pub async fn create_change_summary_check(
     Ok(check_run)
 }
 
-#[cfg(test)]
-mod change_summary_tests {
-    use super::{CHANGE_SUMMARY_HARD_CAP, cap_summary_bytes};
-
-    #[test]
-    fn cap_summary_bytes_short_input_is_unchanged() {
-        let input = "# small markdown\n\nbody".to_string();
-        let original = input.clone();
-        assert_eq!(cap_summary_bytes(input), original);
-    }
-
-    #[test]
-    fn cap_summary_bytes_truncates_oversized_input() {
-        let big = "a".repeat(CHANGE_SUMMARY_HARD_CAP + 5_000);
-        let out = cap_summary_bytes(big);
-        assert!(
-            out.len() <= CHANGE_SUMMARY_HARD_CAP + 64,
-            "output should be near the cap (got {})",
-            out.len()
-        );
-        assert!(
-            out.contains("truncated by sender safety net"),
-            "footer should be appended"
-        );
-    }
-
-    #[test]
-    fn cap_summary_bytes_preserves_utf8_boundary() {
-        // Multibyte codepoint straddling the cut point must not panic.
-        let prefix = "x".repeat(CHANGE_SUMMARY_HARD_CAP - 2);
-        let mut s = prefix.clone();
-        s.push('🦀');
-        s.push_str(&"y".repeat(100));
-        let out = cap_summary_bytes(s);
-        assert!(out.starts_with(&prefix));
-        assert!(out.contains("truncated by sender safety net"));
-    }
-}
-
 /// Patch an existing change-summary check run in place.
 pub async fn update_change_summary_check(
     octocrab: &Octocrab,
@@ -829,7 +778,7 @@ pub async fn update_change_summary_check(
         check_run_id, &ci_check_info.commit
     );
 
-    let summary = cap_summary_bytes(markdown_summary);
+    let summary = cap_output(markdown_summary);
 
     let output = octocrab::params::checks::CheckRunOutput {
         title: CHANGE_SUMMARY_CHECK_TITLE.to_string(),

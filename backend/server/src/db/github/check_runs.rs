@@ -8,6 +8,7 @@ use sqlx::{Pool, Sqlite};
 use super::super::model::DrvId;
 use super::super::model::build_event::DrvBuildState;
 use super::types::CheckRun;
+use crate::github::output_limit::{cap_output, cap_output_str};
 
 impl CheckRun {
     pub async fn send_gh_update(
@@ -38,7 +39,7 @@ impl CheckRun {
         if let Some(log) = log_tail {
             let output = octocrab::params::checks::CheckRunOutput {
                 title: format!("{:?}", status),
-                summary: format!("```\n{}\n```", log),
+                summary: cap_output(format!("```\n{}\n```", log)),
                 text: None,
                 annotations: vec![],
                 images: vec![],
@@ -72,7 +73,7 @@ impl CheckRun {
 
         let output = octocrab::params::checks::CheckRunOutput {
             title: title.to_string(),
-            summary: summary_markdown.to_string(),
+            summary: cap_output_str(summary_markdown),
             text: None,
             annotations: vec![],
             images: vec![],

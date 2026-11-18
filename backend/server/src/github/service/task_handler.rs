@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use tracing::{debug, warn};
 
 use super::GitHubService;
+use crate::github::output_limit::cap_output;
 use crate::github::service::{GitHubTask, actions};
 
 impl GitHubService {
@@ -441,8 +442,12 @@ impl GitHubService {
 
         let output = octocrab::params::checks::CheckRunOutput {
             title,
-            summary,
-            text: if text.is_empty() { None } else { Some(text) },
+            summary: cap_output(summary),
+            text: if text.is_empty() {
+                None
+            } else {
+                Some(cap_output(text))
+            },
             annotations: vec![],
             images: vec![],
         };

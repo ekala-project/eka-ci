@@ -5,6 +5,7 @@ use tracing::{info, warn};
 
 use crate::config::GitHubAppConfig;
 
+pub(crate) mod output_limit;
 mod reconciler;
 pub mod service;
 mod webhook;
