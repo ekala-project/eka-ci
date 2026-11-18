@@ -233,16 +233,23 @@ impl CICheckInfo {
     /// Create a coalesced check run that represents multiple variants of
     /// a package group. The `summary_markdown` is shown in the check run's
     /// output body with a per-variant status table.
-    pub async fn create_coalesced_gh_check_run(
+    pub(crate) async fn create_coalesced_gh_check_run(
         &self,
         octocrab: &Octocrab,
         jobset_name: &str,
         group_name: &str,
+        kind: super::gate_kind::GateKind,
         worst_build_state: DrvBuildState,
         worst_difference: &JobDifference,
         summary_markdown: &str,
     ) -> Result<CheckRun> {
-        let title = format!("{} / {} ({})", group_name, worst_difference, jobset_name);
+        let title = format!(
+            "{} {} / {} ({})",
+            group_name,
+            kind.label(),
+            worst_difference,
+            jobset_name
+        );
         let (gh_status, gh_conclusion) = worst_build_state.as_gh_checkrun_state();
         self.inner_gh_check_run_with_output(
             octocrab,

@@ -182,6 +182,7 @@ impl GitHubService {
                         &octocrab,
                         &jobset_info.job,
                         group_prefix,
+                        super::gate_kind::GateKind::of(group_prefix, &summary_variants),
                         worst_state,
                         &worst_diff,
                         &summary,

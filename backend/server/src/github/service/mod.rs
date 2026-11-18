@@ -25,6 +25,7 @@ mod auto_merge;
 mod change_summary;
 mod checks;
 mod concluded;
+mod gate_kind;
 pub mod graphql_batch;
 mod jobsets;
 mod passthru_filter;
