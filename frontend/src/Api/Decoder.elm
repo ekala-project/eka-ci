@@ -122,13 +122,6 @@ jobSetDetails =
         |> andMap (D.field "transitive_failure_drvs" D.int)
         |> andMap (D.field "blocked_drvs" D.int)
         |> andMap (D.field "interrupted_drvs" D.int)
-        |> andMap (D.succeed 0)
-        -- completedDrvs: computed field for backwards compat
-        |> andMap (D.succeed 0)
-
-
-
--- failedDrvs: computed field for backwards compat
 
 
 {-| Decode a JobSetDrv from JSON.
@@ -258,6 +251,9 @@ buildState =
                         "Blocked" ->
                             D.succeed BS.Blocked
 
+                        "UnsatisfiableRequirements" ->
+                            D.succeed BS.UnsatisfiableRequirements
+
                         _ ->
                             D.fail ("Unknown build state: " ++ str)
                 )
@@ -306,6 +302,9 @@ interruptionKind =
 
                     "ProcessDeath" ->
                         D.succeed BS.ProcessDeath
+
+                    "SchedulerDeath" ->
+                        D.succeed BS.SchedulerDeath
 
                     _ ->
                         D.fail ("Unknown interruption kind: " ++ str)

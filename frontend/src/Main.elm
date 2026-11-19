@@ -1,20 +1,18 @@
 module Main exposing (main)
 
-{-| Main application entry point.
-
-This module sets up routing, manages page state, and coordinates
-the overall application structure.
-
+{-| Application entry point: routing, page state, auth, theme and the
+shared WebSocket status.
 -}
 
 import Auth exposing (AuthState, User)
 import Browser
+import Browser.Dom as Dom
 import Browser.Navigation as Nav
 import Components.Header as Header
-import Html exposing (Html, div, text)
-import Html.Attributes exposing (class)
+import Components.Ui as Ui
+import Html exposing (Html, a, main_, text)
+import Html.Attributes exposing (class, href, id, tabindex)
 import Http
-import Json.Decode as D
 import Json.Encode as E
 import Pages.Admin as Admin
 import Pages.AttrPathSearch as AttrPathSearch
@@ -29,18 +27,17 @@ import Pages.Repository as Repository
 import Pages.Reviews as Reviews
 import Ports
 import Route exposing (Route)
+import Task
+import Theme exposing (Theme)
 import Url exposing (Url)
 
 
-{-| Flags passed from JavaScript on initialization.
--}
 type alias Flags =
     { apiBaseUrl : String
+    , theme : String
     }
 
 
-{-| Main program entry point.
--}
 main : Program Flags Model Msg
 main =
     Browser.application
@@ -57,19 +54,18 @@ main =
 -- MODEL
 
 
-{-| Application model tracking navigation, current page, auth state, and configuration.
--}
 type alias Model =
     { navKey : Nav.Key
+    , url : Url
     , route : Route
     , page : Page
     , authState : AuthState
     , apiBaseUrl : String
+    , theme : Theme
+    , live : Header.Live
     }
 
 
-{-| The current page and its state.
--}
 type Page
     = HomePage Home.Model
     | BuildsPage Builds.Model
@@ -82,146 +78,105 @@ type Page
     | ProfilePage Profile.Model
     | AttrPathSearchPage AttrPathSearch.Model
     | AuthCallbackPage AuthCallback.Model
+      -- A signed-in page, waiting for (or lacking) a signed-in user.
+    | AuthRequiredPage
+    | ForbiddenPage
     | NotFoundPage
 
 
-{-| Initialize the application.
--}
 init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
 init flags url navKey =
     let
         route =
             Route.fromUrl url
 
-        initialAuthState =
-            Auth.init
-
         ( page, cmd ) =
-            initPage flags.apiBaseUrl url route initialAuthState
+            initPage flags.apiBaseUrl url route Auth.init
     in
     ( { navKey = navKey
+      , url = url
       , route = route
       , page = page
-      , authState = initialAuthState
+      , authState = Auth.init
       , apiBaseUrl = flags.apiBaseUrl
+      , theme = Theme.fromString flags.theme
+      , live = Header.Connecting
       }
     , cmd
     )
 
 
-{-| Initialize a page based on the current route.
--}
-initPage : String -> Url -> Route -> Auth.AuthState -> ( Page, Cmd Msg )
+initPage : String -> Url -> Route -> AuthState -> ( Page, Cmd Msg )
 initPage apiBaseUrl url route authState =
     case route of
         Route.Home ->
-            let
-                ( model, cmd ) =
-                    Home.init apiBaseUrl
-            in
-            ( HomePage model, Cmd.map HomeMsg cmd )
+            Home.init apiBaseUrl |> initWith HomePage HomeMsg
 
         Route.Builds ->
-            let
-                ( model, cmd ) =
-                    Builds.init apiBaseUrl
-            in
-            ( BuildsPage model
-            , Cmd.batch
-                [ Cmd.map BuildsMsg cmd
-                , Ports.websocketOut (Ports.encodeSubscribeMessage "allbuilds" "all")
-                ]
-            )
+            Builds.init apiBaseUrl
+                |> initWith BuildsPage BuildsMsg
+                |> Tuple.mapSecond (\cmd -> Cmd.batch [ cmd, Ports.websocketOut (Ports.encodeSubscribeMessage "allbuilds" "all") ])
 
         Route.Reviews ->
-            let
-                ( model, cmd ) =
-                    Reviews.init apiBaseUrl
-            in
-            ( ReviewsPage model, Cmd.map ReviewsMsg cmd )
+            Reviews.init apiBaseUrl |> initWith ReviewsPage ReviewsMsg
 
         Route.PullRequest _ _ _ ->
-            -- PR detail page not implemented yet
             ( NotFoundPage, Cmd.none )
 
         Route.Repository owner repo ->
-            let
-                ( model, cmd ) =
-                    Repository.init apiBaseUrl owner repo
-            in
-            ( RepositoryPage model, Cmd.map RepositoryMsg cmd )
+            Repository.init apiBaseUrl owner repo |> initWith RepositoryPage RepositoryMsg
 
         Route.Commit sha ->
-            let
-                ( model, cmd ) =
-                    Commit.init apiBaseUrl sha
-            in
-            ( CommitPage model, Cmd.map CommitMsg cmd )
+            Commit.init apiBaseUrl sha |> initWith CommitPage CommitMsg
 
         Route.Job jobsetId ->
-            let
-                ( model, cmd ) =
-                    Job.init apiBaseUrl jobsetId authState
-            in
-            ( JobPage model, Cmd.map JobMsg cmd )
+            Job.init apiBaseUrl jobsetId authState |> initWith JobPage JobMsg
 
         Route.Drv drvPath ->
-            let
-                ( model, cmd ) =
-                    Drv.init apiBaseUrl drvPath
-            in
-            ( DrvPage model, Cmd.map DrvMsg cmd )
+            Drv.init apiBaseUrl drvPath |> initWith DrvPage DrvMsg
 
         Route.Admin ->
-            case Auth.getToken authState of
-                Just token ->
-                    let
-                        ( model, cmd ) =
-                            Admin.init apiBaseUrl token
-                    in
-                    ( AdminPage model, Cmd.map AdminMsg cmd )
-
-                Nothing ->
-                    -- Redirect to home if not authenticated
-                    ( NotFoundPage, Cmd.none )
+            signedIn authState True (\token -> Admin.init apiBaseUrl token |> initWith AdminPage AdminMsg)
 
         Route.Profile ->
-            case Auth.getToken authState of
-                Just token ->
-                    let
-                        ( model, cmd ) =
-                            Profile.init apiBaseUrl token
-                    in
-                    ( ProfilePage model, Cmd.map ProfileMsg cmd )
-
-                Nothing ->
-                    -- Redirect to home if not authenticated
-                    ( NotFoundPage, Cmd.none )
+            signedIn authState False (\token -> Profile.init apiBaseUrl token |> initWith ProfilePage ProfileMsg)
 
         Route.AttrPathSearch ->
-            let
-                ( model, cmd ) =
-                    AttrPathSearch.init apiBaseUrl authState
-            in
-            ( AttrPathSearchPage model, Cmd.map AttrPathSearchMsg cmd )
+            AttrPathSearch.init apiBaseUrl authState |> initWith AttrPathSearchPage AttrPathSearchMsg
 
         Route.AuthCallback ->
-            let
-                ( model, cmd ) =
-                    AuthCallback.init url
-            in
-            ( AuthCallbackPage model, Cmd.map AuthCallbackMsg cmd )
+            AuthCallback.init url |> initWith AuthCallbackPage AuthCallbackMsg
 
         Route.NotFound ->
             ( NotFoundPage, Cmd.none )
+
+
+initWith : (subModel -> Page) -> (subMsg -> Msg) -> ( subModel, Cmd subMsg ) -> ( Page, Cmd Msg )
+initWith toPage toMsg ( subModel, cmd ) =
+    ( toPage subModel, Cmd.map toMsg cmd )
+
+
+{-| Pages that need a signed-in user (and maybe an admin) wait until the user
+is known, so they never fire requests that are bound to fail.
+-}
+signedIn : AuthState -> Bool -> (String -> ( Page, Cmd Msg )) -> ( Page, Cmd Msg )
+signedIn authState adminOnly build =
+    case ( Auth.getToken authState, authState.user ) of
+        ( Just token, Just user ) ->
+            if adminOnly && not user.isAdmin then
+                ( ForbiddenPage, Cmd.none )
+
+            else
+                build token
+
+        _ ->
+            ( AuthRequiredPage, Cmd.none )
 
 
 
 -- UPDATE
 
 
-{-| Application messages.
--}
 type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url
@@ -238,365 +193,240 @@ type Msg
     | AuthCallbackMsg AuthCallback.Msg
     | WebSocketMessage Ports.IncomingMessage
     | TokenReceived (Maybe String)
-    | GotUserInfo (Result Http.Error User)
+    | GotUserInfo String (Result Http.Error User)
     | LogoutRequested
+    | ThemeToggled
+    | NoOp
 
 
-{-| Update the application state.
--}
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        LinkClicked urlRequest ->
-            case urlRequest of
-                Browser.Internal url ->
-                    -- Backend routes (like OAuth) need full page navigation
-                    if isBackendRoute url then
-                        ( model, Nav.load (Url.toString url) )
-
-                    else
-                        ( model, Nav.pushUrl model.navKey (Url.toString url) )
-
-                Browser.External href ->
-                    ( model, Nav.load href )
+        LinkClicked request ->
+            linkClicked request model
 
         UrlChanged url ->
-            let
-                newRoute =
-                    Route.fromUrl url
+            urlChanged url model
 
-                -- Unsubscribe from old page resources
-                unsubscribeCmd =
-                    unsubscribeFromPage model.page
+        WebSocketMessage incoming ->
+            routeSocketMessage incoming model
 
-                ( newPage, cmd ) =
-                    initPage model.apiBaseUrl url newRoute model.authState
-            in
-            ( { model
-                | route = newRoute
-                , page = newPage
-              }
-            , Cmd.batch [ unsubscribeCmd, cmd ]
-            )
+        TokenReceived (Just token) ->
+            ( { model | authState = Auth.updateToken (Just token) model.authState }, fetchUserInfo token )
 
-        HomeMsg homeMsg ->
-            case model.page of
-                HomePage homeModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Home.update homeMsg homeModel
-                    in
-                    ( { model | page = HomePage newModel }
-                    , Cmd.map HomeMsg cmd
-                    )
+        TokenReceived Nothing ->
+            ( withAuth (Auth.finishLoading model.authState) model, Cmd.none )
 
-                _ ->
-                    ( model, Cmd.none )
-
-        BuildsMsg buildsMsg ->
-            case model.page of
-                BuildsPage buildsModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Builds.update buildsMsg buildsModel
-                    in
-                    ( { model | page = BuildsPage newModel }
-                    , Cmd.map BuildsMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        ReviewsMsg reviewsMsg ->
-            case model.page of
-                ReviewsPage reviewsModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Reviews.update reviewsMsg reviewsModel
-                    in
-                    ( { model | page = ReviewsPage newModel }
-                    , Cmd.map ReviewsMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        CommitMsg commitMsg ->
-            case model.page of
-                CommitPage commitModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Commit.update commitMsg commitModel
-                    in
-                    ( { model | page = CommitPage newModel }
-                    , Cmd.map CommitMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        AdminMsg adminMsg ->
-            case model.page of
-                AdminPage adminModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Admin.update adminMsg adminModel
-                    in
-                    ( { model | page = AdminPage newModel }
-                    , Cmd.map AdminMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        ProfileMsg profileMsg ->
-            case model.page of
-                ProfilePage profileModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Profile.update profileMsg profileModel
-                    in
-                    ( { model | page = ProfilePage newModel }
-                    , Cmd.map ProfileMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        AttrPathSearchMsg attrPathSearchMsg ->
-            case model.page of
-                AttrPathSearchPage attrPathSearchModel ->
-                    let
-                        ( newModel, cmd ) =
-                            AttrPathSearch.update attrPathSearchMsg attrPathSearchModel
-                    in
-                    ( { model | page = AttrPathSearchPage newModel }
-                    , Cmd.map AttrPathSearchMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        AuthCallbackMsg authCallbackMsg ->
-            case model.page of
-                AuthCallbackPage authCallbackModel ->
-                    let
-                        ( newModel, cmd ) =
-                            AuthCallback.update authCallbackMsg authCallbackModel
-                    in
-                    -- Check if login was successful
-                    case newModel of
-                        AuthCallback.Success token user ->
-                            -- Login successful! Store token and redirect
-                            ( { model
-                                | page = AuthCallbackPage newModel
-                                , authState =
-                                    model.authState
-                                        |> Auth.updateToken (Just token)
-                                        |> Auth.updateUser (Just user)
-                              }
-                            , Cmd.batch
-                                [ Cmd.map AuthCallbackMsg cmd
-                                , Ports.storeToken token
-                                , Nav.pushUrl model.navKey (Route.toHref Route.Home)
-                                ]
-                            )
-
-                        _ ->
-                            ( { model | page = AuthCallbackPage newModel }
-                            , Cmd.map AuthCallbackMsg cmd
-                            )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        RepositoryMsg repoMsg ->
-            case model.page of
-                RepositoryPage repoModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Repository.update repoMsg repoModel
-                    in
-                    ( { model | page = RepositoryPage newModel }
-                    , Cmd.map RepositoryMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        JobMsg jobMsg ->
-            case model.page of
-                JobPage jobModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Job.update jobMsg jobModel
-                    in
-                    ( { model | page = JobPage newModel }
-                    , Cmd.map JobMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        DrvMsg drvMsg ->
-            case model.page of
-                DrvPage drvModel ->
-                    let
-                        ( newModel, cmd ) =
-                            Drv.update drvMsg drvModel
-                    in
-                    ( { model | page = DrvPage newModel }
-                    , Cmd.map DrvMsg cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        WebSocketMessage wsMsg ->
-            case wsMsg of
-                Ports.Connected ->
-                    -- WebSocket connected, no action needed
-                    ( model, Cmd.none )
-
-                Ports.Disconnected ->
-                    -- WebSocket disconnected, no action needed
-                    -- TODO: Show connection status indicator
-                    ( model, Cmd.none )
-
-                Ports.Error errorMsg ->
-                    -- WebSocket error, no action needed
-                    -- TODO: Log error or show to user
-                    ( model, Cmd.none )
-
-                Ports.BuildStateChange event ->
-                    -- Route to Job or Drv pages
-                    case model.page of
-                        JobPage jobModel ->
-                            let
-                                ( newModel, cmd ) =
-                                    Job.update (Job.BuildStateChanged event) jobModel
-                            in
-                            ( { model | page = JobPage newModel }
-                            , Cmd.map JobMsg cmd
-                            )
-
-                        DrvPage drvModel ->
-                            let
-                                ( newModel, cmd ) =
-                                    Drv.update (Drv.BuildStateChanged event) drvModel
-                            in
-                            ( { model | page = DrvPage newModel }
-                            , Cmd.map DrvMsg cmd
-                            )
-
-                        _ ->
-                            ( model, Cmd.none )
-
-                Ports.JobComplete event ->
-                    -- Route to Job or Commit pages
-                    case model.page of
-                        JobPage jobModel ->
-                            let
-                                ( newModel, cmd ) =
-                                    Job.update (Job.JobCompleted event) jobModel
-                            in
-                            ( { model | page = JobPage newModel }
-                            , Cmd.map JobMsg cmd
-                            )
-
-                        CommitPage commitModel ->
-                            let
-                                ( newModel, cmd ) =
-                                    Commit.update (Commit.JobCompleted event) commitModel
-                            in
-                            ( { model | page = CommitPage newModel }
-                            , Cmd.map CommitMsg cmd
-                            )
-
-                        _ ->
-                            ( model, Cmd.none )
-
-                Ports.JobStatsUpdate event ->
-                    -- Route to Builds page for job stats updates
-                    case model.page of
-                        BuildsPage buildsModel ->
-                            let
-                                newModel =
-                                    Builds.websocketUpdate event buildsModel
-                            in
-                            ( { model | page = BuildsPage newModel }
-                            , Cmd.none
-                            )
-
-                        _ ->
-                            ( model, Cmd.none )
-
-                Ports.LogLine event ->
-                    -- Route to Drv page for log viewer
-                    case model.page of
-                        DrvPage drvModel ->
-                            let
-                                ( newModel, cmd ) =
-                                    Drv.update (Drv.LogLineReceived event) drvModel
-                            in
-                            ( { model | page = DrvPage newModel }
-                            , Cmd.map DrvMsg cmd
-                            )
-
-                        _ ->
-                            ( model, Cmd.none )
-
-        TokenReceived maybeToken ->
-            case maybeToken of
-                Just token ->
-                    -- Token found in localStorage, fetch user info
-                    let
-                        newAuthState =
-                            Auth.updateToken (Just token) model.authState
-                    in
-                    ( { model | authState = newAuthState }
-                    , fetchUserInfo token
-                    )
-
-                Nothing ->
-                    -- No token in localStorage
-                    ( model, Cmd.none )
-
-        GotUserInfo result ->
-            case result of
-                Ok user ->
-                    let
-                        newAuthState =
-                            Auth.updateUser (Just user) model.authState
-                    in
-                    ( { model | authState = newAuthState }
-                    , Cmd.none
-                    )
-
-                Err _ ->
-                    -- Failed to get user info, clear token
-                    ( { model | authState = Auth.logout model.authState }
-                    , Ports.clearToken ()
-                    )
+        GotUserInfo token result ->
+            gotUserInfo token result model
 
         LogoutRequested ->
-            ( { model | authState = Auth.logout model.authState }
+            ( withAuth (Auth.logout model.authState) model
+            , Cmd.batch [ Ports.clearToken (), Nav.pushUrl model.navKey (Route.toHref Route.Home) ]
+            )
+
+        ThemeToggled ->
+            let
+                theme =
+                    Theme.next model.theme
+            in
+            ( { model | theme = theme }, Ports.setTheme (Theme.toString theme) )
+
+        NoOp ->
+            ( model, Cmd.none )
+
+        _ ->
+            updatePage msg model
+
+
+linkClicked : Browser.UrlRequest -> Model -> ( Model, Cmd Msg )
+linkClicked request model =
+    case request of
+        Browser.Internal url ->
+            if isBackendRoute url then
+                ( model, Nav.load (Url.toString url) )
+
+            else if url.path == model.url.path && url.query == model.url.query && url.fragment /= Nothing then
+                -- In-page anchor (e.g. the skip link): move focus, don't re-route.
+                ( model, focus (Maybe.withDefault "" url.fragment) )
+
+            else
+                ( model, Nav.pushUrl model.navKey (Url.toString url) )
+
+        Browser.External href ->
+            ( model, Nav.load href )
+
+
+urlChanged : Url -> Model -> ( Model, Cmd Msg )
+urlChanged url model =
+    let
+        route =
+            Route.fromUrl url
+
+        ( page, cmd ) =
+            initPage model.apiBaseUrl url route model.authState
+    in
+    ( { model | url = url, route = route, page = page }
+    , Cmd.batch
+        [ unsubscribeFromPage model.page
+        , cmd
+        , Task.perform (\_ -> NoOp) (Dom.setViewport 0 0)
+        ]
+    )
+
+
+focus : String -> Cmd Msg
+focus elementId =
+    Task.attempt (\_ -> NoOp) (Dom.focus elementId)
+
+
+gotUserInfo : String -> Result Http.Error User -> Model -> ( Model, Cmd Msg )
+gotUserInfo token result model =
+    if Auth.getToken model.authState /= Just token then
+        -- A newer sign-in (or sign-out) superseded this lookup.
+        ( model, Cmd.none )
+
+    else
+        case result of
+            Ok user ->
+                let
+                    signedInModel =
+                        withAuth (Auth.updateUser (Just user) model.authState) model
+                in
+                case model.page of
+                    AuthRequiredPage ->
+                        let
+                            ( page, cmd ) =
+                                initPage model.apiBaseUrl model.url model.route signedInModel.authState
+                        in
+                        ( { signedInModel | page = page }, cmd )
+
+                    _ ->
+                        ( signedInModel, Cmd.none )
+
+            Err _ ->
+                ( withAuth (Auth.logout model.authState) model, Ports.clearToken () )
+
+
+{-| Update the auth state and hand it to pages that show auth-dependent UI.
+-}
+withAuth : AuthState -> Model -> Model
+withAuth authState model =
+    let
+        page =
+            case model.page of
+                JobPage m ->
+                    JobPage (Job.setAuth authState m)
+
+                AttrPathSearchPage m ->
+                    AttrPathSearchPage (AttrPathSearch.setAuth authState m)
+
+                other ->
+                    other
+    in
+    { model | authState = authState, page = page }
+
+
+updatePage : Msg -> Model -> ( Model, Cmd Msg )
+updatePage msg model =
+    case ( msg, model.page ) of
+        ( HomeMsg sub, HomePage m ) ->
+            Home.update sub m |> updateWith HomePage HomeMsg model
+
+        ( BuildsMsg sub, BuildsPage m ) ->
+            Builds.update sub m |> updateWith BuildsPage BuildsMsg model
+
+        ( ReviewsMsg sub, ReviewsPage m ) ->
+            Reviews.update sub m |> updateWith ReviewsPage ReviewsMsg model
+
+        ( RepositoryMsg sub, RepositoryPage m ) ->
+            Repository.update sub m |> updateWith RepositoryPage RepositoryMsg model
+
+        ( CommitMsg sub, CommitPage m ) ->
+            Commit.update sub m |> updateWith CommitPage CommitMsg model
+
+        ( JobMsg sub, JobPage m ) ->
+            Job.update sub m |> updateWith JobPage JobMsg model
+
+        ( DrvMsg sub, DrvPage m ) ->
+            Drv.update sub m |> updateWith DrvPage DrvMsg model
+
+        ( AdminMsg sub, AdminPage m ) ->
+            Admin.update sub m |> updateWith AdminPage AdminMsg model
+
+        ( ProfileMsg sub, ProfilePage m ) ->
+            Profile.update sub m |> updateWith ProfilePage ProfileMsg model
+
+        ( AttrPathSearchMsg sub, AttrPathSearchPage m ) ->
+            AttrPathSearch.update sub m |> updateWith AttrPathSearchPage AttrPathSearchMsg model
+
+        ( AuthCallbackMsg sub, AuthCallbackPage m ) ->
+            AuthCallback.update sub m |> authCallbackUpdated model
+
+        _ ->
+            ( model, Cmd.none )
+
+
+updateWith : (subModel -> Page) -> (subMsg -> Msg) -> Model -> ( subModel, Cmd subMsg ) -> ( Model, Cmd Msg )
+updateWith toPage toMsg model ( subModel, cmd ) =
+    ( { model | page = toPage subModel }, Cmd.map toMsg cmd )
+
+
+{-| On a successful sign-in, store the token and go home.
+-}
+authCallbackUpdated : Model -> ( AuthCallback.Model, Cmd AuthCallback.Msg ) -> ( Model, Cmd Msg )
+authCallbackUpdated model ( subModel, cmd ) =
+    case subModel of
+        AuthCallback.Success token user ->
+            ( withAuth (model.authState |> Auth.updateToken (Just token) |> Auth.updateUser (Just user))
+                { model | page = AuthCallbackPage subModel }
             , Cmd.batch
-                [ Ports.clearToken ()
-                , Nav.pushUrl model.navKey (Route.toHref Route.Home)
+                [ Cmd.map AuthCallbackMsg cmd
+                , Ports.storeToken token
+                , Nav.replaceUrl model.navKey (Route.toHref Route.Home)
                 ]
             )
+
+        _ ->
+            ( { model | page = AuthCallbackPage subModel }, Cmd.map AuthCallbackMsg cmd )
+
+
+routeSocketMessage : Ports.IncomingMessage -> Model -> ( Model, Cmd Msg )
+routeSocketMessage incoming model =
+    case ( incoming, model.page ) of
+        ( Ports.Connected, _ ) ->
+            ( { model | live = Header.Connected }, Cmd.none )
+
+        ( Ports.Disconnected, _ ) ->
+            ( { model | live = Header.Offline }, Cmd.none )
+
+        ( Ports.BuildStateChange event, JobPage m ) ->
+            Job.update (Job.BuildStateChanged event) m |> updateWith JobPage JobMsg model
+
+        ( Ports.BuildStateChange event, DrvPage m ) ->
+            Drv.update (Drv.BuildStateChanged event) m |> updateWith DrvPage DrvMsg model
+
+        ( Ports.JobComplete event, JobPage m ) ->
+            Job.update (Job.JobCompleted event) m |> updateWith JobPage JobMsg model
+
+        ( Ports.JobComplete event, CommitPage m ) ->
+            Commit.update (Commit.JobCompleted event) m |> updateWith CommitPage CommitMsg model
+
+        ( Ports.JobStatsUpdate event, BuildsPage m ) ->
+            ( { model | page = BuildsPage (Builds.websocketUpdate event m) }, Cmd.none )
+
+        ( Ports.LogLine event, DrvPage m ) ->
+            Drv.update (Drv.LogLineReceived event) m |> updateWith DrvPage DrvMsg model
+
+        _ ->
+            ( model, Cmd.none )
 
 
 
 -- HELPERS
 
 
-{-| Check if a URL path is a backend route that should trigger full page navigation.
-
-Backend routes are not handled by the Elm SPA and require a server redirect.
-For example, OAuth endpoints need to redirect to GitHub and back to the server.
-
+{-| Backend routes (like the OAuth endpoints) need a full page load.
 -}
 isBackendRoute : Url -> Bool
 isBackendRoute url =
@@ -608,51 +438,30 @@ isBackendRoute url =
 unsubscribeFromPage : Page -> Cmd Msg
 unsubscribeFromPage page =
     case page of
-        BuildsPage model ->
-            -- Unsubscribe from all builds
-            Builds.cleanup model
+        BuildsPage m ->
+            Builds.cleanup m
 
-        JobPage (Job.Loaded data) ->
-            -- Unsubscribe from job resource
-            Ports.websocketOut
-                (Ports.encodeUnsubscribeMessage "job" (String.fromInt data.jobsetId))
+        JobPage m ->
+            Ports.websocketOut (Ports.encodeUnsubscribeMessage "job" (String.fromInt m.jobsetId))
 
-        JobPage _ ->
-            -- Job page not loaded yet, nothing to unsubscribe
-            Cmd.none
+        CommitPage m ->
+            Ports.websocketOut (Ports.encodeUnsubscribeMessage "commit" m.sha)
 
-        CommitPage (Commit.Loaded data) ->
-            -- Unsubscribe from commit resource
-            Ports.websocketOut
-                (Ports.encodeUnsubscribeMessage "commit" data.sha)
-
-        CommitPage _ ->
-            -- Commit page not loaded yet, nothing to unsubscribe
-            Cmd.none
-
-        DrvPage (Drv.Loaded data) ->
-            -- Unsubscribe from drv resource
-            Ports.websocketOut
-                (Ports.encodeUnsubscribeMessage "drv" data.details.drvPath)
-
-        DrvPage _ ->
-            -- Drv page not loaded yet, nothing to unsubscribe
-            Cmd.none
+        DrvPage m ->
+            Ports.websocketOut (Ports.encodeUnsubscribeMessage "drv" m.drvPath)
 
         _ ->
             Cmd.none
 
 
-{-| Fetch user info from the backend using the JWT token.
--}
 fetchUserInfo : String -> Cmd Msg
 fetchUserInfo token =
     Http.request
         { method = "GET"
         , headers = [ Http.header "Authorization" ("Bearer " ++ token) ]
-        , url = "/github/auth/me"
+        , url = Auth.getUserInfo
         , body = Http.emptyBody
-        , expect = Http.expectJson GotUserInfo Auth.decodeUser
+        , expect = Http.expectJson (GotUserInfo token) Auth.decodeUser
         , timeout = Nothing
         , tracker = Nothing
         }
@@ -662,192 +471,160 @@ fetchUserInfo token =
 -- SUBSCRIPTIONS
 
 
-{-| Application subscriptions.
--}
 subscriptions : Model -> Sub Msg
 subscriptions model =
     Sub.batch
         [ Ports.websocketIn handleWebSocketMessage
         , Ports.tokenReceived TokenReceived
+        , case model.page of
+            BuildsPage m ->
+                Sub.map BuildsMsg (Builds.subscriptions m)
+
+            _ ->
+                Sub.none
         ]
 
 
-{-| Handle incoming WebSocket messages.
--}
 handleWebSocketMessage : E.Value -> Msg
 handleWebSocketMessage value =
     case Ports.decodeIncomingMessage value of
         Ok message ->
             WebSocketMessage message
 
-        Err error ->
-            -- Ignore decode errors for now
-            -- TODO: Log decode errors
-            WebSocketMessage (Ports.Error "Failed to decode message")
+        Err _ ->
+            NoOp
 
 
 
 -- VIEW
 
 
-{-| View the application.
--}
 view : Model -> Browser.Document Msg
 view model =
-    { title = pageTitle model.route
+    { title = pageTitle model.route ++ " · EkaCI"
     , body =
-        [ div []
-            [ Header.view model.authState LogoutRequested
-            , viewPage model.authState model.page
-            ]
+        [ a [ class "skip-link", href "#main" ] [ text "Skip to content" ]
+        , Header.view
+            { route = model.route
+            , authState = model.authState
+            , live = model.live
+            , theme = model.theme
+            , onToggleTheme = ThemeToggled
+            , onLogout = LogoutRequested
+            }
+        , main_ [ id "main", class "page", tabindex -1 ] [ viewPage model ]
         ]
     }
 
 
-{-| Get the page title based on the current route.
--}
 pageTitle : Route -> String
 pageTitle route =
     case route of
         Route.Home ->
-            "Repositories - EkaCI"
+            "Repositories"
 
         Route.Builds ->
-            "Active Builds - EkaCI"
+            "Active builds"
 
         Route.Reviews ->
-            "Pull Request Reviews - EkaCI"
+            "Reviews"
 
-        Route.PullRequest owner repo prNumber ->
-            "PR #" ++ String.fromInt prNumber ++ " - " ++ owner ++ "/" ++ repo ++ " - EkaCI"
+        Route.PullRequest _ _ _ ->
+            "Page not found"
 
         Route.Repository owner repo ->
-            owner ++ "/" ++ repo ++ " - EkaCI"
+            owner ++ "/" ++ repo
 
         Route.Commit sha ->
-            "Commit " ++ String.left 8 sha ++ " - EkaCI"
+            "Commit " ++ Ui.shortSha sha
 
         Route.Job jobsetId ->
-            "Job #" ++ String.fromInt jobsetId ++ " - EkaCI"
+            "Job #" ++ String.fromInt jobsetId
 
         Route.Drv drvPath ->
-            "Derivation - EkaCI"
+            Ui.drvName drvPath
 
         Route.Admin ->
-            "Admin - EkaCI"
+            "Admin"
 
         Route.Profile ->
-            "My Profile - EkaCI"
+            "Profile"
 
         Route.AttrPathSearch ->
-            "Attr Path Search - EkaCI"
+            "Maintainers"
 
         Route.AuthCallback ->
-            "Authenticating - EkaCI"
+            "Signing in"
 
         Route.NotFound ->
-            "Not Found - EkaCI"
+            "Page not found"
 
 
-{-| View the current page with auth protection.
--}
-viewPage : AuthState -> Page -> Html Msg
-viewPage authState page =
-    case page of
-        HomePage model ->
-            Html.map HomeMsg (Home.view model)
+viewPage : Model -> Html Msg
+viewPage model =
+    case model.page of
+        HomePage m ->
+            Html.map HomeMsg (Home.view m)
 
-        BuildsPage model ->
-            Html.map BuildsMsg (Builds.view model)
+        BuildsPage m ->
+            Html.map BuildsMsg (Builds.view m)
 
-        ReviewsPage model ->
-            Html.map ReviewsMsg (Reviews.view model)
+        ReviewsPage m ->
+            Html.map ReviewsMsg (Reviews.view m)
 
-        RepositoryPage model ->
-            Html.map RepositoryMsg (Repository.view model)
+        RepositoryPage m ->
+            Html.map RepositoryMsg (Repository.view m)
 
-        CommitPage model ->
-            Html.map CommitMsg (Commit.view model)
+        CommitPage m ->
+            Html.map CommitMsg (Commit.view m)
 
-        JobPage model ->
-            Html.map JobMsg (Job.view model)
+        JobPage m ->
+            Html.map JobMsg (Job.view m)
 
-        DrvPage model ->
-            Html.map DrvMsg (Drv.view model)
+        DrvPage m ->
+            Html.map DrvMsg (Drv.view m)
 
-        AdminPage model ->
-            -- Protect Admin page: only show to authenticated admins
-            if Auth.isAdmin authState then
-                Html.map AdminMsg (Admin.view model)
+        AdminPage m ->
+            Html.map AdminMsg (Admin.view m)
 
-            else if Auth.isAuthenticated authState then
-                viewUnauthorized
+        ProfilePage m ->
+            Html.map ProfileMsg (Profile.view m)
 
-            else
-                viewNotAuthenticated
+        AttrPathSearchPage m ->
+            Html.map AttrPathSearchMsg (AttrPathSearch.view m)
 
-        ProfilePage model ->
-            -- Protect Profile page: only show to authenticated users
-            if Auth.isAuthenticated authState then
-                Html.map ProfileMsg (Profile.view model)
+        AuthCallbackPage m ->
+            Html.map AuthCallbackMsg (AuthCallback.view m)
 
-            else
-                viewNotAuthenticated
+        AuthRequiredPage ->
+            viewAuthRequired model.authState
 
-        AttrPathSearchPage model ->
-            Html.map AttrPathSearchMsg (AttrPathSearch.view model)
-
-        AuthCallbackPage model ->
-            Html.map AuthCallbackMsg (AuthCallback.view model)
+        ForbiddenPage ->
+            Ui.errorPage
+                { code = "403"
+                , heading = "Admins only"
+                , body = "You're signed in, but this page is only available to EkaCI admins."
+                , action = a [ class "button", href (Route.toHref Route.Home) ] [ text "Go to repositories" ]
+                }
 
         NotFoundPage ->
-            viewNotFound
+            Ui.errorPage
+                { code = "404"
+                , heading = "Page not found"
+                , body = "There's nothing at this address. The link may be wrong, or the page may have moved."
+                , action = a [ class "button", href (Route.toHref Route.Home) ] [ text "Go to repositories" ]
+                }
 
 
-{-| View the 404 not found page.
--}
-viewNotFound : Html Msg
-viewNotFound =
-    div [ class "pa4" ]
-        [ div [ class "card pa4 tc" ]
-            [ Html.h1 [ class "f2 fw6 mb2" ]
-                [ text "404 - Not Found" ]
-            , Html.p [ class "gray" ]
-                [ text "The page you're looking for doesn't exist." ]
-            ]
-        ]
+viewAuthRequired : AuthState -> Html Msg
+viewAuthRequired authState =
+    if authState.loading then
+        Ui.loading "Checking your sign-in…"
 
-
-{-| View unauthorized page (authenticated but not admin).
--}
-viewUnauthorized : Html Msg
-viewUnauthorized =
-    div [ class "pa4" ]
-        [ div [ class "card pa4 tc" ]
-            [ Html.h1 [ class "f2 fw6 mb2" ]
-                [ text "403 - Unauthorized" ]
-            , Html.p [ class "gray" ]
-                [ text "You don't have permission to access this page." ]
-            , Html.p [ class "gray f6 mt3" ]
-                [ text "This page is only accessible to administrators." ]
-            ]
-        ]
-
-
-{-| View not authenticated page (need to log in).
--}
-viewNotAuthenticated : Html Msg
-viewNotAuthenticated =
-    div [ class "pa4" ]
-        [ div [ class "card pa4 tc" ]
-            [ Html.h1 [ class "f2 fw6 mb2" ]
-                [ text "Authentication Required" ]
-            , Html.p [ class "gray mb3" ]
-                [ text "You must be logged in to access this page." ]
-            , Html.a
-                [ Html.Attributes.href "/github/auth/login"
-                , class "link blue hover-dark-blue fw6"
-                ]
-                [ text "Login with GitHub →" ]
-            ]
-        ]
+    else
+        Ui.errorPage
+            { code = ""
+            , heading = "Sign in to continue"
+            , body = "This page shows your account, so you need to sign in with GitHub first."
+            , action = a [ class "button primary", href Auth.login ] [ text "Sign in with GitHub" ]
+            }

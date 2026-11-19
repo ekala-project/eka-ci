@@ -1,70 +1,55 @@
 module Pages.Commit exposing
-    ( Model(..)
+    ( Model
     , Msg(..)
     , init
     , update
     , view
     )
 
-{-| Commit page displaying jobs for a commit with real-time updates.
+{-| Commit page: every job evaluated for a commit, with build progress.
 
-Shows all jobs (builds) associated with a specific commit SHA with:
-
-  - Rich commit header
-  - Expandable job sections
-  - Progress bars for each job
-  - Real-time WebSocket updates
+Progress for all jobs loads up front (one request per job) and refreshes
+when the server reports a job as complete.
 
 -}
 
 import Api.Api as Api
-import Components.ErrorView as ErrorView
-import Components.Loader as Loader
-import Components.ProgressBar as ProgressBar
-import Html exposing (Html, a, button, code, div, h1, h2, h3, p, span, text)
-import Html.Attributes exposing (class, href)
-import Html.Events exposing (onClick, stopPropagationOn)
+import Components.BuildProgress as Progress
+import Components.Ui as Ui
+import Dict exposing (Dict)
+import Html exposing (Html, a, div, h1, span, table, tbody, td, text, th, thead, tr)
+import Html.Attributes exposing (class, href, scope, title)
 import Http
-import Json.Decode
 import Models.Job exposing (CommitJob, JobSetDetails)
 import Ports
 import Route
-import Set exposing (Set)
 
 
-{-| Page model with expandable job sections.
--}
-type Model
-    = Loading String String
-    | Loaded LoadedData
+type Jobs
+    = Loading
+    | Ready (List CommitJob)
     | Failed Http.Error
 
 
-{-| Loaded data with jobs and expansion state.
--}
-type alias LoadedData =
-    { sha : String
-    , jobs : List CommitJob
-    , expandedJobs : Set Int
-    , jobDetails : List ( Int, Maybe JobSetDetails )
-    , apiBaseUrl : String
+type alias Model =
+    { apiBaseUrl : String
+    , sha : String
+    , jobs : Jobs
+
+    -- A missing entry means the job's details are still loading.
+    , details : Dict Int (Result Http.Error JobSetDetails)
     }
 
 
-{-| Page messages including real-time updates.
--}
 type Msg
     = GotCommitJobs (Result Http.Error (List CommitJob))
-    | ToggleJobExpanded Int
     | GotJobDetails Int (Result Http.Error JobSetDetails)
     | JobCompleted Ports.JobCompleteEvent
 
 
-{-| Initialize the page with a commit SHA.
--}
 init : String -> String -> ( Model, Cmd Msg )
 init apiBaseUrl sha =
-    ( Loading apiBaseUrl sha
+    ( { apiBaseUrl = apiBaseUrl, sha = sha, jobs = Loading, details = Dict.empty }
     , Cmd.batch
         [ Api.getCommitJobs apiBaseUrl sha GotCommitJobs
         , Ports.websocketOut (Ports.encodeSubscribeMessage "commit" sha)
@@ -72,343 +57,150 @@ init apiBaseUrl sha =
     )
 
 
-{-| Update the page.
--}
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        GotCommitJobs result ->
-            case ( result, model ) of
-                ( Ok jobs, Loading apiBaseUrl sha ) ->
-                    ( Loaded
-                        { sha = sha
-                        , jobs = jobs
-                        , expandedJobs = Set.empty
-                        , jobDetails = List.map (\job -> ( job.jobsetId, Nothing )) jobs
-                        , apiBaseUrl = apiBaseUrl
-                        }
-                    , Cmd.none
-                    )
+        GotCommitJobs (Ok jobs) ->
+            ( { model | jobs = Ready jobs }
+            , Cmd.batch (List.map (fetchDetails model.apiBaseUrl << .jobsetId) jobs)
+            )
 
-                ( Err error, _ ) ->
-                    ( Failed error, Cmd.none )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        ToggleJobExpanded jobsetId ->
-            case model of
-                Loaded data ->
-                    let
-                        newExpanded =
-                            if Set.member jobsetId data.expandedJobs then
-                                Set.remove jobsetId data.expandedJobs
-
-                            else
-                                Set.insert jobsetId data.expandedJobs
-
-                        -- Load job details if we're expanding and don't have them
-                        shouldLoad =
-                            not (Set.member jobsetId data.expandedJobs)
-                                && not (hasJobDetails jobsetId data.jobDetails)
-
-                        cmd =
-                            if shouldLoad then
-                                Api.getJobSetDetails data.apiBaseUrl jobsetId (GotJobDetails jobsetId)
-
-                            else
-                                Cmd.none
-                    in
-                    ( Loaded { data | expandedJobs = newExpanded }
-                    , cmd
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
+        GotCommitJobs (Err error) ->
+            ( { model | jobs = Failed error }, Cmd.none )
 
         GotJobDetails jobsetId result ->
-            case model of
-                Loaded data ->
-                    case result of
-                        Ok details ->
-                            let
-                                updatedDetails =
-                                    updateJobDetails jobsetId (Just details) data.jobDetails
-                            in
-                            ( Loaded { data | jobDetails = updatedDetails }
-                            , Cmd.none
-                            )
-
-                        Err _ ->
-                            -- Keep the Nothing entry, don't retry
-                            ( model, Cmd.none )
-
-                _ ->
-                    ( model, Cmd.none )
+            ( { model | details = Dict.insert jobsetId result model.details }, Cmd.none )
 
         JobCompleted event ->
-            -- Job completed, refresh job details if we have them loaded
-            case model of
-                Loaded data ->
-                    if hasJobDetails event.jobsetId data.jobDetails then
-                        -- Refetch the job details to get final state
-                        ( model
-                        , Api.getJobSetDetails data.apiBaseUrl event.jobsetId (GotJobDetails event.jobsetId)
-                        )
-
-                    else
-                        -- Job not expanded, just ignore the event
-                        ( model, Cmd.none )
-
-                _ ->
-                    ( model, Cmd.none )
-
-
-{-| Check if we have job details for a jobset ID.
--}
-hasJobDetails : Int -> List ( Int, Maybe JobSetDetails ) -> Bool
-hasJobDetails jobsetId details =
-    List.any (\( id, maybeDetails ) -> id == jobsetId && maybeDetails /= Nothing) details
-
-
-{-| Update job details in the list.
--}
-updateJobDetails : Int -> Maybe JobSetDetails -> List ( Int, Maybe JobSetDetails ) -> List ( Int, Maybe JobSetDetails )
-updateJobDetails jobsetId newDetails detailsList =
-    List.map
-        (\( id, existing ) ->
-            if id == jobsetId then
-                ( id, newDetails )
+            if List.member event.jobsetId (jobIds model) then
+                ( model, fetchDetails model.apiBaseUrl event.jobsetId )
 
             else
-                ( id, existing )
-        )
-        detailsList
+                ( model, Cmd.none )
 
 
-{-| View the page.
--}
+fetchDetails : String -> Int -> Cmd Msg
+fetchDetails apiBaseUrl jobsetId =
+    Api.getJobSetDetails apiBaseUrl jobsetId (GotJobDetails jobsetId)
+
+
+jobIds : Model -> List Int
+jobIds model =
+    case model.jobs of
+        Ready jobs ->
+            List.map .jobsetId jobs
+
+        _ ->
+            []
+
+
+
+-- VIEW
+
+
 view : Model -> Html Msg
 view model =
-    case model of
-        Loading _ sha ->
-            div [ class "pa4" ]
-                [ viewCommitHeader sha Nothing Nothing
-                , Loader.viewWithMessage "Loading jobs..."
-                ]
+    div []
+        [ viewHead model
+        , case model.jobs of
+            Loading ->
+                Ui.loading "Loading jobs…"
 
-        Failed error ->
-            div [ class "pa4" ]
-                [ h1 [ class "f2 fw6 mb4" ]
-                    [ text "Commit" ]
-                , ErrorView.viewHttp error
-                ]
+            Failed error ->
+                Ui.httpError "Could not load jobs for this commit." error
 
-        Loaded data ->
-            if List.isEmpty data.jobs then
-                div [ class "pa4" ]
-                    [ viewCommitHeader data.sha Nothing Nothing
-                    , viewEmptyState
+            Ready [] ->
+                Ui.emptyState "No jobs for this commit"
+                    "EkaCI has not evaluated any jobs at this commit yet."
+
+            Ready jobs ->
+                div []
+                    [ overallPanel model jobs
+                    , Ui.panel "Jobs" [] [ Ui.tableWrap (jobTable model jobs) ]
                     ]
-
-            else
-                div [ class "pa4" ]
-                    [ viewCommitHeader data.sha (Just data.jobs) (Just data.jobDetails)
-                    , div [ class "mt4" ]
-                        [ h2 [ class "f4 fw6 mb3" ]
-                            [ text "Jobs" ]
-                        , viewJobCards data
-                        ]
-                    ]
-
-
-{-| View commit header with progress.
--}
-viewCommitHeader : String -> Maybe (List CommitJob) -> Maybe (List ( Int, Maybe JobSetDetails )) -> Html Msg
-viewCommitHeader sha maybeJobs maybeDetails =
-    div [ class "mb4" ]
-        [ h1 [ class "f2 fw6 mb2" ]
-            [ text "Commit "
-            , code [ class "monospace f4" ]
-                [ text (String.left 8 sha) ]
-            ]
-        , case ( maybeJobs, maybeDetails ) of
-            ( Just jobs, Just details ) ->
-                viewOverallProgress jobs details
-
-            _ ->
-                text ""
         ]
 
 
-{-| View overall progress across all jobs.
--}
-viewOverallProgress : List CommitJob -> List ( Int, Maybe JobSetDetails ) -> Html Msg
-viewOverallProgress jobs details =
+viewHead : Model -> Html Msg
+viewHead model =
     let
-        totalBuilds =
-            List.filterMap
-                (\( _, maybeJobDetails ) ->
-                    case maybeJobDetails of
-                        Just d ->
-                            Just d.totalDrvs
+        repoCrumb =
+            case model.jobs of
+                Ready (job :: _) ->
+                    [ ( job.owner ++ "/" ++ job.repoName, Route.toHref (Route.Repository job.owner job.repoName) ) ]
 
-                        Nothing ->
-                            Nothing
-                )
-                details
-                |> List.sum
-
-        completedBuilds =
-            List.filterMap
-                (\( _, maybeJobDetails ) ->
-                    case maybeJobDetails of
-                        Just d ->
-                            Just d.completedDrvs
-
-                        Nothing ->
-                            Nothing
-                )
-                details
-                |> List.sum
+                _ ->
+                    []
     in
-    if totalBuilds > 0 then
-        div [ class "f6 gray" ]
-            [ text (String.fromInt completedBuilds ++ " / " ++ String.fromInt totalBuilds ++ " builds complete") ]
+    Ui.pageHead
+        { crumbs = ( "Repositories", Route.toHref Route.Home ) :: repoCrumb
+        , title = [ h1 [] [ text "Commit ", span [ class "mono" ] [ text (Ui.shortSha model.sha) ] ] ]
+        , lede = [ span [ class "path" ] [ text model.sha ] ]
+        , actions = []
+        }
 
-    else
+
+{-| Combined progress across every job whose details have loaded.
+-}
+overallPanel : Model -> List CommitJob -> Html Msg
+overallPanel model jobs =
+    let
+        loaded =
+            List.filterMap (\job -> Dict.get job.jobsetId model.details |> Maybe.andThen Result.toMaybe) jobs
+
+        counts =
+            List.foldl (Progress.add << Progress.fromJobSet) Progress.empty loaded
+    in
+    if List.length jobs < 2 || List.isEmpty loaded then
         text ""
 
-
-{-| View empty state when no jobs are found.
--}
-viewEmptyState : Html Msg
-viewEmptyState =
-    div [ class "card pa4 tc" ]
-        [ h2 [ class "f4 fw6 mb2" ]
-            [ text "No Jobs" ]
-        , p [ class "gray" ]
-            [ text "No jobs found for this commit." ]
-        ]
+    else
+        Ui.panel "All jobs" [ Progress.overallBadge counts ] [ Progress.view counts ]
 
 
-{-| View job cards (expandable).
--}
-viewJobCards : LoadedData -> Html Msg
-viewJobCards data =
-    div []
-        (List.map (viewJobCard data) data.jobs)
-
-
-{-| View a single job card.
--}
-viewJobCard : LoadedData -> CommitJob -> Html Msg
-viewJobCard data job =
-    let
-        isExpanded =
-            Set.member job.jobsetId data.expandedJobs
-
-        jobDetails =
-            findJobDetails job.jobsetId data.jobDetails
-
-        expandIcon =
-            if isExpanded then
-                "▼"
-
-            else
-                "▶"
-    in
-    div [ class "card mb3" ]
-        [ -- Job header (always visible, clickable to expand)
-          button
-            [ class "w-100 pa3 bn bg-transparent pointer tl hover-bg-light-gray"
-            , onClick (ToggleJobExpanded job.jobsetId)
-            ]
-            [ div [ class "flex items-center justify-between" ]
-                [ div [ class "flex items-center" ]
-                    [ span [ class "f6 mr2" ] [ text expandIcon ]
-                    , h3 [ class "f5 fw6 ma0" ] [ text job.jobName ]
-                    , span [ class "ml3 gray f6" ]
-                        [ text (job.owner ++ "/" ++ job.repoName) ]
-                    ]
-                , span [ class "link blue hover-dark-blue f6" ]
-                    [ a
-                        [ href (Route.toHref (Route.Job job.jobsetId))
-                        , class "link blue hover-dark-blue"
-                        ]
-                        [ text "View Details →" ]
-                    ]
+jobTable : Model -> List CommitJob -> Html Msg
+jobTable model jobs =
+    table [ class "table" ]
+        [ thead []
+            [ tr []
+                [ th [ scope "col" ] [ text "Job" ]
+                , th [ scope "col" ] [ text "Status" ]
+                , th [ scope "col" ] [ text "Progress" ]
                 ]
             ]
-
-        -- Expanded section (only visible when expanded)
-        , if isExpanded then
-            viewJobExpandedSection jobDetails
-
-          else
-            text ""
+        , tbody [] (List.map (jobRow model) jobs)
         ]
 
 
-{-| Find job details by jobset ID.
--}
-findJobDetails : Int -> List ( Int, Maybe JobSetDetails ) -> Maybe JobSetDetails
-findJobDetails jobsetId details =
-    details
-        |> List.filter (\( id, _ ) -> id == jobsetId)
-        |> List.head
-        |> Maybe.andThen Tuple.second
-
-
-{-| View the expanded section of a job card.
--}
-viewJobExpandedSection : Maybe JobSetDetails -> Html Msg
-viewJobExpandedSection maybeDetails =
-    div [ class "pa3 bt b--black-10 bg-near-white" ]
-        [ case maybeDetails of
-            Just details ->
-                viewJobDetails details
-
-            Nothing ->
-                Loader.viewWithMessage "Loading job details..."
-        ]
-
-
-{-| View job details with progress bar.
--}
-viewJobDetails : JobSetDetails -> Html Msg
-viewJobDetails details =
+jobRow : Model -> CommitJob -> Html Msg
+jobRow model job =
     let
-        segments =
-            ProgressBar.fromJobStats
-                { completed = details.completedDrvs
-                , failed = details.failedDrvs + details.transitiveFailureDrvs
-                , building = details.buildingDrvs
-                , queued = details.queuedDrvs + details.buildableDrvs
-                }
+        link =
+            a [ class "cell-main", href (Route.toHref (Route.Job job.jobsetId)), title ("Job #" ++ String.fromInt job.jobsetId) ]
+                [ text job.jobName ]
     in
-    div []
-        [ -- Progress bar
-          div [ class "mb3" ]
-            [ ProgressBar.view details.totalDrvs segments ]
+    case Dict.get job.jobsetId model.details of
+        Nothing ->
+            tr []
+                [ td [] [ link ]
+                , td [] [ Ui.loadingInline "Loading" ]
+                , td [ class "progress-cell" ] []
+                ]
 
-        -- Statistics
-        , div [ class "flex justify-around f7 gray" ]
-            [ viewStat "Queued" details.queuedDrvs
-            , viewStat "Buildable" details.buildableDrvs
-            , viewStat "Building" details.buildingDrvs
-            , viewStat "Completed" details.completedDrvs
-            , viewStat "Failed" details.failedDrvs
-            , viewStat "Transitive" details.transitiveFailureDrvs
-            ]
-        ]
+        Just (Err _) ->
+            tr []
+                [ td [] [ link ]
+                , td [] [ Ui.badge Ui.Neutral "Unknown" ]
+                , td [ class "progress-cell small muted" ] [ text "Could not load progress." ]
+                ]
 
-
-{-| View a single stat.
--}
-viewStat : String -> Int -> Html Msg
-viewStat label count =
-    div [ class "tc" ]
-        [ div [ class "f5 fw6" ] [ text (String.fromInt count) ]
-        , div [] [ text label ]
-        ]
+        Just (Ok details) ->
+            let
+                counts =
+                    Progress.fromJobSet details
+            in
+            tr []
+                [ td [] [ link ]
+                , td [] [ Progress.overallBadge counts ]
+                , td [ class "progress-cell" ] [ Progress.cell counts ]
+                ]

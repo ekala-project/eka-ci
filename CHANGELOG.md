@@ -149,9 +149,9 @@
   ekaci's own `/prs/...` page. The URL is the `html_url` GitHub sends with
   the PR, stored in a new `GitHubPullRequests.html_url` column, so GitHub
   Enterprise hosts work too. PRs not updated since the upgrade have no URL
-  yet and still link to the internal page
+  yet and link to the PR on github.com (the internal page doesn't exist)
 - Fix the web UI rendering a blank page: `ports.js` (WebSocket and
-  token-storage ports) and `styles/custom.css` were never committed because
+  token-storage ports) and the stylesheet were never committed because
   `frontend/.gitignore` ignored everything in `static/` except `index.html`,
   so the deployed bundle 404'd on them and Elm never started. Both files are
   now tracked, and only the generated `static/main.js` is ignored
@@ -165,6 +165,37 @@
   any `state` that doesn't match
 - The "Log in to request access" button on job pages now starts the GitHub
   login instead of opening the callback page with no code
+- Restyle the web UI to match the ekapkgs-update web service. Tachyons and
+  the Fira fonts are no longer loaded from CDNs; a self-contained
+  `styles/main.css` with color tokens replaces `styles/custom.css`, and every
+  page has a dark theme
+- The theme follows the OS setting by default. A header toggle cycles
+  System → Light → Dark, the choice is remembered per browser, and it is
+  applied before first paint so pages don't flash the wrong theme
+- Navigation: a skip-to-content link, a live-connection indicator, page
+  titles that name the page, scroll reset on navigation, a header that fits
+  on phones, and proper "Sign in to continue", 403 and 404 pages
+- Build progress uses one segmented bar with a legend on the repository,
+  commit, job, builds and reviews pages. The builds page adds summary tiles
+  and refreshes every 10 seconds alongside the live updates
+- Job pages filter derivations by status (chips with counts) and by name
+- Reviews can be filtered by CI status and text and sorted by fewest
+  changes or most recently updated; passing pull requests are listed first
+- Admin: destructive actions ask for confirmation, maintainers are added by
+  GitHub username and looked up by attribute path, and results are reported
+  inline. On phones, tables hide secondary columns
+- Timestamps render as `YYYY-MM-DD HH:MM UTC` instead of the raw API
+  strings
+- Fix the builds page listing every building derivation under every job
+- Fix the reviews page ignoring the secondary sort, and pull request links
+  pointing to a page that doesn't exist
+- Fix the profile, admin and maintainers pages requesting `/v1/v1/...` URLs
+- Fix the admin and profile pages loading before the signed-in user was
+  known, and the admin maintainer lookup sending a request per keystroke
+- Fix the maintainers page relabeling results while typing and sending
+  access requests for the text in the box instead of the path shown
+- Fix users without a GitHub avatar being signed out right after signing
+  in, and a slow `/me` response from an old session signing out a new one
 
 ### GitHub webhooks
 

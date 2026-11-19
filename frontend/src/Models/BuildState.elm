@@ -3,11 +3,11 @@ module Models.BuildState exposing
     , DrvBuildResult(..)
     , DrvBuildState(..)
     , isTerminal
-    , toColor
     , toString
     )
 
-{-| Build state types matching the backend Rust enums.
+{-| Build state types matching the backend Rust enums
+(`backend/server/src/db/model/build_event.rs`).
 
 These types represent the various states a derivation build can be in during the CI process.
 
@@ -25,6 +25,7 @@ type DrvBuildState
     | TransitiveFailure
     | Interrupted DrvBuildInterruptionKind
     | Blocked
+    | UnsatisfiableRequirements
 
 
 {-| The result of a completed build.
@@ -41,9 +42,10 @@ type DrvBuildInterruptionKind
     | Timeout
     | Cancelled
     | ProcessDeath
+    | SchedulerDeath
 
 
-{-| Convert a build state to a human-readable string.
+{-| Convert a build state to a short, sentence-case label.
 -}
 toString : DrvBuildState -> String
 toString state =
@@ -55,68 +57,40 @@ toString state =
             "Buildable"
 
         FailedRetry ->
-            "Failed (Retrying)"
+            "Retrying"
 
         Building ->
             "Building"
 
         Completed Success ->
-            "Success"
+            "Succeeded"
 
         Completed Failure ->
             "Failed"
 
         TransitiveFailure ->
-            "Blocked by Failure"
+            "Dependency failed"
 
         Interrupted OutOfMemory ->
-            "Out of Memory"
+            "Out of memory"
 
         Interrupted Timeout ->
-            "Timeout"
+            "Timed out"
 
         Interrupted Cancelled ->
             "Cancelled"
 
         Interrupted ProcessDeath ->
-            "Process Died"
+            "Process died"
+
+        Interrupted SchedulerDeath ->
+            "Scheduler died"
 
         Blocked ->
             "Blocked"
 
-
-{-| Get a color for displaying the build state (for badges/UI).
-Returns a CSS color class name.
--}
-toColor : DrvBuildState -> String
-toColor state =
-    case state of
-        Queued ->
-            "gray"
-
-        Buildable ->
-            "blue"
-
-        FailedRetry ->
-            "orange"
-
-        Building ->
-            "yellow"
-
-        Completed Success ->
-            "green"
-
-        Completed Failure ->
-            "red"
-
-        TransitiveFailure ->
-            "dark-orange"
-
-        Interrupted _ ->
-            "purple"
-
-        Blocked ->
-            "gray"
+        UnsatisfiableRequirements ->
+            "Unsatisfiable"
 
 
 {-| Check if a build state is terminal (won't change anymore).
@@ -128,6 +102,12 @@ isTerminal state =
             True
 
         Interrupted _ ->
+            True
+
+        TransitiveFailure ->
+            True
+
+        UnsatisfiableRequirements ->
             True
 
         _ ->

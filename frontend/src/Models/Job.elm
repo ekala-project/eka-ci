@@ -10,7 +10,6 @@ module Models.Job exposing
 -}
 
 import Models.BuildState exposing (DrvBuildState)
-import Time
 
 
 {-| A job associated with a commit (from GET /v1/commits/{sha}/jobs).
@@ -42,8 +41,6 @@ type alias JobSetDetails =
     , transitiveFailureDrvs : Int
     , blockedDrvs : Int
     , interruptedDrvs : Int
-    , completedDrvs : Int
-    , failedDrvs : Int
     }
 
 

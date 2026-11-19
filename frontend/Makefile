@@ -14,7 +14,7 @@ ELM_SOURCES = $(shell find $(SRC_DIR) -name '*.elm')
 # Static assets that should exist
 STATIC_ASSETS = $(STATIC_DIR)/index.html \
                 $(STATIC_DIR)/ports.js \
-                $(STATIC_DIR)/styles/custom.css
+                $(STATIC_DIR)/styles/main.css
 
 # Default target
 all: build
