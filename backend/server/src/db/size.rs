@@ -56,10 +56,10 @@ impl SizeMetric {
     }
 }
 
-/// A successful build whose output or closure grew beyond its job's
-/// threshold.
+/// A successful build's output or closure size compared against its job's
+/// base-branch baseline. It is a warning when [`SizeComparison::exceeded`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SizeWarning {
+pub struct SizeComparison {
     /// Which size grew.
     pub metric: SizeMetric,
     /// Base branch the baseline was taken from.
@@ -75,6 +75,13 @@ pub struct SizeWarning {
     pub increase_percent: f64,
     /// Configured threshold for `metric`, in percent.
     pub threshold_percent: f64,
+}
+
+impl SizeComparison {
+    /// Whether the size grew beyond the configured threshold.
+    pub fn exceeded(&self) -> bool {
+        self.increase_percent > self.threshold_percent
+    }
 }
 
 /// Identifies the base-branch baseline a PR build is compared against.

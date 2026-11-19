@@ -66,21 +66,28 @@ impl SizeChecker {
             },
         };
         let paths: Vec<String> = outputs.into_values().collect();
+        let report = self.measure_anywhere(&paths).await;
+        if report.is_none() {
+            debug!("No store has the outputs of base {}", drv.store_path());
+        }
+        report
+    }
 
+    /// Measure `paths` in the local store or, failing that, the first
+    /// configured substituter that has them all.
+    pub(super) async fn measure_anywhere(&self, paths: &[String]) -> Option<OutputSizeReport> {
         let mut stores: Vec<Option<String>> = vec![None];
         stores.extend(self.substituters().await.iter().cloned().map(Some));
         for store in stores {
-            match measure_outputs(&paths, store.as_deref()).await {
+            match measure_outputs(paths, store.as_deref()).await {
                 Ok(report) => return Some(report),
                 Err(e) => debug!(
-                    "Base {} not measurable in {}: {}",
-                    drv.store_path(),
+                    "Outputs not measurable in {}: {}",
                     store.as_deref().unwrap_or("local store"),
                     e
                 ),
             }
         }
-        debug!("No store has the outputs of base {}", drv.store_path());
         None
     }
 

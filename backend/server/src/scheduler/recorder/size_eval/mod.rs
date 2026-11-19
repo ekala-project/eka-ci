@@ -6,7 +6,6 @@
 //! exercised against a real database in tests.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use anyhow::Result;
 use sqlx::SqlitePool;
@@ -15,29 +14,17 @@ use tracing::{debug, info, warn};
 use crate::ci::config::{Job, SizeCheck};
 use crate::db::github::{JobInfo, JobSetInfo};
 use crate::db::model::DrvId;
-use crate::db::model::build_event::{DrvBuildResult, DrvBuildState};
 use crate::db::size::{self, BaselineKey, SizeMetric};
-use crate::github::GitHubTask;
 
-pub(crate) use crate::db::size::SizeWarning;
+pub(crate) use crate::db::size::SizeComparison;
 
-/// The GitHub task that marks the derivation's check runs neutral with
-/// `warnings`. Sent after the plain success update; both travel the same
-/// GraphQL batch queue, so the warning lands last.
-pub(crate) fn size_warnings_task(drv_id: Arc<DrvId>, warnings: Vec<SizeWarning>) -> GitHubTask {
-    GitHubTask::UpdateBuildStatusWithSizeWarnings {
-        drv_id,
-        status: DrvBuildState::Completed(DrvBuildResult::Success),
-        warnings,
-    }
-}
-
-/// Drop duplicate warnings: a derivation in several jobsets of the same job
-/// and base branch (e.g. re-pushes of a PR) is compared to the same baseline.
-pub(crate) fn dedupe(mut warnings: Vec<SizeWarning>) -> Vec<SizeWarning> {
+/// Drop duplicate comparisons: a derivation in several jobsets of the same
+/// job and base branch (e.g. re-pushes of a PR) is compared to the same
+/// baseline.
+pub(crate) fn dedupe(mut comparisons: Vec<SizeComparison>) -> Vec<SizeComparison> {
     let mut seen = std::collections::HashSet::new();
-    warnings.retain(|w| seen.insert((w.metric, w.base_branch.clone(), w.attr.clone())));
-    warnings
+    comparisons.retain(|c| seen.insert((c.metric, c.base_branch.clone(), c.attr.clone())));
+    comparisons
 }
 
 /// Compare the `metric` size of `drv_id` against the base-branch baseline of
@@ -45,19 +32,20 @@ pub(crate) fn dedupe(mut warnings: Vec<SizeWarning>) -> Vec<SizeWarning> {
 ///
 /// Before comparing, records the size in the per-commit history and, for
 /// jobs in base-branch jobsets, as the new baseline for that attr. Returns
-/// a warning for every job whose threshold was exceeded.
+/// a comparison for every job with a `size_check` and a baseline; those
+/// whose threshold was exceeded are [`SizeComparison::exceeded`].
 pub(crate) async fn evaluate_size(
     pool: &SqlitePool,
     drv_id: &DrvId,
     job_infos: &[JobInfo],
     metric: SizeMetric,
     current: u64,
-) -> Result<Vec<SizeWarning>> {
+) -> Result<Vec<SizeComparison>> {
     let Some(drv) = crate::db::model::drv::get_drv(drv_id, pool).await? else {
         return Ok(Vec::new());
     };
 
-    let mut warnings = Vec::new();
+    let mut comparisons = Vec::new();
     for job_info in job_infos {
         let jobset = match crate::db::github::get_jobset_info(job_info.jobset_id, pool).await {
             Ok(info) => info,
@@ -86,12 +74,13 @@ pub(crate) async fn evaluate_size(
             continue;
         };
 
-        let warning = compare_sizes(&size_check, metric, &job_info.name, baseline, current);
-        log_comparison(drv_id, &key, metric, (baseline, current), warning.is_some());
-        warnings.extend(warning);
+        let comparison = compare_sizes(&size_check, metric, &job_info.name, baseline, current);
+        let hit = comparison.as_ref().is_some_and(SizeComparison::exceeded);
+        log_comparison(drv_id, &key, metric, (baseline, current), hit);
+        comparisons.extend(comparison);
     }
 
-    Ok(warnings)
+    Ok(comparisons)
 }
 
 /// Write a measured size to the `Drv` row (`total`) and to the per-output
@@ -132,15 +121,15 @@ pub(crate) async fn persist_size(
     Ok(())
 }
 
-/// Return a warning if `current` exceeds `baseline` by more than the
-/// configured percentage for `metric`.
+/// Compare `current` against `baseline` and the configured percentage for
+/// `metric`. `None` for an empty baseline, which allows no percentage.
 fn compare_sizes(
     size_check: &SizeCheck,
     metric: SizeMetric,
     attr: &str,
     baseline: u64,
     current: u64,
-) -> Option<SizeWarning> {
+) -> Option<SizeComparison> {
     if baseline == 0 {
         return None;
     }
@@ -149,7 +138,7 @@ fn compare_sizes(
         SizeMetric::Closure => size_check.closure_threshold_percent(),
     };
     let increase_percent = (current as f64 - baseline as f64) / baseline as f64 * 100.0;
-    (increase_percent > threshold_percent).then(|| SizeWarning {
+    Some(SizeComparison {
         metric,
         base_branch: size_check.base_branch.clone(),
         attr: attr.to_string(),

@@ -330,7 +330,15 @@ pub enum GitHubTask {
     UpdateBuildStatusWithSizeWarnings {
         drv_id: Arc<DrvId>,
         status: DrvBuildState,
-        warnings: Vec<crate::db::size::SizeWarning>,
+        warnings: Vec<crate::db::size::SizeComparison>,
+    },
+    /// Show a successful build's outputs, sizes, build time and baseline
+    /// comparisons on its check runs; neutral if a size threshold was
+    /// exceeded. Sent by the recorder's size checker after the plain success
+    /// update, so it lands last. Supersedes `UpdateBuildStatusWithSizeWarnings`.
+    ReportBuildSuccess {
+        drv_id: Arc<DrvId>,
+        report: super::build_report::BuildReport,
     },
     CreateJobSet {
         ci_check_info: Arc<CICheckInfo>,

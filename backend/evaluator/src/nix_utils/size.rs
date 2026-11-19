@@ -23,6 +23,8 @@ pub struct OutputSize {
     pub nar_size: u64,
     /// NAR size of the output and everything it references at runtime.
     pub closure_size: u64,
+    /// Number of store paths in the output's runtime closure, itself included.
+    pub closure_paths: usize,
 }
 
 /// Sizes of all requested outputs of a derivation.
@@ -147,6 +149,7 @@ fn compute_report(
         let mut closure = HashSet::new();
         closure_of(name, infos, &mut closure)?;
         let closure_size = sum_nar(&closure, infos);
+        let closure_paths = closure.len();
         union.extend(closure);
 
         report.total_nar_size += nar_size;
@@ -155,6 +158,7 @@ fn compute_report(
             OutputSize {
                 nar_size: *nar_size,
                 closure_size,
+                closure_paths,
             },
         );
     }
@@ -303,8 +307,10 @@ mod tests {
         let dev = report.outputs["/nix/store/bbb-pkg-dev"];
         assert_eq!(out.nar_size, 100);
         assert_eq!(out.closure_size, 6100);
+        assert_eq!(out.closure_paths, 3);
         assert_eq!(dev.nar_size, 10);
         assert_eq!(dev.closure_size, 6110);
+        assert_eq!(dev.closure_paths, 4);
         assert_eq!(report.total_nar_size, 110);
         // Shared paths are counted once, not 6100 + 6110.
         assert_eq!(report.total_closure_size, 6110);

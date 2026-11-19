@@ -108,6 +108,9 @@ impl GitHubService {
                 self.handle_update_build_status_with_size_warnings(drv_id, status, &reports)
                     .await?;
             },
+            GitHubTask::ReportBuildSuccess { drv_id, report } => {
+                self.handle_report_build_success(drv_id, report).await?;
+            },
             GitHubTask::CreateJobSet {
                 ci_check_info,
                 name,
