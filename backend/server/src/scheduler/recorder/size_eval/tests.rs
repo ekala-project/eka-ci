@@ -60,26 +60,38 @@ async fn base_and_head(db: &DbService) -> Result<(i64, i64)> {
 }
 
 /// Record the `metric` size of a successful build of `drv_path` and run
-/// the size check, as the recorder does after `nix path-info`.
+/// the size check, as the recorder does after `nix path-info`. Returns the
+/// comparison against the baseline, if there is one.
+async fn compare(
+    db: &DbService,
+    drv_path: &str,
+    metric: SizeMetric,
+    size: u64,
+) -> Result<Option<SizeComparison>> {
+    let drv_id = DrvId::from_str(drv_path)?;
+    let per_output = HashMap::from([("out".to_string(), size)]);
+    persist_size(&db.pool, &drv_id, metric, size, &per_output).await?;
+    let job_infos = db.get_job_info_for_drv(&drv_id).await?;
+    let mut comparisons = evaluate_size(&db.pool, &drv_id, &job_infos, metric, size).await?;
+    assert!(
+        comparisons.len() <= 1,
+        "one job, one comparison at most: {comparisons:?}"
+    );
+    Ok(comparisons.pop())
+}
+
+/// Like [`compare`], but only returns comparisons over the threshold.
 async fn measure(
     db: &DbService,
     drv_path: &str,
     metric: SizeMetric,
     size: u64,
-) -> Result<Option<SizeWarning>> {
-    let drv_id = DrvId::from_str(drv_path)?;
-    let per_output = HashMap::from([("out".to_string(), size)]);
-    persist_size(&db.pool, &drv_id, metric, size, &per_output).await?;
-    let job_infos = db.get_job_info_for_drv(&drv_id).await?;
-    let mut warnings = evaluate_size(&db.pool, &drv_id, &job_infos, metric, size).await?;
-    assert!(
-        warnings.len() <= 1,
-        "one job, one warning at most: {warnings:?}"
-    );
-    Ok(warnings.pop())
+) -> Result<Option<SizeComparison>> {
+    let comparison = compare(db, drv_path, metric, size).await?;
+    Ok(comparison.filter(SizeComparison::exceeded))
 }
 
-async fn build(db: &DbService, drv_path: &str, size: u64) -> Result<Option<SizeWarning>> {
+async fn build(db: &DbService, drv_path: &str, size: u64) -> Result<Option<SizeComparison>> {
     measure(db, drv_path, SizeMetric::Output, size).await
 }
 
@@ -104,20 +116,6 @@ async fn warning_fires_against_base_branch_baseline() -> Result<()> {
     assert!((warning.increase_percent - 50.0).abs() < 1e-9);
     assert_eq!(warning.threshold_percent, 10.0);
     assert_eq!(warning.attr, "hello");
-
-    let drv_id = Arc::new(DrvId::from_str(HEAD_DRV)?);
-    match size_warnings_task(Arc::clone(&drv_id), vec![warning.clone()]) {
-        GitHubTask::UpdateBuildStatusWithSizeWarnings {
-            drv_id: task_drv,
-            status,
-            warnings,
-        } => {
-            assert_eq!(task_drv, drv_id);
-            assert_eq!(status, DrvBuildState::Completed(DrvBuildResult::Success));
-            assert_eq!(warnings, vec![warning]);
-        },
-        other => panic!("unexpected task {:?}", other),
-    }
 
     // The head jobset is not a base-branch jobset: no baseline from it.
     let branch: Option<String> =
@@ -184,6 +182,23 @@ async fn no_warning_within_threshold_or_without_baseline() -> Result<()> {
     Ok(())
 }
 
+/// A build within its threshold is still compared, so the success summary
+/// can show how it changed against the base branch.
+#[tokio::test]
+async fn comparison_within_threshold_is_reported() -> Result<()> {
+    let db = DbService::new_in_memory().await?;
+    base_and_head(&db).await?;
+    build(&db, BASE_DRV, 1_000_000).await?;
+
+    let comparison = compare(&db, HEAD_DRV, SizeMetric::Output, 1_050_000)
+        .await?
+        .expect("a baseline exists");
+    assert!(!comparison.exceeded());
+    assert_eq!(comparison.baseline_size, 1_000_000);
+    assert!((comparison.increase_percent - 5.0).abs() < 1e-9);
+    Ok(())
+}
+
 /// `GitHubJobSets.config_json` holds a single job's config. Parsing it as
 /// the whole `.ekaci/config.json` (as the recorder used to) silently
 /// yields no jobs, so the size check never ran.
@@ -222,22 +237,30 @@ fn size_check(closure: Option<f64>) -> SizeCheck {
 fn compare_sizes_threshold() {
     let size_check = size_check(None);
     let out = SizeMetric::Output;
-    assert!(compare_sizes(&size_check, out, "a", 100, 110).is_none());
-    assert!(compare_sizes(&size_check, out, "a", 100, 50).is_none());
-    assert!(compare_sizes(&size_check, out, "a", 0, 100).is_none());
-    let warning = compare_sizes(&size_check, SizeMetric::Closure, "a", 100, 111);
-    assert_eq!(warning.map(|w| w.metric), Some(SizeMetric::Closure));
+    let exceeded = |metric, baseline, current| {
+        compare_sizes(&size_check, metric, "a", baseline, current).map(|c| c.exceeded())
+    };
+    assert_eq!(exceeded(out, 100, 110), Some(false));
+    assert_eq!(exceeded(out, 100, 50), Some(false));
+    assert_eq!(exceeded(out, 0, 100), None);
+    assert_eq!(exceeded(SizeMetric::Closure, 100, 111), Some(true));
 }
 
 #[test]
 fn closure_threshold_override() {
     let size_check = size_check(Some(50.0));
     let closure = SizeMetric::Closure;
-    assert!(compare_sizes(&size_check, closure, "a", 100, 140).is_none());
+    assert!(
+        !compare_sizes(&size_check, closure, "a", 100, 140)
+            .unwrap()
+            .exceeded()
+    );
     let warning = compare_sizes(&size_check, closure, "a", 100, 160).unwrap();
+    assert!(warning.exceeded());
     assert_eq!(warning.threshold_percent, 50.0);
     // The output threshold is unaffected.
-    assert!(compare_sizes(&size_check, SizeMetric::Output, "a", 100, 120).is_some());
+    let output = compare_sizes(&size_check, SizeMetric::Output, "a", 100, 120).unwrap();
+    assert!(output.exceeded());
 }
 
 #[test]

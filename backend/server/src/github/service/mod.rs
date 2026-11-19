@@ -22,6 +22,7 @@ pub(crate) const CHANGE_SUMMARY_DEBOUNCE: Duration = Duration::from_secs(5 * 60)
 // Sub-modules
 pub mod actions;
 mod auto_merge;
+pub mod build_report;
 mod change_summary;
 mod checks;
 mod concluded;

@@ -2,15 +2,15 @@
 //!
 //! A successful build whose output grew beyond its job's `size_check`
 //! threshold gets a *neutral* conclusion and a size comparison instead of the
-//! plain success update. The recorder sends one task or the other, never
-//! both, so the warning is not overwritten.
+//! plain success update. New builds report this through
+//! `GitHubTask::ReportBuildSuccess` (see `build_report`), which leads with
+//! [`render`]; the `UpdateBuildStatusWithSizeWarning(s)` tasks handled here
+//! remain for tasks already in the journal.
 
 use anyhow::Result;
-use octocrab::Octocrab;
 use tracing::debug;
 
 use super::GitHubService;
-use crate::db::github::CheckRun;
 use crate::db::model::DrvId;
 use crate::db::model::build_event::DrvBuildState;
 use crate::db::size::SizeMetric;
@@ -87,7 +87,7 @@ impl SizeWarningReport<'_> {
 
 impl<'a> SizeWarningReport<'a> {
     /// Report for a warning carried by `UpdateBuildStatusWithSizeWarnings`.
-    pub(super) fn from_warning(w: &'a crate::db::size::SizeWarning) -> Self {
+    pub(super) fn from_warning(w: &'a crate::db::size::SizeComparison) -> Self {
         Self {
             metric: w.metric,
             base_branch: &w.base_branch,
@@ -100,7 +100,7 @@ impl<'a> SizeWarningReport<'a> {
 }
 
 /// Check-run title and markdown summary for one or more warnings.
-fn render(reports: &[SizeWarningReport<'_>]) -> (String, String) {
+pub(super) fn render(reports: &[SizeWarningReport<'_>]) -> (String, String) {
     if let [report] = reports {
         return report.text();
     }
@@ -153,77 +153,11 @@ impl GitHubService {
                 warnings.len()
             );
             let (title, summary) = render(warnings);
-            if self.queue_size_warning(&check_run, &title, &summary).await {
-                continue;
-            }
-
-            // REST fallback for check runs without a node id
-            self.rate_limiter.acquire().await;
-            let octocrab = self.octocrab_for_owner(&check_run.repo_owner)?;
-            update_check_run_with_size_warning(&octocrab, &check_run, title, summary).await?;
+            self.update_completed_output(&check_run, true, &title, &summary)
+                .await?;
         }
         Ok(())
     }
-
-    /// Queue the warning on the GraphQL batcher, which also carries the
-    /// check run's earlier status updates, so it lands after them. Returns
-    /// `false` if the check run or repository has no node id.
-    async fn queue_size_warning(&self, check_run: &CheckRun, title: &str, summary: &str) -> bool {
-        let Some(node_id) = &check_run.node_id else {
-            return false;
-        };
-        let Some(repo_node_id) = self
-            .get_repo_node_id(&check_run.repo_owner, &check_run.repo_name)
-            .await
-        else {
-            return false;
-        };
-        self.batcher
-            .queue_update_with_output(
-                &check_run.repo_owner,
-                &repo_node_id,
-                node_id,
-                "COMPLETED",
-                Some("NEUTRAL"),
-                title.to_string(),
-                summary.to_string(),
-            )
-            .await;
-        true
-    }
-}
-
-/// Update a check run over REST with a neutral conclusion and the size
-/// warning as its output.
-async fn update_check_run_with_size_warning(
-    octocrab: &Octocrab,
-    check_run: &CheckRun,
-    title: String,
-    summary: String,
-) -> Result<()> {
-    use octocrab::params::checks::{CheckRunConclusion, CheckRunOutput, CheckRunStatus};
-
-    let output = CheckRunOutput {
-        title,
-        summary: crate::github::output_limit::cap_output(summary),
-        text: None,
-        annotations: vec![],
-        images: vec![],
-    };
-    octocrab
-        .checks(&check_run.repo_owner, &check_run.repo_name)
-        .update_check_run(octocrab::models::CheckRunId(check_run.check_run_id as u64))
-        .status(CheckRunStatus::Completed)
-        .conclusion(CheckRunConclusion::Neutral)
-        .output(output)
-        .send()
-        .await?;
-
-    debug!(
-        "Successfully updated check run {} with size warning",
-        check_run.check_run_id
-    );
-    Ok(())
 }
 
 #[cfg(test)]

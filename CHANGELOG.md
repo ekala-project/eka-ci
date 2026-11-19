@@ -214,6 +214,16 @@
 
 ### GitHub check runs
 
+- Successful build gates now show what was built: a table of the
+  derivation's outputs with their store paths, output (NAR) size, closure
+  size and closure path count, plus the package name/version, system,
+  derivation path, build time (from the last start to success) and the
+  totals. Jobs with a `size_check` also get a "Compared with base branch"
+  table for every baseline comparison, not only exceeded ones; an exceeded
+  threshold still makes the check neutral and leads the summary. Gates
+  substituted from a binary cache show their outputs and, where the local
+  store or a substituter has them, their sizes. Coalesced gates keep their
+  variant table
 - Check-run output over GitHub's 65,535-character limit is now truncated
   instead of rejected with 422 ("Only 65535 characters are allowed").
   Coalesced gates for large groups (e.g. `texlivePackages`, ~180k chars of

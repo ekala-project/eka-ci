@@ -438,18 +438,22 @@ RecorderTask { derivation, result }
 │     - GitHubTask::CompleteCIEvalJob                         │
 │     - Check auto-merge eligibility (if enabled)             │
 └──────┬──────────────────────────────────────────────────────┘
-       │ (success after a local build only)
+       │ (success: local build, or cache hit of a job)
        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Size check (background, scheduler/recorder/size_checks)     │
 │   - nix path-info -r: output (NAR) + closure size           │
+│   Local builds only:                                        │
 │   - Persist on Drv, DrvRuntimeRefs, per-commit history,     │
 │     DrvSizeBaselines (base-branch jobsets)                  │
 │   - No baseline for a changed attr: measure the PR's        │
 │     base-commit drv (local store / substituters)            │
-│   - Compare with the base_branch baseline; over threshold:  │
-│     GitHubTask::UpdateBuildStatusWithSizeWarnings           │
-│       → check run neutral with every exceeded size          │
+│   - Compare with the base_branch baseline                   │
+│   Jobs only (drv has check runs):                           │
+│   - GitHubTask::ReportBuildSuccess { drv_id, report }       │
+│       → check run output: output paths, sizes, closure      │
+│         path counts, build time, baseline comparisons;      │
+│         neutral with the warning if a threshold exceeded    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -463,8 +467,12 @@ failures. A jobset concluded by a fast build may be signalled twice; the
 handler re-validates every gate, so that is harmless.
 
 The size check is spawned after `UpdateBuildStatus` was sent, so its
-neutral update is queued behind the success update in the same GitHub
-batch queue and is not overwritten by it.
+build report is queued behind the success update in the same GitHub
+batch queue and is not overwritten by it. Cache hits are measured in the
+local store or a substituter (`.narinfo` only) and reported without being
+compared. Coalesced gates keep their variant table and get no report.
+`UpdateBuildStatusWithSizeWarnings` is no longer sent; its handler remains
+for tasks already in the journal.
 
 ### 5. Custom Checks Flow (Parallel to Builds)
 
