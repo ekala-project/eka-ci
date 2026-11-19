@@ -1,38 +1,25 @@
 <!doctype html>
 <html lang="en">
     <head>
-        <!-- Some html boilerplate -->
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <style>
-            /* Copied from `elm make` output, no idea why they do this and if we need it. */
-            body {
-                padding: 0;
-                margin: 0;
-            }
-        </style>
+        <meta name="color-scheme" content="light dark" />
+        <title>EkaCI</title>
 
         <!--
-        Use a nice mono space font, because we deserve bettern than Courier.
-        No thought has been given to this choice, replace at will.
+        Apply a saved light/dark override before first paint so the page never
+        flashes the wrong theme. Without one, the stylesheet follows the OS.
         -->
-        <link
-            rel="stylesheet"
-            href="https://cdn.jsdelivr.net/npm/firacode@6.2.0/distr/fira_code.css"
-        />
+        <script>
+            try {
+                var savedTheme = window.localStorage.getItem('ekaci_theme');
+                if (savedTheme === 'light' || savedTheme === 'dark') {
+                    document.documentElement.dataset.theme = savedTheme;
+                }
+            } catch (e) {}
+        </script>
 
-        <!--
-        Tachyons CSS: utility-first CSS framework for fast, responsive UI development.
-        -->
-        <link
-            rel="stylesheet"
-            href="https://unpkg.com/tachyons@4.12.0/css/tachyons.min.css"
-        />
-
-        <!--
-        Custom EkaCI styles for status badges, progress bars, and log viewer.
-        -->
-        <link rel="stylesheet" href="/styles/custom.css" />
+        <link rel="stylesheet" href="/styles/main.css" />
 
         <!--
         The server is configured to try and serve all files that are in this directory
@@ -41,7 +28,7 @@
         -->
         <script src="/main.js"></script>
         <script type="module">
-            import { setupPorts } from '/ports.js';
+            import { readTheme, setupPorts } from '/ports.js';
 
             // Calculate API base URL from current location
             // This allows the frontend to work whether served directly or via reverse proxy
@@ -50,11 +37,12 @@
             // Initialize the Elm application with configuration
             const app = Elm.Main.init({
                 flags: {
-                    apiBaseUrl: apiBaseUrl
+                    apiBaseUrl: apiBaseUrl,
+                    theme: readTheme()
                 }
             });
 
-            // Set up WebSocket ports
+            // Set up WebSocket, token and theme ports
             setupPorts(app);
         </script>
     </head>

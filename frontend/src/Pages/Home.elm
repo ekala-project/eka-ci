@@ -8,16 +8,15 @@ module Pages.Home exposing
 
 {-| Home page displaying list of repositories.
 
-Shows all repositories where the GitHub App is installed with a
-Buildkite-style card layout, search, and filtering.
+Shows all repositories where the GitHub App is installed as a card grid
+with a name filter.
 
 -}
 
 import Api.Api as Api
-import Components.ErrorView as ErrorView
-import Components.Loader as Loader
-import Html exposing (Html, a, div, h1, h2, input, p, span, text)
-import Html.Attributes exposing (class, href, placeholder, type_, value)
+import Components.Ui as Ui
+import Html exposing (Html, a, div, input, label, li, p, span, text, ul)
+import Html.Attributes exposing (attribute, class, href, id, placeholder, type_, value)
 import Html.Events exposing (onInput)
 import Http
 import Models.Repository exposing (Repository)
@@ -101,133 +100,96 @@ update msg model =
 -}
 view : Model -> Html Msg
 view model =
-    div [ class "pa4" ]
-        [ h1 [ class "f2 fw6 mb4" ]
-            [ text "Repositories" ]
+    div []
+        [ Ui.simpleHead "Repositories" "Repositories where the EkaCI GitHub App is installed."
         , case model of
             Loading _ ->
-                Loader.viewWithMessage "Loading repositories..."
+                Ui.loading "Loading repositories…"
 
             Failed error ->
-                ErrorView.viewHttp error
+                Ui.httpError "Could not load repositories." error
 
             Loaded data ->
                 if List.isEmpty data.repositories then
-                    viewEmptyState
+                    Ui.emptyState "No repositories yet"
+                        "Install the EkaCI GitHub App on a repository and it will appear here."
 
                 else
-                    viewRepositoryGrid data
+                    viewRepositories data
         ]
 
 
-{-| View empty state when no repositories are found.
--}
-viewEmptyState : Html Msg
-viewEmptyState =
-    div [ class "card pa4 tc" ]
-        [ h2 [ class "f4 fw6 mb2" ]
-            [ text "No Repositories" ]
-        , p [ class "gray" ]
-            [ text "No repositories found. Install the GitHub App on your repositories to get started." ]
-        ]
-
-
-{-| View the repository grid with search.
--}
-viewRepositoryGrid : LoadedData -> Html Msg
-viewRepositoryGrid data =
+viewRepositories : LoadedData -> Html Msg
+viewRepositories data =
     let
-        filteredRepos =
+        filtered =
             filterRepositories data.searchTerm data.repositories
+
+        total =
+            List.length data.repositories
     in
     div []
-        [ -- Search bar
-          viewSearchBar data.searchTerm
-
-        -- Repository count
-        , div [ class "mv3 gray f6" ]
-            [ text
-                (String.fromInt (List.length filteredRepos)
-                    ++ " "
-                    ++ (if List.length filteredRepos == 1 then
-                            "repository"
-
-                        else
-                            "repositories"
-                       )
-                )
+        [ div [ class "toolbar" ]
+            [ label [ class "field grow" ]
+                [ text "Filter repositories"
+                , input
+                    [ type_ "search"
+                    , placeholder "owner or name"
+                    , value data.searchTerm
+                    , onInput SearchInput
+                    , attribute "aria-describedby" "repo-count"
+                    ]
+                    []
+                ]
             ]
-
-        -- Repository cards
-        , if List.isEmpty filteredRepos then
-            div [ class "card pa4 tc gray" ]
-                [ text "No repositories match your search." ]
+        , p [ id "repo-count", class "small muted", attribute "aria-live" "polite" ]
+            [ text (countText (List.length filtered) total) ]
+        , if List.isEmpty filtered then
+            Ui.emptyState "No matching repositories" ("Nothing matches “" ++ data.searchTerm ++ "”.")
 
           else
-            div [ class "flex flex-wrap nl3 nr3" ]
-                (List.map viewRepositoryCard filteredRepos)
+            ul [ class "repo-grid" ] (List.map viewRepositoryCard filtered)
         ]
 
 
-{-| View search bar.
--}
-viewSearchBar : String -> Html Msg
-viewSearchBar searchTerm =
-    div [ class "mb3" ]
-        [ input
-            [ type_ "text"
-            , class "pa3 br2 ba b--black-20 w-100 w-50-ns"
-            , placeholder "Search repositories by name or owner..."
-            , value searchTerm
-            , onInput SearchInput
-            ]
-            []
-        ]
+countText : Int -> Int -> String
+countText shown total =
+    if shown == total then
+        String.fromInt total ++ pluralize total " repository" " repositories"
+
+    else
+        String.fromInt shown ++ " of " ++ String.fromInt total ++ " repositories"
 
 
-{-| Filter repositories by search term.
--}
+pluralize : Int -> String -> String -> String
+pluralize n one many =
+    if n == 1 then
+        one
+
+    else
+        many
+
+
 filterRepositories : String -> List Repository -> List Repository
-filterRepositories searchTerm repos =
-    if String.isEmpty searchTerm then
+filterRepositories term repos =
+    let
+        needle =
+            String.toLower (String.trim term)
+    in
+    if String.isEmpty needle then
         repos
 
     else
-        let
-            lowerTerm =
-                String.toLower searchTerm
-        in
         List.filter
-            (\repo ->
-                String.contains lowerTerm (String.toLower repo.repoName)
-                    || String.contains lowerTerm (String.toLower repo.owner)
-            )
+            (\repo -> String.contains needle (String.toLower (repo.owner ++ "/" ++ repo.repoName)))
             repos
 
 
-{-| View a single repository card.
--}
 viewRepositoryCard : Repository -> Html Msg
 viewRepositoryCard repo =
-    div [ class "w-100 w-50-m w-third-l pa3" ]
-        [ a
-            [ href (Route.toHref (Route.Repository repo.owner repo.repoName))
-            , class "card db pa4 link black hover-bg-light-gray transition"
-            ]
-            [ -- Repository name
-              h2 [ class "f4 fw6 mt0 mb2 dark-blue" ]
-                [ text repo.repoName ]
-
-            -- Owner
-            , div [ class "flex items-center mb2" ]
-                [ span [ class "gray f6" ]
-                    [ text ("@" ++ repo.owner) ]
-                ]
-
-            -- Installation ID (subtle)
-            , div [ class "mt3 pt3 bt b--black-10" ]
-                [ span [ class "f7 gray" ]
-                    [ text ("Installation #" ++ String.fromInt repo.installationId) ]
-                ]
+    li []
+        [ a [ class "repo-card", href (Route.toHref (Route.Repository repo.owner repo.repoName)) ]
+            [ span [ class "repo-owner" ] [ text repo.owner ]
+            , span [ class "repo-name" ] [ text repo.repoName ]
             ]
         ]

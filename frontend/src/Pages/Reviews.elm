@@ -6,304 +6,378 @@ module Pages.Reviews exposing
     , view
     )
 
-{-| Pull Request Review Portal page.
+{-| Reviews: open pull requests with their CI results.
 
-Displays all open PRs with build statistics, sorted by CI status,
-changed drvs count, and lines changed.
+Pull requests can be filtered by CI status and text, and sorted by how many
+derivations they change or by when they were last updated. Within a sort,
+passing pull requests come first.
 
 -}
 
 import Api.Api as Api
-import Components.ErrorView as ErrorView
-import Components.Loader as Loader
-import Components.StatusBadge as StatusBadge
-import Html exposing (Html, a, button, div, h1, h2, input, label, p, span, table, tbody, td, text, th, thead, tr)
-import Html.Attributes exposing (checked, class, href, type_)
-import Html.Events exposing (onCheck, onClick)
+import Components.BuildProgress as Progress
+import Components.Ui as Ui
+import Html exposing (Html, a, div, input, label, p, span, table, tbody, td, text, th, thead, tr)
+import Html.Attributes exposing (attribute, class, href, id, placeholder, scope, title, type_, value)
+import Html.Events exposing (onInput)
 import Http
 import Models.PullRequest exposing (PullRequest)
 import Route
 
 
-{-| Page model with PR list data.
--}
-type Model
-    = Loading String
-    | Loaded LoadedData
-    | Failed Http.Error
-
-
-{-| Loaded data with PRs and sort settings.
--}
-type alias LoadedData =
-    { prs : List PullRequest
-    , apiBaseUrl : String
+type alias Model =
+    { apiBaseUrl : String
+    , prs : Remote (List PullRequest)
     , sortBy : SortBy
-    , hideFailingGates : Bool
+    , status : Maybe Status
+    , search : String
     }
 
 
-{-| Sort options for PRs.
--}
+type Remote a
+    = Loading
+    | Ready a
+    | Failed Http.Error
+
+
 type SortBy
-    = ByChangedDrvs
-    | ByLinesChanged -- Not yet implemented, needs GitHub API integration
-    | ByLastUpdated
+    = FewestChanges
+    | RecentlyUpdated
 
 
-{-| Page messages.
+{-| CI status of a pull request, in the order reviewers care about.
 -}
+type Status
+    = Passed
+    | InProgress
+    | Failing
+    | NoBuilds
+
+
 type Msg
     = GotPullRequests (Result Http.Error (List PullRequest))
-    | ChangeSortBy SortBy
-    | ToggleHideFailingGates Bool
+    | SetSort SortBy
+    | SetStatus (Maybe Status)
+    | SetSearch String
 
 
-{-| Initialize the page.
--}
 init : String -> ( Model, Cmd Msg )
 init apiBaseUrl =
-    ( Loading apiBaseUrl
+    ( { apiBaseUrl = apiBaseUrl
+      , prs = Loading
+      , sortBy = FewestChanges
+      , status = Nothing
+      , search = ""
+      }
     , Api.getPullRequests apiBaseUrl GotPullRequests
     )
 
 
-{-| Update the page.
--}
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        GotPullRequests result ->
-            case ( result, model ) of
-                ( Ok prs, Loading apiBaseUrl ) ->
-                    ( Loaded
-                        { prs = prs
-                        , apiBaseUrl = apiBaseUrl
-                        , sortBy = ByChangedDrvs
-                        , hideFailingGates = False
-                        }
-                    , Cmd.none
-                    )
+        GotPullRequests (Ok prs) ->
+            ( { model | prs = Ready prs }, Cmd.none )
 
-                ( Ok prs, Loaded data ) ->
-                    ( Loaded { data | prs = prs }
-                    , Cmd.none
-                    )
+        GotPullRequests (Err error) ->
+            ( { model | prs = Failed error }, Cmd.none )
 
-                ( Ok _, _ ) ->
-                    ( model, Cmd.none )
+        SetSort sortBy ->
+            ( { model | sortBy = sortBy }, Cmd.none )
 
-                ( Err err, _ ) ->
-                    ( Failed err, Cmd.none )
+        SetStatus status ->
+            ( { model | status = status }, Cmd.none )
 
-        ChangeSortBy sortBy ->
-            case model of
-                Loaded data ->
-                    ( Loaded { data | sortBy = sortBy }, Cmd.none )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        ToggleHideFailingGates hide ->
-            case model of
-                Loaded data ->
-                    ( Loaded { data | hideFailingGates = hide }, Cmd.none )
-
-                _ ->
-                    ( model, Cmd.none )
+        SetSearch search ->
+            ( { model | search = search }, Cmd.none )
 
 
-{-| Render the page.
--}
-view : Model -> Html Msg
-view model =
-    case model of
-        Loading _ ->
-            Loader.view
 
-        Failed err ->
-            ErrorView.viewHttp err
-
-        Loaded data ->
-            viewLoaded data
+-- STATUS AND SORTING
 
 
-{-| Render the loaded page with PR list.
--}
-viewLoaded : LoadedData -> Html Msg
-viewLoaded data =
-    let
-        filteredAndSortedPRs =
-            data.prs
-                |> filterPRs data.hideFailingGates
-                |> sortPRs data.sortBy
-    in
-    div [ class "container mx-auto px-4 py-8" ]
-        [ h1 [ class "text-3xl font-bold mb-6" ] [ text "Pull Request Review Portal" ]
-        , viewControls data.sortBy data.hideFailingGates
-        , if List.isEmpty filteredAndSortedPRs then
-            p [ class "text-gray-500 mt-8" ] [ text "No open pull requests found." ]
+statusOf : PullRequest -> Status
+statusOf pr =
+    case Progress.overall (Progress.fromPullRequest pr) of
+        ( Ui.Good, _ ) ->
+            Passed
 
-          else
-            viewPRTable filteredAndSortedPRs
-        ]
+        ( Ui.Critical, _ ) ->
+            Failing
+
+        ( Ui.Neutral, _ ) ->
+            NoBuilds
+
+        _ ->
+            InProgress
 
 
-{-| View sorting and filtering controls.
--}
-viewControls : SortBy -> Bool -> Html Msg
-viewControls currentSort hideFailingGates =
-    div [ class "mb-6 p-4 bg-gray-50 rounded-lg" ]
-        [ div [ class "flex flex-wrap items-center gap-4" ]
-            [ div [ class "flex items-center gap-2" ]
-                [ label [ class "font-semibold" ] [ text "Sort by:" ]
-                , viewSortButton "Changed Drvs" ByChangedDrvs (currentSort == ByChangedDrvs)
-                , viewSortButton "Last Updated" ByLastUpdated (currentSort == ByLastUpdated)
-                ]
-            , div [ class "flex items-center gap-2" ]
-                [ input
-                    [ type_ "checkbox"
-                    , checked hideFailingGates
-                    , onCheck ToggleHideFailingGates
-                    , class "rounded"
-                    ]
-                    []
-                , label [ class "text-sm" ] [ text "Hide PRs with failing CI gates" ]
-                ]
-            ]
-        ]
+statusRank : Status -> Int
+statusRank status =
+    case status of
+        Passed ->
+            0
+
+        InProgress ->
+            1
+
+        Failing ->
+            2
+
+        NoBuilds ->
+            3
 
 
-{-| View a sort button.
--}
-viewSortButton : String -> SortBy -> Bool -> Html Msg
-viewSortButton label sortBy isActive =
-    button
-        [ onClick (ChangeSortBy sortBy)
-        , class
-            (if isActive then
-                "px-3 py-1 rounded bg-blue-600 text-white"
+statusLabel : Status -> String
+statusLabel status =
+    case status of
+        Passed ->
+            "Passed"
 
-             else
-                "px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
-            )
-        ]
-        [ text label ]
+        InProgress ->
+            "In progress"
 
+        Failing ->
+            "Failing"
 
-{-| View the PR table.
--}
-viewPRTable : List PullRequest -> Html Msg
-viewPRTable prs =
-    table [ class "min-w-full bg-white border border-gray-200" ]
-        [ thead [ class "bg-gray-100" ]
-            [ tr []
-                [ th [ class "px-4 py-2 text-left" ] [ text "Repository" ]
-                , th [ class "px-4 py-2 text-left" ] [ text "PR" ]
-                , th [ class "px-4 py-2 text-left" ] [ text "Title" ]
-                , th [ class "px-4 py-2 text-left" ] [ text "Author" ]
-                , th [ class "px-4 py-2 text-center" ] [ text "CI Status" ]
-                , th [ class "px-4 py-2 text-right" ] [ text "Changed Drvs" ]
-                , th [ class "px-4 py-2 text-right" ] [ text "Total Drvs" ]
-                ]
-            ]
-        , tbody [] (List.map viewPRRow prs)
-        ]
+        NoBuilds ->
+            "No builds"
 
 
-{-| View a single PR row.
--}
-viewPRRow : PullRequest -> Html Msg
-viewPRRow pr =
-    let
-        -- The forge's own URL (github.com, GHE, ...); unknown until the
-        -- server next sees the PR, so fall back to our PR page.
-        prUrl =
-            pr.htmlUrl
-                |> Maybe.withDefault (Route.toHref (Route.PullRequest pr.owner pr.repoName pr.prNumber))
+statusTone : Status -> Ui.Tone
+statusTone status =
+    case status of
+        Passed ->
+            Ui.Good
 
-        ciPassed =
-            pr.completedFailureDrvs == 0 && pr.failedRetryDrvs == 0 && pr.totalDrvs > 0
+        InProgress ->
+            Ui.Info
 
-        ciInProgress =
-            pr.totalDrvs > 0 && (pr.completedSuccessDrvs + pr.completedFailureDrvs) < pr.totalDrvs
+        Failing ->
+            Ui.Critical
 
-        statusBadge =
-            if ciPassed then
-                span [ class "px-2 py-1 rounded bg-green-100 text-green-800 text-sm" ] [ text "✓ Passed" ]
-
-            else if ciInProgress then
-                span [ class "px-2 py-1 rounded bg-yellow-100 text-yellow-800 text-sm" ] [ text "⋯ In Progress" ]
-
-            else if pr.totalDrvs == 0 then
-                span [ class "px-2 py-1 rounded bg-gray-100 text-gray-600 text-sm" ] [ text "No builds" ]
-
-            else
-                span [ class "px-2 py-1 rounded bg-red-100 text-red-800 text-sm" ] [ text "✗ Failed" ]
-    in
-    tr [ class "border-t border-gray-200 hover:bg-gray-50" ]
-        [ td [ class "px-4 py-3" ]
-            [ text (pr.owner ++ "/" ++ pr.repoName) ]
-        , td [ class "px-4 py-3" ]
-            [ a [ href prUrl, class "text-blue-600 hover:underline" ]
-                [ text ("#" ++ String.fromInt pr.prNumber) ]
-            ]
-        , td [ class "px-4 py-3 max-w-md truncate" ]
-            [ a [ href prUrl, class "hover:underline" ]
-                [ text pr.title ]
-            ]
-        , td [ class "px-4 py-3 text-sm text-gray-600" ]
-            [ text pr.author ]
-        , td [ class "px-4 py-3 text-center" ]
-            [ statusBadge ]
-        , td [ class "px-4 py-3 text-right font-mono text-sm" ]
-            [ text (String.fromInt pr.changedDrvs) ]
-        , td [ class "px-4 py-3 text-right font-mono text-sm" ]
-            [ text (String.fromInt pr.totalDrvs) ]
-        ]
+        NoBuilds ->
+            Ui.Neutral
 
 
-{-| Filter PRs based on settings.
--}
-filterPRs : Bool -> List PullRequest -> List PullRequest
-filterPRs hideFailingGates prs =
-    if hideFailingGates then
-        prs
-            |> List.filter
-                (\pr ->
-                    -- Only show PRs with all CI gates passing
-                    pr.completedFailureDrvs == 0 && pr.failedRetryDrvs == 0
-                )
-
-    else
-        prs
-
-
-{-| Sort PRs based on the selected sort option.
+{-| Passing first, then by the chosen key. `List.sortWith` is stable, so
+equal keys keep the server's order.
 -}
 sortPRs : SortBy -> List PullRequest -> List PullRequest
-sortPRs sortBy prs =
+sortPRs sortBy =
+    List.sortWith
+        (\a b ->
+            case compare (statusRank (statusOf a)) (statusRank (statusOf b)) of
+                EQ ->
+                    case sortBy of
+                        FewestChanges ->
+                            compare a.changedDrvs b.changedDrvs
+
+                        RecentlyUpdated ->
+                            -- ISO-8601 timestamps sort lexically; newest first.
+                            compare b.updatedAt a.updatedAt
+
+                order ->
+                    order
+        )
+
+
+matches : Maybe Status -> String -> PullRequest -> Bool
+matches status search pr =
     let
-        -- Primary sort: CI gates passing (all green first)
-        byCI pr =
-            if pr.completedFailureDrvs == 0 && pr.failedRetryDrvs == 0 && pr.totalDrvs > 0 then
-                0
+        needle =
+            String.toLower (String.trim search)
 
-            else
-                1
-
-        -- Secondary sort based on selection
-        secondarySort =
-            case sortBy of
-                ByChangedDrvs ->
-                    \pr -> ( byCI pr, pr.changedDrvs, pr.updatedAt )
-
-                ByLastUpdated ->
-                    \pr -> ( byCI pr, pr.updatedAt, pr.changedDrvs )
-
-                ByLinesChanged ->
-                    -- Not implemented yet, fall back to changed drvs
-                    \pr -> ( byCI pr, pr.changedDrvs, pr.updatedAt )
+        haystack =
+            String.toLower (String.join " " [ pr.title, pr.author, pr.owner ++ "/" ++ pr.repoName, "#" ++ String.fromInt pr.prNumber ])
     in
-    prs
-        |> List.sortBy (\pr -> ( byCI pr, pr.changedDrvs ))
+    (status == Nothing || status == Just (statusOf pr))
+        && (String.isEmpty needle || String.contains needle haystack)
+
+
+
+-- VIEW
+
+
+view : Model -> Html Msg
+view model =
+    div []
+        [ Ui.simpleHead "Reviews" "Open pull requests and their CI results. Passing pull requests are listed first."
+        , case model.prs of
+            Loading ->
+                Ui.loading "Loading pull requests…"
+
+            Failed error ->
+                Ui.httpError "Could not load pull requests." error
+
+            Ready [] ->
+                Ui.emptyState "No open pull requests" "Pull requests on installed repositories will show up here once EkaCI evaluates them."
+
+            Ready prs ->
+                viewLoaded model prs
+        ]
+
+
+viewLoaded : Model -> List PullRequest -> Html Msg
+viewLoaded model prs =
+    let
+        shown =
+            prs
+                |> List.filter (matches model.status model.search)
+                |> sortPRs model.sortBy
+    in
+    div []
+        [ statusChips model.status prs
+        , div [ class "toolbar" ]
+            [ label [ class "field grow" ]
+                [ text "Filter"
+                , input
+                    [ type_ "search"
+                    , placeholder "title, author, repository or #number"
+                    , value model.search
+                    , onInput SetSearch
+                    , attribute "aria-describedby" "pr-count"
+                    ]
+                    []
+                ]
+            , sortChips model.sortBy
+            ]
+        , p [ id "pr-count", class "small muted", attribute "aria-live" "polite" ]
+            [ text (countText (List.length shown) (List.length prs)) ]
+        , if List.isEmpty shown then
+            Ui.emptyState "No matching pull requests" "Try a different status or filter."
+
+          else
+            Ui.tableWrap (prTable shown)
+        ]
+
+
+statusChips : Maybe Status -> List PullRequest -> Html Msg
+statusChips current prs =
+    let
+        countFor status =
+            List.length (List.filter (\pr -> statusOf pr == status) prs)
+
+        statusChip status =
+            Ui.chip
+                { label = statusLabel status
+                , count = Just (countFor status)
+                , tone = Just (statusTone status)
+                , pressed = current == Just status
+                , onPress = SetStatus (Just status)
+                }
+    in
+    div [ class "chips", attribute "role" "group", attribute "aria-label" "Filter by CI status" ]
+        (Ui.chip { label = "All", count = Just (List.length prs), tone = Nothing, pressed = current == Nothing, onPress = SetStatus Nothing }
+            :: List.map statusChip (List.filter (\s -> countFor s > 0) [ Passed, InProgress, Failing, NoBuilds ])
+        )
+
+
+sortChips : SortBy -> Html Msg
+sortChips current =
+    div [ class "chips", attribute "role" "group", attribute "aria-label" "Sort" ]
+        [ span [ class "small muted" ] [ text "Sort:" ]
+        , Ui.chip { label = "Fewest changes", count = Nothing, tone = Nothing, pressed = current == FewestChanges, onPress = SetSort FewestChanges }
+        , Ui.chip { label = "Recently updated", count = Nothing, tone = Nothing, pressed = current == RecentlyUpdated, onPress = SetSort RecentlyUpdated }
+        ]
+
+
+countText : Int -> Int -> String
+countText shown total =
+    if shown == total then
+        String.fromInt total
+            ++ (if total == 1 then
+                    " pull request"
+
+                else
+                    " pull requests"
+               )
+
+    else
+        String.fromInt shown ++ " of " ++ String.fromInt total ++ " pull requests"
+
+
+prTable : List PullRequest -> Html Msg
+prTable prs =
+    table [ class "table" ]
+        [ thead []
+            [ tr []
+                [ th [ scope "col" ] [ text "Pull request" ]
+                , th [ scope "col" ] [ text "Status" ]
+                , th [ scope "col" ] [ text "Progress" ]
+                , th [ scope "col", class "num hide-sm" ] [ text "Changed" ]
+                , th [ scope "col", class "hide-sm" ] [ text "Updated" ]
+                ]
+            ]
+        , tbody [] (List.map prRow prs)
+        ]
+
+
+prRow : PullRequest -> Html Msg
+prRow pr =
+    let
+        counts =
+            Progress.fromPullRequest pr
+    in
+    tr []
+        [ td [] [ prTitle pr, prSubline pr ]
+        , td [] [ Ui.badge (statusTone (statusOf pr)) (statusLabel (statusOf pr)) ]
+        , td [ class "progress-cell" ]
+            [ if counts.total == 0 then
+                span [ class "small muted" ] [ text "Not evaluated yet" ]
+
+              else
+                Progress.cell counts
+            ]
+        , td [ class "num hide-sm", title (changedTitle pr) ]
+            [ text (String.fromInt pr.changedDrvs)
+            , if pr.newDrvs > 0 then
+                span [ class "cell-sub" ] [ text (String.fromInt pr.newDrvs ++ " new") ]
+
+              else
+                text ""
+            ]
+        , td [ class "nowrap small hide-sm" ] [ Ui.timestamp pr.updatedAt ]
+        ]
+
+
+{-| The title opens the PR's job when EkaCI has one; otherwise GitHub.
+-}
+prTitle : PullRequest -> Html Msg
+prTitle pr =
+    case pr.jobsetId of
+        Just jobsetId ->
+            a [ class "cell-main", href (Route.toHref (Route.Job jobsetId)) ] [ text pr.title ]
+
+        Nothing ->
+            a [ class "cell-main", href (gitHubUrl pr), Html.Attributes.target "_blank", Html.Attributes.rel "noopener noreferrer" ]
+                [ text pr.title ]
+
+
+prSubline : PullRequest -> Html Msg
+prSubline pr =
+    span [ class "cell-sub" ]
+        [ a [ href (Route.toHref (Route.Repository pr.owner pr.repoName)) ] [ text (pr.owner ++ "/" ++ pr.repoName) ]
+        , text " "
+        , Ui.externalLink (gitHubUrl pr) [ text ("#" ++ String.fromInt pr.prNumber) ]
+        , text (" by " ++ pr.author)
+        ]
+
+
+{-| The forge's own URL for the PR (github.com, GHE, ...). The server only
+learns it the next time it sees the PR, so older rows fall back to a
+github.com URL; ekaci has no pull request page of its own.
+-}
+gitHubUrl : PullRequest -> String
+gitHubUrl pr =
+    Maybe.withDefault (fallbackUrl pr) pr.htmlUrl
+
+
+fallbackUrl : PullRequest -> String
+fallbackUrl pr =
+    "https://github.com/" ++ pr.owner ++ "/" ++ pr.repoName ++ "/pull/" ++ String.fromInt pr.prNumber
+
+
+changedTitle : PullRequest -> String
+changedTitle pr =
+    String.fromInt pr.changedDrvs ++ " changed derivations, " ++ String.fromInt pr.newDrvs ++ " new"

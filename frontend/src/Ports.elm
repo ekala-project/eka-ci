@@ -9,6 +9,7 @@ port module Ports exposing
     , decodeIncomingMessage
     , encodeSubscribeMessage
     , encodeUnsubscribeMessage
+    , setTheme
     , storeToken
     , tokenReceived
     , websocketIn
@@ -18,10 +19,11 @@ port module Ports exposing
 {-| Ports for WebSocket communication and localStorage management.
 
 WebSocket: Managed on the JavaScript side, Elm sends/receives messages via ports.
-LocalStorage: JWT token persistence for authentication.
+LocalStorage: JWT token persistence for authentication, and the theme choice.
 
 -}
 
+import Api.Decoder as Decoder
 import Json.Decode as D
 import Json.Encode as E
 import Models.BuildState as BS
@@ -174,8 +176,8 @@ buildStateChangeDecoder : D.Decoder BuildStateChangeEvent
 buildStateChangeDecoder =
     D.map4 BuildStateChangeEvent
         (D.field "drv_path" D.string)
-        (D.field "old_state" buildStateDecoder)
-        (D.field "new_state" buildStateDecoder)
+        (D.field "old_state" Decoder.buildState)
+        (D.field "new_state" Decoder.buildState)
         (D.field "timestamp" D.string)
 
 
@@ -217,83 +219,6 @@ logLineDecoder =
         (D.field "timestamp" D.string)
 
 
-{-| Decode a DrvBuildState from JSON (duplicated from Decoder.elm for ports).
--}
-buildStateDecoder : D.Decoder BS.DrvBuildState
-buildStateDecoder =
-    D.oneOf
-        [ D.string
-            |> D.andThen
-                (\str ->
-                    case str of
-                        "Queued" ->
-                            D.succeed BS.Queued
-
-                        "Buildable" ->
-                            D.succeed BS.Buildable
-
-                        "FailedRetry" ->
-                            D.succeed BS.FailedRetry
-
-                        "Building" ->
-                            D.succeed BS.Building
-
-                        "TransitiveFailure" ->
-                            D.succeed BS.TransitiveFailure
-
-                        "Blocked" ->
-                            D.succeed BS.Blocked
-
-                        _ ->
-                            D.fail ("Unknown build state: " ++ str)
-                )
-        , D.field "Completed" buildResultDecoder
-            |> D.map BS.Completed
-        , D.field "Interrupted" interruptionKindDecoder
-            |> D.map BS.Interrupted
-        ]
-
-
-buildResultDecoder : D.Decoder BS.DrvBuildResult
-buildResultDecoder =
-    D.string
-        |> D.andThen
-            (\str ->
-                case str of
-                    "Success" ->
-                        D.succeed BS.Success
-
-                    "Failure" ->
-                        D.succeed BS.Failure
-
-                    _ ->
-                        D.fail ("Unknown build result: " ++ str)
-            )
-
-
-interruptionKindDecoder : D.Decoder BS.DrvBuildInterruptionKind
-interruptionKindDecoder =
-    D.string
-        |> D.andThen
-            (\str ->
-                case str of
-                    "OutOfMemory" ->
-                        D.succeed BS.OutOfMemory
-
-                    "Timeout" ->
-                        D.succeed BS.Timeout
-
-                    "Cancelled" ->
-                        D.succeed BS.Cancelled
-
-                    "ProcessDeath" ->
-                        D.succeed BS.ProcessDeath
-
-                    _ ->
-                        D.fail ("Unknown interruption kind: " ++ str)
-            )
-
-
 
 {- LocalStorage Ports -}
 
@@ -320,3 +245,8 @@ JavaScript will send the stored token (if any) when the app starts.
 
 -}
 port tokenReceived : (Maybe String -> msg) -> Sub msg
+
+
+{-| Apply and persist the colour theme: "system", "light" or "dark".
+-}
+port setTheme : String -> Cmd msg

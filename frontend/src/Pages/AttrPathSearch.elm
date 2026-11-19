@@ -2,336 +2,274 @@ module Pages.AttrPathSearch exposing
     ( Model
     , Msg
     , init
+    , setAuth
     , update
     , view
     )
 
-{-| Attribute path search page.
-
-Allows users to search for attr paths and view their maintainers.
-
+{-| Maintainers: look up who maintains an attribute path and request access.
 -}
 
 import Api.Api as Api
 import Auth exposing (AuthState, AuthToken)
-import Html exposing (Html, a, button, div, h1, h2, h3, img, input, li, p, span, text, ul)
-import Html.Attributes exposing (class, disabled, href, placeholder, src, type_, value)
-import Html.Events exposing (onClick, onInput)
+import Components.Ui as Ui
+import Html exposing (Html, a, button, div, form, input, label, span, table, tbody, td, text, th, thead, tr)
+import Html.Attributes exposing (attribute, autocomplete, class, disabled, href, placeholder, scope, spellcheck, type_, value)
+import Html.Events exposing (onClick, onInput, onSubmit)
 import Http
 import Models.Maintainer exposing (MaintainerDetail)
 
 
-{-| Page model.
--}
 type alias Model =
     { apiBaseUrl : String
     , authState : AuthState
-    , searchQuery : String
-    , searchResults : List MaintainerDetail
-    , searching : Bool
-    , searched : Bool
+    , query : String
+    , results : Results
+    , requesting : Bool
     , error : Maybe String
-    , requestingAccess : Bool
-    , successMessage : Maybe String
+    , success : Maybe String
     }
 
 
-{-| Page messages.
+{-| Results always remember the attr path they are for, so editing the
+search box doesn't relabel (or redirect requests for) the current results.
 -}
+type Results
+    = NotSearched
+    | Searching String
+    | Found String (List MaintainerDetail)
+    | SearchFailed String Http.Error
+
+
 type Msg
-    = SetSearchQuery String
-    | Search
-    | SearchCompleted (Result Http.Error (List MaintainerDetail))
-    | RequestMaintainerAccess String
-    | MaintainerRequestCompleted (Result Http.Error ())
+    = SetQuery String
+    | Submit
+    | GotMaintainers String (Result Http.Error (List MaintainerDetail))
+    | RequestAccess String
+    | RequestCompleted String (Result Http.Error ())
     | DismissMessage
 
 
-{-| Initialize the page.
--}
 init : String -> AuthState -> ( Model, Cmd Msg )
 init apiBaseUrl authState =
     ( { apiBaseUrl = apiBaseUrl
       , authState = authState
-      , searchQuery = ""
-      , searchResults = []
-      , searching = False
-      , searched = False
+      , query = ""
+      , results = NotSearched
+      , requesting = False
       , error = Nothing
-      , requestingAccess = False
-      , successMessage = Nothing
+      , success = Nothing
       }
     , Cmd.none
     )
 
 
-{-| Update the page.
--}
+setAuth : AuthState -> Model -> Model
+setAuth authState model =
+    { model | authState = authState }
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        SetSearchQuery query ->
-            ( { model | searchQuery = query }
-            , Cmd.none
-            )
+        SetQuery query ->
+            ( { model | query = query }, Cmd.none )
 
-        Search ->
-            if String.isEmpty (String.trim model.searchQuery) then
-                ( { model | error = Just "Please enter an attr path to search" }
-                , Cmd.none
-                )
+        Submit ->
+            let
+                attrPath =
+                    String.trim model.query
+            in
+            if String.isEmpty attrPath then
+                ( { model | error = Just "Enter an attribute path to search for." }, Cmd.none )
 
             else
-                ( { model
-                    | searching = True
-                    , searched = False
-                    , error = Nothing
-                  }
-                , Api.getAttrPathMaintainers model.apiBaseUrl model.searchQuery SearchCompleted
+                ( { model | results = Searching attrPath, error = Nothing, success = Nothing }
+                , search model.apiBaseUrl attrPath
                 )
 
-        SearchCompleted (Ok results) ->
-            ( { model
-                | searchResults = results
-                , searching = False
-                , searched = True
-              }
-            , Cmd.none
-            )
+        GotMaintainers attrPath (Ok maintainers) ->
+            ( { model | results = Found attrPath maintainers }, Cmd.none )
 
-        SearchCompleted (Err err) ->
-            ( { model
-                | searching = False
-                , searched = True
-                , error = Just (httpErrorToString err)
-              }
-            , Cmd.none
-            )
+        GotMaintainers attrPath (Err error) ->
+            ( { model | results = SearchFailed attrPath error }, Cmd.none )
 
-        RequestMaintainerAccess attrPath ->
+        RequestAccess attrPath ->
             case Auth.getToken model.authState of
                 Just token ->
-                    ( { model | requestingAccess = True, error = Nothing }
+                    ( { model | requesting = True, error = Nothing, success = Nothing }
                     , requestMaintainerAccess model.apiBaseUrl token attrPath
                     )
 
                 Nothing ->
-                    ( { model | error = Just "You must be logged in to request access" }
-                    , Cmd.none
-                    )
+                    ( { model | error = Just "Sign in to request maintainer access." }, Cmd.none )
 
-        MaintainerRequestCompleted (Ok ()) ->
-            ( { model
-                | requestingAccess = False
-                , successMessage = Just "Maintainer request submitted successfully!"
-              }
-            , Api.getAttrPathMaintainers model.apiBaseUrl model.searchQuery SearchCompleted
+        RequestCompleted attrPath (Ok ()) ->
+            ( { model | requesting = False, success = Just ("Requested maintainer access to " ++ attrPath ++ ". An admin will review it.") }
+            , search model.apiBaseUrl attrPath
             )
 
-        MaintainerRequestCompleted (Err err) ->
-            ( { model
-                | requestingAccess = False
-                , error = Just (httpErrorToString err)
-              }
-            , Cmd.none
-            )
+        RequestCompleted _ (Err error) ->
+            ( { model | requesting = False, error = Just (requestErrorText error) }, Cmd.none )
 
         DismissMessage ->
-            ( { model | error = Nothing, successMessage = Nothing }
-            , Cmd.none
-            )
+            ( { model | error = Nothing, success = Nothing }, Cmd.none )
 
 
-{-| View the page.
--}
+search : String -> String -> Cmd Msg
+search apiBaseUrl attrPath =
+    Api.getAttrPathMaintainers apiBaseUrl attrPath (GotMaintainers attrPath)
+
+
+requestErrorText : Http.Error -> String
+requestErrorText error =
+    case error of
+        Http.BadStatus 409 ->
+            "You already have a pending request, or already maintain this."
+
+        _ ->
+            "Could not request access. " ++ Ui.httpErrorMessage error
+
+
+
+-- VIEW
+
+
 view : Model -> Html Msg
 view model =
-    div [ class "pa4 center mw7" ]
-        [ h1 [ class "f2 fw6 mb4" ]
-            [ text "Attribute Path Search" ]
-        , viewMessages model
-        , div [ class "card pa4 mb4" ]
-            [ h2 [ class "f3 fw6 mb3" ] [ text "Search for Maintainers" ]
-            , div [ class "flex gap2 mb3" ]
-                [ input
-                    [ type_ "text"
-                    , placeholder "Enter attr path (e.g., nixpkgs.python3)"
-                    , value model.searchQuery
-                    , onInput SetSearchQuery
-                    , class "input flex-auto"
-                    , disabled model.searching
-                    ]
-                    []
-                , button
-                    [ onClick Search
-                    , class "btn-primary"
-                    , disabled model.searching
-                    ]
-                    [ text
-                        (if model.searching then
-                            "Searching..."
-
-                         else
-                            "Search"
-                        )
-                    ]
-                ]
-            , p [ class "gray f6" ]
-                [ text "Search for an attribute path to view its maintainers and request access." ]
-            ]
-        , if model.searching then
-            div [ class "card pa4 tc" ]
-                [ p [ class "gray" ] [ text "Searching..." ] ]
-
-          else if model.searched then
-            viewSearchResults model
-
-          else
-            div [ class "card pa4 tc gray" ]
-                [ p [] [ text "Enter an attr path above to search for maintainers." ] ]
-        ]
-
-
-viewMessages : Model -> Html Msg
-viewMessages model =
     div []
-        [ case model.error of
-            Just err ->
-                div [ class "card pa3 mb3 bg-light-red" ]
-                    [ div [ class "flex justify-between items-center" ]
-                        [ span [ class "dark-red" ] [ text ("Error: " ++ err) ]
-                        , button
-                            [ onClick DismissMessage
-                            , class "bn bg-transparent pointer dark-red"
-                            ]
-                            [ text "×" ]
-                        ]
-                    ]
-
-            Nothing ->
-                text ""
-        , case model.successMessage of
-            Just msg ->
-                div [ class "card pa3 mb3 bg-light-green" ]
-                    [ div [ class "flex justify-between items-center" ]
-                        [ span [ class "dark-green" ] [ text msg ]
-                        , button
-                            [ onClick DismissMessage
-                            , class "bn bg-transparent pointer dark-green"
-                            ]
-                            [ text "×" ]
-                        ]
-                    ]
-
-            Nothing ->
-                text ""
+        [ Ui.simpleHead "Maintainers" "Look up who maintains an attribute path, and request to maintain it yourself."
+        , Ui.messages { error = model.error, success = model.success, onDismiss = DismissMessage }
+        , searchForm model
+        , viewResults model
         ]
 
 
-viewSearchResults : Model -> Html Msg
-viewSearchResults model =
-    div [ class "card pa4" ]
-        [ div [ class "flex justify-between items-center mb3" ]
-            [ h2 [ class "f3 fw6" ]
-                [ text ("Results for: " ++ model.searchQuery) ]
-            , viewRequestButton model
+searchForm : Model -> Html Msg
+searchForm model =
+    form [ class "toolbar", onSubmit Submit, attribute "role" "search" ]
+        [ label [ class "field grow" ]
+            [ text "Attribute path"
+            , input
+                [ type_ "search"
+                , class "mono"
+                , placeholder "e.g. python3Packages.requests"
+                , value model.query
+                , onInput SetQuery
+                , autocomplete False
+                , spellcheck False
+                ]
+                []
             ]
-        , if List.isEmpty model.searchResults then
-            div []
-                [ p [ class "gray mb3" ] [ text "No maintainers found for this attr path." ]
-                , p [ class "f6 gray" ]
-                    [ text "This attr path has no maintainers yet. You can be the first to request access!" ]
-                ]
+        , button [ type_ "submit", class "button primary", disabled (isSearching model) ]
+            [ text
+                (if isSearching model then
+                    "Searching…"
 
-          else
-            div []
-                [ p [ class "f6 mb3 gray" ]
-                    [ text (String.fromInt (List.length model.searchResults) ++ " maintainer(s)") ]
-                , ul [ class "list pl0" ]
-                    (List.map viewMaintainer model.searchResults)
-                ]
+                 else
+                    "Search"
+                )
+            ]
         ]
 
 
-viewMaintainer : MaintainerDetail -> Html Msg
-viewMaintainer maintainer =
-    li [ class "bb b--light-gray pv3" ]
-        [ div [ class "flex items-center gap3" ]
-            [ case maintainer.githubAvatarUrl of
-                Just url ->
-                    img
-                        [ src url
-                        , class "br-100 w3 h3"
-                        ]
-                        []
+isSearching : Model -> Bool
+isSearching model =
+    case model.results of
+        Searching _ ->
+            True
+
+        _ ->
+            False
+
+
+viewResults : Model -> Html Msg
+viewResults model =
+    case model.results of
+        NotSearched ->
+            Ui.emptyState "Search for an attribute path" "Results show its maintainers and when they were added."
+
+        Searching _ ->
+            Ui.loading "Looking up maintainers…"
+
+        SearchFailed attrPath error ->
+            Ui.httpError ("Could not look up " ++ attrPath ++ ".") error
+
+        Found attrPath maintainers ->
+            Ui.panel ("Maintainers of " ++ attrPath)
+                [ requestButton model attrPath maintainers ]
+                [ if List.isEmpty maintainers then
+                    Ui.emptyNote "Nobody maintains this attribute path yet. Request access to be the first."
+
+                  else
+                    Ui.tableWrap (maintainerTable maintainers)
+                ]
+
+
+requestButton : Model -> String -> List MaintainerDetail -> Html Msg
+requestButton model attrPath maintainers =
+    let
+        isMaintainer =
+            case model.authState.user of
+                Just user ->
+                    List.any (\m -> m.githubUserId == user.githubId) maintainers
 
                 Nothing ->
-                    div [ class "br-100 w3 h3 bg-light-gray" ] []
-            , div [ class "flex-auto" ]
-                [ div [ class "fw6 mb1" ]
-                    [ a
-                        [ href ("https://github.com/" ++ maintainer.githubUsername)
-                        , class "link blue dim"
-                        ]
-                        [ text maintainer.githubUsername ]
-                    ]
-                , div [ class "f6 gray" ]
-                    [ text ("Added: " ++ formatDate maintainer.addedAt)
-                    , case ( maintainer.addedByUserId, maintainer.addedByUsername ) of
-                        ( Just _, Just addedBy ) ->
-                            text (" by " ++ addedBy)
+                    False
+    in
+    if model.authState.loading then
+        text ""
 
-                        _ ->
-                            text ""
-                    ]
+    else if not (Auth.isAuthenticated model.authState) then
+        a [ class "button small", href Auth.login ] [ text "Sign in to request access" ]
+
+    else if isMaintainer then
+        Ui.badge Ui.Good "You maintain this"
+
+    else if model.requesting then
+        button [ type_ "button", class "button small", disabled True ] [ text "Requesting…" ]
+
+    else
+        button [ type_ "button", class "button small", onClick (RequestAccess attrPath) ] [ text "Request maintainer access" ]
+
+
+maintainerTable : List MaintainerDetail -> Html Msg
+maintainerTable maintainers =
+    table [ class "table compact" ]
+        [ thead []
+            [ tr []
+                [ th [ scope "col" ] [ text "Maintainer" ]
+                , th [ scope "col" ] [ text "Added" ]
+                , th [ scope "col" ] [ text "Added by" ]
                 ]
+            ]
+        , tbody [] (List.map maintainerRow maintainers)
+        ]
+
+
+maintainerRow : MaintainerDetail -> Html Msg
+maintainerRow maintainer =
+    tr []
+        [ td []
+            [ span [ class "person" ]
+                [ Ui.avatar maintainer.githubAvatarUrl maintainer.githubUsername
+                , Ui.externalLink ("https://github.com/" ++ maintainer.githubUsername) [ text maintainer.githubUsername ]
+                ]
+            ]
+        , td [ class "nowrap small" ] [ Ui.timestamp maintainer.addedAt ]
+        , td [ class "small" ]
+            [ case maintainer.addedByUsername of
+                Just name ->
+                    text name
+
+                Nothing ->
+                    span [ class "muted" ] [ text "Approved request" ]
             ]
         ]
 
 
-viewRequestButton : Model -> Html Msg
-viewRequestButton model =
-    let
-        currentUserId =
-            model.authState.user
-                |> Maybe.map .githubId
 
-        isAlreadyMaintainer =
-            List.any
-                (\m -> Just m.githubUserId == currentUserId)
-                model.searchResults
-    in
-    if not (Auth.isAuthenticated model.authState) then
-        a
-            [ href Auth.login
-            , class "btn-primary"
-            ]
-            [ text "Log in to request access" ]
-
-    else if isAlreadyMaintainer then
-        button
-            [ class "btn-secondary"
-            , disabled True
-            ]
-            [ text "You are a maintainer" ]
-
-    else if model.requestingAccess then
-        button
-            [ class "btn-primary"
-            , disabled True
-            ]
-            [ text "Requesting..." ]
-
-    else
-        button
-            [ onClick (RequestMaintainerAccess model.searchQuery)
-            , class "btn-primary"
-            ]
-            [ text "Request Maintainer Access" ]
-
-
-
--- API CALLS
+-- API
 
 
 requestMaintainerAccess : String -> AuthToken -> String -> Cmd Msg
@@ -339,39 +277,9 @@ requestMaintainerAccess apiBaseUrl authToken attrPath =
     Http.request
         { method = "POST"
         , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/attr-paths/" ++ attrPath ++ "/request-maintainer"
+        , url = apiBaseUrl ++ "/attr-paths/" ++ attrPath ++ "/request-maintainer"
         , body = Http.emptyBody
-        , expect = Http.expectWhatever MaintainerRequestCompleted
+        , expect = Http.expectWhatever (RequestCompleted attrPath)
         , timeout = Nothing
         , tracker = Nothing
         }
-
-
-
--- HELPERS
-
-
-httpErrorToString : Http.Error -> String
-httpErrorToString error =
-    case error of
-        Http.BadUrl url ->
-            "Invalid URL: " ++ url
-
-        Http.Timeout ->
-            "Request timed out"
-
-        Http.NetworkError ->
-            "Network error"
-
-        Http.BadStatus code ->
-            "Server returned error code: " ++ String.fromInt code
-
-        Http.BadBody body ->
-            "Invalid response: " ++ body
-
-
-formatDate : String -> String
-formatDate dateStr =
-    -- For now, just return the date string as-is
-    -- In a real app, you'd parse and format this nicely
-    dateStr

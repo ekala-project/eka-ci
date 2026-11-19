@@ -1,34 +1,29 @@
 module Pages.Job exposing
-    ( Model(..)
+    ( Model
     , Msg(..)
     , init
+    , setAuth
     , update
     , view
     )
 
-{-| Job details page showing jobset information and all derivations.
+{-| Job page: a jobset's progress, its maintainers, and every derivation.
 
-Displays comprehensive information about a specific job including:
-
-  - Job metadata (SHA, name, repository)
-  - Overall progress
-  - List of all derivations with their states
-  - Maintainers of the attr path
-  - Real-time updates via WebSocket
+Derivations can be filtered by status bucket and by name, and are listed
+problems first. Build state changes arrive over the WebSocket.
 
 -}
 
 import Api.Api as Api
 import Auth exposing (AuthState)
-import Components.ErrorView as ErrorView
-import Components.Loader as Loader
-import Components.ProgressBar as ProgressBar
+import Components.BuildProgress as Progress exposing (Bucket)
 import Components.StatusBadge as StatusBadge
-import Html exposing (Html, a, button, code, div, h1, h2, img, p, span, table, tbody, td, text, th, thead, tr)
-import Html.Attributes exposing (class, disabled, href, src, title)
-import Html.Events exposing (onClick)
+import Components.Ui as Ui
+import Html exposing (Html, a, button, div, h1, input, label, li, p, span, table, tbody, td, text, th, thead, tr, ul)
+import Html.Attributes exposing (attribute, class, disabled, href, placeholder, scope, title, type_, value)
+import Html.Events exposing (onClick, onInput)
+import Html.Lazy exposing (lazy4)
 import Http
-import Json.Encode as E
 import Models.BuildState as BS
 import Models.Job exposing (JobSetDetails, JobSetDrv)
 import Models.Maintainer exposing (MaintainerDetail)
@@ -36,32 +31,28 @@ import Ports
 import Route
 
 
-{-| Page model.
--}
-type Model
-    = Loading String Int AuthState
-    | Loaded JobData
+type Remote a
+    = Loading
+    | Ready a
     | Failed Http.Error
 
 
-{-| Job data combining details and derivations.
--}
-type alias JobData =
-    { jobsetId : Int
-    , details : JobSetDetails
-    , drvs : List JobSetDrv
-    , maintainers : List MaintainerDetail
-    , loadingMaintainers : Bool
+type alias Model =
+    { apiBaseUrl : String
+    , jobsetId : Int
+    , authState : AuthState
+    , details : Remote JobSetDetails
+    , drvs : Remote (List JobSetDrv)
+    , maintainers : Remote (List MaintainerDetail)
     , requestingAccess : Bool
     , successMessage : Maybe String
     , errorMessage : Maybe String
-    , apiBaseUrl : String
-    , authState : AuthState
+    , filter : Maybe Bucket
+    , search : String
+    , limit : Int
     }
 
 
-{-| Page messages.
--}
 type Msg
     = GotJobSetDetails (Result Http.Error JobSetDetails)
     | GotJobSetDrvs (Result Http.Error (List JobSetDrv))
@@ -69,15 +60,33 @@ type Msg
     | RequestMaintainerAccess
     | MaintainerRequestCompleted (Result Http.Error ())
     | DismissMessage
+    | SetFilter (Maybe Bucket)
+    | SetSearch String
+    | ShowMore
     | BuildStateChanged Ports.BuildStateChangeEvent
     | JobCompleted Ports.JobCompleteEvent
 
 
-{-| Initialize the page with a jobset ID.
--}
+pageSize : Int
+pageSize =
+    200
+
+
 init : String -> Int -> AuthState -> ( Model, Cmd Msg )
 init apiBaseUrl jobsetId authState =
-    ( Loading apiBaseUrl jobsetId authState
+    ( { apiBaseUrl = apiBaseUrl
+      , jobsetId = jobsetId
+      , authState = authState
+      , details = Loading
+      , drvs = Loading
+      , maintainers = Loading
+      , requestingAccess = False
+      , successMessage = Nothing
+      , errorMessage = Nothing
+      , filter = Nothing
+      , search = ""
+      , limit = pageSize
+      }
     , Cmd.batch
         [ Api.getJobSetDetails apiBaseUrl jobsetId GotJobSetDetails
         , Api.getJobSetDrvs apiBaseUrl jobsetId GotJobSetDrvs
@@ -87,492 +96,106 @@ init apiBaseUrl jobsetId authState =
     )
 
 
-{-| Update the page.
+{-| Keep the page's view of the session in sync (e.g. after a reload
+resolves the stored token).
 -}
+setAuth : AuthState -> Model -> Model
+setAuth authState model =
+    { model | authState = authState }
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         GotJobSetDetails result ->
-            case result of
-                Ok details ->
-                    case model of
-                        Loading apiBaseUrl jobsetId authState ->
-                            -- Wait for drvs to load too
-                            ( Loaded
-                                { jobsetId = jobsetId
-                                , details = details
-                                , drvs = []
-                                , maintainers = []
-                                , loadingMaintainers = True
-                                , requestingAccess = False
-                                , successMessage = Nothing
-                                , errorMessage = Nothing
-                                , apiBaseUrl = apiBaseUrl
-                                , authState = authState
-                                }
-                            , Cmd.none
-                            )
-
-                        Loaded data ->
-                            ( Loaded { data | details = details }
-                            , Cmd.none
-                            )
-
-                        _ ->
-                            ( model, Cmd.none )
-
-                Err error ->
-                    ( Failed error, Cmd.none )
+            ( { model | details = toRemote result }, Cmd.none )
 
         GotJobSetDrvs result ->
-            case result of
-                Ok drvs ->
-                    case model of
-                        Loaded data ->
-                            ( Loaded { data | drvs = drvs }
-                            , Cmd.none
-                            )
-
-                        Loading _ _ _ ->
-                            -- Details haven't loaded yet, create partial state
-                            ( model, Cmd.none )
-
-                        _ ->
-                            ( model, Cmd.none )
-
-                Err error ->
-                    ( Failed error, Cmd.none )
+            ( { model | drvs = toRemote result }, Cmd.none )
 
         GotMaintainers result ->
-            case model of
-                Loaded data ->
-                    case result of
-                        Ok maintainers ->
-                            ( Loaded
-                                { data
-                                    | maintainers = maintainers
-                                    , loadingMaintainers = False
-                                }
-                            , Cmd.none
-                            )
-
-                        Err _ ->
-                            ( Loaded { data | loadingMaintainers = False }
-                            , Cmd.none
-                            )
-
-                _ ->
-                    ( model, Cmd.none )
+            ( { model | maintainers = toRemote result }, Cmd.none )
 
         RequestMaintainerAccess ->
-            case model of
-                Loaded data ->
-                    case Auth.getToken data.authState of
-                        Just token ->
-                            ( Loaded { data | requestingAccess = True, errorMessage = Nothing }
-                            , requestMaintainerAccess data.apiBaseUrl token data.details.jobName
-                            )
+            requestAccess model
 
-                        Nothing ->
-                            ( Loaded { data | errorMessage = Just "You must be logged in to request maintainer access" }
-                            , Cmd.none
-                            )
+        MaintainerRequestCompleted (Ok _) ->
+            ( { model
+                | requestingAccess = False
+                , successMessage = Just "Maintainer access requested. An admin will review it."
+                , errorMessage = Nothing
+              }
+            , Api.getJobMaintainers model.apiBaseUrl model.jobsetId GotMaintainers
+            )
 
-                _ ->
-                    ( model, Cmd.none )
-
-        MaintainerRequestCompleted result ->
-            case model of
-                Loaded data ->
-                    case result of
-                        Ok _ ->
-                            ( Loaded
-                                { data
-                                    | requestingAccess = False
-                                    , successMessage = Just "Maintainer access requested successfully!"
-                                    , errorMessage = Nothing
-                                }
-                            , Api.getJobMaintainers data.apiBaseUrl data.jobsetId GotMaintainers
-                            )
-
-                        Err error ->
-                            ( Loaded
-                                { data
-                                    | requestingAccess = False
-                                    , errorMessage = Just (httpErrorToString error)
-                                }
-                            , Cmd.none
-                            )
-
-                _ ->
-                    ( model, Cmd.none )
+        MaintainerRequestCompleted (Err error) ->
+            ( { model | requestingAccess = False, errorMessage = Just (requestErrorText error) }, Cmd.none )
 
         DismissMessage ->
-            case model of
-                Loaded data ->
-                    ( Loaded { data | successMessage = Nothing, errorMessage = Nothing }
-                    , Cmd.none
-                    )
+            ( { model | successMessage = Nothing, errorMessage = Nothing }, Cmd.none )
 
-                _ ->
-                    ( model, Cmd.none )
+        SetFilter filter ->
+            ( { model | filter = filter, limit = pageSize }, Cmd.none )
+
+        SetSearch search ->
+            ( { model | search = search, limit = pageSize }, Cmd.none )
+
+        ShowMore ->
+            ( { model | limit = model.limit + pageSize }, Cmd.none )
 
         BuildStateChanged event ->
-            case model of
-                Loaded data ->
-                    let
-                        updatedDrvs =
-                            updateDrvState event.drvPath event.newState data.drvs
-
-                        updatedDetails =
-                            recalculateStats updatedDrvs data.details
-                    in
-                    ( Loaded
-                        { data
-                            | drvs = updatedDrvs
-                            , details = updatedDetails
-                        }
-                    , Cmd.none
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
+            ( { model | drvs = mapRemote (updateDrvState event.drvPath event.newState) model.drvs }, Cmd.none )
 
         JobCompleted event ->
-            -- Job completed, could refetch or show notification
-            case model of
-                Loaded data ->
-                    if data.jobsetId == event.jobsetId then
-                        -- Refresh job details to get final state
-                        ( model
-                        , Api.getJobSetDetails data.apiBaseUrl data.jobsetId GotJobSetDetails
-                        )
-
-                    else
-                        ( model, Cmd.none )
-
-                _ ->
-                    ( model, Cmd.none )
-
-
-{-| View the page.
--}
-view : Model -> Html Msg
-view model =
-    case model of
-        Loading _ jobsetId _ ->
-            div [ class "pa4" ]
-                [ h1 [ class "f2 fw6 mb4" ]
-                    [ text ("Job #" ++ String.fromInt jobsetId) ]
-                , Loader.viewWithMessage "Loading job details..."
-                ]
-
-        Failed error ->
-            div [ class "pa4" ]
-                [ h1 [ class "f2 fw6 mb4" ]
-                    [ text "Job" ]
-                , ErrorView.viewHttp error
-                ]
-
-        Loaded data ->
-            viewJobDetails data
-
-
-{-| View job details.
--}
-viewJobDetails : JobData -> Html Msg
-viewJobDetails data =
-    div [ class "pa4" ]
-        [ -- Header
-          viewJobHeader data.details
-
-        -- Messages
-        , viewMessages data
-
-        -- Progress
-        , viewProgress data.details
-
-        -- Maintainers section
-        , div [ class "mt4" ]
-            [ viewMaintainersSection data ]
-
-        -- Derivations table
-        , div [ class "mt4" ]
-            [ h2 [ class "f4 fw6 mb3" ]
-                [ text "Derivations" ]
-            , viewDrvTable data.drvs
-            ]
-        ]
-
-
-{-| View job header with metadata.
--}
-viewJobHeader : JobSetDetails -> Html Msg
-viewJobHeader details =
-    div [ class "mb4" ]
-        [ h1 [ class "f2 fw6 mb2" ]
-            [ text details.jobName ]
-        , div [ class "flex items-center gray f6" ]
-            [ a
-                [ href (Route.toHref (Route.Repository details.owner details.repoName))
-                , class "link blue hover-dark-blue mr3"
-                ]
-                [ text (details.owner ++ "/" ++ details.repoName) ]
-            , span [ class "mr3" ] [ text "•" ]
-            , a
-                [ href (Route.toHref (Route.Commit details.sha))
-                , class "link blue hover-dark-blue monospace"
-                ]
-                [ text (String.left 8 details.sha) ]
-            ]
-        ]
-
-
-{-| View overall progress bar.
--}
-viewProgress : JobSetDetails -> Html Msg
-viewProgress details =
-    let
-        segments =
-            ProgressBar.fromJobStats
-                { completed = details.completedDrvs
-                , failed = details.failedDrvs + details.transitiveFailureDrvs
-                , building = details.buildingDrvs
-                , queued = details.queuedDrvs + details.buildableDrvs
-                }
-    in
-    div [ class "card pa3" ]
-        [ div [ class "mb3 flex items-center justify-between" ]
-            [ h2 [ class "f5 fw6 ma0" ]
-                [ text "Progress" ]
-            , p [ class "f6 gray ma0" ]
-                [ text
-                    (String.fromInt details.completedDrvs
-                        ++ " / "
-                        ++ String.fromInt details.totalDrvs
-                        ++ " completed"
-                    )
-                ]
-            ]
-        , ProgressBar.view details.totalDrvs segments
-
-        -- Stats
-        , div [ class "flex justify-around mt3 f7 gray" ]
-            [ viewStat "Queued" details.queuedDrvs
-            , viewStat "Buildable" details.buildableDrvs
-            , viewStat "Building" details.buildingDrvs
-            , viewStat "Completed" details.completedDrvs
-            , viewStat "Failed" details.failedDrvs
-            , viewStat "Transitive" details.transitiveFailureDrvs
-            ]
-        ]
-
-
-{-| View a single stat.
--}
-viewStat : String -> Int -> Html Msg
-viewStat label count =
-    div [ class "tc" ]
-        [ div [ class "f5 fw6" ] [ text (String.fromInt count) ]
-        , div [] [ text label ]
-        ]
-
-
-{-| View derivations table.
--}
-viewDrvTable : List JobSetDrv -> Html Msg
-viewDrvTable drvs =
-    if List.isEmpty drvs then
-        div [ class "card pa4 tc" ]
-            [ p [ class "gray" ] [ text "No derivations found" ] ]
-
-    else
-        div [ class "card" ]
-            [ table [ class "table w-100" ]
-                [ thead []
-                    [ tr []
-                        [ th [] [ text "Name" ]
-                        , th [] [ text "System" ]
-                        , th [] [ text "Status" ]
-                        , th [] [ text "Type" ]
-                        , th [] [ text "Path" ]
-                        ]
+            if event.jobsetId == model.jobsetId then
+                ( model
+                , Cmd.batch
+                    [ Api.getJobSetDetails model.apiBaseUrl model.jobsetId GotJobSetDetails
+                    , Api.getJobSetDrvs model.apiBaseUrl model.jobsetId GotJobSetDrvs
                     ]
-                , tbody []
-                    (List.map viewDrvRow drvs)
-                ]
-            ]
+                )
+
+            else
+                ( model, Cmd.none )
 
 
-{-| View a single derivation row.
--}
-viewDrvRow : JobSetDrv -> Html Msg
-viewDrvRow drv =
-    tr []
-        [ td []
-            [ a
-                [ href (Route.toHref (Route.Drv drv.drvPath))
-                , class "link blue hover-dark-blue"
-                ]
-                [ text drv.name ]
-            ]
-        , td [ class "gray f7" ]
-            [ text drv.system ]
-        , td []
-            [ StatusBadge.view drv.buildState ]
-        , td [ class "f7" ]
-            [ if drv.isFod then
-                text "FOD"
+requestAccess : Model -> ( Model, Cmd Msg )
+requestAccess model =
+    case ( Auth.getToken model.authState, model.details ) of
+        ( Just token, Ready details ) ->
+            ( { model | requestingAccess = True, errorMessage = Nothing, successMessage = Nothing }
+            , requestMaintainerAccess model.apiBaseUrl token details.jobName
+            )
 
-              else if drv.preferLocalBuild then
-                text "Local"
+        ( Nothing, _ ) ->
+            ( { model | errorMessage = Just "Sign in to request maintainer access." }, Cmd.none )
 
-              else
-                text "-"
-            ]
-        , td [ class "monospace f7 gray truncate-path" ]
-            [ text drv.drvPath ]
-        ]
+        _ ->
+            ( model, Cmd.none )
 
 
-{-| View success/error messages.
--}
-viewMessages : JobData -> Html Msg
-viewMessages data =
-    div []
-        [ case data.errorMessage of
-            Just err ->
-                div [ class "card pa3 mb3 bg-light-red" ]
-                    [ div [ class "flex justify-between items-center" ]
-                        [ span [ class "dark-red" ] [ text err ]
-                        , button
-                            [ onClick DismissMessage
-                            , class "bn bg-transparent pointer dark-red f4"
-                            ]
-                            [ text "×" ]
-                        ]
-                    ]
+toRemote : Result Http.Error a -> Remote a
+toRemote result =
+    case result of
+        Ok value ->
+            Ready value
 
-            Nothing ->
-                text ""
-        , case data.successMessage of
-            Just msg ->
-                div [ class "card pa3 mb3 bg-light-green" ]
-                    [ div [ class "flex justify-between items-center" ]
-                        [ span [ class "dark-green" ] [ text msg ]
-                        , button
-                            [ onClick DismissMessage
-                            , class "bn bg-transparent pointer dark-green f4"
-                            ]
-                            [ text "×" ]
-                        ]
-                    ]
-
-            Nothing ->
-                text ""
-        ]
+        Err error ->
+            Failed error
 
 
-{-| View maintainers section with list and request button.
--}
-viewMaintainersSection : JobData -> Html Msg
-viewMaintainersSection data =
-    div [ class "card pa3" ]
-        [ div [ class "flex justify-between items-center mb3" ]
-            [ h2 [ class "f5 fw6 ma0" ]
-                [ text "Maintainers" ]
-            , viewRequestButton data
-            ]
-        , if data.loadingMaintainers then
-            div [ class "tc pa3 gray" ]
-                [ text "Loading maintainers..." ]
+mapRemote : (a -> a) -> Remote a -> Remote a
+mapRemote f remote =
+    case remote of
+        Ready value ->
+            Ready (f value)
 
-          else if List.isEmpty data.maintainers then
-            div [ class "tc pa3 gray" ]
-                [ text "No maintainers yet. Be the first to request access!" ]
-
-          else
-            div [ class "flex gap2 flex-wrap" ]
-                (List.map viewMaintainer data.maintainers)
-        ]
+        _ ->
+            remote
 
 
-{-| View a single maintainer badge.
--}
-viewMaintainer : MaintainerDetail -> Html Msg
-viewMaintainer maintainer =
-    div
-        [ class "flex items-center gap2 pa2 br2 bg-light-gray"
-        , title ("Added " ++ maintainer.addedAt)
-        ]
-        [ case maintainer.githubAvatarUrl of
-            Just avatarUrl ->
-                img
-                    [ src avatarUrl
-                    , class "w2 h2 br-100"
-                    ]
-                    []
-
-            Nothing ->
-                div [ class "w2 h2 br-100 bg-gray" ] []
-        , span [ class "f6" ] [ text maintainer.githubUsername ]
-        ]
-
-
-{-| View request maintainer button with different states.
--}
-viewRequestButton : JobData -> Html Msg
-viewRequestButton data =
-    let
-        isAuthenticated =
-            Auth.isAuthenticated data.authState
-
-        currentUserId =
-            data.authState.user
-                |> Maybe.map .githubId
-
-        isAlreadyMaintainer =
-            currentUserId
-                |> Maybe.map (\userId -> List.any (\m -> m.githubUserId == userId) data.maintainers)
-                |> Maybe.withDefault False
-    in
-    if not isAuthenticated then
-        a
-            [ href Auth.login
-            , class "btn-secondary btn-sm"
-            ]
-            [ text "Log in to request access" ]
-
-    else if isAlreadyMaintainer then
-        button
-            [ class "btn-secondary btn-sm"
-            , disabled True
-            ]
-            [ text "You are a maintainer" ]
-
-    else if data.requestingAccess then
-        button
-            [ class "btn-primary btn-sm"
-            , disabled True
-            ]
-            [ text "Requesting..." ]
-
-    else
-        button
-            [ onClick RequestMaintainerAccess
-            , class "btn-primary btn-sm"
-            ]
-            [ text "Request Maintainer Access" ]
-
-
-
-{- HELPER FUNCTIONS FOR REAL-TIME UPDATES -}
-
-
-{-| Update a single derivation's build state in the list.
--}
 updateDrvState : String -> BS.DrvBuildState -> List JobSetDrv -> List JobSetDrv
-updateDrvState drvPath newState drvs =
+updateDrvState drvPath newState =
     List.map
         (\drv ->
             if drv.drvPath == drvPath then
@@ -581,81 +204,319 @@ updateDrvState drvPath newState drvs =
             else
                 drv
         )
-        drvs
 
 
-{-| Recalculate job statistics based on current derivation states.
+{-| Progress from the live per-derivation states once they have loaded, so
+the bar, legend and filter chips always agree; the jobset summary until then.
 -}
-recalculateStats : List JobSetDrv -> JobSetDetails -> JobSetDetails
-recalculateStats drvs details =
+counts : Model -> Maybe Progress.Counts
+counts model =
+    case ( model.drvs, model.details ) of
+        ( Ready drvs, _ ) ->
+            Just (Progress.fromStates (List.map .buildState drvs))
+
+        ( _, Ready details ) ->
+            Just (Progress.fromJobSet details)
+
+        _ ->
+            Nothing
+
+
+
+-- VIEW
+
+
+view : Model -> Html Msg
+view model =
+    case model.details of
+        Loading ->
+            div []
+                [ Ui.simpleHead ("Job #" ++ String.fromInt model.jobsetId) ""
+                , Ui.loading "Loading job…"
+                ]
+
+        Failed error ->
+            div []
+                [ Ui.simpleHead ("Job #" ++ String.fromInt model.jobsetId) ""
+                , Ui.httpError "Could not load this job." error
+                ]
+
+        Ready details ->
+            div []
+                [ viewHead model details
+                , Ui.messages { error = model.errorMessage, success = model.successMessage, onDismiss = DismissMessage }
+                , div [ class "grid-2" ]
+                    [ viewProgress model
+                    , viewMaintainers model
+                    ]
+                , viewDerivations model
+                ]
+
+
+viewHead : Model -> JobSetDetails -> Html Msg
+viewHead model details =
+    Ui.pageHead
+        { crumbs =
+            [ ( "Repositories", Route.toHref Route.Home )
+            , ( details.owner ++ "/" ++ details.repoName, Route.toHref (Route.Repository details.owner details.repoName) )
+            , ( "Commit " ++ Ui.shortSha details.sha, Route.toHref (Route.Commit details.sha) )
+            ]
+        , title =
+            [ h1 [] [ text details.jobName ]
+            , counts model |> Maybe.map Progress.overallBadge |> Maybe.withDefault (text "")
+            ]
+        , lede =
+            [ text ("Job #" ++ String.fromInt details.jobsetId ++ " at commit ")
+            , a [ class "mono", href (Route.toHref (Route.Commit details.sha)), title details.sha ] [ text (Ui.shortSha details.sha) ]
+            ]
+        , actions = []
+        }
+
+
+viewProgress : Model -> Html Msg
+viewProgress model =
+    Ui.panel "Progress"
+        []
+        [ case counts model of
+            Just c ->
+                Progress.view c
+
+            Nothing ->
+                Ui.loadingInline "Loading progress…"
+        ]
+
+
+
+-- MAINTAINERS
+
+
+viewMaintainers : Model -> Html Msg
+viewMaintainers model =
+    Ui.panel "Maintainers"
+        [ requestButton model ]
+        [ case model.maintainers of
+            Loading ->
+                Ui.loadingInline "Loading maintainers…"
+
+            Failed _ ->
+                p [ class "muted" ] [ text "Could not load maintainers." ]
+
+            Ready [] ->
+                p [ class "muted" ] [ text "Nobody maintains this job yet." ]
+
+            Ready maintainers ->
+                ul [ class "people" ] (List.map viewMaintainer maintainers)
+        ]
+
+
+viewMaintainer : MaintainerDetail -> Html Msg
+viewMaintainer maintainer =
+    li [ class "person", title ("Maintainer since " ++ maintainer.addedAt) ]
+        [ Ui.avatar maintainer.githubAvatarUrl maintainer.githubUsername
+        , text maintainer.githubUsername
+        ]
+
+
+requestButton : Model -> Html Msg
+requestButton model =
     let
-        counts =
-            List.foldl countDrvState initialCounts drvs
+        isMaintainer =
+            case ( model.authState.user, model.maintainers ) of
+                ( Just user, Ready maintainers ) ->
+                    List.any (\m -> m.githubUserId == user.githubId) maintainers
+
+                _ ->
+                    False
     in
-    { details
-        | queuedDrvs = counts.queued
-        , buildableDrvs = counts.buildable
-        , buildingDrvs = counts.building
-        , completedDrvs = counts.completed
-        , failedDrvs = counts.failed
-        , transitiveFailureDrvs = counts.transitive
-    }
+    if model.authState.loading then
+        text ""
+
+    else if not (Auth.isAuthenticated model.authState) then
+        a [ class "button small", href Auth.login ] [ text "Sign in to request access" ]
+
+    else if isMaintainer then
+        Ui.badge Ui.Good "You maintain this"
+
+    else if model.requestingAccess then
+        button [ type_ "button", class "button small", disabled True ] [ text "Requesting…" ]
+
+    else
+        button [ type_ "button", class "button small", onClick RequestMaintainerAccess ] [ text "Request maintainer access" ]
 
 
-type alias DrvCounts =
-    { queued : Int
-    , buildable : Int
-    , building : Int
-    , completed : Int
-    , failed : Int
-    , transitive : Int
-    }
+
+-- DERIVATIONS
 
 
-initialCounts : DrvCounts
-initialCounts =
-    { queued = 0
-    , buildable = 0
-    , building = 0
-    , completed = 0
-    , failed = 0
-    , transitive = 0
-    }
+viewDerivations : Model -> Html Msg
+viewDerivations model =
+    case model.drvs of
+        Loading ->
+            Ui.panel "Derivations" [] [ Ui.loadingInline "Loading derivations…" ]
+
+        Failed error ->
+            Ui.panel "Derivations" [] [ Ui.httpError "Could not load derivations." error ]
+
+        Ready [] ->
+            Ui.panel "Derivations" [] [ Ui.emptyNote "This job has no derivations." ]
+
+        Ready drvs ->
+            lazy4 viewDerivationPanel model.filter model.search model.limit drvs
 
 
-countDrvState : JobSetDrv -> DrvCounts -> DrvCounts
-countDrvState drv counts =
-    case drv.buildState of
-        BS.Queued ->
-            { counts | queued = counts.queued + 1 }
+viewDerivationPanel : Maybe Bucket -> String -> Int -> List JobSetDrv -> Html Msg
+viewDerivationPanel filter search limit drvs =
+    let
+        matching =
+            drvs
+                |> List.filter (matchesFilter filter search)
+                |> List.sortBy (\drv -> ( Progress.bucketRank (Progress.bucketOf drv.buildState), drv.name ))
 
-        BS.Buildable ->
-            { counts | buildable = counts.buildable + 1 }
+        shown =
+            List.take limit matching
 
-        BS.Building ->
-            { counts | building = counts.building + 1 }
+        matchCount =
+            List.length matching
+    in
+    Ui.panel "Derivations"
+        [ span [ class "small muted", attribute "aria-live" "polite" ] [ text (shownText (List.length shown) matchCount (List.length drvs)) ] ]
+        [ filterChips filter drvs
+        , div [ class "toolbar" ]
+            [ label [ class "field grow" ]
+                [ text "Filter by name"
+                , input [ type_ "search", placeholder "e.g. python3", value search, onInput SetSearch ] []
+                ]
+            ]
+        , if List.isEmpty shown then
+            Ui.emptyNote "No derivations match these filters."
 
-        BS.Completed BS.Success ->
-            { counts | completed = counts.completed + 1 }
+          else
+            Ui.tableWrap (drvTable shown)
+        , if matchCount > limit then
+            div [ class "more" ]
+                [ button [ type_ "button", class "button", onClick ShowMore ]
+                    [ text ("Show " ++ String.fromInt (min pageSize (matchCount - limit)) ++ " more") ]
+                ]
 
-        BS.Completed BS.Failure ->
-            { counts | failed = counts.failed + 1 }
-
-        BS.TransitiveFailure ->
-            { counts | transitive = counts.transitive + 1 }
-
-        BS.FailedRetry ->
-            { counts | queued = counts.queued + 1 }
-
-        BS.Interrupted _ ->
-            { counts | failed = counts.failed + 1 }
-
-        BS.Blocked ->
-            counts
+          else
+            text ""
+        ]
 
 
-{-| Request maintainer access for an attr path (authenticated API call).
--}
+shownText : Int -> Int -> Int -> String
+shownText shown matching total =
+    if shown == total then
+        String.fromInt total ++ " derivations"
+
+    else if shown == matching then
+        String.fromInt matching ++ " of " ++ String.fromInt total ++ " derivations"
+
+    else
+        "Showing " ++ String.fromInt shown ++ " of " ++ String.fromInt matching ++ " matching"
+
+
+matchesFilter : Maybe Bucket -> String -> JobSetDrv -> Bool
+matchesFilter filter search drv =
+    let
+        needle =
+            String.toLower (String.trim search)
+
+        bucketOk =
+            case filter of
+                Just bucket ->
+                    Progress.bucketOf drv.buildState == bucket
+
+                Nothing ->
+                    True
+    in
+    bucketOk
+        && (String.isEmpty needle
+                || String.contains needle (String.toLower drv.name)
+                || String.contains needle (String.toLower drv.drvPath)
+           )
+
+
+filterChips : Maybe Bucket -> List JobSetDrv -> Html Msg
+filterChips filter drvs =
+    let
+        c =
+            Progress.fromStates (List.map .buildState drvs)
+
+        bucketChip bucket =
+            Ui.chip
+                { label = Progress.bucketLabel bucket
+                , count = Just (Progress.countOf bucket c)
+                , tone = Just (Progress.bucketTone bucket)
+                , pressed = filter == Just bucket
+                , onPress =
+                    if filter == Just bucket then
+                        SetFilter Nothing
+
+                    else
+                        SetFilter (Just bucket)
+                }
+    in
+    div [ class "chips", attribute "role" "group", attribute "aria-label" "Filter by status" ]
+        (Ui.chip { label = "All", count = Just c.total, tone = Nothing, pressed = filter == Nothing, onPress = SetFilter Nothing }
+            :: (Progress.filterOrder
+                    |> List.filter (\b -> Progress.countOf b c > 0 || filter == Just b)
+                    |> List.map bucketChip
+               )
+        )
+
+
+drvTable : List JobSetDrv -> Html Msg
+drvTable drvs =
+    table [ class "table compact" ]
+        [ thead []
+            [ tr []
+                [ th [ scope "col" ] [ text "Name" ]
+                , th [ scope "col" ] [ text "Status" ]
+                , th [ scope "col" ] [ text "System" ]
+                , th [ scope "col", class "hide-sm" ] [ text "Type" ]
+                ]
+            ]
+        , tbody [] (List.map drvRow drvs)
+        ]
+
+
+drvRow : JobSetDrv -> Html Msg
+drvRow drv =
+    tr []
+        [ td []
+            [ a [ class "cell-main", href (Route.toHref (Route.Drv drv.drvPath)), title ("/nix/store/" ++ drv.drvPath) ]
+                [ text drv.name ]
+            ]
+        , td [] [ StatusBadge.view drv.buildState ]
+        , td [ class "mono small nowrap" ] [ text drv.system ]
+        , td [ class "hide-sm" ] [ drvTags drv ]
+        ]
+
+
+drvTags : { a | isFod : Bool, preferLocalBuild : Bool } -> Html msg
+drvTags drv =
+    let
+        tags =
+            List.filterMap identity
+                [ if drv.isFod then
+                    Just (span [ class "tag", title "Fixed-output derivation (fetches sources)" ] [ text "FOD" ])
+
+                  else
+                    Nothing
+                , if drv.preferLocalBuild then
+                    Just (span [ class "tag", title "Prefers a local build" ] [ text "Local" ])
+
+                  else
+                    Nothing
+                ]
+    in
+    span [ class "tags" ] tags
+
+
+
+-- HTTP
+
+
 requestMaintainerAccess : String -> String -> String -> Cmd Msg
 requestMaintainerAccess apiBaseUrl authToken attrPath =
     Http.request
@@ -669,32 +530,11 @@ requestMaintainerAccess apiBaseUrl authToken attrPath =
         }
 
 
-{-| Convert HTTP error to user-friendly string.
--}
-httpErrorToString : Http.Error -> String
-httpErrorToString error =
+requestErrorText : Http.Error -> String
+requestErrorText error =
     case error of
-        Http.BadUrl _ ->
-            "Invalid URL"
+        Http.BadStatus 409 ->
+            "You already have a pending request, or already maintain this."
 
-        Http.Timeout ->
-            "Request timed out"
-
-        Http.NetworkError ->
-            "Network error"
-
-        Http.BadStatus code ->
-            if code == 401 then
-                "Not authenticated"
-
-            else if code == 403 then
-                "Not authorized"
-
-            else if code == 409 then
-                "You already have a pending request or are already a maintainer"
-
-            else
-                "Server error: " ++ String.fromInt code
-
-        Http.BadBody message ->
-            "Invalid response: " ++ message
+        _ ->
+            "Could not request access. " ++ Ui.httpErrorMessage error

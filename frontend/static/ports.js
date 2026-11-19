@@ -5,8 +5,11 @@
 //   events are forwarded to Elm verbatim, plus synthetic
 //   {type: "connected"} / {type: "disconnected"} status messages.
 // - storeToken / clearToken / tokenReceived: JWT persistence in localStorage.
+// - setTheme: "system" | "light" | "dark". Sets/clears data-theme on <html>
+//   and persists the choice (index.html re-applies it before first paint).
 
 const TOKEN_KEY = 'ekaci_token';
+const THEME_KEY = 'ekaci_theme';
 const MIN_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
 
@@ -28,6 +31,34 @@ function writeToken(token) {
         }
     } catch (e) {
         console.warn('ekaci: unable to persist token to localStorage', e);
+    }
+}
+
+// The saved theme override, or "system" when the OS preference applies.
+export function readTheme() {
+    try {
+        const theme = window.localStorage.getItem(THEME_KEY);
+        return theme === 'light' || theme === 'dark' ? theme : 'system';
+    } catch (e) {
+        return 'system';
+    }
+}
+
+function applyTheme(theme) {
+    const root = document.documentElement;
+    if (theme === 'light' || theme === 'dark') {
+        root.dataset.theme = theme;
+    } else {
+        delete root.dataset.theme;
+    }
+    try {
+        if (theme === 'light' || theme === 'dark') {
+            window.localStorage.setItem(THEME_KEY, theme);
+        } else {
+            window.localStorage.removeItem(THEME_KEY);
+        }
+    } catch (e) {
+        console.warn('ekaci: unable to persist theme to localStorage', e);
     }
 }
 
@@ -171,6 +202,10 @@ export function setupPorts(app) {
             writeToken(null);
             socket.reconnect();
         });
+    }
+
+    if (ports.setTheme) {
+        ports.setTheme.subscribe(applyTheme);
     }
 
     // Defer so Elm's subscriptions are registered before we send.

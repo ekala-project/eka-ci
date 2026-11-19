@@ -1,302 +1,266 @@
 module Pages.Drv exposing
-    ( Model(..)
+    ( Model
     , Msg(..)
     , init
     , update
     , view
     )
 
-{-| Derivation details page.
+{-| Derivation page: status, metadata, direct dependencies and the build log.
 
-Shows comprehensive information about a specific derivation including:
-
-  - Derivation metadata
-  - Build status
-  - Dependencies tree
-  - Build logs (if available)
+The stored log is fetched on load; new lines stream in over the WebSocket.
 
 -}
 
 import Api.Api as Api
-import Components.DrvTree as DrvTree
-import Components.ErrorView as ErrorView
-import Components.Loader as Loader
+import Components.BuildProgress as Progress
 import Components.LogViewer as LogViewer
 import Components.StatusBadge as StatusBadge
-import Html exposing (Html, div, h1, h2, p, table, tbody, td, text, th, thead, tr)
-import Html.Attributes exposing (class)
+import Components.Ui as Ui
+import Html exposing (Html, a, div, h1, span, table, tbody, td, text, th, thead, tr)
+import Html.Attributes exposing (class, href, scope, title)
 import Http
 import Models.BuildState as BS
 import Models.Derivation exposing (DrvDependency, DrvDetails)
 import Ports
+import Route
 
 
-{-| Page model.
--}
-type Model
-    = Loading String String
-    | Loaded DrvData
+type Remote a
+    = Loading
+    | Ready a
     | Failed Http.Error
 
 
-{-| Derivation data combining details, dependencies, and logs.
--}
-type alias DrvData =
-    { details : DrvDetails
-    , dependencies : List DrvDependency
-    , logViewer : LogViewer.Model
-    , drvTree : DrvTree.Model
-    , apiBaseUrl : String
+type alias Model =
+    { apiBaseUrl : String
+    , drvPath : String
+    , details : Remote DrvDetails
+    , dependencies : Remote (List DrvDependency)
+    , log : LogViewer.Model
     }
 
 
-{-| Page messages.
--}
 type Msg
     = GotDrvDetails (Result Http.Error DrvDetails)
     | GotDrvDependencies (Result Http.Error (List DrvDependency))
+    | GotLog (Result Http.Error String)
     | LogViewerMsg LogViewer.Msg
-    | DrvTreeMsg DrvTree.Msg
     | BuildStateChanged Ports.BuildStateChangeEvent
     | LogLineReceived Ports.LogLineEvent
 
 
-{-| Initialize the page with a derivation path.
--}
 init : String -> String -> ( Model, Cmd Msg )
 init apiBaseUrl drvPath =
-    ( Loading apiBaseUrl drvPath
+    ( { apiBaseUrl = apiBaseUrl
+      , drvPath = drvPath
+      , details = Loading
+      , dependencies = Loading
+      , log = LogViewer.fetching LogViewer.init
+      }
     , Cmd.batch
         [ Api.getDrvDetails apiBaseUrl drvPath GotDrvDetails
         , Api.getDrvDependencies apiBaseUrl drvPath GotDrvDependencies
+        , Api.getDrvLog apiBaseUrl drvPath GotLog
         , Ports.websocketOut (Ports.encodeSubscribeMessage "drv" drvPath)
         ]
     )
 
 
-{-| Update the page.
--}
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         GotDrvDetails result ->
-            case result of
-                Ok details ->
-                    case model of
-                        Loading apiBaseUrl _ ->
-                            ( Loaded
-                                { details = details
-                                , dependencies = []
-                                , logViewer = LogViewer.init
-                                , drvTree = DrvTree.init
-                                , apiBaseUrl = apiBaseUrl
-                                }
-                            , Cmd.none
-                            )
-
-                        Loaded data ->
-                            ( Loaded { data | details = details }
-                            , Cmd.none
-                            )
-
-                        _ ->
-                            ( model, Cmd.none )
-
-                Err error ->
-                    ( Failed error, Cmd.none )
+            ( { model | details = toRemote result }, Cmd.none )
 
         GotDrvDependencies result ->
-            case result of
-                Ok deps ->
-                    case model of
-                        Loaded data ->
-                            let
-                                updatedTree =
-                                    DrvTree.setDependencies deps data.drvTree
-                            in
-                            ( Loaded
-                                { data
-                                    | dependencies = deps
-                                    , drvTree = updatedTree
-                                }
-                            , Cmd.none
-                            )
+            ( { model | dependencies = toRemote result }, Cmd.none )
 
-                        _ ->
-                            ( model, Cmd.none )
-
-                Err error ->
-                    ( Failed error, Cmd.none )
+        GotLog result ->
+            withLog (LogViewer.setStored result model.log) model
 
         LogViewerMsg logMsg ->
-            case model of
-                Loaded data ->
-                    ( Loaded { data | logViewer = LogViewer.update logMsg data.logViewer }
-                    , Cmd.none
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        DrvTreeMsg treeMsg ->
-            case model of
-                Loaded data ->
-                    ( Loaded { data | drvTree = DrvTree.update treeMsg data.drvTree }
-                    , Cmd.none
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
+            let
+                ( log, cmd ) =
+                    LogViewer.update logMsg model.log
+            in
+            ( { model | log = log }, Cmd.map LogViewerMsg cmd )
 
         BuildStateChanged event ->
-            -- Update build state in real-time
-            case model of
-                Loaded data ->
-                    if data.details.drvPath == event.drvPath then
-                        let
-                            currentDetails =
-                                data.details
+            if event.drvPath == model.drvPath then
+                buildStateChanged event model
 
-                            updatedDetails =
-                                { currentDetails | buildState = event.newState }
-                        in
-                        ( Loaded { data | details = updatedDetails }
-                        , Cmd.none
-                        )
-
-                    else
-                        ( model, Cmd.none )
-
-                _ ->
-                    ( model, Cmd.none )
+            else
+                ( model, Cmd.none )
 
         LogLineReceived event ->
-            -- Add log line to viewer in real-time
-            case model of
-                Loaded data ->
-                    if data.details.drvPath == event.drvPath then
-                        let
-                            updatedLogViewer =
-                                LogViewer.addLine event.line data.logViewer
-                        in
-                        ( Loaded { data | logViewer = updatedLogViewer }
-                        , Cmd.none
-                        )
+            if event.drvPath == model.drvPath then
+                withLog (LogViewer.addLine event.line model.log) model
 
-                    else
-                        ( model, Cmd.none )
-
-                _ ->
-                    ( model, Cmd.none )
+            else
+                ( model, Cmd.none )
 
 
-{-| View the page.
+withLog : LogViewer.Model -> Model -> ( Model, Cmd Msg )
+withLog log model =
+    ( { model | log = log }, Cmd.map LogViewerMsg (LogViewer.scrollToEnd log) )
+
+
+{-| Update the status; when the build finishes, re-read the stored log so
+the viewer shows the complete output even if streamed lines were missed.
 -}
+buildStateChanged : Ports.BuildStateChangeEvent -> Model -> ( Model, Cmd Msg )
+buildStateChanged event model =
+    let
+        details =
+            case model.details of
+                Ready d ->
+                    Ready { d | buildState = event.newState }
+
+                other ->
+                    other
+
+        refetch =
+            if BS.isTerminal event.newState && not (BS.isTerminal event.oldState) then
+                Api.getDrvLog model.apiBaseUrl model.drvPath GotLog
+
+            else
+                Cmd.none
+    in
+    ( { model | details = details }, refetch )
+
+
+toRemote : Result Http.Error a -> Remote a
+toRemote result =
+    case result of
+        Ok value ->
+            Ready value
+
+        Err error ->
+            Failed error
+
+
+
+-- VIEW
+
+
 view : Model -> Html Msg
 view model =
-    case model of
-        Loading _ drvPath ->
-            div [ class "pa4" ]
-                [ h1 [ class "f2 fw6 mb4 monospace truncate" ]
-                    [ text drvPath ]
-                , Loader.viewWithMessage "Loading derivation..."
+    case model.details of
+        Loading ->
+            div []
+                [ viewHead model Nothing
+                , Ui.loading "Loading derivation…"
                 ]
 
         Failed error ->
-            div [ class "pa4" ]
-                [ h1 [ class "f2 fw6 mb4" ]
-                    [ text "Derivation" ]
-                , ErrorView.viewHttp error
+            div []
+                [ viewHead model Nothing
+                , Ui.httpError "Could not load this derivation." error
                 ]
 
-        Loaded data ->
-            viewDrvDetails data
-
-
-{-| View derivation details.
--}
-viewDrvDetails : DrvData -> Html Msg
-viewDrvDetails data =
-    div [ class "pa4" ]
-        [ -- Header
-          viewDrvHeader data.details
-
-        -- Metadata
-        , div [ class "mb4" ]
-            [ viewMetadataCard data.details ]
-
-        -- Dependencies
-        , div [ class "mb4" ]
-            [ h2 [ class "f4 fw6 mb3" ]
-                [ text "Dependencies" ]
-            , div [ class "card pa3" ]
-                [ Html.map DrvTreeMsg (DrvTree.view data.drvTree) ]
-            ]
-
-        -- Build logs
-        , div []
-            [ h2 [ class "f4 fw6 mb3" ]
-                [ text "Build Logs" ]
-            , Html.map LogViewerMsg (LogViewer.view data.logViewer)
-            ]
-        ]
-
-
-{-| View derivation header.
--}
-viewDrvHeader : DrvDetails -> Html Msg
-viewDrvHeader details =
-    div [ class "mb4" ]
-        [ h1 [ class "f2 fw6 mb2" ]
-            [ text details.name ]
-        , div [ class "flex items-center mb2" ]
-            [ StatusBadge.view details.buildState ]
-        , p [ class "monospace f7 gray truncate-path" ]
-            [ text details.drvPath ]
-        ]
-
-
-{-| View metadata card.
--}
-viewMetadataCard : DrvDetails -> Html Msg
-viewMetadataCard details =
-    div [ class "card" ]
-        [ table [ class "table w-100" ]
-            [ tbody []
-                [ viewMetadataRow "Name" details.name
-                , viewMetadataRow "System" details.system
-                , viewMetadataRow "Status" (statusText details.buildState)
-                , viewMetadataRow "Fixed-output derivation" (boolText details.isFod)
-                , viewMetadataRow "Prefer local build" (boolText details.preferLocalBuild)
-                , viewMetadataRow "Derivation path" details.drvPath
+        Ready details ->
+            div []
+                [ viewHead model (Just details)
+                , div [ class "grid-2" ]
+                    [ viewDetails details
+                    , viewDependencies model.dependencies
+                    ]
+                , Ui.panel "Build log"
+                    []
+                    [ Html.map LogViewerMsg (LogViewer.view (model.apiBaseUrl ++ "/logs/" ++ model.drvPath) model.log) ]
                 ]
+
+
+viewHead : Model -> Maybe DrvDetails -> Html Msg
+viewHead model maybeDetails =
+    Ui.pageHead
+        { crumbs = [ ( "Repositories", Route.toHref Route.Home ) ]
+        , title =
+            case maybeDetails of
+                Just details ->
+                    [ h1 [] [ text details.name ], StatusBadge.view details.buildState ]
+
+                Nothing ->
+                    [ h1 [] [ text "Derivation" ] ]
+        , lede = [ span [ class "path" ] [ text (storePath model.drvPath) ] ]
+        , actions = []
+        }
+
+
+storePath : String -> String
+storePath drvPath =
+    if String.startsWith "/nix/store/" drvPath then
+        drvPath
+
+    else
+        "/nix/store/" ++ drvPath
+
+
+viewDetails : DrvDetails -> Html Msg
+viewDetails details =
+    Ui.panel "Details"
+        []
+        [ Ui.facts
+            [ ( "Status", StatusBadge.view details.buildState )
+            , ( "System", span [ class "mono" ] [ text details.system ] )
+            , ( "Fixed-output", text (yesNo details.isFod) )
+            , ( "Prefers local build", text (yesNo details.preferLocalBuild) )
+            , ( "Derivation", span [ class "path" ] [ text (storePath details.drvPath) ] )
             ]
         ]
 
 
-{-| View a metadata row.
--}
-viewMetadataRow : String -> String -> Html Msg
-viewMetadataRow label value =
-    tr []
-        [ th [ class "w-30" ] [ text label ]
-        , td [ class "monospace f6" ] [ text value ]
-        ]
-
-
-{-| Convert build state to text.
--}
-statusText : BS.DrvBuildState -> String
-statusText state =
-    BS.toString state
-
-
-{-| Convert boolean to text.
--}
-boolText : Bool -> String
-boolText value =
+yesNo : Bool -> String
+yesNo value =
     if value then
         "Yes"
 
     else
         "No"
+
+
+viewDependencies : Remote (List DrvDependency) -> Html Msg
+viewDependencies remote =
+    case remote of
+        Loading ->
+            Ui.panel "Dependencies" [] [ Ui.loadingInline "Loading dependencies…" ]
+
+        Failed error ->
+            Ui.panel "Dependencies" [] [ Ui.httpError "Could not load dependencies." error ]
+
+        Ready [] ->
+            Ui.panel "Dependencies" [] [ Ui.emptyNote "No dependencies that EkaCI builds." ]
+
+        Ready deps ->
+            Ui.panel "Dependencies"
+                [ span [ class "small muted" ] [ text (String.fromInt (List.length deps) ++ " direct") ] ]
+                [ Ui.tableWrap (dependencyTable deps) ]
+
+
+dependencyTable : List DrvDependency -> Html Msg
+dependencyTable deps =
+    table [ class "table compact" ]
+        [ thead []
+            [ tr []
+                [ th [ scope "col" ] [ text "Name" ]
+                , th [ scope "col" ] [ text "Status" ]
+                ]
+            ]
+        , tbody []
+            (deps
+                |> List.sortBy (\dep -> ( Progress.bucketRank (Progress.bucketOf dep.buildState), dep.name ))
+                |> List.map dependencyRow
+            )
+        ]
+
+
+dependencyRow : DrvDependency -> Html Msg
+dependencyRow dep =
+    tr []
+        [ td []
+            [ a [ class "cell-main", href (Route.toHref (Route.Drv dep.drvPath)), title (storePath dep.drvPath) ]
+                [ text dep.name ]
+            ]
+        , td [] [ StatusBadge.view dep.buildState ]
+        ]

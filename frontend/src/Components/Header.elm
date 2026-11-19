@@ -1,119 +1,218 @@
-module Components.Header exposing (view)
+module Components.Header exposing
+    ( Config
+    , Live(..)
+    , view
+    )
 
-{-| Application header with navigation and authentication.
-
-Provides a consistent header across all pages with branding, navigation links,
-and login/logout functionality.
-
+{-| Site header: brand, main navigation (with the current section marked),
+live-update status, theme toggle and the signed-in user.
 -}
 
 import Auth exposing (AuthState)
-import Html exposing (Html, a, button, div, h1, header, img, nav, span, text)
-import Html.Attributes exposing (alt, class, href, src)
+import Components.Ui as Ui
+import Html exposing (Html, a, button, div, header, nav, span, text)
+import Html.Attributes exposing (attribute, class, href, title, type_)
 import Html.Events exposing (onClick)
 import Route exposing (Route)
+import Theme exposing (Theme)
 
 
-{-| View the application header with authentication state.
-
-Shows login button when not authenticated, user info and logout when authenticated.
-
+{-| State of the shared WebSocket used for live updates.
 -}
-view : AuthState -> msg -> Html msg
-view authState onLogout =
-    header [ class "app-header" ]
-        [ div [ class "flex items-center justify-between" ]
-            [ -- Logo and branding
-              div [ class "flex items-center" ]
-                [ a
-                    [ href (Route.toHref Route.Home)
-                    , class "flex items-center"
-                    ]
-                    [ h1 [ class "f3 fw6 ma0" ]
-                        [ text "EkaCI" ]
-                    ]
-                ]
+type Live
+    = Connecting
+    | Connected
+    | Offline
 
-            -- Navigation and auth
-            , nav [ class "flex items-center" ]
-                [ a
-                    [ href (Route.toHref Route.Home)
-                    , class "mh3 f6 fw5 link white hover-white-80"
-                    ]
-                    [ text "Repositories" ]
-                , a
-                    [ href (Route.toHref Route.Builds)
-                    , class "mh3 f6 fw5 link white hover-white-80"
-                    ]
-                    [ text "Builds" ]
-                , a
-                    [ href (Route.toHref Route.Reviews)
-                    , class "mh3 f6 fw5 link white hover-white-80"
-                    ]
-                    [ text "Reviews" ]
-                , a
-                    [ href (Route.toHref Route.AttrPathSearch)
-                    , class "mh3 f6 fw5 link white hover-white-80"
-                    ]
-                    [ text "Maintainers" ]
 
-                -- Auth section
-                , viewAuthSection authState onLogout
+type alias Config msg =
+    { route : Route
+    , authState : AuthState
+    , live : Live
+    , theme : Theme
+    , onToggleTheme : msg
+    , onLogout : msg
+    }
+
+
+view : Config msg -> Html msg
+view config =
+    header [ class "site-header" ]
+        [ div [ class "site-header-inner" ]
+            [ a [ class "brand", href (Route.toHref Route.Home) ] [ text "EkaCI" ]
+            , nav [ class "site-nav", attribute "aria-label" "Main" ]
+                (List.map (navLink config.route) (navItems config.authState))
+            , div [ class "header-tools" ]
+                [ liveStatus config.live
+                , themeToggle config.theme config.onToggleTheme
+                , userArea config
                 ]
             ]
         ]
 
 
-{-| View authentication section (login button or user menu).
+
+-- NAVIGATION
+
+
+type Section
+    = Repositories
+    | Builds
+    | Reviews
+    | Maintainers
+    | Admin
+    | NoSection
+
+
+navItems : AuthState -> List ( Section, String, Route )
+navItems authState =
+    [ ( Repositories, "Repositories", Route.Home )
+    , ( Builds, "Builds", Route.Builds )
+    , ( Reviews, "Reviews", Route.Reviews )
+    , ( Maintainers, "Maintainers", Route.AttrPathSearch )
+    ]
+        ++ (if Auth.isAdmin authState then
+                [ ( Admin, "Admin", Route.Admin ) ]
+
+            else
+                []
+           )
+
+
+{-| Which nav item a route belongs to: drill-down pages (repository, commit,
+job, derivation) stay under Repositories.
 -}
-viewAuthSection : AuthState -> msg -> Html msg
-viewAuthSection authState onLogout =
-    case authState.user of
-        Nothing ->
-            -- Not authenticated: show login button
-            a
-                [ href "/github/auth/login"
-                , class "ml3 pa2 br2 bg-white-20 hover-bg-white-30 link white fw5 f6"
-                ]
-                [ text "Login with GitHub" ]
+sectionOf : Route -> Section
+sectionOf route =
+    case route of
+        Route.Home ->
+            Repositories
 
-        Just user ->
-            -- Authenticated: show user info and logout
-            div [ class "flex items-center ml3" ]
-                [ -- Show Admin link for admin users
-                  if user.isAdmin then
-                    a
-                        [ href (Route.toHref Route.Admin)
-                        , class "mr3 link white hover-white-80 f6"
-                        ]
-                        [ text "Admin" ]
+        Route.Repository _ _ ->
+            Repositories
 
-                  else
-                    text ""
+        Route.Commit _ ->
+            Repositories
 
-                -- Profile link
-                , a
-                    [ href (Route.toHref Route.Profile)
-                    , class "mr3 link white hover-white-80 f6"
-                    ]
-                    [ text "Profile" ]
+        Route.Job _ ->
+            Repositories
 
-                -- User avatar
-                , img
-                    [ src user.avatarUrl
-                    , alt user.username
-                    , class "br-100 w2 h2 mr2"
-                    ]
+        Route.Drv _ ->
+            Repositories
+
+        Route.PullRequest _ _ _ ->
+            Reviews
+
+        Route.Builds ->
+            Builds
+
+        Route.Reviews ->
+            Reviews
+
+        Route.AttrPathSearch ->
+            Maintainers
+
+        Route.Admin ->
+            Admin
+
+        Route.Profile ->
+            NoSection
+
+        Route.AuthCallback ->
+            NoSection
+
+        Route.NotFound ->
+            NoSection
+
+
+navLink : Route -> ( Section, String, Route ) -> Html msg
+navLink current ( section, label, route ) =
+    a
+        (href (Route.toHref route)
+            :: (if sectionOf current == section then
+                    [ attribute "aria-current" "page" ]
+
+                else
                     []
+               )
+        )
+        [ text label ]
 
-                -- Username
-                , span [ class "mr3 f6 white" ]
-                    [ text user.username ]
 
-                -- Logout button
-                , button
-                    [ onClick onLogout
-                    , class "pa2 br2 bn bg-white-20 hover-bg-white-30 white pointer f6"
+
+-- TOOLS
+
+
+liveStatus : Live -> Html msg
+liveStatus live =
+    let
+        ( state, label, tip ) =
+            case live of
+                Connecting ->
+                    ( "connecting", "Connecting", "Connecting to live updates…" )
+
+                Connected ->
+                    ( "live", "Live", "Live updates connected" )
+
+                Offline ->
+                    ( "offline", "Offline", "Live updates disconnected — reconnecting automatically. Pages still load, but won't update on their own." )
+    in
+    span
+        [ class "live-status"
+        , attribute "data-state" state
+        , attribute "role" "status"
+        , title tip
+        ]
+        [ span [ class "dot", attribute "aria-hidden" "true" ] []
+        , span [ class "live-label" ] [ text label ]
+        ]
+
+
+themeToggle : Theme -> msg -> Html msg
+themeToggle theme onToggle =
+    let
+        nextLabel =
+            Theme.label (Theme.next theme)
+    in
+    button
+        [ type_ "button"
+        , class "theme-toggle"
+        , attribute "data-mode" (Theme.toString theme)
+        , attribute "aria-label" ("Theme: " ++ Theme.label theme ++ ". Switch to " ++ nextLabel)
+        , title ("Theme: " ++ Theme.label theme ++ " (click for " ++ nextLabel ++ ")")
+        , onClick onToggle
+        ]
+        [ span [ class "theme-icon", attribute "aria-hidden" "true" ] []
+        , span [ class "theme-label" ] [ text (Theme.label theme) ]
+        ]
+
+
+userArea : Config msg -> Html msg
+userArea config =
+    case ( config.authState.user, config.authState.loading ) of
+        ( Just user, _ ) ->
+            div [ class "site-user" ]
+                [ a
+                    ([ class "user-link"
+                     , href (Route.toHref Route.Profile)
+                     , title "Your profile"
+                     ]
+                        ++ (if config.route == Route.Profile then
+                                [ attribute "aria-current" "page" ]
+
+                            else
+                                []
+                           )
+                    )
+                    [ Ui.avatar user.avatarUrl user.username
+                    , span [ class "user-name" ] [ text user.username ]
                     ]
-                    [ text "Logout" ]
+                , button [ type_ "button", class "button ghost small", onClick config.onLogout ] [ text "Log out" ]
                 ]
+
+        ( Nothing, True ) ->
+            -- Still resolving a stored session; avoid flashing "Sign in".
+            text ""
+
+        ( Nothing, False ) ->
+            a [ class "button small", href Auth.login ] [ text "Sign in with GitHub" ]

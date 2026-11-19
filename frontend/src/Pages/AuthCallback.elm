@@ -17,9 +17,9 @@ Main.elm, which stores the token and redirects home.
 -}
 
 import Auth
-import Components.Loader as Loader
-import Html exposing (Html, div, h1, p, text)
-import Html.Attributes exposing (class)
+import Components.Ui as Ui
+import Html exposing (Html, a, text)
+import Html.Attributes exposing (class, href)
 import Http
 import Url exposing (Url)
 
@@ -77,59 +77,20 @@ update msg model =
 -}
 view : Model -> Html Msg
 view model =
-    div [ class "pa4 tc" ]
-        [ h1 [ class "f2 fw6 mb4" ]
-            [ text "Authenticating..." ]
-        , case model of
-            Processing ->
-                viewProcessing
+    case model of
+        Processing ->
+            Ui.loading "Finishing sign-in with GitHub…"
 
-            Success _ user ->
-                viewSuccess user
+        Success _ user ->
+            Ui.loading ("Signed in as " ++ user.username ++ ". Taking you back…")
 
-            Failed error ->
-                viewError error
-        ]
-
-
-{-| View processing state.
--}
-viewProcessing : Html Msg
-viewProcessing =
-    div []
-        [ Loader.viewLarge
-        , p [ class "gray mt3" ]
-            [ text "Completing GitHub authentication..." ]
-        ]
-
-
-{-| View success state.
--}
-viewSuccess : Auth.User -> Html Msg
-viewSuccess user =
-    div [ class "card pa4 tc" ]
-        [ div [ class "f3 mb3" ] [ text "✓" ]
-        , p [ class "f5 mb2" ]
-            [ text ("Welcome, " ++ user.username ++ "!") ]
-        , p [ class "gray f6" ]
-            [ text "Redirecting to home..." ]
-        ]
-
-
-{-| View error state.
--}
-viewError : String -> Html Msg
-viewError error =
-    div [ class "card pa4" ]
-        [ div [ class "error-container" ]
-            [ Html.h3 [ class "error-title" ]
-                [ text "Authentication Failed" ]
-            , p [ class "error-message" ]
-                [ text "There was a problem completing the GitHub authentication." ]
-            , Html.code [ class "db pa2 bg-light-gray br2 mt2" ]
-                [ text error ]
-            ]
-        ]
+        Failed error ->
+            Ui.errorPage
+                { code = ""
+                , heading = "Could not sign you in"
+                , body = error
+                , action = a [ class "button primary", href Auth.login ] [ text "Try again" ]
+                }
 
 
 

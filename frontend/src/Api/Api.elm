@@ -5,6 +5,7 @@ module Api.Api exposing
     , getCommitJobs
     , getDrvDependencies
     , getDrvDetails
+    , getDrvLog
     , getJobMaintainers
     , getJobSetDetails
     , getJobSetDrvs
@@ -140,6 +141,19 @@ getDrvDetails apiBaseUrl drvPath toMsg =
     Http.get
         { url = apiBaseUrl ++ "/drvs/" ++ drvPath
         , expect = Http.expectJson toMsg Decoder.drvDetails
+        }
+
+
+{-| Get the stored build log of a derivation (plain text; 404 if none).
+
+    getDrvLog apiBaseUrl "abc…-hello-2.12.drv" GotLog
+
+-}
+getDrvLog : String -> String -> (Result Http.Error String -> msg) -> Cmd msg
+getDrvLog apiBaseUrl drvPath toMsg =
+    Http.get
+        { url = apiBaseUrl ++ "/logs/" ++ drvPath
+        , expect = Http.expectString toMsg
         }
 
 

@@ -3,6 +3,7 @@ module Auth exposing
     , AuthToken
     , User
     , decodeUser
+    , finishLoading
     , getToken
     , getUserInfo
     , init
@@ -25,6 +26,11 @@ import Json.Decode as D exposing (Decoder)
 
 
 {-| Authentication state.
+
+`loading` is True from startup until the stored session (if any) has been
+resolved, so protected pages can show a spinner instead of a sign-in prompt
+on reload.
+
 -}
 type alias AuthState =
     { token : Maybe String
@@ -44,19 +50,26 @@ type alias AuthToken =
 type alias User =
     { githubId : Int
     , username : String
-    , avatarUrl : String
+    , avatarUrl : Maybe String
     , isAdmin : Bool
     }
 
 
-{-| Initialize empty auth state.
+{-| Initial auth state: no session yet, still checking localStorage.
 -}
 init : AuthState
 init =
     { token = Nothing
     , user = Nothing
-    , loading = False
+    , loading = True
     }
+
+
+{-| Mark the stored session as resolved (e.g. no token was found).
+-}
+finishLoading : AuthState -> AuthState
+finishLoading state =
+    { state | loading = False }
 
 
 {-| Update the token in auth state.
@@ -133,5 +146,5 @@ decodeUser =
     D.map4 User
         (D.field "github_id" D.int)
         (D.field "username" D.string)
-        (D.field "avatar_url" D.string)
+        (D.field "avatar_url" (D.nullable D.string))
         (D.field "is_admin" D.bool)

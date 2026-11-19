@@ -6,42 +6,56 @@ module Pages.Admin exposing
     , view
     )
 
-{-| Admin page with user and maintainer management.
+{-| Admin: maintainer requests, users and attribute path maintainers.
+
+Every change goes through one `Action` type, so running it, confirming it,
+and the success/failure messages are handled in one place. Destructive
+actions (remove admin, delete user, remove maintainer) ask for an inline
+confirmation first.
+
 -}
 
+import Api.Api as Api
 import Api.Decoder as Decoder
 import Auth exposing (AuthToken)
-import Html exposing (Html, button, div, h1, h2, h3, input, li, p, span, table, tbody, td, text, th, thead, tr, ul)
-import Html.Attributes exposing (class, disabled, placeholder, type_, value)
-import Html.Events exposing (onClick, onInput)
+import Components.Ui as Ui
+import Html exposing (Html, button, div, form, input, label, span, table, tbody, td, text, th, thead, tr)
+import Html.Attributes exposing (attribute, autocomplete, class, disabled, placeholder, required, scope, spellcheck, type_, value)
+import Html.Events exposing (onClick, onInput, onSubmit)
 import Http
 import Json.Decode as D
 import Json.Encode as E
-import Models.Maintainer exposing (MaintainerRequest, RequestStatus(..))
+import Models.Maintainer exposing (MaintainerDetail, MaintainerRequest, RequestStatus(..))
 
 
-{-| Page model.
--}
+type Remote a
+    = Loading
+    | Ready a
+    | Failed Http.Error
+
+
+type Lookup
+    = NoLookup
+    | LookingUp String
+    | LookedUp String (Result Http.Error (List MaintainerDetail))
+
+
 type alias Model =
     { apiBaseUrl : String
     , authToken : AuthToken
-    , users : List User
-    , selectedUser : Maybe User
-    , maintainers : List Maintainer
-    , requests : List MaintainerRequest
-    , loadingUsers : Bool
-    , loadingMaintainers : Bool
-    , loadingRequests : Bool
+    , users : Remote (List User)
+    , requests : Remote (List MaintainerRequest)
+    , lookupDraft : String
+    , lookup : Lookup
+    , newPath : String
+    , newUsername : String
+    , confirm : Maybe Action
+    , working : Bool
     , error : Maybe String
-    , successMessage : Maybe String
-    , newMaintainerPath : String
-    , newMaintainerUserId : String
-    , selectedAttrPath : Maybe String
+    , success : Maybe String
     }
 
 
-{-| User detail from admin API.
--}
 type alias User =
     { githubId : Int
     , githubUsername : String
@@ -52,691 +66,275 @@ type alias User =
     }
 
 
-{-| Attr path maintainer.
--}
-type alias Maintainer =
-    { id : Int
-    , attrPath : String
-    , githubUserId : Int
-    , addedAt : String
-    , addedByUserId : Maybe Int
-    }
+type Action
+    = Promote User
+    | Demote User
+    | DeleteUser User
+    | Approve MaintainerRequest
+    | Reject MaintainerRequest
+    | AddMaintainer String String
+    | RemoveMaintainer String MaintainerDetail
 
 
-{-| Page messages.
--}
 type Msg
-    = LoadUsers
+    = Refresh
     | UsersLoaded (Result Http.Error (List User))
-    | PromoteUser Int
-    | DemoteUser Int
-    | DeleteUser Int
-    | UserActionCompleted (Result Http.Error ())
-    | SelectUser (Maybe User)
-    | LoadMaintainersForPath String
-    | MaintainersLoaded (Result Http.Error (List Maintainer))
-    | SetNewMaintainerPath String
-    | SetNewMaintainerUserId String
-    | AddMaintainer
-    | RemoveMaintainer String Int
-    | MaintainerActionCompleted (Result Http.Error ())
-    | LoadPendingRequests
     | RequestsLoaded (Result Http.Error (List MaintainerRequest))
-    | ApproveRequest Int
-    | RejectRequest Int
-    | RequestActionCompleted (Result Http.Error ())
+    | SetLookupDraft String
+    | SubmitLookup
+    | MaintainersLoaded String (Result Http.Error (List MaintainerDetail))
+    | SetNewPath String
+    | SetNewUsername String
+    | SubmitAdd
+    | AskConfirm Action
+    | CancelConfirm
+    | Run Action
+    | Done Action (Result Http.Error ())
     | DismissMessage
 
 
-{-| Initialize the page.
--}
 init : String -> AuthToken -> ( Model, Cmd Msg )
 init apiBaseUrl authToken =
-    ( { apiBaseUrl = apiBaseUrl
-      , authToken = authToken
-      , users = []
-      , selectedUser = Nothing
-      , maintainers = []
-      , requests = []
-      , loadingUsers = True
-      , loadingMaintainers = False
-      , loadingRequests = True
-      , error = Nothing
-      , successMessage = Nothing
-      , newMaintainerPath = ""
-      , newMaintainerUserId = ""
-      , selectedAttrPath = Nothing
-      }
-    , Cmd.batch
-        [ loadUsers apiBaseUrl authToken
-        , loadPendingRequests apiBaseUrl authToken
-        ]
-    )
+    let
+        model =
+            { apiBaseUrl = apiBaseUrl
+            , authToken = authToken
+            , users = Loading
+            , requests = Loading
+            , lookupDraft = ""
+            , lookup = NoLookup
+            , newPath = ""
+            , newUsername = ""
+            , confirm = Nothing
+            , working = False
+            , error = Nothing
+            , success = Nothing
+            }
+    in
+    ( model, Cmd.batch [ loadUsers model, loadRequests model ] )
 
 
-{-| Update the page.
--}
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        LoadUsers ->
-            ( { model | loadingUsers = True, error = Nothing }
-            , loadUsers model.apiBaseUrl model.authToken
+        Refresh ->
+            ( model, Cmd.batch [ loadUsers model, loadRequests model ] )
+
+        UsersLoaded result ->
+            ( { model | users = toRemote result }, Cmd.none )
+
+        RequestsLoaded result ->
+            ( { model | requests = toRemote result }, Cmd.none )
+
+        SetLookupDraft draft ->
+            ( { model | lookupDraft = draft }, Cmd.none )
+
+        SubmitLookup ->
+            lookUp (String.trim model.lookupDraft) model
+
+        MaintainersLoaded attrPath result ->
+            ( { model | lookup = LookedUp attrPath result }, Cmd.none )
+
+        SetNewPath path ->
+            ( { model | newPath = path }, Cmd.none )
+
+        SetNewUsername username ->
+            ( { model | newUsername = username }, Cmd.none )
+
+        SubmitAdd ->
+            submitAdd model
+
+        AskConfirm action ->
+            ( { model | confirm = Just action }, Cmd.none )
+
+        CancelConfirm ->
+            ( { model | confirm = Nothing }, Cmd.none )
+
+        Run action ->
+            ( { model | working = True, confirm = Nothing, error = Nothing, success = Nothing }
+            , runAction model action
             )
 
-        UsersLoaded (Ok users) ->
-            ( { model | users = users, loadingUsers = False }
-            , Cmd.none
-            )
-
-        UsersLoaded (Err err) ->
-            ( { model
-                | loadingUsers = False
-                , error = Just (httpErrorToString err)
-              }
-            , Cmd.none
-            )
-
-        PromoteUser githubId ->
-            ( { model | error = Nothing }
-            , promoteUser model.apiBaseUrl model.authToken githubId
-            )
-
-        DemoteUser githubId ->
-            ( { model | error = Nothing }
-            , demoteUser model.apiBaseUrl model.authToken githubId
-            )
-
-        DeleteUser githubId ->
-            ( { model | error = Nothing }
-            , deleteUser model.apiBaseUrl model.authToken githubId
-            )
-
-        UserActionCompleted (Ok ()) ->
-            ( { model | successMessage = Just "Action completed successfully" }
-            , loadUsers model.apiBaseUrl model.authToken
-            )
-
-        UserActionCompleted (Err err) ->
-            ( { model | error = Just (httpErrorToString err) }
-            , Cmd.none
-            )
-
-        SelectUser user ->
-            ( { model | selectedUser = user }
-            , Cmd.none
-            )
-
-        LoadMaintainersForPath attrPath ->
-            ( { model
-                | loadingMaintainers = True
-                , error = Nothing
-                , selectedAttrPath = Just attrPath
-              }
-            , loadMaintainers model.apiBaseUrl model.authToken attrPath
-            )
-
-        MaintainersLoaded (Ok maintainers) ->
-            ( { model | maintainers = maintainers, loadingMaintainers = False }
-            , Cmd.none
-            )
-
-        MaintainersLoaded (Err err) ->
-            ( { model
-                | loadingMaintainers = False
-                , error = Just (httpErrorToString err)
-              }
-            , Cmd.none
-            )
-
-        SetNewMaintainerPath path ->
-            ( { model | newMaintainerPath = path }
-            , Cmd.none
-            )
-
-        SetNewMaintainerUserId userId ->
-            ( { model | newMaintainerUserId = userId }
-            , Cmd.none
-            )
-
-        AddMaintainer ->
-            case ( model.newMaintainerPath, String.toInt model.newMaintainerUserId ) of
-                ( "", _ ) ->
-                    ( { model | error = Just "Please enter an attr path" }
-                    , Cmd.none
-                    )
-
-                ( _, Nothing ) ->
-                    ( { model | error = Just "Please enter a valid user ID" }
-                    , Cmd.none
-                    )
-
-                ( path, Just userId ) ->
-                    ( { model | error = Nothing }
-                    , addMaintainer model.apiBaseUrl model.authToken path userId
-                    )
-
-        RemoveMaintainer attrPath githubId ->
-            ( { model | error = Nothing }
-            , removeMaintainer model.apiBaseUrl model.authToken attrPath githubId
-            )
-
-        MaintainerActionCompleted (Ok ()) ->
-            ( { model
-                | successMessage = Just "Maintainer action completed successfully"
-                , newMaintainerPath = ""
-                , newMaintainerUserId = ""
-              }
-            , case model.selectedAttrPath of
-                Just path ->
-                    loadMaintainers model.apiBaseUrl model.authToken path
-
-                Nothing ->
-                    Cmd.none
-            )
-
-        MaintainerActionCompleted (Err err) ->
-            ( { model | error = Just (httpErrorToString err) }
-            , Cmd.none
-            )
-
-        LoadPendingRequests ->
-            ( { model | loadingRequests = True, error = Nothing }
-            , loadPendingRequests model.apiBaseUrl model.authToken
-            )
-
-        RequestsLoaded (Ok requests) ->
-            ( { model
-                | requests = requests
-                , loadingRequests = False
-              }
-            , Cmd.none
-            )
-
-        RequestsLoaded (Err err) ->
-            ( { model
-                | loadingRequests = False
-                , error = Just (httpErrorToString err)
-              }
-            , Cmd.none
-            )
-
-        ApproveRequest requestId ->
-            ( { model | error = Nothing }
-            , approveRequest model.apiBaseUrl model.authToken requestId
-            )
-
-        RejectRequest requestId ->
-            ( { model | error = Nothing }
-            , rejectRequest model.apiBaseUrl model.authToken requestId
-            )
-
-        RequestActionCompleted (Ok ()) ->
-            ( { model | successMessage = Just "Request processed successfully" }
-            , loadPendingRequests model.apiBaseUrl model.authToken
-            )
-
-        RequestActionCompleted (Err err) ->
-            ( { model | error = Just (httpErrorToString err) }
-            , Cmd.none
-            )
+        Done action result ->
+            actionDone action result { model | working = False }
 
         DismissMessage ->
-            ( { model | error = Nothing, successMessage = Nothing }
-            , Cmd.none
-            )
+            ( { model | error = Nothing, success = Nothing }, Cmd.none )
 
 
-{-| View the page.
--}
-view : Model -> Html Msg
-view model =
-    div [ class "pa4" ]
-        [ h1 [ class "f2 fw6 mb4" ]
-            [ text "Admin Panel" ]
-        , viewMessages model
-        , viewPendingRequestsSection model
-        , div [ class "flex gap3" ]
-            [ div [ class "w-60" ]
-                [ viewUsersSection model ]
-            , div [ class "w-40" ]
-                [ viewMaintainersSection model ]
-            ]
-        ]
+toRemote : Result Http.Error a -> Remote a
+toRemote result =
+    case result of
+        Ok value ->
+            Ready value
+
+        Err error ->
+            Failed error
 
 
-viewMessages : Model -> Html Msg
-viewMessages model =
-    div []
-        [ case model.error of
-            Just err ->
-                div [ class "card pa3 mb3 bg-light-red" ]
-                    [ div [ class "flex justify-between items-center" ]
-                        [ span [ class "dark-red" ] [ text ("Error: " ++ err) ]
-                        , button
-                            [ onClick DismissMessage
-                            , class "bn bg-transparent pointer dark-red"
-                            ]
-                            [ text "×" ]
-                        ]
-                    ]
+lookUp : String -> Model -> ( Model, Cmd Msg )
+lookUp attrPath model =
+    if String.isEmpty attrPath then
+        ( { model | lookup = NoLookup }, Cmd.none )
 
-            Nothing ->
-                text ""
-        , case model.successMessage of
-            Just msg ->
-                div [ class "card pa3 mb3 bg-light-green" ]
-                    [ div [ class "flex justify-between items-center" ]
-                        [ span [ class "dark-green" ] [ text msg ]
-                        , button
-                            [ onClick DismissMessage
-                            , class "bn bg-transparent pointer dark-green"
-                            ]
-                            [ text "×" ]
-                        ]
-                    ]
-
-            Nothing ->
-                text ""
-        ]
+    else
+        ( { model | lookup = LookingUp attrPath, lookupDraft = attrPath }
+        , Api.getAttrPathMaintainers model.apiBaseUrl attrPath (MaintainersLoaded attrPath)
+        )
 
 
-viewPendingRequestsSection : Model -> Html Msg
-viewPendingRequestsSection model =
-    div [ class "card pa4 mb4" ]
-        [ div [ class "flex justify-between items-center mb3" ]
-            [ h2 [ class "f3 fw6" ] [ text "Pending Maintainer Requests" ]
-            , button
-                [ onClick LoadPendingRequests
-                , class "btn-secondary"
-                , disabled model.loadingRequests
-                ]
-                [ text
-                    (if model.loadingRequests then
-                        "Loading..."
+submitAdd : Model -> ( Model, Cmd Msg )
+submitAdd model =
+    let
+        path =
+            String.trim model.newPath
 
-                     else
-                        "Refresh"
-                    )
-                ]
-            ]
-        , if model.loadingRequests then
-            p [ class "gray" ] [ text "Loading requests..." ]
-
-          else if List.isEmpty (List.filter (\r -> r.status == Pending) model.requests) then
-            p [ class "gray" ] [ text "No pending requests" ]
-
-          else
-            div []
-                (List.filterMap
-                    (\r ->
-                        if r.status == Pending then
-                            Just (viewPendingRequest r)
+        username =
+            String.trim model.newUsername
+                |> (\name ->
+                        if String.startsWith "@" name then
+                            String.dropLeft 1 name
 
                         else
-                            Nothing
-                    )
-                    model.requests
-                )
-        ]
+                            name
+                   )
+    in
+    if String.isEmpty path || String.isEmpty username then
+        ( { model | error = Just "Enter both an attribute path and a GitHub username." }, Cmd.none )
+
+    else
+        update (Run (AddMaintainer path username)) model
 
 
-viewPendingRequest : MaintainerRequest -> Html Msg
-viewPendingRequest request =
-    div [ class "pa3 mb3 br2 bg-washed-yellow ba b--gold" ]
-        [ div [ class "flex justify-between items-start" ]
-            [ div [ class "flex-auto" ]
-                [ div [ class "f5 fw6 mb1 code" ] [ text request.attrPath ]
-                , div [ class "f6 mb1" ]
-                    [ text ("Requested by: " ++ request.githubUsername) ]
-                , div [ class "f6 gray" ]
-                    [ text ("Requested: " ++ formatDate request.requestedAt) ]
-                ]
-            , div [ class "flex gap2" ]
-                [ button
-                    [ onClick (ApproveRequest request.id)
-                    , class "btn-sm btn-success"
-                    ]
-                    [ text "Approve" ]
-                , button
-                    [ onClick (RejectRequest request.id)
-                    , class "btn-sm btn-danger"
-                    ]
-                    [ text "Reject" ]
-                ]
-            ]
-        ]
+{-| After an action, refresh whatever it could have changed.
+-}
+actionDone : Action -> Result Http.Error () -> Model -> ( Model, Cmd Msg )
+actionDone action result model =
+    case result of
+        Err error ->
+            ( { model | error = Just (failureText action error) }, Cmd.none )
+
+        Ok () ->
+            let
+                done =
+                    { model | success = Just (successText action) }
+            in
+            case action of
+                AddMaintainer path _ ->
+                    lookUp path { done | newUsername = "" }
+
+                RemoveMaintainer path _ ->
+                    lookUp path done
+
+                Approve _ ->
+                    ( done, loadRequests model )
+
+                Reject _ ->
+                    ( done, loadRequests model )
+
+                _ ->
+                    ( done, loadUsers model )
 
 
-viewUsersSection : Model -> Html Msg
-viewUsersSection model =
-    div [ class "card pa4" ]
-        [ div [ class "flex justify-between items-center mb3" ]
-            [ h2 [ class "f3 fw6" ] [ text "User Management" ]
-            , button
-                [ onClick LoadUsers
-                , class "btn-secondary"
-                , disabled model.loadingUsers
-                ]
-                [ text
-                    (if model.loadingUsers then
-                        "Loading..."
+successText : Action -> String
+successText action =
+    case action of
+        Promote user ->
+            user.githubUsername ++ " is now an admin."
 
-                     else
-                        "Refresh"
-                    )
-                ]
-            ]
-        , if model.loadingUsers then
-            p [ class "gray" ] [ text "Loading users..." ]
+        Demote user ->
+            user.githubUsername ++ " is no longer an admin."
 
-          else if List.isEmpty model.users then
-            p [ class "gray" ] [ text "No users found" ]
+        DeleteUser user ->
+            "Deleted " ++ user.githubUsername ++ "."
 
-          else
-            table [ class "w-100 collapse" ]
-                [ thead []
-                    [ tr [ class "bb b--light-gray" ]
-                        [ th [ class "tl pv2 ph1" ] [ text "User" ]
-                        , th [ class "tl pv2 ph1" ] [ text "GitHub ID" ]
-                        , th [ class "tl pv2 ph1" ] [ text "Role" ]
-                        , th [ class "tl pv2 ph1" ] [ text "Actions" ]
-                        ]
-                    ]
-                , tbody []
-                    (List.map viewUserRow model.users)
-                ]
-        ]
+        Approve request ->
+            "Approved " ++ request.githubUsername ++ " as a maintainer of " ++ request.attrPath ++ "."
+
+        Reject request ->
+            "Rejected " ++ request.githubUsername ++ "’s request for " ++ request.attrPath ++ "."
+
+        AddMaintainer path username ->
+            "Added " ++ username ++ " as a maintainer of " ++ path ++ "."
+
+        RemoveMaintainer path maintainer ->
+            "Removed " ++ maintainer.githubUsername ++ " from " ++ path ++ "."
 
 
-viewUserRow : User -> Html Msg
-viewUserRow user =
-    tr [ class "bb b--light-gray" ]
-        [ td [ class "pv2 ph1" ]
-            [ div [ class "flex items-center gap2" ]
-                [ case user.githubAvatarUrl of
-                    Just url ->
-                        Html.img
-                            [ Html.Attributes.src url
-                            , class "br-100 w2 h2"
-                            , Html.Attributes.alt user.githubUsername
-                            ]
-                            []
+failureText : Action -> Http.Error -> String
+failureText action error =
+    case ( action, error ) of
+        ( AddMaintainer _ username, Http.BadStatus 404 ) ->
+            "No EkaCI user is called " ++ username ++ ". They need to sign in once before they can be added."
 
-                    Nothing ->
-                        div [ class "br-100 w2 h2 bg-light-gray" ] []
-                , text user.githubUsername
-                ]
-            ]
-        , td [ class "pv2 ph1 gray f7" ] [ text (String.fromInt user.githubId) ]
-        , td [ class "pv2 ph1" ]
-            [ span
-                [ class
-                    (if user.isAdmin then
-                        "badge badge-success"
+        ( AddMaintainer _ username, Http.BadStatus 409 ) ->
+            username ++ " already maintains this attribute path."
 
-                     else
-                        "badge badge-default"
-                    )
-                ]
-                [ text
-                    (if user.isAdmin then
-                        "Admin"
-
-                     else
-                        "User"
-                    )
-                ]
-            ]
-        , td [ class "pv2 ph1" ]
-            [ div [ class "flex gap2" ]
-                [ if user.isAdmin then
-                    button
-                        [ onClick (DemoteUser user.githubId)
-                        , class "btn-sm btn-secondary"
-                        ]
-                        [ text "Remove Admin" ]
-
-                  else
-                    button
-                        [ onClick (PromoteUser user.githubId)
-                        , class "btn-sm btn-primary"
-                        ]
-                        [ text "Make Admin" ]
-                , button
-                    [ onClick (DeleteUser user.githubId)
-                    , class "btn-sm btn-danger"
-                    ]
-                    [ text "Delete" ]
-                ]
-            ]
-        ]
-
-
-viewMaintainersSection : Model -> Html Msg
-viewMaintainersSection model =
-    div [ class "card pa4" ]
-        [ h2 [ class "f3 fw6 mb3" ] [ text "Attr Path Maintainers" ]
-        , div [ class "mb4" ]
-            [ h3 [ class "f4 fw6 mb2" ] [ text "Add Maintainer" ]
-            , div [ class "mb2" ]
-                [ input
-                    [ type_ "text"
-                    , placeholder "Attr path (e.g., nixpkgs.python3)"
-                    , value model.newMaintainerPath
-                    , onInput SetNewMaintainerPath
-                    , class "input w-100"
-                    ]
-                    []
-                ]
-            , div [ class "mb2" ]
-                [ input
-                    [ type_ "text"
-                    , placeholder "GitHub User ID"
-                    , value model.newMaintainerUserId
-                    , onInput SetNewMaintainerUserId
-                    , class "input w-100"
-                    ]
-                    []
-                ]
-            , button
-                [ onClick AddMaintainer
-                , class "btn-primary w-100"
-                ]
-                [ text "Add Maintainer" ]
-            ]
-        , div [ class "mb4" ]
-            [ h3 [ class "f4 fw6 mb2" ] [ text "Search Maintainers" ]
-            , input
-                [ type_ "text"
-                , placeholder "Attr path to search"
-                , class "input w-100"
-                , onInput LoadMaintainersForPath
-                ]
-                []
-            ]
-        , if model.loadingMaintainers then
-            p [ class "gray" ] [ text "Loading maintainers..." ]
-
-          else if List.isEmpty model.maintainers then
-            p [ class "gray" ] [ text "No maintainers found for this path" ]
-
-          else
-            div []
-                [ h3 [ class "f5 fw6 mb2" ]
-                    [ text
-                        (case model.selectedAttrPath of
-                            Just path ->
-                                "Maintainers for: " ++ path
-
-                            Nothing ->
-                                "Maintainers"
-                        )
-                    ]
-                , ul [ class "list pl0" ]
-                    (List.map (viewMaintainer model.selectedAttrPath) model.maintainers)
-                ]
-        ]
-
-
-viewMaintainer : Maybe String -> Maintainer -> Html Msg
-viewMaintainer selectedPath maintainer =
-    li [ class "bb b--light-gray pv2" ]
-        [ div [ class "flex justify-between items-center" ]
-            [ div []
-                [ div [ class "fw6" ] [ text ("User ID: " ++ String.fromInt maintainer.githubUserId) ]
-                , div [ class "gray f7 mt1" ] [ text ("Added: " ++ maintainer.addedAt) ]
-                ]
-            , button
-                [ onClick (RemoveMaintainer maintainer.attrPath maintainer.githubUserId)
-                , class "btn-sm btn-danger"
-                ]
-                [ text "Remove" ]
-            ]
-        ]
+        _ ->
+            "That didn’t work. " ++ Ui.httpErrorMessage error
 
 
 
--- API CALLS
+-- API
 
 
-loadUsers : String -> AuthToken -> Cmd Msg
-loadUsers apiBaseUrl authToken =
+runAction : Model -> Action -> Cmd Msg
+runAction model action =
+    let
+        post path =
+            authRequest model "POST" path Http.emptyBody (Http.expectWhatever (Done action))
+
+        delete path =
+            authRequest model "DELETE" path Http.emptyBody (Http.expectWhatever (Done action))
+    in
+    case action of
+        Promote user ->
+            post ("/admin/users/" ++ String.fromInt user.githubId ++ "/promote")
+
+        Demote user ->
+            post ("/admin/users/" ++ String.fromInt user.githubId ++ "/demote")
+
+        DeleteUser user ->
+            delete ("/admin/users/" ++ String.fromInt user.githubId)
+
+        Approve request ->
+            post ("/admin/maintainer-requests/" ++ String.fromInt request.id ++ "/approve")
+
+        Reject request ->
+            post ("/admin/maintainer-requests/" ++ String.fromInt request.id ++ "/reject")
+
+        AddMaintainer path username ->
+            authRequest model
+                "POST"
+                ("/admin/attr-paths/" ++ path ++ "/maintainers/by-username")
+                (Http.jsonBody (E.object [ ( "github_username", E.string username ) ]))
+                (Http.expectWhatever (Done action))
+
+        RemoveMaintainer path maintainer ->
+            delete ("/admin/attr-paths/" ++ path ++ "/maintainers/" ++ String.fromInt maintainer.githubUserId)
+
+
+loadUsers : Model -> Cmd Msg
+loadUsers model =
+    authRequest model "GET" "/admin/users" Http.emptyBody (Http.expectJson UsersLoaded (D.list userDecoder))
+
+
+loadRequests : Model -> Cmd Msg
+loadRequests model =
+    authRequest model "GET" "/admin/maintainer-requests" Http.emptyBody (Http.expectJson RequestsLoaded Decoder.maintainerRequestList)
+
+
+authRequest : Model -> String -> String -> Http.Body -> Http.Expect Msg -> Cmd Msg
+authRequest model method path body expect =
     Http.request
-        { method = "GET"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/users"
-        , body = Http.emptyBody
-        , expect = Http.expectJson UsersLoaded (D.list userDecoder)
+        { method = method
+        , headers = [ Http.header "Authorization" ("Bearer " ++ model.authToken) ]
+        , url = model.apiBaseUrl ++ path
+        , body = body
+        , expect = expect
         , timeout = Nothing
         , tracker = Nothing
         }
-
-
-promoteUser : String -> AuthToken -> Int -> Cmd Msg
-promoteUser apiBaseUrl authToken githubId =
-    Http.request
-        { method = "POST"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/users/" ++ String.fromInt githubId ++ "/promote"
-        , body = Http.emptyBody
-        , expect = Http.expectWhatever UserActionCompleted
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-demoteUser : String -> AuthToken -> Int -> Cmd Msg
-demoteUser apiBaseUrl authToken githubId =
-    Http.request
-        { method = "POST"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/users/" ++ String.fromInt githubId ++ "/demote"
-        , body = Http.emptyBody
-        , expect = Http.expectWhatever UserActionCompleted
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-deleteUser : String -> AuthToken -> Int -> Cmd Msg
-deleteUser apiBaseUrl authToken githubId =
-    Http.request
-        { method = "DELETE"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/users/" ++ String.fromInt githubId
-        , body = Http.emptyBody
-        , expect = Http.expectWhatever UserActionCompleted
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-loadMaintainers : String -> AuthToken -> String -> Cmd Msg
-loadMaintainers apiBaseUrl authToken attrPath =
-    Http.request
-        { method = "GET"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/attr-paths/" ++ attrPath ++ "/maintainers"
-        , body = Http.emptyBody
-        , expect = Http.expectJson MaintainersLoaded (D.list maintainerDecoder)
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-addMaintainer : String -> AuthToken -> String -> Int -> Cmd Msg
-addMaintainer apiBaseUrl authToken attrPath githubUserId =
-    Http.request
-        { method = "POST"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/attr-paths/" ++ attrPath ++ "/maintainers"
-        , body =
-            Http.jsonBody
-                (E.object
-                    [ ( "github_user_id", E.int githubUserId )
-                    ]
-                )
-        , expect = Http.expectWhatever MaintainerActionCompleted
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-removeMaintainer : String -> AuthToken -> String -> Int -> Cmd Msg
-removeMaintainer apiBaseUrl authToken attrPath githubUserId =
-    Http.request
-        { method = "DELETE"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/attr-paths/" ++ attrPath ++ "/maintainers/" ++ String.fromInt githubUserId
-        , body = Http.emptyBody
-        , expect = Http.expectWhatever MaintainerActionCompleted
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-loadPendingRequests : String -> AuthToken -> Cmd Msg
-loadPendingRequests apiBaseUrl authToken =
-    Http.request
-        { method = "GET"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/maintainer-requests"
-        , body = Http.emptyBody
-        , expect = Http.expectJson RequestsLoaded Decoder.maintainerRequestList
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-approveRequest : String -> AuthToken -> Int -> Cmd Msg
-approveRequest apiBaseUrl authToken requestId =
-    Http.request
-        { method = "POST"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/maintainer-requests/" ++ String.fromInt requestId ++ "/approve"
-        , body = Http.emptyBody
-        , expect = Http.expectWhatever RequestActionCompleted
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-rejectRequest : String -> AuthToken -> Int -> Cmd Msg
-rejectRequest apiBaseUrl authToken requestId =
-    Http.request
-        { method = "POST"
-        , headers = [ Http.header "Authorization" ("Bearer " ++ authToken) ]
-        , url = apiBaseUrl ++ "/v1/admin/maintainer-requests/" ++ String.fromInt requestId ++ "/reject"
-        , body = Http.emptyBody
-        , expect = Http.expectWhatever RequestActionCompleted
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-
--- DECODERS
 
 
 userDecoder : D.Decoder User
@@ -750,41 +348,282 @@ userDecoder =
         (D.field "last_login" D.string)
 
 
-maintainerDecoder : D.Decoder Maintainer
-maintainerDecoder =
-    D.map5 Maintainer
-        (D.field "id" D.int)
-        (D.field "attr_path" D.string)
-        (D.field "github_user_id" D.int)
-        (D.field "added_at" D.string)
-        (D.field "added_by_user_id" (D.nullable D.int))
+
+-- VIEW
+
+
+view : Model -> Html Msg
+view model =
+    div []
+        [ Ui.pageHead
+            { crumbs = []
+            , title = [ Html.h1 [] [ text "Admin" ] ]
+            , lede = [ text "Review maintainer requests and manage users and maintainers." ]
+            , actions = [ button [ type_ "button", class "button", onClick Refresh ] [ text "Refresh" ] ]
+            }
+        , Ui.messages { error = model.error, success = model.success, onDismiss = DismissMessage }
+        , viewRequests model
+        , viewUsers model
+        , div [ class "grid-2" ]
+            [ viewLookup model
+            , viewAddForm model
+            ]
+        ]
+
+
+{-| A destructive action's button, replaced by an inline "are you sure?"
+while it is being confirmed.
+-}
+confirmable : Model -> Action -> { label : String, question : String, verb : String } -> Html Msg
+confirmable model action config =
+    if model.confirm == Just action then
+        span [ class "confirm", attribute "role" "group", attribute "aria-label" config.question ]
+            [ span [] [ text config.question ]
+            , button [ type_ "button", class "button small danger solid", onClick (Run action), disabled model.working ] [ text config.verb ]
+            , button [ type_ "button", class "button small ghost", onClick CancelConfirm ] [ text "Cancel" ]
+            ]
+
+    else
+        button [ type_ "button", class "button small danger", onClick (AskConfirm action), disabled model.working ] [ text config.label ]
+
+
+actionButton : Model -> String -> String -> Action -> Html Msg
+actionButton model classes label action =
+    button [ type_ "button", class ("button small " ++ classes), onClick (Run action), disabled model.working ] [ text label ]
 
 
 
--- HELPERS
+-- REQUESTS
 
 
-httpErrorToString : Http.Error -> String
-httpErrorToString error =
-    case error of
-        Http.BadUrl url ->
-            "Invalid URL: " ++ url
+viewRequests : Model -> Html Msg
+viewRequests model =
+    case model.requests of
+        Loading ->
+            Ui.panel "Pending requests" [] [ Ui.loadingInline "Loading requests…" ]
 
-        Http.Timeout ->
-            "Request timed out"
+        Failed error ->
+            Ui.panel "Pending requests" [] [ Ui.httpError "Could not load requests." error ]
 
-        Http.NetworkError ->
-            "Network error"
+        Ready all ->
+            let
+                pending =
+                    List.filter (\r -> r.status == Pending) all
+            in
+            Ui.panel "Pending requests"
+                [ Ui.badge
+                    (if List.isEmpty pending then
+                        Ui.Neutral
 
-        Http.BadStatus code ->
-            "Server returned error code: " ++ String.fromInt code
+                     else
+                        Ui.Warn
+                    )
+                    (String.fromInt (List.length pending) ++ " pending")
+                ]
+                [ if List.isEmpty pending then
+                    Ui.emptyNote "No requests are waiting for review."
 
-        Http.BadBody body ->
-            "Invalid response: " ++ body
+                  else
+                    Ui.tableWrap (requestTable model pending)
+                ]
 
 
-formatDate : String -> String
-formatDate dateStr =
-    -- For now, just return the date string as-is
-    -- In a real app, you'd parse and format this nicely
-    dateStr
+requestTable : Model -> List MaintainerRequest -> Html Msg
+requestTable model requests =
+    table [ class "table" ]
+        [ thead []
+            [ tr []
+                [ th [ scope "col" ] [ text "Request" ]
+                , th [ scope "col", class "hide-sm" ] [ text "Requested" ]
+                , th [ scope "col" ] [ span [ class "sr-only" ] [ text "Actions" ] ]
+                ]
+            ]
+        , tbody []
+            (List.map
+                (\request ->
+                    tr []
+                        [ td []
+                            [ span [ class "cell-main mono" ] [ text request.attrPath ]
+                            , span [ class "cell-sub request-by" ]
+                                [ text "by ", person request.githubAvatarUrl request.githubUsername ]
+                            ]
+                        , td [ class "nowrap small hide-sm" ] [ Ui.timestamp request.requestedAt ]
+                        , td []
+                            [ div [ class "actions" ]
+                                [ actionButton model "primary" "Approve" (Approve request)
+                                , actionButton model "danger" "Reject" (Reject request)
+                                ]
+                            ]
+                        ]
+                )
+                requests
+            )
+        ]
+
+
+person : Maybe String -> String -> Html msg
+person avatarUrl username =
+    span [ class "person" ] [ Ui.avatar avatarUrl username, text username ]
+
+
+
+-- USERS
+
+
+viewUsers : Model -> Html Msg
+viewUsers model =
+    Ui.panel "Users"
+        []
+        [ case model.users of
+            Loading ->
+                Ui.loadingInline "Loading users…"
+
+            Failed error ->
+                Ui.httpError "Could not load users." error
+
+            Ready [] ->
+                Ui.emptyNote "Nobody has signed in yet."
+
+            Ready users ->
+                Ui.tableWrap (userTable model users)
+        ]
+
+
+userTable : Model -> List User -> Html Msg
+userTable model users =
+    table [ class "table" ]
+        [ thead []
+            [ tr []
+                [ th [ scope "col" ] [ text "User" ]
+                , th [ scope "col" ] [ text "Role" ]
+                , th [ scope "col", class "hide-sm" ] [ text "Last sign-in" ]
+                , th [ scope "col" ] [ span [ class "sr-only" ] [ text "Actions" ] ]
+                ]
+            ]
+        , tbody [] (List.map (userRow model) (List.sortBy (\u -> String.toLower u.githubUsername) users))
+        ]
+
+
+userRow : Model -> User -> Html Msg
+userRow model user =
+    tr []
+        [ td []
+            [ person user.githubAvatarUrl user.githubUsername
+            , span [ class "cell-sub" ] [ text ("GitHub ID " ++ String.fromInt user.githubId) ]
+            ]
+        , td []
+            [ if user.isAdmin then
+                Ui.badge Ui.Info "Admin"
+
+              else
+                Ui.badge Ui.Neutral "Member"
+            ]
+        , td [ class "nowrap small hide-sm" ] [ Ui.timestamp user.lastLogin ]
+        , td [] [ div [ class "actions" ] (userActions model user) ]
+        ]
+
+
+userActions : Model -> User -> List (Html Msg)
+userActions model user =
+    [ if user.isAdmin then
+        confirmable model
+            (Demote user)
+            { label = "Remove admin", question = "Remove admin from " ++ user.githubUsername ++ "?", verb = "Remove admin" }
+
+      else
+        actionButton model "" "Make admin" (Promote user)
+    , confirmable model
+        (DeleteUser user)
+        { label = "Delete", question = "Delete " ++ user.githubUsername ++ "?", verb = "Delete user" }
+    ]
+
+
+
+-- MAINTAINERS
+
+
+viewLookup : Model -> Html Msg
+viewLookup model =
+    Ui.panel "Maintainers"
+        []
+        [ form [ class "form-row", onSubmit SubmitLookup, attribute "role" "search" ]
+            [ label [ class "field grow" ]
+                [ text "Attribute path"
+                , input
+                    [ type_ "search"
+                    , class "mono"
+                    , placeholder "e.g. python3Packages.requests"
+                    , value model.lookupDraft
+                    , onInput SetLookupDraft
+                    , autocomplete False
+                    , spellcheck False
+                    ]
+                    []
+                ]
+            , button [ type_ "submit", class "button" ] [ text "Look up" ]
+            ]
+        , viewLookupResult model
+        ]
+
+
+viewLookupResult : Model -> Html Msg
+viewLookupResult model =
+    case model.lookup of
+        NoLookup ->
+            Ui.emptyNote "Look up an attribute path to see and remove its maintainers."
+
+        LookingUp _ ->
+            Ui.loadingInline "Looking up maintainers…"
+
+        LookedUp path (Err error) ->
+            Ui.httpError ("Could not look up " ++ path ++ ".") error
+
+        LookedUp path (Ok []) ->
+            Ui.emptyNote ("Nobody maintains " ++ path ++ ".")
+
+        LookedUp path (Ok maintainers) ->
+            Ui.tableWrap
+                (table [ class "table compact" ]
+                    [ thead []
+                        [ tr []
+                            [ th [ scope "col" ] [ text "Maintainer" ]
+                            , th [ scope "col" ] [ text "Added" ]
+                            , th [ scope "col" ] [ span [ class "sr-only" ] [ text "Actions" ] ]
+                            ]
+                        ]
+                    , tbody [] (List.map (maintainerRow model path) maintainers)
+                    ]
+                )
+
+
+maintainerRow : Model -> String -> MaintainerDetail -> Html Msg
+maintainerRow model path maintainer =
+    tr []
+        [ td [] [ person maintainer.githubAvatarUrl maintainer.githubUsername ]
+        , td [ class "nowrap small" ] [ Ui.timestamp maintainer.addedAt ]
+        , td []
+            [ confirmable model
+                (RemoveMaintainer path maintainer)
+                { label = "Remove", question = "Remove " ++ maintainer.githubUsername ++ "?", verb = "Remove" }
+            ]
+        ]
+
+
+viewAddForm : Model -> Html Msg
+viewAddForm model =
+    Ui.panel "Add a maintainer"
+        []
+        [ form [ class "form-stack", onSubmit SubmitAdd ]
+            [ label [ class "field" ]
+                [ text "Attribute path"
+                , input [ type_ "text", class "mono", value model.newPath, onInput SetNewPath, required True, autocomplete False, spellcheck False ] []
+                ]
+            , label [ class "field" ]
+                [ text "GitHub username"
+                , input [ type_ "text", value model.newUsername, onInput SetNewUsername, required True, autocomplete False, spellcheck False ] []
+                , span [ class "field-hint" ] [ text "They must have signed in to EkaCI at least once." ]
+                ]
+            , div [ class "actions" ]
+                [ button [ type_ "submit", class "button primary", disabled model.working ] [ text "Add maintainer" ] ]
+            ]
+        ]
