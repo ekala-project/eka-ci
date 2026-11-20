@@ -11,13 +11,15 @@ module Pages.AttrPathSearch exposing
 -}
 
 import Api.Api as Api
+import Api.Decoder as Decoder
 import Auth exposing (AuthState, AuthToken)
 import Components.Ui as Ui
 import Html exposing (Html, a, button, div, form, input, label, span, table, tbody, td, text, th, thead, tr)
 import Html.Attributes exposing (attribute, autocomplete, class, disabled, href, placeholder, scope, spellcheck, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Http
-import Models.Maintainer exposing (MaintainerDetail)
+import Models.Maintainer exposing (MaintainerDetail, MaintainerRequest, RequestStatus(..))
+import Set exposing (Set)
 
 
 type alias Model =
@@ -26,6 +28,7 @@ type alias Model =
     , query : String
     , results : Results
     , requesting : Bool
+    , pending : Set String
     , error : Maybe String
     , success : Maybe String
     }
@@ -47,6 +50,7 @@ type Msg
     | GotMaintainers String (Result Http.Error (List MaintainerDetail))
     | RequestAccess String
     | RequestCompleted String (Result Http.Error ())
+    | GotMyRequests (Result Http.Error (List MaintainerRequest))
     | DismissMessage
 
 
@@ -57,6 +61,7 @@ init apiBaseUrl authState =
       , query = ""
       , results = NotSearched
       , requesting = False
+      , pending = Set.empty
       , error = Nothing
       , success = Nothing
       }
@@ -85,7 +90,7 @@ update msg model =
 
             else
                 ( { model | results = Searching attrPath, error = Nothing, success = Nothing }
-                , search model.apiBaseUrl attrPath
+                , Cmd.batch [ search model.apiBaseUrl attrPath, fetchMyRequests model ]
                 )
 
         GotMaintainers attrPath (Ok maintainers) ->
@@ -105,15 +110,54 @@ update msg model =
                     ( { model | error = Just "Sign in to request maintainer access." }, Cmd.none )
 
         RequestCompleted attrPath (Ok ()) ->
-            ( { model | requesting = False, success = Just ("Requested maintainer access to " ++ attrPath ++ ". An admin will review it.") }
+            ( { model | requesting = False, pending = Set.insert attrPath model.pending, success = Just ("Requested maintainer access to " ++ attrPath ++ ". An admin will review it.") }
             , search model.apiBaseUrl attrPath
             )
 
         RequestCompleted _ (Err error) ->
-            ( { model | requesting = False, error = Just (requestErrorText error) }, Cmd.none )
+            ( { model | requesting = False, error = Just (requestErrorText error) }
+            , -- A 409 usually means a request is already pending; show it.
+              fetchMyRequests model
+            )
+
+        GotMyRequests (Ok requests) ->
+            ( { model | pending = pendingPaths requests }, Cmd.none )
+
+        GotMyRequests (Err _) ->
+            -- Only used to label the request button; the button still works.
+            ( model, Cmd.none )
 
         DismissMessage ->
             ( { model | error = Nothing, success = Nothing }, Cmd.none )
+
+
+pendingPaths : List MaintainerRequest -> Set String
+pendingPaths requests =
+    requests
+        |> List.filter (\request -> request.status == Pending)
+        |> List.map .attrPath
+        |> Set.fromList
+
+
+{-| The signed-in user's own requests, so paths they've already asked for
+show as pending instead of offering the button again.
+-}
+fetchMyRequests : Model -> Cmd Msg
+fetchMyRequests model =
+    case Auth.getToken model.authState of
+        Just token ->
+            Http.request
+                { method = "GET"
+                , headers = [ Http.header "Authorization" ("Bearer " ++ token) ]
+                , url = model.apiBaseUrl ++ "/users/me/maintainer-requests"
+                , body = Http.emptyBody
+                , expect = Http.expectJson GotMyRequests Decoder.maintainerRequestList
+                , timeout = Nothing
+                , tracker = Nothing
+                }
+
+        Nothing ->
+            Cmd.none
 
 
 search : String -> String -> Cmd Msg
@@ -225,6 +269,9 @@ requestButton model attrPath maintainers =
 
     else if isMaintainer then
         Ui.badge Ui.Good "You maintain this"
+
+    else if Set.member attrPath model.pending then
+        Ui.badge Ui.Warn "Request pending"
 
     else if model.requesting then
         button [ type_ "button", class "button small", disabled True ] [ text "Requesting…" ]

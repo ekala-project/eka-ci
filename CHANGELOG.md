@@ -196,6 +196,8 @@
   access requests for the text in the box instead of the path shown
 - Fix users without a GitHub avatar being signed out right after signing
   in, and a slow `/me` response from an old session signing out a new one
+- The maintainers page shows "Request pending" for attribute paths you've
+  already asked to maintain, instead of offering the request button again
 
 ### GitHub webhooks
 
